@@ -1,0 +1,11 @@
+fastapi==0.111.0
+uvicorn==0.30.1
+httpx==0.27.0
+pydantic==2.7.1
+moviepy==1.0.3
+gTTS==2.5.1
+Pillow==10.3.0
+duckduckgo-search==6.1.7
+requests==2.32.3
+aiofiles==23.2.1
+python-multipart==0.0.9

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+data/memory.db
+data/agents/
+output/
+*.mp4
+*.mp3
+*.png
