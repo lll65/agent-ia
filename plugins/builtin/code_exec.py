@@ -1,5 +1,6 @@
 import subprocess
-import resource
+import sys
+import platform
 from plugins.base import Plugin
 from config import config
 
@@ -14,23 +15,26 @@ class CodeExecPlugin(Plugin):
 
     def run(self, code: str, timeout: int = 15) -> str:
         timeout = min(timeout, 30)
+        python = sys.executable
 
-        def limit_resources():
-            # RAM max 256MB, CPU max 10s
-            try:
-                resource.setrlimit(resource.RLIMIT_AS, (256 * 1024 * 1024, 256 * 1024 * 1024))
-                resource.setrlimit(resource.RLIMIT_CPU, (10, 10))
-            except Exception:
-                pass
+        preexec = None
+        if platform.system() != "Windows":
+            import resource
+            def preexec():
+                try:
+                    resource.setrlimit(resource.RLIMIT_AS, (256 * 1024 * 1024, 256 * 1024 * 1024))
+                    resource.setrlimit(resource.RLIMIT_CPU, (10, 10))
+                except Exception:
+                    pass
 
         try:
             result = subprocess.run(
-                ["python3", "-c", code],
+                [python, "-c", code],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
                 cwd=config.OUTPUT_DIR,
-                preexec_fn=limit_resources,
+                preexec_fn=preexec,
             )
             out = result.stdout.strip()
             err = result.stderr.strip()
