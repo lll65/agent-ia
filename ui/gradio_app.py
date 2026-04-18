@@ -1,21 +1,42 @@
 """
-Interface Web Gradio — accès visuel à tout ton agent IA depuis le navigateur.
-Lance avec: python main.py (intégré)
+Interface Web — MasterAgent-Gros
+Architecture deux couches :
+  ⚡ Fast Chat  — appel direct Ollama, sans ReAct ni outils, < 5s
+  🔥 Full Agent — boucle ReAct complète avec mémoire, outils, sous-agents
 """
 import asyncio
 import json
+from datetime import datetime
+from pathlib import Path
+
 import gradio as gr
 
 from config import config
 
-# Détection version Gradio pour compatibilité
+# ── compat Gradio 4 / 5 ───────────────────────────────────────────────────────
 _GRADIO_MAJOR = int(gr.__version__.split(".")[0])
 _USE_DICT_FORMAT = _GRADIO_MAJOR >= 5
 
+# ── sessions persistantes ─────────────────────────────────────────────────────
+SESSIONS_DIR = Path("data/sessions")
+SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
-# ── helpers async ──────────────────────────────────────────────────────────────
+# Préfixes qui activent le mode Agent depuis le mode Rapide
+AGENT_TRIGGERS = (
+    "agent:",
+    "mode complet:",
+    "plein mode:",
+    "utilise tes outils:",
+    "passe en mode agent",
+)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
 
 def _run(coro):
+    """Exécute une coroutine depuis un contexte synchrone."""
     try:
         return asyncio.run(coro)
     except RuntimeError:
@@ -27,26 +48,95 @@ def _run(coro):
             loop.close()
 
 
-# ── onglet Chat ────────────────────────────────────────────────────────────────
-
-def _direct_chat(message: str, history_msgs: list) -> str:
-    """Appel direct Ollama sans pipeline ReAct — rapide pour le chat simple."""
-    import ollama
-    messages = [
-        {"role": "system", "content": "Tu es un assistant IA personnel. Tu réponds en français, de façon concise et utile."},
-    ]
-    # Ajoute les 6 derniers échanges comme contexte
-    for m in history_msgs[-6:]:
+def _history_to_ollama(history: list) -> list:
+    """Convertit l'historique Gradio en messages Ollama (10 derniers max)."""
+    msgs = []
+    for m in history[-10:]:
         if isinstance(m, dict):
-            messages.append({"role": m["role"], "content": m["content"]})
-        elif isinstance(m, tuple) and len(m) == 2:
+            msgs.append({"role": m["role"], "content": m["content"]})
+        elif isinstance(m, (list, tuple)) and len(m) == 2:
             if m[0]:
-                messages.append({"role": "user", "content": m[0]})
+                msgs.append({"role": "user", "content": str(m[0])})
             if m[1]:
-                messages.append({"role": "assistant", "content": m[1]})
+                msgs.append({"role": "assistant", "content": str(m[1])})
+    return msgs
+
+
+def _append_history(history: list, user_msg: str, assistant_msg: str) -> list:
+    """Ajoute un échange à l'historique dans le bon format selon la version Gradio."""
+    if _USE_DICT_FORMAT:
+        return history + [
+            {"role": "user", "content": user_msg},
+            {"role": "assistant", "content": assistant_msg},
+        ]
+    return history + [(user_msg, assistant_msg)]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GESTION DES SESSIONS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _session_path(sid: str) -> Path:
+    return SESSIONS_DIR / f"{sid}.json"
+
+
+def save_session(sid: str, name: str, history: list):
+    _session_path(sid).write_text(
+        json.dumps(
+            {"id": sid, "name": name[:60], "updated_at": datetime.now().isoformat(), "history": history},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def load_session(sid: str) -> dict:
+    p = _session_path(sid)
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"id": sid, "name": "Nouvelle", "history": []}
+
+
+def list_sessions() -> list:
+    """Liste les 20 sessions les plus récentes (format 'nom | id')."""
+    sessions = []
+    for f in sorted(SESSIONS_DIR.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+            sessions.append(f"{d.get('name', 'Sans titre')} | {d['id']}")
+        except Exception:
+            pass
+    return sessions[:20]
+
+
+def new_sid() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ⚡ FAST CHAT LAYER  —  appel direct Ollama, aucun outil, aucun ReAct
+# ══════════════════════════════════════════════════════════════════════════════
+
+_FAST_SYSTEM = (
+    "Tu es MasterAgent, un assistant IA personnel chaleureux, direct et efficace. "
+    "Tu réponds en français, naturellement et de façon concise. "
+    "Pour des tâches complexes (créer du code, gérer des fichiers, rechercher sur "
+    "internet, orchestrer des agents), invite l'utilisateur à activer le "
+    "Mode Agent Complet 🔥 ou à préfixer son message par 'Agent:'."
+)
+
+
+def fast_chat(message: str, history: list) -> str:
+    """Appel direct Ollama — sans pipeline ReAct, réponse rapide."""
+    import ollama
+    messages = [{"role": "system", "content": _FAST_SYSTEM}]
+    messages.extend(_history_to_ollama(history))
     messages.append({"role": "user", "content": message})
     try:
-        client = ollama.Client(timeout=120)
+        client = ollama.Client(timeout=60)
         resp = client.chat(
             model=config.OLLAMA_MODEL,
             messages=messages,
@@ -54,257 +144,369 @@ def _direct_chat(message: str, history_msgs: list) -> str:
         )
         return resp["message"]["content"]
     except Exception as e:
-        return f"Erreur: {e}"
+        return (
+            f"❌ Ollama indisponible: {e}\n\n"
+            f"Lance: `ollama pull {config.OLLAMA_MODEL}`"
+        )
 
 
-def chat_with_agent(message: str, history: list, agent_id: str, show_steps: bool):
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔥 FULL AGENT LAYER  —  ReAct complet, outils, mémoire, sous-agents
+# ══════════════════════════════════════════════════════════════════════════════
+
+def full_agent_chat(message: str, history: list, session_id: str) -> str:
+    """Pipeline ReAct complète avec tous les outils et la mémoire ChromaDB."""
+    from agent.core import run_agent
+    from plugins import get_loader
+
+    agent_config = {
+        "id": session_id,
+        "name": "MasterAgent-Gros",
+        "system_prompt": (
+            "Tu es MasterAgent-Gros, un agent IA maître ultra-puissant. "
+            "Tu utilises tous les outils disponibles pour accomplir les tâches: "
+            "créer des sous-agents, écrire du code, gérer des fichiers, "
+            "orchestrer des workflows complexes. Tu réponds en français."
+        ),
+        "tools": list(get_loader().list_all().keys()),
+        "model": config.OLLAMA_MODEL,
+    }
+    try:
+        result = _run(run_agent(message, agent_config, session_id))
+        answer = result.get("answer", "Pas de réponse.")
+        used = {s["action"] for s in result.get("steps", []) if s.get("action")}
+        if used:
+            answer += f"\n\n*🔧 Outils utilisés : {', '.join(sorted(used))}*"
+        return answer
+    except Exception as e:
+        return f"❌ Erreur agent: {e}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LOGIQUE CENTRALE
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _should_use_agent(message: str, mode: str) -> tuple:
+    """Retourne (use_agent: bool, message_nettoyé: str)."""
+    if mode == "agent":
+        return True, message
+    low = message.lower().strip()
+    for trigger in AGENT_TRIGGERS:
+        if low.startswith(trigger):
+            cleaned = message[len(trigger):].strip()
+            return True, cleaned or message
+    return False, message
+
+
+def send_message(message: str, history: list, mode: str, sid: str):
+    """Point d'entrée unique — route vers Fast ou Full Agent selon le mode."""
     if not message.strip():
         return history, history, ""
 
-    if show_steps:
-        # Mode agent complet avec outils (plus lent)
-        from agent.core import run_agent
-        from plugins import get_loader
-        from orchestrator import get_registry
-        registry = get_registry()
-        agent = registry.get(agent_id) if agent_id != "default" else None
-        if agent is None:
-            agent = {
-                "id": "default",
-                "name": "Agent Principal",
-                "system_prompt": "Tu es un assistant IA polyvalent.",
-                "tools": list(get_loader().list_all().keys()),
-                "model": config.OLLAMA_MODEL,
-            }
-        result = _run(run_agent(message, agent, agent_id))
-        answer = result.get("answer", "Pas de réponse.")
-        steps_text = "\n\n".join(
-            f"**Étape {s['iteration']}**\n"
-            + (f"→ Action: `{s.get('action', '')}` | Params: `{s.get('params', {})}`\n" if s.get("action") else "")
-            + (f"→ Observation: {s.get('observation', '')[:300]}\n" if s.get("observation") else "")
-            for s in result.get("steps", []) if s.get("action")
-        )
-        if steps_text:
-            answer = f"{answer}\n\n---\n**Actions ({result['iterations']} itérations):**\n{steps_text}"
+    use_agent, clean = _should_use_agent(message, mode)
+
+    if use_agent:
+        answer = full_agent_chat(clean, history, sid)
     else:
-        # Mode rapide: appel direct sans ReAct ni mémoire
-        answer = _direct_chat(message, history)
+        answer = fast_chat(clean, history)
 
-    if _USE_DICT_FORMAT:
-        history.append({"role": "user", "content": message})
-        history.append({"role": "assistant", "content": answer})
+    new_history = _append_history(history, message, answer)
+
+    # Sauvegarde : nom de session = premier message utilisateur
+    existing = load_session(sid)
+    name = existing.get("name", "Nouvelle") if existing.get("history") else message[:50]
+    save_session(sid, name, new_history)
+
+    return new_history, new_history, ""
+
+
+def do_toggle_mode(mode: str):
+    """Bascule Fast ↔ Agent et met à jour le bouton + indicateur."""
+    new_mode = "agent" if mode == "fast" else "fast"
+    if new_mode == "fast":
+        label = "⚡ Mode Rapide — ACTIF"
+        indicator = "🟢 **Mode Rapide ⚡** — Réponses directes en quelques secondes, sans outils"
     else:
-        history.append((message, answer))
-    return history, history, ""
+        label = "🔥 Mode Agent Complet — ACTIF"
+        indicator = "🔴 **Mode Agent Complet 🔥** — ReAct + outils + mémoire (30-60s par réponse)"
+    return new_mode, gr.update(value=label), indicator
 
 
-# ── onglet Orchestrateur ───────────────────────────────────────────────────────
-
-def run_master(goal: str, progress=gr.Progress()):
-    from orchestrator import get_master
-    if not goal.strip():
-        return "Saisis un objectif."
-    progress(0.1, desc="Décomposition du goal...")
-    result = _run(get_master().execute(goal))
-    progress(0.9, desc="Synthèse...")
-    output = f"## Résultat pour: {goal}\n\n"
-    output += f"**Mode:** {result.get('mode', 'unknown')}\n"
-    if result.get("agents"):
-        output += f"**Agents créés:** {len(result['agents'])}\n"
-        for a in result["agents"]:
-            output += f"  - `{a['role']}`: {a['objective']}\n"
-    output += f"\n---\n\n{result.get('answer', '')}"
-    return output
+def do_new_conversation():
+    return [], [], new_sid()
 
 
-# ── onglet Vidéo ───────────────────────────────────────────────────────────────
-
-def create_video_ui(topic: str, style: str, lang: str, slides_n: int, theme: str, add_audio: bool, progress=gr.Progress()):
-    import httpx
-
-    async def _gen():
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"http://localhost:{config.PORT}/video/script",
-                json={"topic": topic, "style": style, "lang": lang, "slides_count": int(slides_n)},
-            )
-            return resp.json()
-
-    progress(0.2, desc="Génération du script...")
-    data = _run(_gen())
-    slides = data.get("slides", [topic])
-
-    progress(0.4, desc="Création des images...")
-    from video.creator import create_video
-    try:
-        path = create_video(slides, topic[:30].replace(" ", "_"), lang=lang, add_audio=add_audio, theme=theme)
-        progress(1.0, desc="Terminé!")
-        script = "\n\n---\n\n".join(slides)
-        return path, script
-    except Exception as e:
-        return None, f"Erreur: {e}"
+def do_load_session(choice: str):
+    if choice and " | " in choice:
+        sid = choice.split(" | ")[-1].strip()
+        data = load_session(sid)
+        h = data.get("history", [])
+        return h, h, sid
+    return [], [], new_sid()
 
 
-# ── onglet Code ────────────────────────────────────────────────────────────────
-
-def generate_code_ui(description: str, language: str, run_code: bool):
-    import httpx
-
-    async def _gen():
-        async with httpx.AsyncClient(timeout=90.0) as c:
-            if run_code and language == "python":
-                r = await c.post(
-                    f"http://localhost:{config.PORT}/code/generate-and-run",
-                    json={"description": description, "language": language},
-                )
-            else:
-                r = await c.post(
-                    f"http://localhost:{config.PORT}/code/generate",
-                    json={"description": description, "language": language},
-                )
-            return r.json()
-
-    data = _run(_gen())
-    code = data.get("code", "Erreur: " + str(data))
-    output = data.get("output", "")
-    return code, output or "(code non exécuté)"
+def do_refresh_sessions():
+    return gr.update(choices=list_sessions(), value=None)
 
 
-# ── onglet Plugins ─────────────────────────────────────────────────────────────
-
-def list_plugins_ui():
-    from plugins import get_loader
-    plugins = get_loader().list_all()
-    return [[name, desc] for name, desc in plugins.items()]
-
-
-def add_plugin_ui(code: str):
-    from pathlib import Path
-    path = Path(config.PLUGINS_DIR) / "user_plugin.py"
-    path.write_text(code, encoding="utf-8")
-    from plugins import get_loader
-    get_loader().reload_user_plugins()
-    return f"Plugin chargé. Disponibles: {list(get_loader().list_all().keys())}"
-
-
-# ── onglet Agents ──────────────────────────────────────────────────────────────
-
-def list_agents_ui():
-    from orchestrator import get_registry
-    agents = get_registry().list_all()
-    return [[a["id"], a.get("name", ""), a.get("role", ""), a.get("status", ""), a.get("last_active", "")] for a in agents]
-
-
-def create_agent_ui(role: str, objective: str, model: str):
-    from orchestrator.factory import generate_agent_config
-    from orchestrator import get_registry
-    cfg = _run(generate_agent_config(role, objective, model or config.OLLAMA_MODEL))
-    get_registry().register(cfg)
-    return json.dumps(cfg, indent=2, ensure_ascii=False)
-
-
-# ── Construction de l'UI ───────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# CONSTRUCTION DE L'INTERFACE
+# ══════════════════════════════════════════════════════════════════════════════
 
 def build_ui() -> gr.Blocks:
-    with gr.Blocks(title="Agent IA Personnel") as demo:
-        gr.Markdown("# Agent IA Personnel\n*100% local — 0€/mois*")
+    try:
+        theme = gr.themes.Soft()
+    except Exception:
+        theme = None
+
+    blocks_kwargs = {"title": "MasterAgent-Gros"}
+    if theme:
+        blocks_kwargs["theme"] = theme
+
+    with gr.Blocks(**blocks_kwargs) as demo:
+
+        # ── États globaux ────────────────────────────────────────────────────
+        mode_state = gr.State("fast")
+        sid_state = gr.State(new_sid())
+
+        # ── En-tête ──────────────────────────────────────────────────────────
+        with gr.Row():
+            gr.Markdown("# 🤖 MasterAgent-Gros")
+            with gr.Column(scale=0, min_width=280):
+                mode_btn = gr.Button("⚡ Mode Rapide — ACTIF", variant="secondary", size="sm")
+
+        mode_indicator = gr.Markdown(
+            "🟢 **Mode Rapide ⚡** — Réponses directes en quelques secondes, sans outils"
+        )
 
         with gr.Tabs():
 
-            # ── CHAT ──────────────────────────────────────────────────────────
-            with gr.TabItem("Chat"):
-                # type="messages" = format Gradio 6+
-                chatbot_kwargs = {}
-                chatbot = gr.Chatbot(height=500, label="Conversation", **chatbot_kwargs)
+            # ══ CHAT ══════════════════════════════════════════════════════════
+            with gr.TabItem("💬 Chat"):
                 with gr.Row():
-                    msg_input = gr.Textbox(placeholder="Ton message...", scale=5, label="")
-                    send_btn = gr.Button("Envoyer", variant="primary", scale=1)
-                with gr.Row():
-                    agent_dropdown = gr.Dropdown(choices=["default"], value="default", label="Agent", scale=3)
-                    show_steps = gr.Checkbox(label="Voir les étapes", value=False, scale=1)
-                    clear_btn = gr.Button("Effacer", scale=1)
 
-                state = gr.State([])
-                send_btn.click(chat_with_agent, [msg_input, state, agent_dropdown, show_steps], [chatbot, state, msg_input])
-                msg_input.submit(chat_with_agent, [msg_input, state, agent_dropdown, show_steps], [chatbot, state, msg_input])
-                clear_btn.click(lambda: ([], []), None, [chatbot, state])
+                    # Panneau gauche — historique des sessions
+                    with gr.Column(scale=1, min_width=210):
+                        gr.Markdown("### 📋 Historique")
+                        new_btn = gr.Button("✨ Nouvelle conv.", variant="primary", size="sm")
+                        sessions_dd = gr.Dropdown(
+                            choices=list_sessions(),
+                            label="Sessions passées",
+                            value=None,
+                            interactive=True,
+                        )
+                        refresh_sessions_btn = gr.Button("🔄 Rafraîchir", size="sm")
 
-            # ── ORCHESTRATEUR ─────────────────────────────────────────────────
-            with gr.TabItem("Orchestrateur"):
-                gr.Markdown("Donne un objectif complexe — le Master Agent le décompose et crée les sous-agents.")
-                goal_input = gr.Textbox(
-                    placeholder='Ex: Crée une vidéo virale sur le Bitcoin ET génère le code Python pour tracker son prix',
-                    label="Objectif", lines=3
-                )
-                orchestrate_btn = gr.Button("Lancer", variant="primary")
-                orch_output = gr.Markdown()
-                orchestrate_btn.click(run_master, [goal_input], [orch_output])
-
-            # ── VIDÉO ─────────────────────────────────────────────────────────
-            with gr.TabItem("Créateur Vidéo"):
-                with gr.Row():
-                    with gr.Column():
-                        topic_in = gr.Textbox(label="Sujet", placeholder="Ex: Les erreurs des débutants en crypto")
-                        style_in = gr.Dropdown(["éducatif", "motivation", "humour", "tutoriel", "choc"], value="éducatif", label="Style")
+                    # Panneau droit — chat
+                    with gr.Column(scale=4):
+                        chatbot = gr.Chatbot(height=500, label="")
                         with gr.Row():
-                            lang_in = gr.Dropdown(["fr", "en", "es"], value="fr", label="Langue")
-                            theme_in = gr.Dropdown(["dark", "fire", "ocean", "gold"], value="dark", label="Thème")
-                        slides_in = gr.Slider(3, 10, value=5, step=1, label="Nombre de slides")
-                        audio_in = gr.Checkbox(value=True, label="Voix (TTS)")
-                        video_btn = gr.Button("Créer la vidéo", variant="primary")
-                    with gr.Column():
-                        video_out = gr.Video(label="Vidéo générée")
-                        script_out = gr.Textbox(label="Script", lines=10)
-                video_btn.click(create_video_ui, [topic_in, style_in, lang_in, slides_in, theme_in, audio_in], [video_out, script_out])
+                            msg_in = gr.Textbox(
+                                placeholder='Message… ou "Agent: fais-moi un script Python" pour le mode complet',
+                                scale=5,
+                                label="",
+                                lines=1,
+                            )
+                            send_btn = gr.Button("Envoyer ▶", variant="primary", scale=1)
 
-            # ── CODE ──────────────────────────────────────────────────────────
-            with gr.TabItem("Générateur de Code"):
+                chat_state = gr.State([])
+
+                # Événements chat
+                mode_btn.click(
+                    do_toggle_mode,
+                    inputs=[mode_state],
+                    outputs=[mode_state, mode_btn, mode_indicator],
+                )
+                send_btn.click(
+                    send_message,
+                    inputs=[msg_in, chat_state, mode_state, sid_state],
+                    outputs=[chatbot, chat_state, msg_in],
+                )
+                msg_in.submit(
+                    send_message,
+                    inputs=[msg_in, chat_state, mode_state, sid_state],
+                    outputs=[chatbot, chat_state, msg_in],
+                )
+                new_btn.click(
+                    do_new_conversation,
+                    outputs=[chatbot, chat_state, sid_state],
+                ).then(do_refresh_sessions, outputs=[sessions_dd])
+
+                refresh_sessions_btn.click(do_refresh_sessions, outputs=[sessions_dd])
+                sessions_dd.change(
+                    do_load_session,
+                    inputs=[sessions_dd],
+                    outputs=[chatbot, chat_state, sid_state],
+                )
+
+            # ══ ORCHESTRATEUR ═════════════════════════════════════════════════
+            with gr.TabItem("🧠 Orchestrateur"):
+                gr.Markdown(
+                    "Donne un objectif complexe — le Master Agent le décompose "
+                    "et crée les sous-agents spécialisés nécessaires."
+                )
+                goal_in = gr.Textbox(
+                    placeholder="Ex: Crée une vidéo virale sur le Bitcoin ET génère du code Python pour tracker son prix",
+                    label="Objectif",
+                    lines=3,
+                )
+                orch_btn = gr.Button("🚀 Lancer", variant="primary")
+                orch_out = gr.Markdown()
+
+                def run_master_ui(goal: str, progress=gr.Progress()):
+                    from orchestrator import get_master
+                    if not goal.strip():
+                        return "Saisis un objectif."
+                    progress(0.1, desc="Décomposition...")
+                    result = _run(get_master().execute(goal))
+                    progress(0.9, desc="Synthèse...")
+                    out = f"## Résultat\n\n**Mode:** {result.get('mode', '?')}\n"
+                    for a in result.get("agents", []):
+                        out += f"  - `{a['role']}`: {a['objective']}\n"
+                    return out + f"\n---\n\n{result.get('answer', '')}"
+
+                orch_btn.click(run_master_ui, [goal_in], [orch_out])
+
+            # ══ VIDÉO ═════════════════════════════════════════════════════════
+            with gr.TabItem("🎬 Vidéo"):
                 with gr.Row():
                     with gr.Column():
-                        code_desc = gr.Textbox(label="Description", placeholder="Ex: Script Python pour télécharger des vidéos YouTube", lines=3)
-                        code_lang = gr.Dropdown(["python", "javascript", "bash", "sql"], value="python", label="Langage")
-                        run_checkbox = gr.Checkbox(value=False, label="Exécuter (Python uniquement)")
-                        code_btn = gr.Button("Générer", variant="primary")
+                        vtopic = gr.Textbox(label="Sujet", placeholder="Ex: Les erreurs des débutants en crypto")
+                        vstyle = gr.Dropdown(["éducatif", "motivation", "humour", "tutoriel", "choc"], value="éducatif", label="Style")
+                        with gr.Row():
+                            vlang = gr.Dropdown(["fr", "en", "es"], value="fr", label="Langue")
+                            vtheme = gr.Dropdown(["dark", "fire", "ocean", "gold"], value="dark", label="Thème")
+                        vslides = gr.Slider(3, 10, value=5, step=1, label="Slides")
+                        vaudio = gr.Checkbox(value=True, label="Voix (TTS)")
+                        vbtn = gr.Button("🎬 Créer la vidéo", variant="primary")
                     with gr.Column():
-                        code_out = gr.Code(label="Code généré", language="python")
-                        exec_out = gr.Textbox(label="Sortie", lines=5)
-                code_btn.click(generate_code_ui, [code_desc, code_lang, run_checkbox], [code_out, exec_out])
+                        vout = gr.Video(label="Vidéo générée")
+                        sout = gr.Textbox(label="Script généré", lines=10)
 
-            # ── AGENTS ────────────────────────────────────────────────────────
-            with gr.TabItem("Mes Agents"):
+                def make_video_ui(topic, style, lang, slides_n, theme, add_audio, progress=gr.Progress()):
+                    import httpx
+                    async def _gen():
+                        async with httpx.AsyncClient(timeout=60.0) as c:
+                            r = await c.post(
+                                f"http://localhost:{config.PORT}/video/script",
+                                json={"topic": topic, "style": style, "lang": lang, "slides_count": int(slides_n)},
+                            )
+                            return r.json()
+                    progress(0.2, desc="Génération du script...")
+                    data = _run(_gen())
+                    slides = data.get("slides", [topic])
+                    progress(0.5, desc="Création des images...")
+                    try:
+                        from video.creator import create_video
+                        path = create_video(slides, topic[:30].replace(" ", "_"), lang=lang, add_audio=add_audio, theme=theme)
+                        progress(1.0)
+                        return path, "\n\n---\n\n".join(slides)
+                    except Exception as e:
+                        return None, f"Erreur: {e}"
+
+                vbtn.click(make_video_ui, [vtopic, vstyle, vlang, vslides, vtheme, vaudio], [vout, sout])
+
+            # ══ CODE ══════════════════════════════════════════════════════════
+            with gr.TabItem("💻 Code"):
+                with gr.Row():
+                    with gr.Column():
+                        cdesc = gr.Textbox(label="Description", lines=3, placeholder="Ex: Script Python pour télécharger des vidéos YouTube")
+                        clang = gr.Dropdown(["python", "javascript", "bash", "sql"], value="python", label="Langage")
+                        crun = gr.Checkbox(value=False, label="Exécuter (Python uniquement)")
+                        cbtn = gr.Button("⚙️ Générer", variant="primary")
+                    with gr.Column():
+                        cout = gr.Code(label="Code généré", language="python")
+                        eout = gr.Textbox(label="Sortie d'exécution", lines=5)
+
+                def gen_code_ui(desc, lang, run_it):
+                    import httpx
+                    async def _g():
+                        async with httpx.AsyncClient(timeout=120.0) as c:
+                            ep = "/code/generate-and-run" if run_it and lang == "python" else "/code/generate"
+                            r = await c.post(f"http://localhost:{config.PORT}{ep}", json={"description": desc, "language": lang})
+                            return r.json()
+                    d = _run(_g())
+                    return d.get("code", str(d)), d.get("output", "(non exécuté)")
+
+                cbtn.click(gen_code_ui, [cdesc, clang, crun], [cout, eout])
+
+            # ══ AGENTS ════════════════════════════════════════════════════════
+            with gr.TabItem("🤖 Agents"):
                 with gr.Row():
                     with gr.Column():
                         gr.Markdown("### Créer un sous-agent")
-                        role_in = gr.Dropdown(["researcher", "coder", "video_creator", "analyst", "writer", "generic"], value="coder", label="Rôle")
-                        obj_in = gr.Textbox(label="Objectif", placeholder="Ex: Spécialiste APIs REST en Python")
-                        model_in = gr.Textbox(label="Modèle (vide = défaut)", placeholder=config.OLLAMA_MODEL)
-                        create_agent_btn = gr.Button("Créer", variant="primary")
-                        agent_cfg_out = gr.Code(label="Config générée", language="json")
-                        create_agent_btn.click(create_agent_ui, [role_in, obj_in, model_in], [agent_cfg_out])
+                        arole = gr.Dropdown(
+                            ["researcher", "coder", "video_creator", "analyst", "writer", "generic"],
+                            value="coder", label="Rôle",
+                        )
+                        aobj = gr.Textbox(label="Objectif", placeholder="Ex: Spécialiste APIs REST en Python")
+                        amodel = gr.Textbox(label="Modèle (vide = défaut)", placeholder=config.OLLAMA_MODEL)
+                        abtn = gr.Button("➕ Créer", variant="primary")
+                        acfg = gr.Code(label="Config JSON", language="json")
+
+                        def mk_agent(role, obj, model):
+                            from orchestrator.factory import generate_agent_config
+                            from orchestrator import get_registry
+                            cfg = _run(generate_agent_config(role, obj, model or config.OLLAMA_MODEL))
+                            get_registry().register(cfg)
+                            return json.dumps(cfg, indent=2, ensure_ascii=False)
+
+                        abtn.click(mk_agent, [arole, aobj, amodel], [acfg])
+
                     with gr.Column():
                         gr.Markdown("### Agents existants")
-                        refresh_btn = gr.Button("Rafraîchir")
-                        agents_table = gr.Dataframe(headers=["ID", "Nom", "Rôle", "Statut", "Dernière activité"], label="")
-                        refresh_btn.click(list_agents_ui, None, [agents_table])
+                        arbtn = gr.Button("🔄 Rafraîchir")
+                        atable = gr.Dataframe(headers=["ID", "Nom", "Rôle", "Statut", "Dernière activité"])
 
-            # ── PLUGINS ───────────────────────────────────────────────────────
-            with gr.TabItem("Plugins"):
+                        def ls_agents():
+                            from orchestrator import get_registry
+                            return [
+                                [a["id"], a.get("name", ""), a.get("role", ""), a.get("status", ""), a.get("last_active", "")]
+                                for a in get_registry().list_all()
+                            ]
+
+                        arbtn.click(ls_agents, [], [atable])
+
+            # ══ PLUGINS ═══════════════════════════════════════════════════════
+            with gr.TabItem("🔌 Plugins"):
                 with gr.Row():
                     with gr.Column():
                         gr.Markdown("### Plugins installés")
-                        plugins_table = gr.Dataframe(headers=["Nom", "Description"], label="")
-                        refresh_plugins_btn = gr.Button("Rafraîchir")
-                        refresh_plugins_btn.click(list_plugins_ui, None, [plugins_table])
+                        ptbl = gr.Dataframe(headers=["Nom", "Description"])
+                        prbtn = gr.Button("🔄 Rafraîchir")
+
+                        def ls_plugins():
+                            from plugins import get_loader
+                            return [[n, d] for n, d in get_loader().list_all().items()]
+
+                        prbtn.click(ls_plugins, [], [ptbl])
+
                     with gr.Column():
-                        gr.Markdown("### Ajouter un plugin\nColle ton code Python ici:")
-                        plugin_code = gr.Code(
-                            label="Code du plugin",
+                        gr.Markdown("### Ajouter un plugin")
+                        pcode = gr.Code(
+                            label="Code Python",
                             language="python",
-                            value='from plugins.base import Plugin\n\nclass MonPlugin(Plugin):\n    name = "mon_outil"\n    description = "Ce que fait l\'outil"\n    parameters = {"input": {"type": "string", "required": True}}\n\n    def run(self, input: str) -> str:\n        return f"Résultat: {input}"\n',
+                            value=(
+                                "from plugins.base import Plugin\n\n"
+                                "class MonPlugin(Plugin):\n"
+                                "    name = \"mon_outil\"\n"
+                                "    description = \"Ce que fait l'outil\"\n"
+                                "    parameters = {\"input\": {\"type\": \"string\", \"required\": True}}\n\n"
+                                "    def run(self, input: str) -> str:\n"
+                                "        return f\"Résultat: {input}\"\n"
+                            ),
                         )
-                        add_plugin_btn = gr.Button("Charger le plugin", variant="primary")
-                        plugin_status = gr.Textbox(label="Statut")
-                        add_plugin_btn.click(add_plugin_ui, [plugin_code], [plugin_status])
+                        pabtn = gr.Button("⬆️ Charger", variant="primary")
+                        pstatus = gr.Textbox(label="Statut")
+
+                        def add_plugin(code):
+                            from plugins import get_loader
+                            Path(config.PLUGINS_DIR).mkdir(exist_ok=True)
+                            (Path(config.PLUGINS_DIR) / "user_plugin.py").write_text(code, encoding="utf-8")
+                            get_loader().reload_user_plugins()
+                            return f"✅ Chargé. Outils disponibles : {list(get_loader().list_all().keys())}"
+
+                        pabtn.click(add_plugin, [pcode], [pstatus])
 
     return demo
 
