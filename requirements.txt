@@ -19,6 +19,9 @@ requests==2.32.3
 # Memory vectorielle (LLM local, sans API)
 chromadb==0.5.3
 
+# Client Ollama officiel
+ollama>=0.3.0
+
 # Robustesse
 tenacity==8.5.0
 

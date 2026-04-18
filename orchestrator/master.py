@@ -104,25 +104,20 @@ class MasterAgent:
 
     async def _decompose(self, goal: str) -> dict | None:
         prompt = DECOMPOSE_PROMPT.format(goal=goal)
-        payload = {
-            "model": config.OLLAMA_MODEL,
-            "messages": [
-                {"role": "system", "content": "Tu es un architecte de systèmes IA. Tu réponds UNIQUEMENT en JSON valide."},
-                {"role": "user", "content": prompt},
-            ],
-            "stream": False,
-            "options": {"temperature": 0.3},
-        }
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.post(f"{config.OLLAMA_URL}/api/chat", json=payload)
-                resp.raise_for_status()
-                raw = resp.json().get("message", {}).get("content", "")
-                # Extraire le JSON même si le LLM ajoute du texte autour
-                import re
-                json_match = re.search(r"\{[\s\S]+\}", raw)
-                if json_match:
-                    return json.loads(json_match.group())
+            import ollama
+            loop = asyncio.get_event_loop()
+            raw = await loop.run_in_executor(None, lambda: ollama.chat(
+                model=config.OLLAMA_MODEL,
+                messages=[
+                    {"role": "system", "content": "Tu es un architecte de systèmes IA. Tu réponds UNIQUEMENT en JSON valide."},
+                    {"role": "user", "content": prompt},
+                ],
+                options={"temperature": 0.3},
+            )["message"]["content"])
+            json_match = re.search(r"\{[\s\S]+\}", raw)
+            if json_match:
+                return json.loads(json_match.group())
         except Exception as e:
             logger.warning(f"[Master] Décomposition échouée: {e}")
         return None
@@ -178,20 +173,17 @@ class MasterAgent:
             synthesis_instruction=instruction,
             results=results_text,
         )
-        payload = {
-            "model": config.OLLAMA_MODEL,
-            "messages": [
-                {"role": "system", "content": "Tu es un expert en synthèse. Tu produis des réponses complètes et structurées."},
-                {"role": "user", "content": prompt},
-            ],
-            "stream": False,
-            "options": {"temperature": 0.5},
-        }
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                resp = await client.post(f"{config.OLLAMA_URL}/api/chat", json=payload)
-                resp.raise_for_status()
-                return resp.json().get("message", {}).get("content", "").strip()
+            import ollama
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, lambda: ollama.chat(
+                model=config.OLLAMA_MODEL,
+                messages=[
+                    {"role": "system", "content": "Tu es un expert en synthèse. Tu produis des réponses complètes et structurées."},
+                    {"role": "user", "content": prompt},
+                ],
+                options={"temperature": 0.5},
+            )["message"]["content"].strip())
         except Exception as e:
             logger.error(f"[Master] Synthèse échouée: {e}")
             return "\n\n".join(r["result"] for r in results)

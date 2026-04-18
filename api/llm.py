@@ -1,12 +1,6 @@
-"""
-API LLM — wraps Ollama (modèle IA local gratuit).
-Utilise /api/chat compatible avec toutes les versions d'Ollama.
-"""
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-import httpx
-
 from config import config
 
 router = APIRouter()
@@ -30,55 +24,53 @@ class ModelInfo(BaseModel):
     size: Optional[str] = None
 
 
-async def call_ollama(prompt: str, system: str, model: str, temperature: float) -> str:
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-        "stream": False,
-        "options": {"temperature": temperature},
-    }
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        try:
-            resp = await client.post(f"{config.OLLAMA_URL}/api/chat", json=payload)
-            resp.raise_for_status()
-            return resp.json().get("message", {}).get("content", "")
-        except httpx.ConnectError:
-            raise HTTPException(status_code=503, detail="Ollama non démarré. Lance 'ollama serve'.")
+def _ollama_chat(messages: list, model: str, temperature: float) -> str:
+    import ollama
+    response = ollama.chat(
+        model=model,
+        messages=messages,
+        options={"temperature": temperature},
+    )
+    return response["message"]["content"]
 
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
+    import asyncio
     model = req.model or config.OLLAMA_MODEL
-    response = await call_ollama(req.message, req.system, model, req.temperature)
-    return ChatResponse(response=response, model=model, done=True)
+    messages = [
+        {"role": "system", "content": req.system},
+        {"role": "user", "content": req.message},
+    ]
+    try:
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(None, lambda: _ollama_chat(messages, model, req.temperature))
+        return ChatResponse(response=response, model=model, done=True)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Erreur Ollama: {e}")
 
 
 @router.get("/models", response_model=list[ModelInfo])
 async def list_models():
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            resp = await client.get(f"{config.OLLAMA_URL}/api/tags")
-            resp.raise_for_status()
-            models = resp.json().get("models", [])
-            return [
-                ModelInfo(
-                    name=m["name"],
-                    size=f"{m.get('size', 0) // 1_000_000} MB" if m.get("size") else None,
-                )
-                for m in models
-            ]
-        except httpx.ConnectError:
-            raise HTTPException(status_code=503, detail="Ollama non démarré.")
+    import ollama
+    try:
+        models = ollama.list()
+        return [
+            ModelInfo(
+                name=m["model"],
+                size=f"{m.get('size', 0) // 1_000_000} MB" if m.get("size") else None,
+            )
+            for m in models.get("models", [])
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Ollama non démarré: {e}")
 
 
 @router.get("/status")
 async def status():
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        try:
-            await client.get(f"{config.OLLAMA_URL}/api/tags")
-            return {"status": "online", "url": config.OLLAMA_URL, "model": config.OLLAMA_MODEL}
-        except httpx.ConnectError:
-            return {"status": "offline", "url": config.OLLAMA_URL}
+    import ollama
+    try:
+        ollama.list()
+        return {"status": "online", "model": config.OLLAMA_MODEL}
+    except Exception as e:
+        return {"status": "offline", "error": str(e)}

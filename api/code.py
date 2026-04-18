@@ -31,38 +31,35 @@ class ExecuteResponse(BaseModel):
 
 
 async def ask_llm_for_code(description: str, language: str) -> str:
+    import ollama, asyncio
     prompt = (
         f"Écris du code {language} pour: {description}\n"
         f"Réponds UNIQUEMENT avec le code, sans explication ni markdown. "
         f"Le code doit être complet et fonctionnel."
     )
-    payload = {
-        "model": config.OLLAMA_MODEL,
-        "prompt": prompt,
-        "system": f"Tu es un expert en {language}. Tu génères uniquement du code propre et fonctionnel.",
-        "stream": False,
-        "options": {"temperature": 0.2},
-    }
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        try:
-            resp = await client.post(f"{config.OLLAMA_URL}/api/chat", json=payload)
-            resp.raise_for_status()
-            code = resp.json().get("message", {}).get("content", "")
-            # Nettoie les balises markdown si présentes
-            if "```" in code:
-                lines = code.split("\n")
-                code_lines = []
-                inside = False
-                for line in lines:
-                    if line.startswith("```"):
-                        inside = not inside
-                        continue
-                    if inside or not line.startswith("```"):
-                        code_lines.append(line)
-                code = "\n".join(code_lines).strip()
-            return code
-        except httpx.ConnectError:
-            raise HTTPException(status_code=503, detail="Ollama non démarré.")
+    try:
+        loop = asyncio.get_event_loop()
+        code = await loop.run_in_executor(None, lambda: ollama.chat(
+            model=config.OLLAMA_MODEL,
+            messages=[
+                {"role": "system", "content": f"Tu es un expert en {language}. Tu génères uniquement du code propre et fonctionnel."},
+                {"role": "user", "content": prompt},
+            ],
+            options={"temperature": 0.2},
+        )["message"]["content"])
+        if "```" in code:
+            lines = code.split("\n")
+            code_lines, inside = [], False
+            for line in lines:
+                if line.startswith("```"):
+                    inside = not inside
+                    continue
+                if inside:
+                    code_lines.append(line)
+            code = "\n".join(code_lines).strip()
+        return code
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Ollama erreur: {e}")
 
 
 @router.post("/generate", response_model=GenerateResponse)

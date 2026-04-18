@@ -24,25 +24,24 @@ class ProjectResponse(BaseModel):
 
 
 async def generate_readme(name: str, description: str, project_type: str) -> str:
+    import ollama, asyncio
     prompt = (
         f"Génère un README.md complet et professionnel pour un projet nommé '{name}' "
         f"de type {project_type}. Description: {description}. "
         f"Inclus: présentation, installation, utilisation, structure. En français."
     )
-    payload = {
-        "model": config.OLLAMA_MODEL,
-        "prompt": prompt,
-        "system": "Tu génères des README.md professionnels en Markdown.",
-        "stream": False,
-        "options": {"temperature": 0.5},
-    }
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        try:
-            resp = await client.post(f"{config.OLLAMA_URL}/api/chat", json=payload)
-            resp.raise_for_status()
-            return resp.json().get("message", {}).get("content", "")
-        except httpx.ConnectError:
-            return f"# {name}\n\n{description}\n"
+    try:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: ollama.chat(
+            model=config.OLLAMA_MODEL,
+            messages=[
+                {"role": "system", "content": "Tu génères des README.md professionnels en Markdown."},
+                {"role": "user", "content": prompt},
+            ],
+            options={"temperature": 0.5},
+        )["message"]["content"])
+    except Exception:
+        return f"# {name}\n\n{description}\n"
 
 
 @router.post("/create", response_model=ProjectResponse)

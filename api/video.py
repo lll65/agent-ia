@@ -27,28 +27,28 @@ class VideoResponse(BaseModel):
 
 
 async def generate_video_slides(topic: str, style: str, count: int) -> list[str]:
+    import ollama
     prompt = (
         f"Crée {count} slides courts pour une vidéo virale {style} sur: '{topic}'.\n"
         f"Format EXACT (une slide par ligne, séparées par ---) :\n"
         f"Texte slide 1\n---\nTexte slide 2\n---\n...\n"
         f"Chaque slide: max 15 mots, percutant, accrocheur. Langue française."
     )
-    payload = {
-        "model": config.OLLAMA_MODEL,
-        "prompt": prompt,
-        "system": "Tu crées du contenu viral pour les réseaux sociaux. Réponses courtes et percutantes.",
-        "stream": False,
-        "options": {"temperature": 0.8},
-    }
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        try:
-            resp = await client.post(f"{config.OLLAMA_URL}/api/chat", json=payload)
-            resp.raise_for_status()
-            raw = resp.json().get("message", {}).get("content", "")
-            slides = [s.strip() for s in raw.split("---") if s.strip()]
-            return slides[:count] if slides else [topic]
-        except httpx.ConnectError:
-            raise HTTPException(status_code=503, detail="Ollama non démarré.")
+    try:
+        import asyncio
+        loop = asyncio.get_event_loop()
+        raw = await loop.run_in_executor(None, lambda: ollama.chat(
+            model=config.OLLAMA_MODEL,
+            messages=[
+                {"role": "system", "content": "Tu crées du contenu viral pour les réseaux sociaux. Réponses courtes et percutantes."},
+                {"role": "user", "content": prompt},
+            ],
+            options={"temperature": 0.8},
+        )["message"]["content"])
+        slides = [s.strip() for s in raw.split("---") if s.strip()]
+        return slides[:count] if slides else [topic]
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Ollama erreur: {e}")
 
 
 @router.post("/create", response_model=VideoResponse)
