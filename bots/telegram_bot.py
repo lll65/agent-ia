@@ -1,12 +1,13 @@
 """
-Bot Telegram — envoie des messages à ton agent via Telegram.
-Prérequis: crée ton bot via @BotFather et mets le token dans .env
+Bot Telegram — répond rapidement via Groq (mode rapide) ou agent complet.
+Prérequis: TELEGRAM_TOKEN dans .env (obtenu via @BotFather)
 """
-import asyncio
 import logging
 from config import config
 
 logger = logging.getLogger(__name__)
+
+AGENT_PREFIXES = ("agent:", "mode complet:", "utilise tes outils:", "/agent")
 
 
 async def run_telegram_bot():
@@ -21,55 +22,93 @@ async def run_telegram_bot():
         logger.error("python-telegram-bot non installé: pip install python-telegram-bot")
         return
 
-    from agent.core import run_agent
-    from plugins import get_loader
+    async def _fast_reply(text: str, history: list = None) -> str:
+        from llm.client import chat
+        messages = [
+            {"role": "system", "content": "Tu es MasterAgent, un assistant IA personnel chaleureux. Tu réponds en français, de façon concise. Tu es sur Telegram."},
+        ]
+        if history:
+            messages.extend(history[-6:])
+        messages.append({"role": "user", "content": text})
+        return chat(messages, temperature=0.7)
 
-    DEFAULT_AGENT = {
-        "id": "telegram",
-        "name": "Agent Telegram",
-        "system_prompt": "Tu es un assistant IA personnel sur Telegram. Réponds de façon concise et utile.",
-        "tools": list(get_loader().list_all().keys()),
-        "model": config.OLLAMA_MODEL,
-    }
+    async def _agent_reply(text: str, user_id: str) -> str:
+        from agent.core import run_agent
+        from plugins import get_loader
+        cfg = {
+            "id": f"tg_{user_id}",
+            "name": "MasterAgent Telegram",
+            "system_prompt": "Tu es un agent IA puissant sur Telegram. Tu utilises tous les outils disponibles. Réponds en français.",
+            "tools": list(get_loader().list_all().keys()),
+            "model": config.LLM_MODEL,
+        }
+        result = await run_agent(text, cfg, f"tg_{user_id}")
+        answer = result.get("answer", "Pas de réponse.")
+        used = {s["action"] for s in result.get("steps", []) if s.get("action")}
+        if used:
+            answer += f"\n\n🔧 _Outils: {', '.join(sorted(used))}_"
+        return answer
 
     async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
-            "🤖 Agent IA Personnel connecté!\n"
-            "Envoie-moi n'importe quelle question ou tâche.\n"
-            "Commandes: /help /clear /status"
+            "🤖 *MasterAgent-Gros* connecté!\n\n"
+            "Envoie-moi n'importe quelle question.\n"
+            "Préfixe `Agent:` pour utiliser tous les outils.\n\n"
+            "Commandes: /help /clear /status",
+            parse_mode="Markdown",
         )
 
     async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         from plugins import get_loader
-        tools = ", ".join(get_loader().list_all().keys())
-        await update.message.reply_text(f"Outils disponibles: {tools}")
+        tools = list(get_loader().list_all().keys())
+        await update.message.reply_text(
+            f"🔧 *Outils disponibles:*\n" + "\n".join(f"  • `{t}`" for t in tools),
+            parse_mode="Markdown",
+        )
 
     async def clear_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         from memory import get_memory
         user_id = str(update.effective_user.id)
-        get_memory().clear(f"telegram_{user_id}")
+        get_memory().clear(f"tg_{user_id}")
         await update.message.reply_text("✅ Mémoire effacée.")
 
     async def status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         from agent.self_heal import health_monitor
         report = health_monitor.report()
-        text = "📊 Statut des outils:\n"
-        for tool, stats in report.items():
-            text += f"  • {tool}: {stats.get('error_rate', '0%')} d'erreurs\n"
-        await update.message.reply_text(text or "Aucun outil utilisé encore.")
+        if not report:
+            await update.message.reply_text("✅ Aucun outil utilisé encore. Tout va bien!")
+            return
+        lines = [f"• {t}: {s.get('error_rate', '0%')} erreurs" for t, s in report.items()]
+        await update.message.reply_text("📊 *Statut:*\n" + "\n".join(lines), parse_mode="Markdown")
 
     async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user_id = str(update.effective_user.id)
-        text = update.message.text
-        thinking_msg = await update.message.reply_text("⏳ En cours...")
+        text = update.message.text or ""
+        if not text.strip():
+            return
+
+        # Détecte si mode agent demandé
+        use_agent = any(text.lower().strip().startswith(p) for p in AGENT_PREFIXES)
+        clean = text
+        if use_agent:
+            for p in AGENT_PREFIXES:
+                if text.lower().strip().startswith(p):
+                    clean = text[len(p):].strip() or text
+                    break
+
+        thinking = await update.message.reply_text("⏳ Réflexion..." if use_agent else "💬 ...")
+
         try:
-            result = await run_agent(text, DEFAULT_AGENT, f"telegram_{user_id}")
-            answer = result.get("answer", "Pas de réponse.")
+            if use_agent:
+                answer = await _agent_reply(clean, user_id)
+            else:
+                answer = await _fast_reply(clean)
+
             if len(answer) > 4000:
-                answer = answer[:4000] + "\n...(tronqué)"
-            await thinking_msg.edit_text(answer)
+                answer = answer[:4000] + "\n…_(réponse tronquée)_"
+            await thinking.edit_text(answer)
         except Exception as e:
-            await thinking_msg.edit_text(f"❌ Erreur: {e}")
+            await thinking.edit_text(f"❌ Erreur: {e}")
 
     app = ApplicationBuilder().token(config.TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -78,5 +117,5 @@ async def run_telegram_bot():
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("Bot Telegram démarré.")
+    logger.info(f"Bot Telegram démarré (provider: {config.LLM_PROVIDER}).")
     await app.run_polling()
