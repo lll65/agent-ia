@@ -49,7 +49,7 @@ class Config:
     # Bots (optionnels)
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
     DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
-    DISCORD_GUILD_ID = int(os.getenv("DISCORD_GUILD_ID", "0"))
+    DISCORD_GUILD_ID = int(os.getenv("DISCORD_GUILD_ID") or "0")
 
     # UI
     GRADIO_PORT = int(os.getenv("GRADIO_PORT", "7860"))
