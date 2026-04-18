@@ -130,24 +130,15 @@ _FAST_SYSTEM = (
 
 
 def fast_chat(message: str, history: list) -> str:
-    """Appel direct Ollama — sans pipeline ReAct, réponse rapide."""
-    import ollama
+    """Appel direct LLM — sans pipeline ReAct, réponse rapide."""
+    from llm.client import chat
     messages = [{"role": "system", "content": _FAST_SYSTEM}]
     messages.extend(_history_to_ollama(history))
     messages.append({"role": "user", "content": message})
     try:
-        client = ollama.Client(timeout=60)
-        resp = client.chat(
-            model=config.OLLAMA_MODEL,
-            messages=messages,
-            options={"temperature": 0.7, "num_ctx": 1024},
-        )
-        return resp["message"]["content"]
+        return chat(messages, temperature=0.7)
     except Exception as e:
-        return (
-            f"❌ Ollama indisponible: {e}\n\n"
-            f"Lance: `ollama pull {config.OLLAMA_MODEL}`"
-        )
+        return f"❌ LLM indisponible: {e}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

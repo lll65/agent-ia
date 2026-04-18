@@ -43,20 +43,10 @@ def build_system(agent_config: dict, plugins: dict) -> str:
     )
 
 
-def _ollama_call(messages: list, model: str) -> str:
-    import ollama
-    client = ollama.Client(timeout=120)
-    response = client.chat(
-        model=model,
-        messages=messages,
-        options={"temperature": 0.7, "num_ctx": 2048},
-    )
-    return response["message"]["content"]
-
-
-async def llm_call(messages: list, model: str) -> str:
+async def llm_call(messages: list, model: str = None) -> str:
+    from llm.client import chat
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, lambda: _ollama_call(messages, model))
+    return await loop.run_in_executor(None, lambda: chat(messages, temperature=0.7))
 
 
 def parse_response(text: str) -> tuple[str | None, dict | None, str | None]:
