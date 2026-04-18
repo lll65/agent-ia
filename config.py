@@ -6,9 +6,29 @@ load_dotenv()
 
 
 class Config:
-    # LLM local via Ollama
+    # API Keys cloud
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+    XAI_API_KEY = os.getenv("XAI_API_KEY", "")
+
+    # LLM local via Ollama (fallback si pas de clé cloud)
     OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
     OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "tinyllama")
+
+    @property
+    def LLM_PROVIDER(self) -> str:
+        if self.GROQ_API_KEY:
+            return "groq"
+        if self.XAI_API_KEY:
+            return "xai"
+        return "ollama"
+
+    @property
+    def LLM_MODEL(self) -> str:
+        if self.GROQ_API_KEY:
+            return os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        if self.XAI_API_KEY:
+            return os.getenv("XAI_MODEL", "grok-beta")
+        return self.OLLAMA_MODEL
 
     # Serveur API
     HOST = os.getenv("HOST", "0.0.0.0")
