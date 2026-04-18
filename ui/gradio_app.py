@@ -29,34 +29,66 @@ def _run(coro):
 
 # ── onglet Chat ────────────────────────────────────────────────────────────────
 
+def _direct_chat(message: str, history_msgs: list) -> str:
+    """Appel direct Ollama sans pipeline ReAct — rapide pour le chat simple."""
+    import ollama
+    messages = [
+        {"role": "system", "content": "Tu es un assistant IA personnel. Tu réponds en français, de façon concise et utile."},
+    ]
+    # Ajoute les 6 derniers échanges comme contexte
+    for m in history_msgs[-6:]:
+        if isinstance(m, dict):
+            messages.append({"role": m["role"], "content": m["content"]})
+        elif isinstance(m, tuple) and len(m) == 2:
+            if m[0]:
+                messages.append({"role": "user", "content": m[0]})
+            if m[1]:
+                messages.append({"role": "assistant", "content": m[1]})
+    messages.append({"role": "user", "content": message})
+    try:
+        client = ollama.Client(timeout=120)
+        resp = client.chat(
+            model=config.OLLAMA_MODEL,
+            messages=messages,
+            options={"temperature": 0.7, "num_ctx": 1024},
+        )
+        return resp["message"]["content"]
+    except Exception as e:
+        return f"Erreur: {e}"
+
+
 def chat_with_agent(message: str, history: list, agent_id: str, show_steps: bool):
-    from agent.core import run_agent
-    from plugins import get_loader
-    from orchestrator import get_registry
+    if not message.strip():
+        return history, history, ""
 
-    registry = get_registry()
-    agent = registry.get(agent_id) if agent_id != "default" else None
-    if agent is None:
-        agent = {
-            "id": "default",
-            "name": "Agent Principal",
-            "system_prompt": "Tu es un assistant IA polyvalent.",
-            "tools": list(get_loader().list_all().keys()),
-            "model": config.OLLAMA_MODEL,
-        }
-
-    result = _run(run_agent(message, agent, agent_id))
-    answer = result.get("answer", "Pas de réponse.")
-
-    if show_steps and result.get("steps"):
+    if show_steps:
+        # Mode agent complet avec outils (plus lent)
+        from agent.core import run_agent
+        from plugins import get_loader
+        from orchestrator import get_registry
+        registry = get_registry()
+        agent = registry.get(agent_id) if agent_id != "default" else None
+        if agent is None:
+            agent = {
+                "id": "default",
+                "name": "Agent Principal",
+                "system_prompt": "Tu es un assistant IA polyvalent.",
+                "tools": list(get_loader().list_all().keys()),
+                "model": config.OLLAMA_MODEL,
+            }
+        result = _run(run_agent(message, agent, agent_id))
+        answer = result.get("answer", "Pas de réponse.")
         steps_text = "\n\n".join(
             f"**Étape {s['iteration']}**\n"
             + (f"→ Action: `{s.get('action', '')}` | Params: `{s.get('params', {})}`\n" if s.get("action") else "")
             + (f"→ Observation: {s.get('observation', '')[:300]}\n" if s.get("observation") else "")
-            for s in result["steps"] if s.get("action")
+            for s in result.get("steps", []) if s.get("action")
         )
         if steps_text:
-            answer = f"{answer}\n\n---\n**Détail des actions ({result['iterations']} itérations):**\n{steps_text}"
+            answer = f"{answer}\n\n---\n**Actions ({result['iterations']} itérations):**\n{steps_text}"
+    else:
+        # Mode rapide: appel direct sans ReAct ni mémoire
+        answer = _direct_chat(message, history)
 
     if _USE_DICT_FORMAT:
         history.append({"role": "user", "content": message})
