@@ -55,9 +55,7 @@ def chat_with_agent(message: str, history: list, agent_id: str, show_steps: bool
         if steps_text:
             answer = f"{answer}\n\n---\n**Détail des actions ({result['iterations']} itérations):**\n{steps_text}"
 
-    # Format Gradio 6 — messages comme dicts
-    history.append({"role": "user", "content": message})
-    history.append({"role": "assistant", "content": answer})
+    history.append((message, answer))
     return history, history, ""
 
 
@@ -177,7 +175,7 @@ def build_ui() -> gr.Blocks:
             # ── CHAT ──────────────────────────────────────────────────────────
             with gr.TabItem("Chat"):
                 # type="messages" = format Gradio 6+
-                chatbot = gr.Chatbot(height=500, label="Conversation", type="messages")
+                chatbot = gr.Chatbot(height=500, label="Conversation")
                 with gr.Row():
                     msg_input = gr.Textbox(placeholder="Ton message...", scale=5, label="")
                     send_btn = gr.Button("Envoyer", variant="primary", scale=1)
