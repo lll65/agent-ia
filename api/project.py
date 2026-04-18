@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-import httpx
+from pathlib import Path
 
 from agent.tools import create_project, list_files
 from config import config
@@ -24,22 +24,22 @@ class ProjectResponse(BaseModel):
 
 
 async def generate_readme(name: str, description: str, project_type: str) -> str:
-    import ollama, asyncio
+    import asyncio
+    from llm.client import chat
     prompt = (
-        f"Génère un README.md complet et professionnel pour un projet nommé '{name}' "
-        f"de type {project_type}. Description: {description}. "
+        f"Génère un README.md complet pour un projet '{name}' de type {project_type}. "
+        f"Description: {description}. "
         f"Inclus: présentation, installation, utilisation, structure. En français."
     )
     try:
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, lambda: ollama.chat(
-            model=config.OLLAMA_MODEL,
-            messages=[
+        return await loop.run_in_executor(None, lambda: chat(
+            [
                 {"role": "system", "content": "Tu génères des README.md professionnels en Markdown."},
                 {"role": "user", "content": prompt},
             ],
-            options={"temperature": 0.5},
-        )["message"]["content"])
+            temperature=0.5,
+        ))
     except Exception:
         return f"# {name}\n\n{description}\n"
 
@@ -59,16 +59,13 @@ async def create_new_project(req: ProjectRequest):
         from agent.tools import write_file
         write_file(f"{req.name}/README.md", readme)
 
-    from pathlib import Path
     path = str(Path(config.OUTPUT_DIR) / req.name)
     return ProjectResponse(name=req.name, type=req.type, path=path, files=files, readme=readme)
 
 
 @router.get("/list")
 async def list_projects():
-    from pathlib import Path
     base = Path(config.OUTPUT_DIR)
     if not base.exists():
         return {"projects": []}
-    projects = [d.name for d in base.iterdir() if d.is_dir()]
-    return {"projects": projects}
+    return {"projects": [d.name for d in base.iterdir() if d.is_dir()]}

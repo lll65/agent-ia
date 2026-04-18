@@ -3,13 +3,11 @@ Fabrique de sous-agents: génère dynamiquement la config complète
 (nom, prompt système, outils) en fonction du rôle demandé.
 """
 import uuid
-import httpx
 import logging
 from config import config
 
 logger = logging.getLogger(__name__)
 
-# Templates de prompts par type d'agent
 AGENT_TEMPLATES = {
     "researcher": {
         "system_prompt": "Tu es un agent de recherche expert. Tu collectes, synthétises et vérifies des informations sur internet. Tu cites tes sources et présentes des faits vérifiés.",
@@ -33,50 +31,38 @@ AGENT_TEMPLATES = {
     },
     "generic": {
         "system_prompt": "Tu es un assistant IA polyvalent. Tu aides avec tout type de tâche.",
-        "tools": None,  # tous les outils disponibles
+        "tools": None,
     },
 }
 
 
 async def generate_agent_config(role: str, objective: str, model: str | None = None) -> dict:
-    """
-    Génère la configuration complète d'un agent à partir de son rôle et objectif.
-    Utilise le LLM pour personnaliser le prompt système.
-    """
-    model = model or config.OLLAMA_MODEL
-    template = AGENT_TEMPLATES.get(role, AGENT_TEMPLATES["generic"])
+    import asyncio
+    from llm.client import chat
 
-    # Génère un prompt système personnalisé via LLM
+    template = AGENT_TEMPLATES.get(role, AGENT_TEMPLATES["generic"])
     prompt = (
         f"Crée le prompt système d'un agent IA spécialisé.\n"
-        f"Rôle: {role}\n"
-        f"Objectif: {objective}\n"
-        f"Base de départ: {template['system_prompt']}\n\n"
-        f"Génère un prompt système en 3-5 phrases qui définit précisément "
-        f"le comportement, les capacités et le style de cet agent. "
+        f"Rôle: {role}\nObjectif: {objective}\n"
+        f"Base: {template['system_prompt']}\n\n"
+        f"Génère un prompt système en 3-5 phrases précises. "
         f"Réponds UNIQUEMENT avec le prompt, sans introduction."
     )
 
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "Tu génères des prompts système précis pour des agents IA."},
-            {"role": "user", "content": prompt},
-        ],
-        "stream": False,
-        "options": {"temperature": 0.6},
-    }
-
     system_prompt = template["system_prompt"]
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(f"{config.OLLAMA_URL}/api/chat", json=payload)
-            resp.raise_for_status()
-            generated = resp.json().get("message", {}).get("content", "").strip()
-            if generated and len(generated) > 20:
-                system_prompt = generated
+        loop = asyncio.get_event_loop()
+        generated = await loop.run_in_executor(None, lambda: chat(
+            [
+                {"role": "system", "content": "Tu génères des prompts système précis pour des agents IA."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.6,
+        ))
+        if generated and len(generated) > 20:
+            system_prompt = generated
     except Exception as e:
-        logger.warning(f"Génération LLM du prompt échouée, utilisation du template: {e}")
+        logger.warning(f"Génération prompt échouée, utilisation du template: {e}")
 
     from plugins import get_loader
     all_tools = list(get_loader().list_all().keys())
@@ -88,6 +74,6 @@ async def generate_agent_config(role: str, objective: str, model: str | None = N
         "objective": objective,
         "system_prompt": system_prompt,
         "tools": template["tools"] or all_tools,
-        "model": model,
+        "model": config.LLM_MODEL,
         "status": "idle",
     }

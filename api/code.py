@@ -1,10 +1,8 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-import httpx
 
 from agent.tools import exec_python, write_file
-from config import config
 
 router = APIRouter()
 
@@ -31,7 +29,8 @@ class ExecuteResponse(BaseModel):
 
 
 async def ask_llm_for_code(description: str, language: str) -> str:
-    import ollama, asyncio
+    import asyncio
+    from llm.client import chat
     prompt = (
         f"Écris du code {language} pour: {description}\n"
         f"Réponds UNIQUEMENT avec le code, sans explication ni markdown. "
@@ -39,14 +38,13 @@ async def ask_llm_for_code(description: str, language: str) -> str:
     )
     try:
         loop = asyncio.get_event_loop()
-        code = await loop.run_in_executor(None, lambda: ollama.chat(
-            model=config.OLLAMA_MODEL,
-            messages=[
+        code = await loop.run_in_executor(None, lambda: chat(
+            [
                 {"role": "system", "content": f"Tu es un expert en {language}. Tu génères uniquement du code propre et fonctionnel."},
                 {"role": "user", "content": prompt},
             ],
-            options={"temperature": 0.2},
-        )["message"]["content"])
+            temperature=0.2,
+        ))
         if "```" in code:
             lines = code.split("\n")
             code_lines, inside = [], False
@@ -59,7 +57,7 @@ async def ask_llm_for_code(description: str, language: str) -> str:
             code = "\n".join(code_lines).strip()
         return code
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Ollama erreur: {e}")
+        raise HTTPException(status_code=503, detail=f"Erreur LLM: {e}")
 
 
 @router.post("/generate", response_model=GenerateResponse)
@@ -67,8 +65,7 @@ async def generate_code(req: GenerateRequest):
     code = await ask_llm_for_code(req.description, req.language)
     saved_to = None
     if req.save_as:
-        result = write_file(req.save_as, code)
-        saved_to = result
+        saved_to = write_file(req.save_as, code)
     return GenerateResponse(code=code, language=req.language, saved_to=saved_to)
 
 
