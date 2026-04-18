@@ -56,7 +56,7 @@ class Config:
     GRADIO_SHARE = os.getenv("GRADIO_SHARE", "false").lower() == "true"
 
     # Vidéo
-    VIDEO_RESOLUTION = tuple(map(int, os.getenv("VIDEO_RESOLUTION", "1080x1920").split("x")))
+    VIDEO_RESOLUTION = tuple(map(int, os.getenv("VIDEO_RESOLUTION", "720x1280").split("x")))
     VIDEO_FPS = int(os.getenv("VIDEO_FPS", "24"))
 
     def ensure_dirs(self):
