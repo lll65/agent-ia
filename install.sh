@@ -1,42 +1,69 @@
 #!/bin/bash
 set -e
 
-echo "=========================================="
-echo "  Installation Agent IA Personnel"
-echo "=========================================="
+BOLD="\033[1m"
+GREEN="\033[32m"
+YELLOW="\033[33m"
+RESET="\033[0m"
 
-# 1. Python deps
-echo ""
-echo "[1/3] Installation des dépendances Python..."
-pip install -r requirements.txt
+echo -e "${BOLD}=========================================="
+echo -e "  Agent IA Personnel v2.0 — Installation"
+echo -e "==========================================${RESET}"
 
-# 2. Ollama
-echo ""
-echo "[2/3] Installation d'Ollama (LLM local gratuit)..."
+# 1. Ollama
+echo -e "\n${BOLD}[1/4] Ollama (LLM local)${RESET}"
 if ! command -v ollama &> /dev/null; then
+    echo "Installation d'Ollama..."
     curl -fsSL https://ollama.com/install.sh | sh
-    echo "Ollama installé."
 else
-    echo "Ollama déjà installé."
+    echo "Ollama déjà installé: $(ollama --version)"
 fi
 
-# 3. Téléchargement du modèle
-echo ""
-echo "[3/3] Téléchargement du modèle LLM (Llama3 ~4GB, une seule fois)..."
-echo "Démarre Ollama en arrière-plan..."
-ollama serve &
+# 2. FFmpeg
+echo -e "\n${BOLD}[2/4] FFmpeg (traitement vidéo)${RESET}"
+if ! command -v ffmpeg &> /dev/null; then
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg fonts-dejavu
+    elif command -v brew &> /dev/null; then
+        brew install ffmpeg
+    else
+        echo "${YELLOW}FFmpeg non trouvé. Installe-le manuellement: https://ffmpeg.org${RESET}"
+    fi
+else
+    echo "FFmpeg déjà installé: $(ffmpeg -version 2>&1 | head -1)"
+fi
+
+# 3. Dépendances Python
+echo -e "\n${BOLD}[3/4] Dépendances Python${RESET}"
+pip install -r requirements.txt -q
+
+# 4. Modèle LLM
+echo -e "\n${BOLD}[4/4] Téléchargement du modèle Llama3 (~4GB)${RESET}"
+echo "Démarrage d'Ollama..."
+ollama serve &>/dev/null &
 OLLAMA_PID=$!
-sleep 3
-ollama pull llama3
+sleep 4
+
+MODEL=${OLLAMA_MODEL:-llama3}
+echo "Téléchargement de '$MODEL'..."
+ollama pull "$MODEL"
 kill $OLLAMA_PID 2>/dev/null || true
 
-echo ""
-echo "=========================================="
+# .env
+if [ ! -f .env ]; then
+    cp .env.example .env
+    echo -e "\n${YELLOW}⚠️  Fichier .env créé depuis .env.example"
+    echo "   Édite-le pour configurer les bots Telegram/Discord.${RESET}"
+fi
+
+echo -e "\n${GREEN}${BOLD}=========================================="
 echo "  Installation terminée !"
-echo "=========================================="
+echo -e "==========================================${RESET}"
 echo ""
-echo "Pour démarrer ton agent IA:"
-echo "  1. ollama serve          (dans un terminal)"
-echo "  2. python main.py        (dans un autre terminal)"
-echo "  3. Ouvre: http://localhost:8000/docs"
+echo "Pour démarrer:"
+echo -e "  ${BOLD}Terminal 1:${RESET} ollama serve"
+echo -e "  ${BOLD}Terminal 2:${RESET} python main.py"
 echo ""
+echo "Accès:"
+echo -e "  API:  http://localhost:8000/docs"
+echo -e "  UI:   http://localhost:7860"

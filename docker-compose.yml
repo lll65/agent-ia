@@ -1,6 +1,8 @@
 version: "3.9"
 
 services:
+
+  # Modèle LLM local (cerveau IA)
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
@@ -9,7 +11,12 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
-    # Ajoute ces lignes si tu as un GPU NVIDIA:
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    # GPU NVIDIA: décommente ces lignes si tu as une carte graphique
     # deploy:
     #   resources:
     #     reservations:
@@ -18,19 +25,27 @@ services:
     #           count: all
     #           capabilities: [gpu]
 
+  # Agent IA — API + UI
   agent-ia:
     build: .
     container_name: agent-ia
     ports:
-      - "8000:8000"
+      - "8000:8000"   # API REST
+      - "7860:7860"   # Interface Gradio
     environment:
       - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_MODEL=llama3
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3}
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN:-}
+      - DISCORD_TOKEN=${DISCORD_TOKEN:-}
+      - DISCORD_GUILD_ID=${DISCORD_GUILD_ID:-0}
+      - GRADIO_PORT=7860
     volumes:
-      - ./data:/app/data
-      - ./output:/app/output
+      - ./data:/app/data        # mémoire + agents + plugins
+      - ./output:/app/output    # vidéos + projets générés
+      - ./.env:/app/.env:ro
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

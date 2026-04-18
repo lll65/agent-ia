@@ -1,11 +1,11 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-import uuid
 
 from agent.core import run_agent
-from agent.memory import save_agent, get_agent, list_agents, clear_history, get_history
-from agent.tools import AVAILABLE_TOOLS
+from agent.memory import get_history, clear_history
+from memory import get_memory
+from plugins import get_loader
 from config import config
 
 router = APIRouter()
@@ -13,9 +13,8 @@ router = APIRouter()
 DEFAULT_AGENT = {
     "id": "default",
     "name": "Agent Principal",
-    "description": "Agent IA personnel polyvalent — peut créer d'autres agents, coder, chercher sur le web et créer des vidéos.",
+    "description": "Agent IA personnel polyvalent — peut créer d'autres agents, coder, chercher et créer des vidéos.",
     "system_prompt": "Tu es un agent IA personnel puissant. Tu aides à créer des projets, écrire du code, chercher des informations et créer du contenu.",
-    "tools": list(AVAILABLE_TOOLS.keys()),
     "model": config.OLLAMA_MODEL,
 }
 
@@ -31,22 +30,7 @@ class ChatResponse(BaseModel):
     agent_id: str
     iterations: int
     steps: Optional[list] = None
-
-
-class CreateAgentRequest(BaseModel):
-    name: str
-    description: str
-    system_prompt: str
-    tools: Optional[list[str]] = None
-    model: Optional[str] = None
-
-
-class AgentInfo(BaseModel):
-    id: str
-    name: str
-    description: Optional[str] = None
-    model: str
-    created_at: Optional[str] = None
+    memory_count: Optional[int] = None
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -54,58 +38,23 @@ async def chat(req: ChatRequest):
     agent_id = req.agent_id or "default"
 
     if agent_id == "default":
-        agent_config = DEFAULT_AGENT
+        agent_config = {**DEFAULT_AGENT, "tools": list(get_loader().list_all().keys())}
     else:
-        agent_config = get_agent(agent_id)
+        from orchestrator import get_registry
+        agent_config = get_registry().get(agent_id)
         if not agent_config:
             raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' introuvable.")
 
     result = await run_agent(req.message, agent_config, agent_id)
+    mem = get_memory()
+
     return ChatResponse(
         answer=result["answer"],
         agent_id=agent_id,
         iterations=result["iterations"],
         steps=result["steps"] if req.show_steps else None,
+        memory_count=mem.chroma.count(agent_id) if mem.chroma.available else None,
     )
-
-
-@router.post("/create", response_model=AgentInfo)
-async def create_agent(req: CreateAgentRequest):
-    agent_id = str(uuid.uuid4())[:8]
-    tools = req.tools or list(AVAILABLE_TOOLS.keys())
-    model = req.model or config.OLLAMA_MODEL
-
-    invalid = [t for t in tools if t not in AVAILABLE_TOOLS]
-    if invalid:
-        raise HTTPException(status_code=400, detail=f"Outils inconnus: {invalid}. Disponibles: {list(AVAILABLE_TOOLS.keys())}")
-
-    save_agent(agent_id, req.name, req.description, req.system_prompt, tools, model)
-
-    from datetime import datetime
-    return AgentInfo(id=agent_id, name=req.name, description=req.description, model=model, created_at=datetime.utcnow().isoformat())
-
-
-@router.get("/list", response_model=list[AgentInfo])
-async def list_all_agents():
-    agents = list_agents()
-    result = [AgentInfo(**a) for a in agents]
-    result.insert(0, AgentInfo(
-        id="default",
-        name=DEFAULT_AGENT["name"],
-        description=DEFAULT_AGENT["description"],
-        model=DEFAULT_AGENT["model"],
-    ))
-    return result
-
-
-@router.get("/{agent_id}")
-async def get_agent_info(agent_id: str):
-    if agent_id == "default":
-        return DEFAULT_AGENT
-    agent = get_agent(agent_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' introuvable.")
-    return agent
 
 
 @router.get("/{agent_id}/history")
@@ -113,12 +62,18 @@ async def agent_history(agent_id: str, limit: int = 20):
     return {"agent_id": agent_id, "history": get_history(agent_id, limit)}
 
 
-@router.delete("/{agent_id}/history")
-async def clear_agent_history(agent_id: str):
-    clear_history(agent_id)
-    return {"message": f"Historique de '{agent_id}' effacé."}
+@router.delete("/{agent_id}/memory")
+async def clear_memory(agent_id: str):
+    get_memory().clear(agent_id)
+    return {"message": f"Mémoire de '{agent_id}' effacée (SQLite + ChromaDB)."}
+
+
+@router.get("/{agent_id}/summary")
+async def get_summary(agent_id: str):
+    summary = get_memory().get_summary(agent_id)
+    return {"agent_id": agent_id, "summary": summary or "Aucun résumé disponible."}
 
 
 @router.get("/tools/list")
 async def available_tools():
-    return {"tools": AVAILABLE_TOOLS}
+    return {"tools": get_loader().list_all()}

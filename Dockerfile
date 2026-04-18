@@ -2,9 +2,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    ffprobe \
     fonts-dejavu \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -12,8 +14,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p data output
+RUN mkdir -p data output output/videos data/agents data/chroma data/plugins
 
-EXPOSE 8000
+EXPOSE 8000 7860
 
 CMD ["python", "main.py"]
