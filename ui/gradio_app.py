@@ -1,6 +1,6 @@
 """
 Interface Web Gradio — accès visuel à tout ton agent IA depuis le navigateur.
-Lance avec: python ui/gradio_app.py  ou  python main.py (intégré)
+Lance avec: python main.py (intégré)
 """
 import asyncio
 import json
@@ -28,7 +28,6 @@ def _run(coro):
 
 def chat_with_agent(message: str, history: list, agent_id: str, show_steps: bool):
     from agent.core import run_agent
-    from agent.memory import get_history
     from plugins import get_loader
     from orchestrator import get_registry
 
@@ -56,16 +55,10 @@ def chat_with_agent(message: str, history: list, agent_id: str, show_steps: bool
         if steps_text:
             answer = f"{answer}\n\n---\n**Détail des actions ({result['iterations']} itérations):**\n{steps_text}"
 
-    history.append((message, answer))
+    # Format Gradio 6 — messages comme dicts
+    history.append({"role": "user", "content": message})
+    history.append({"role": "assistant", "content": answer})
     return history, history, ""
-
-
-def get_agent_choices():
-    from orchestrator import get_registry
-    agents = [("Agent Principal (défaut)", "default")]
-    for a in get_registry().list_all():
-        agents.append((f"{a['name']} [{a.get('role', '')}]", a["id"]))
-    return [a[1] for a in agents], [a[0] for a in agents]
 
 
 # ── onglet Orchestrateur ───────────────────────────────────────────────────────
@@ -73,7 +66,7 @@ def get_agent_choices():
 def run_master(goal: str, progress=gr.Progress()):
     from orchestrator import get_master
     if not goal.strip():
-        return "⚠️ Saisis un objectif."
+        return "Saisis un objectif."
     progress(0.1, desc="Décomposition du goal...")
     result = _run(get_master().execute(goal))
     progress(0.9, desc="Synthèse...")
@@ -90,13 +83,13 @@ def run_master(goal: str, progress=gr.Progress()):
 # ── onglet Vidéo ───────────────────────────────────────────────────────────────
 
 def create_video_ui(topic: str, style: str, lang: str, slides_n: int, theme: str, add_audio: bool, progress=gr.Progress()):
-    import httpx, asyncio
+    import httpx
 
     async def _gen():
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 f"http://localhost:{config.PORT}/video/script",
-                json={"topic": topic, "style": style, "lang": lang, "slides_count": slides_n},
+                json={"topic": topic, "style": style, "lang": lang, "slides_count": int(slides_n)},
             )
             return resp.json()
 
@@ -145,17 +138,16 @@ def generate_code_ui(description: str, language: str, run_code: bool):
 def list_plugins_ui():
     from plugins import get_loader
     plugins = get_loader().list_all()
-    rows = [[name, desc] for name, desc in plugins.items()]
-    return rows
+    return [[name, desc] for name, desc in plugins.items()]
 
 
 def add_plugin_ui(code: str):
     from pathlib import Path
     path = Path(config.PLUGINS_DIR) / "user_plugin.py"
-    path.write_text(code)
+    path.write_text(code, encoding="utf-8")
     from plugins import get_loader
     get_loader().reload_user_plugins()
-    return f"Plugin rechargé depuis {path}. Plugins disponibles: {list(get_loader().list_all().keys())}"
+    return f"Plugin chargé. Disponibles: {list(get_loader().list_all().keys())}"
 
 
 # ── onglet Agents ──────────────────────────────────────────────────────────────
@@ -177,54 +169,41 @@ def create_agent_ui(role: str, objective: str, model: str):
 # ── Construction de l'UI ───────────────────────────────────────────────────────
 
 def build_ui() -> gr.Blocks:
-    with gr.Blocks(
-        title="Agent IA Personnel",
-        theme=gr.themes.Soft(primary_hue="indigo", neutral_hue="slate"),
-        css=".gradio-container { max-width: 1200px; margin: auto; }",
-    ) as demo:
-        gr.Markdown("# 🤖 Agent IA Personnel\n*100% local — 0€/mois*")
+    with gr.Blocks(title="Agent IA Personnel") as demo:
+        gr.Markdown("# Agent IA Personnel\n*100% local — 0€/mois*")
 
         with gr.Tabs():
 
             # ── CHAT ──────────────────────────────────────────────────────────
-            with gr.TabItem("💬 Chat"):
-                chatbot = gr.Chatbot(height=500, label="Conversation")
+            with gr.TabItem("Chat"):
+                # type="messages" = format Gradio 6+
+                chatbot = gr.Chatbot(height=500, label="Conversation", type="messages")
                 with gr.Row():
                     msg_input = gr.Textbox(placeholder="Ton message...", scale=5, label="")
                     send_btn = gr.Button("Envoyer", variant="primary", scale=1)
                 with gr.Row():
-                    agent_dropdown = gr.Dropdown(
-                        choices=["default"], value="default", label="Agent", scale=3
-                    )
+                    agent_dropdown = gr.Dropdown(choices=["default"], value="default", label="Agent", scale=3)
                     show_steps = gr.Checkbox(label="Voir les étapes", value=False, scale=1)
                     clear_btn = gr.Button("Effacer", scale=1)
 
                 state = gr.State([])
-                send_btn.click(
-                    chat_with_agent,
-                    [msg_input, state, agent_dropdown, show_steps],
-                    [chatbot, state, msg_input],
-                )
-                msg_input.submit(
-                    chat_with_agent,
-                    [msg_input, state, agent_dropdown, show_steps],
-                    [chatbot, state, msg_input],
-                )
+                send_btn.click(chat_with_agent, [msg_input, state, agent_dropdown, show_steps], [chatbot, state, msg_input])
+                msg_input.submit(chat_with_agent, [msg_input, state, agent_dropdown, show_steps], [chatbot, state, msg_input])
                 clear_btn.click(lambda: ([], []), None, [chatbot, state])
 
             # ── ORCHESTRATEUR ─────────────────────────────────────────────────
-            with gr.TabItem("🎯 Orchestrateur"):
+            with gr.TabItem("Orchestrateur"):
                 gr.Markdown("Donne un objectif complexe — le Master Agent le décompose et crée les sous-agents.")
                 goal_input = gr.Textbox(
-                    placeholder='Ex: "Crée une vidéo virale sur le Bitcoin ET génère le code Python pour tracker son prix"',
+                    placeholder='Ex: Crée une vidéo virale sur le Bitcoin ET génère le code Python pour tracker son prix',
                     label="Objectif", lines=3
                 )
-                orchestrate_btn = gr.Button("Lancer l'orchestration", variant="primary")
+                orchestrate_btn = gr.Button("Lancer", variant="primary")
                 orch_output = gr.Markdown()
                 orchestrate_btn.click(run_master, [goal_input], [orch_output])
 
             # ── VIDÉO ─────────────────────────────────────────────────────────
-            with gr.TabItem("🎬 Créateur Vidéo"):
+            with gr.TabItem("Créateur Vidéo"):
                 with gr.Row():
                     with gr.Column():
                         topic_in = gr.Textbox(label="Sujet", placeholder="Ex: Les erreurs des débutants en crypto")
@@ -241,20 +220,20 @@ def build_ui() -> gr.Blocks:
                 video_btn.click(create_video_ui, [topic_in, style_in, lang_in, slides_in, theme_in, audio_in], [video_out, script_out])
 
             # ── CODE ──────────────────────────────────────────────────────────
-            with gr.TabItem("💻 Générateur de Code"):
+            with gr.TabItem("Générateur de Code"):
                 with gr.Row():
                     with gr.Column():
-                        code_desc = gr.Textbox(label="Description", placeholder="Ex: Classe Python pour gérer une liste de tâches avec SQLite", lines=3)
+                        code_desc = gr.Textbox(label="Description", placeholder="Ex: Script Python pour télécharger des vidéos YouTube", lines=3)
                         code_lang = gr.Dropdown(["python", "javascript", "bash", "sql"], value="python", label="Langage")
                         run_checkbox = gr.Checkbox(value=False, label="Exécuter (Python uniquement)")
                         code_btn = gr.Button("Générer", variant="primary")
                     with gr.Column():
                         code_out = gr.Code(label="Code généré", language="python")
-                        exec_out = gr.Textbox(label="Sortie d'exécution", lines=5)
+                        exec_out = gr.Textbox(label="Sortie", lines=5)
                 code_btn.click(generate_code_ui, [code_desc, code_lang, run_checkbox], [code_out, exec_out])
 
             # ── AGENTS ────────────────────────────────────────────────────────
-            with gr.TabItem("🤖 Mes Agents"):
+            with gr.TabItem("Mes Agents"):
                 with gr.Row():
                     with gr.Column():
                         gr.Markdown("### Créer un sous-agent")
@@ -267,14 +246,11 @@ def build_ui() -> gr.Blocks:
                     with gr.Column():
                         gr.Markdown("### Agents existants")
                         refresh_btn = gr.Button("Rafraîchir")
-                        agents_table = gr.Dataframe(
-                            headers=["ID", "Nom", "Rôle", "Statut", "Dernière activité"],
-                            label="",
-                        )
+                        agents_table = gr.Dataframe(headers=["ID", "Nom", "Rôle", "Statut", "Dernière activité"], label="")
                         refresh_btn.click(list_agents_ui, None, [agents_table])
 
             # ── PLUGINS ───────────────────────────────────────────────────────
-            with gr.TabItem("🔌 Plugins"):
+            with gr.TabItem("Plugins"):
                 with gr.Row():
                     with gr.Column():
                         gr.Markdown("### Plugins installés")
@@ -282,20 +258,11 @@ def build_ui() -> gr.Blocks:
                         refresh_plugins_btn = gr.Button("Rafraîchir")
                         refresh_plugins_btn.click(list_plugins_ui, None, [plugins_table])
                     with gr.Column():
-                        gr.Markdown("### Ajouter un plugin\nColle ton code Python ici (classe héritant de `Plugin`):")
+                        gr.Markdown("### Ajouter un plugin\nColle ton code Python ici:")
                         plugin_code = gr.Code(
                             label="Code du plugin",
                             language="python",
-                            value='''from plugins.base import Plugin
-
-class MonPlugin(Plugin):
-    name = "mon_outil"
-    description = "Description de ce que fait l\'outil"
-    parameters = {"input": {"type": "string", "required": True}}
-
-    def run(self, input: str) -> str:
-        return f"Résultat pour: {input}"
-''',
+                            value='from plugins.base import Plugin\n\nclass MonPlugin(Plugin):\n    name = "mon_outil"\n    description = "Ce que fait l\'outil"\n    parameters = {"input": {"type": "string", "required": True}}\n\n    def run(self, input: str) -> str:\n        return f"Résultat: {input}"\n',
                         )
                         add_plugin_btn = gr.Button("Charger le plugin", variant="primary")
                         plugin_status = gr.Textbox(label="Statut")
