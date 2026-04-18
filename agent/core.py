@@ -45,10 +45,11 @@ def build_system(agent_config: dict, plugins: dict) -> str:
 
 def _ollama_call(messages: list, model: str) -> str:
     import ollama
-    response = ollama.chat(
+    client = ollama.Client(timeout=120)
+    response = client.chat(
         model=model,
         messages=messages,
-        options={"temperature": 0.7, "num_ctx": 4096},
+        options={"temperature": 0.7, "num_ctx": 2048},
     )
     return response["message"]["content"]
 
