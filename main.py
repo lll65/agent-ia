@@ -125,14 +125,15 @@ async def full_status():
 # ── Lancement ─────────────────────────────────────────────────────────────────
 
 def start_gradio():
-    """Lance Gradio dans un thread séparé."""
-    import threading
-    def _run():
-        from ui.gradio_app import launch
-        launch()
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    return t
+    """Lance Gradio dans un sous-processus séparé (plus stable qu'un thread)."""
+    import subprocess, sys
+    proc = subprocess.Popen(
+        [sys.executable, "-c",
+         "import sys; sys.path.insert(0, '.'); from ui.gradio_app import launch; launch()"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return proc
 
 
 if __name__ == "__main__":

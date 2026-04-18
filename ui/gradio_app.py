@@ -183,7 +183,7 @@ def build_ui() -> gr.Blocks:
             # ── CHAT ──────────────────────────────────────────────────────────
             with gr.TabItem("Chat"):
                 # type="messages" = format Gradio 6+
-                chatbot_kwargs = {"type": "messages"} if _USE_DICT_FORMAT else {}
+                chatbot_kwargs = {}
                 chatbot = gr.Chatbot(height=500, label="Conversation", **chatbot_kwargs)
                 with gr.Row():
                     msg_input = gr.Textbox(placeholder="Ton message...", scale=5, label="")
