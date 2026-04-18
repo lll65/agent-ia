@@ -10,6 +10,7 @@ Reçoit un objectif complexe et:
 import asyncio
 import json
 import logging
+import re
 import httpx
 from datetime import datetime
 
