@@ -54,15 +54,17 @@ def build_system(agent_config: dict, plugins: dict) -> str:
 async def llm_call(prompt: str, system: str, model: str) -> str:
     payload = {
         "model": model,
-        "prompt": prompt,
-        "system": system,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
         "stream": False,
         "options": {"temperature": 0.7, "num_ctx": 4096},
     }
     async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(f"{config.OLLAMA_URL}/api/generate", json=payload)
+        resp = await client.post(f"{config.OLLAMA_URL}/api/chat", json=payload)
         resp.raise_for_status()
-        return resp.json().get("response", "")
+        return resp.json().get("message", {}).get("content", "")
 
 
 def parse_response(text: str) -> tuple[str | None, dict | None, str | None]:

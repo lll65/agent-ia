@@ -59,8 +59,10 @@ async def generate_agent_config(role: str, objective: str, model: str | None = N
 
     payload = {
         "model": model,
-        "prompt": prompt,
-        "system": "Tu génères des prompts système précis pour des agents IA.",
+        "messages": [
+            {"role": "system", "content": "Tu génères des prompts système précis pour des agents IA."},
+            {"role": "user", "content": prompt},
+        ],
         "stream": False,
         "options": {"temperature": 0.6},
     }
@@ -68,9 +70,9 @@ async def generate_agent_config(role: str, objective: str, model: str | None = N
     system_prompt = template["system_prompt"]
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(f"{config.OLLAMA_URL}/api/generate", json=payload)
+            resp = await client.post(f"{config.OLLAMA_URL}/api/chat", json=payload)
             resp.raise_for_status()
-            generated = resp.json().get("response", "").strip()
+            generated = resp.json().get("message", {}).get("content", "").strip()
             if generated and len(generated) > 20:
                 system_prompt = generated
     except Exception as e:

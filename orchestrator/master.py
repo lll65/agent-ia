@@ -106,16 +106,18 @@ class MasterAgent:
         prompt = DECOMPOSE_PROMPT.format(goal=goal)
         payload = {
             "model": config.OLLAMA_MODEL,
-            "prompt": prompt,
-            "system": "Tu es un architecte de systèmes IA. Tu réponds UNIQUEMENT en JSON valide.",
+            "messages": [
+                {"role": "system", "content": "Tu es un architecte de systèmes IA. Tu réponds UNIQUEMENT en JSON valide."},
+                {"role": "user", "content": prompt},
+            ],
             "stream": False,
             "options": {"temperature": 0.3},
         }
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.post(f"{config.OLLAMA_URL}/api/generate", json=payload)
+                resp = await client.post(f"{config.OLLAMA_URL}/api/chat", json=payload)
                 resp.raise_for_status()
-                raw = resp.json().get("response", "")
+                raw = resp.json().get("message", {}).get("content", "")
                 # Extraire le JSON même si le LLM ajoute du texte autour
                 import re
                 json_match = re.search(r"\{[\s\S]+\}", raw)
@@ -178,16 +180,18 @@ class MasterAgent:
         )
         payload = {
             "model": config.OLLAMA_MODEL,
-            "prompt": prompt,
-            "system": "Tu es un expert en synthèse. Tu produis des réponses complètes et structurées.",
+            "messages": [
+                {"role": "system", "content": "Tu es un expert en synthèse. Tu produis des réponses complètes et structurées."},
+                {"role": "user", "content": prompt},
+            ],
             "stream": False,
             "options": {"temperature": 0.5},
         }
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
-                resp = await client.post(f"{config.OLLAMA_URL}/api/generate", json=payload)
+                resp = await client.post(f"{config.OLLAMA_URL}/api/chat", json=payload)
                 resp.raise_for_status()
-                return resp.json().get("response", "").strip()
+                return resp.json().get("message", {}).get("content", "").strip()
         except Exception as e:
             logger.error(f"[Master] Synthèse échouée: {e}")
             return "\n\n".join(r["result"] for r in results)

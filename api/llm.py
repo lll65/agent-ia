@@ -1,6 +1,6 @@
 """
-API LLM — wraps Ollama (modèle IA local gratuit sur ta machine).
-Ollama tourne sur http://localhost:11434 et sert des modèles comme Llama3, Mistral, etc.
+API LLM — wraps Ollama (modèle IA local gratuit).
+Utilise /api/chat compatible avec toutes les versions d'Ollama.
 """
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -33,24 +33,20 @@ class ModelInfo(BaseModel):
 async def call_ollama(prompt: str, system: str, model: str, temperature: float) -> str:
     payload = {
         "model": model,
-        "prompt": prompt,
-        "system": system,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
         "stream": False,
         "options": {"temperature": temperature},
     }
     async with httpx.AsyncClient(timeout=120.0) as client:
         try:
-            resp = await client.post(f"{config.OLLAMA_URL}/api/generate", json=payload)
+            resp = await client.post(f"{config.OLLAMA_URL}/api/chat", json=payload)
             resp.raise_for_status()
-            return resp.json().get("response", "")
+            return resp.json().get("message", {}).get("content", "")
         except httpx.ConnectError:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "Ollama n'est pas démarré. Lance 'ollama serve' dans un terminal, "
-                    "puis 'ollama pull llama3' pour télécharger le modèle."
-                ),
-            )
+            raise HTTPException(status_code=503, detail="Ollama non démarré. Lance 'ollama serve'.")
 
 
 @router.post("/chat", response_model=ChatResponse)

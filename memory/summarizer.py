@@ -25,16 +25,18 @@ async def summarize_messages(messages: list[dict], model: str | None = None) -> 
 
     payload = {
         "model": model,
-        "prompt": prompt,
-        "system": "Tu es un expert en synthèse de conversations. Sois concis et précis.",
+        "messages": [
+            {"role": "system", "content": "Tu es un expert en synthèse de conversations. Sois concis et précis."},
+            {"role": "user", "content": prompt},
+        ],
         "stream": False,
         "options": {"temperature": 0.3},
     }
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
-            resp = await client.post(f"{config.OLLAMA_URL}/api/generate", json=payload)
+            resp = await client.post(f"{config.OLLAMA_URL}/api/chat", json=payload)
             resp.raise_for_status()
-            return resp.json().get("response", "").strip()
+            return resp.json().get("message", {}).get("content", "").strip()
         except Exception as e:
             logger.warning(f"Résumé impossible: {e}")
             # Fallback: concaténation simple

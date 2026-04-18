@@ -42,9 +42,9 @@ async def generate_video_slides(topic: str, style: str, count: int) -> list[str]
     }
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
-            resp = await client.post(f"{config.OLLAMA_URL}/api/generate", json=payload)
+            resp = await client.post(f"{config.OLLAMA_URL}/api/chat", json=payload)
             resp.raise_for_status()
-            raw = resp.json().get("response", "")
+            raw = resp.json().get("message", {}).get("content", "")
             slides = [s.strip() for s in raw.split("---") if s.strip()]
             return slides[:count] if slides else [topic]
         except httpx.ConnectError:

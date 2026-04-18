@@ -45,9 +45,9 @@ async def ask_llm_for_code(description: str, language: str) -> str:
     }
     async with httpx.AsyncClient(timeout=120.0) as client:
         try:
-            resp = await client.post(f"{config.OLLAMA_URL}/api/generate", json=payload)
+            resp = await client.post(f"{config.OLLAMA_URL}/api/chat", json=payload)
             resp.raise_for_status()
-            code = resp.json().get("response", "")
+            code = resp.json().get("message", {}).get("content", "")
             # Nettoie les balises markdown si présentes
             if "```" in code:
                 lines = code.split("\n")

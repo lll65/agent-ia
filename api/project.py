@@ -38,9 +38,9 @@ async def generate_readme(name: str, description: str, project_type: str) -> str
     }
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
-            resp = await client.post(f"{config.OLLAMA_URL}/api/generate", json=payload)
+            resp = await client.post(f"{config.OLLAMA_URL}/api/chat", json=payload)
             resp.raise_for_status()
-            return resp.json().get("response", "")
+            return resp.json().get("message", {}).get("content", "")
         except httpx.ConnectError:
             return f"# {name}\n\n{description}\n"
 
