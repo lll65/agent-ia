@@ -8,6 +8,10 @@ import gradio as gr
 
 from config import config
 
+# Détection version Gradio pour compatibilité
+_GRADIO_MAJOR = int(gr.__version__.split(".")[0])
+_USE_DICT_FORMAT = _GRADIO_MAJOR >= 5
+
 
 # ── helpers async ──────────────────────────────────────────────────────────────
 
@@ -55,7 +59,11 @@ def chat_with_agent(message: str, history: list, agent_id: str, show_steps: bool
         if steps_text:
             answer = f"{answer}\n\n---\n**Détail des actions ({result['iterations']} itérations):**\n{steps_text}"
 
-    history.append((message, answer))
+    if _USE_DICT_FORMAT:
+        history.append({"role": "user", "content": message})
+        history.append({"role": "assistant", "content": answer})
+    else:
+        history.append((message, answer))
     return history, history, ""
 
 
@@ -175,7 +183,8 @@ def build_ui() -> gr.Blocks:
             # ── CHAT ──────────────────────────────────────────────────────────
             with gr.TabItem("Chat"):
                 # type="messages" = format Gradio 6+
-                chatbot = gr.Chatbot(height=500, label="Conversation")
+                chatbot_kwargs = {"type": "messages"} if _USE_DICT_FORMAT else {}
+                chatbot = gr.Chatbot(height=500, label="Conversation", **chatbot_kwargs)
                 with gr.Row():
                     msg_input = gr.Textbox(placeholder="Ton message...", scale=5, label="")
                     send_btn = gr.Button("Envoyer", variant="primary", scale=1)
