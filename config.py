@@ -8,7 +8,7 @@ load_dotenv()
 class Config:
     # LLM local via Ollama
     OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:1b")
+    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "tinyllama")
 
     # Serveur API
     HOST = os.getenv("HOST", "0.0.0.0")
