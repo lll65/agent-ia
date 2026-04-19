@@ -125,13 +125,11 @@ async def full_status():
 # ── Lancement ─────────────────────────────────────────────────────────────────
 
 def start_gradio():
-    """Lance Gradio dans un sous-processus séparé (plus stable qu'un thread)."""
+    """Lance Gradio dans un sous-processus séparé."""
     import subprocess, sys
     proc = subprocess.Popen(
         [sys.executable, "-c",
          "import sys; sys.path.insert(0, '.'); from ui.gradio_app import launch; launch()"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
     )
     return proc
 
