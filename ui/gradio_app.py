@@ -387,7 +387,7 @@ def build_ui() -> gr.Blocks:
                                     height=420,
                                 )
                             with gr.TabItem("📝 Script"):
-                                sout = gr.Textbox(label="", lines=15, show_copy_button=True)
+                                sout = gr.Textbox(label="", lines=15)
 
                 def make_video_ui(topic, style, lang, slides_n, theme, add_audio, progress=gr.Progress()):
                     import httpx, tempfile
