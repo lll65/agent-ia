@@ -245,16 +245,7 @@ def do_refresh_sessions():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def build_ui() -> gr.Blocks:
-    try:
-        theme = gr.themes.Soft()
-    except Exception:
-        theme = None
-
-    blocks_kwargs = {"title": "MasterAgent-Gros"}
-    if theme:
-        blocks_kwargs["theme"] = theme
-
-    with gr.Blocks(**blocks_kwargs) as demo:
+    with gr.Blocks(title="MasterAgent-Gros") as demo:
 
         # ── États globaux ────────────────────────────────────────────────────
         mode_state = gr.State("fast")
@@ -392,8 +383,7 @@ def build_ui() -> gr.Blocks:
                                 )
                             with gr.TabItem("🎞️ Vidéo / GIF"):
                                 vpreview = gr.Image(
-                                    label="Aperçu animé (GIF)",
-                                    show_download_button=True,
+                                    label="Aperçu animé (GIF) — clic droit pour télécharger",
                                     height=420,
                                 )
                             with gr.TabItem("📝 Script"):
@@ -581,12 +571,17 @@ def build_ui() -> gr.Blocks:
 
 def launch(share: bool = False, port: int = None):
     demo = build_ui()
-    demo.launch(
-        server_port=port or config.GRADIO_PORT,
-        share=share or config.GRADIO_SHARE,
-        server_name="0.0.0.0",
-        show_error=True,
-    )
+    launch_kwargs = {
+        "server_port": port or config.GRADIO_PORT,
+        "share": share or config.GRADIO_SHARE,
+        "server_name": "0.0.0.0",
+        "show_error": True,
+    }
+    try:
+        launch_kwargs["theme"] = gr.themes.Soft()
+    except Exception:
+        pass
+    demo.launch(**launch_kwargs)
 
 
 if __name__ == "__main__":
