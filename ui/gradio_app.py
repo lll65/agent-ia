@@ -361,41 +361,118 @@ def build_ui() -> gr.Blocks:
             # ══ VIDÉO ═════════════════════════════════════════════════════════
             with gr.TabItem("🎬 Vidéo"):
                 with gr.Row():
-                    with gr.Column():
-                        vtopic = gr.Textbox(label="Sujet", placeholder="Ex: Les erreurs des débutants en crypto")
-                        vstyle = gr.Dropdown(["éducatif", "motivation", "humour", "tutoriel", "choc"], value="éducatif", label="Style")
+                    # ── Panneau gauche : contrôles ───────────────────────────
+                    with gr.Column(scale=1):
+                        vtopic = gr.Textbox(
+                            label="💡 Sujet de la vidéo",
+                            placeholder="Ex: Les 5 erreurs des débutants en crypto",
+                            lines=2,
+                        )
+                        vstyle = gr.Dropdown(
+                            ["éducatif", "motivation", "humour", "tutoriel", "choc"],
+                            value="éducatif", label="🎭 Style",
+                        )
                         with gr.Row():
-                            vlang = gr.Dropdown(["fr", "en", "es"], value="fr", label="Langue")
-                            vtheme = gr.Dropdown(["dark", "fire", "ocean", "gold"], value="dark", label="Thème")
-                        vslides = gr.Slider(3, 10, value=5, step=1, label="Slides")
-                        vaudio = gr.Checkbox(value=True, label="Voix (TTS)")
-                        vbtn = gr.Button("🎬 Créer la vidéo", variant="primary")
-                    with gr.Column():
-                        vout = gr.Video(label="Vidéo générée")
-                        sout = gr.Textbox(label="Script généré", lines=10)
+                            vlang = gr.Dropdown(["fr", "en", "es"], value="fr", label="🌍 Langue")
+                            vtheme = gr.Dropdown(["dark", "fire", "ocean", "gold"], value="dark", label="🎨 Thème")
+                        vslides = gr.Slider(3, 10, value=5, step=1, label="📊 Nombre de slides")
+                        vaudio = gr.Checkbox(value=False, label="🔊 Voix (TTS) — désactiver si lent")
+                        vbtn = gr.Button("🎬 Générer la vidéo", variant="primary", size="lg")
+                        vstatus = gr.Markdown("")
+
+                    # ── Panneau droit : résultats ────────────────────────────
+                    with gr.Column(scale=2):
+                        with gr.Tabs():
+                            with gr.TabItem("🖼️ Slides (aperçu)"):
+                                vgallery = gr.Gallery(
+                                    label="",
+                                    columns=3,
+                                    height=420,
+                                    object_fit="contain",
+                                )
+                            with gr.TabItem("🎞️ Vidéo / GIF"):
+                                vpreview = gr.Image(
+                                    label="Aperçu animé (GIF)",
+                                    show_download_button=True,
+                                    height=420,
+                                )
+                            with gr.TabItem("📝 Script"):
+                                sout = gr.Textbox(label="", lines=15, show_copy_button=True)
 
                 def make_video_ui(topic, style, lang, slides_n, theme, add_audio, progress=gr.Progress()):
-                    import httpx
-                    async def _gen():
+                    import httpx, tempfile
+                    from pathlib import Path
+
+                    if not topic.strip():
+                        return [], None, "⚠️ Saisis un sujet.", "Écris un sujet d'abord."
+
+                    # 1. Génère le script via l'API
+                    progress(0.15, desc="✍️ Génération du script...")
+                    async def _get_script():
                         async with httpx.AsyncClient(timeout=60.0) as c:
                             r = await c.post(
                                 f"http://localhost:{config.PORT}/video/script",
                                 json={"topic": topic, "style": style, "lang": lang, "slides_count": int(slides_n)},
                             )
                             return r.json()
-                    progress(0.2, desc="Génération du script...")
-                    data = _run(_gen())
-                    slides = data.get("slides", [topic])
-                    progress(0.5, desc="Création des images...")
                     try:
-                        from video.creator import create_video
-                        path = create_video(slides, topic[:30].replace(" ", "_"), lang=lang, add_audio=add_audio, theme=theme)
-                        progress(1.0)
-                        return path, "\n\n---\n\n".join(slides)
+                        data = _run(_get_script())
+                        slides = data.get("slides", [topic])
                     except Exception as e:
-                        return None, f"Erreur: {e}"
+                        return [], None, f"❌ Erreur script: {e}", ""
 
-                vbtn.click(make_video_ui, [vtopic, vstyle, vlang, vslides, vtheme, vaudio], [vout, sout])
+                    script_text = "\n\n---\n\n".join(slides)
+
+                    # 2. Génère les images des slides
+                    progress(0.4, desc="🖼️ Création des slides...")
+                    from video.image_gen import create_slide, save_slide
+                    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in topic)[:35]
+                    tmp_dir = Path("output/tmp_preview") / safe_name
+                    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+                    slide_paths = []
+                    for i, text in enumerate(slides):
+                        path = str(tmp_dir / f"slide_{i:03d}.png")
+                        save_slide(text, path, index=i, total=len(slides), theme=theme)
+                        slide_paths.append(path)
+                        progress(0.4 + 0.3 * (i + 1) / len(slides), desc=f"🖼️ Slide {i+1}/{len(slides)}...")
+
+                    # 3. Crée le GIF animé (toujours, indépendant de FFmpeg)
+                    progress(0.75, desc="🎞️ Assemblage GIF...")
+                    gif_path = None
+                    try:
+                        from PIL import Image as PILImage
+                        frames = [PILImage.open(p) for p in slide_paths]
+                        gif_path = str(Path("output/videos") / f"{safe_name}.gif")
+                        Path("output/videos").mkdir(parents=True, exist_ok=True)
+                        frames[0].save(
+                            gif_path, save_all=True, append_images=frames[1:],
+                            duration=2500, loop=0, optimize=True,
+                        )
+                    except Exception as e:
+                        pass
+
+                    # 4. Essaie aussi MP4 en arrière-plan (sans bloquer)
+                    progress(0.9, desc="🎬 Finalisation...")
+                    if add_audio:
+                        try:
+                            from video.creator import create_video
+                            create_video(slides, safe_name, lang=lang, add_audio=True, theme=theme)
+                        except Exception:
+                            pass
+
+                    progress(1.0, desc="✅ Terminé!")
+                    status = f"✅ **{len(slides)} slides générées** pour: _{topic}_"
+                    if gif_path:
+                        status += f"\n\n📥 GIF prêt — clique sur l'onglet **Vidéo / GIF** pour le voir et le télécharger."
+
+                    return slide_paths, gif_path, status, script_text
+
+                vbtn.click(
+                    make_video_ui,
+                    [vtopic, vstyle, vlang, vslides, vtheme, vaudio],
+                    [vgallery, vpreview, vstatus, sout],
+                )
 
             # ══ CODE ══════════════════════════════════════════════════════════
             with gr.TabItem("💻 Code"):
