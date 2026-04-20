@@ -107,6 +107,16 @@ async def run_agent(
         except Exception as e:
             logger.warning(f"Auto-résumé échoué: {e}")
 
+    # Injecte les leçons apprises si disponibles
+    try:
+        from agent.self_improve import get_improvement_context
+        domain = agent_config.get("role", "general")
+        lessons = get_improvement_context(domain=domain, max_lessons=4)
+        if lessons:
+            system = system + f"\n\n{lessons}"
+    except Exception:
+        pass
+
     context = mem.build_context(agent_id, task, recent_limit=6)
     messages = [{"role": "system", "content": system}]
     if context:

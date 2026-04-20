@@ -110,10 +110,19 @@ class MasterAgent:
         results = await self._execute_tasks(agent_configs, session_id)
         final = await self._synthesize(goal, synthesis_instruction, results)
 
+        # Auto-amélioration : évalue et apprend en arrière-plan
+        auto_created = creation.get("created", []) if "creation" in dir() else []
+        try:
+            from agent.self_improve import evaluate_and_learn
+            asyncio.ensure_future(evaluate_and_learn(goal, final, domain="orchestration"))
+        except Exception:
+            pass
+
         return {
             "goal": goal,
             "mode": "orchestrated",
             "tasks_count": len(tasks),
+            "auto_created": auto_created,
             "agents": [{"id": c["id"], "role": c["role"], "objective": c["objective"]} for c in agent_configs],
             "results": results,
             "answer": final,

@@ -455,14 +455,34 @@ def add_plugin(code):
 
 def run_master(goal, progress=gr.Progress()):
     from orchestrator import get_master
-    if not goal.strip(): return "Saisis un objectif."
-    progress(0.1, desc="🧩 Décomposition...")
-    result = _run(get_master().execute(goal))
-    progress(0.9, desc="🔀 Synthèse...")
-    out = f"## Résultat\n**Mode:** {result.get('mode','?')}\n"
-    for a in result.get("agents", []):
-        out += f"  - `{a['role']}` : {a['objective']}\n"
-    return out + f"\n---\n\n{result.get('answer','')}"
+    if not goal.strip():
+        return "⚠️ Saisis un objectif complexe."
+    try:
+        progress(0.05, desc="🔍 Analyse de la requête...")
+        result = _run(get_master().execute(goal))
+        progress(0.95, desc="✅ Synthèse terminée")
+
+        mode = result.get("mode", "?")
+        out = f"## ✅ Résultat — mode **{mode}**\n\n"
+
+        created = result.get("auto_created", [])
+        if created:
+            out += "**🆕 Créés automatiquement :** " + ", ".join(f"`{c}`" for c in created) + "\n\n"
+
+        agents = result.get("agents", [])
+        if agents:
+            out += "**Agents mobilisés :**\n"
+            for a in agents:
+                out += f"  - `{a['role']}` → _{a['objective']}_\n"
+            out += "\n---\n\n"
+
+        out += result.get("answer", "_Pas de réponse._")
+        return out
+
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        return f"❌ **Erreur orchestrateur**\n\n```\n{tb[:1500]}\n```\n\n*Vérifie le terminal pour plus de détails.*"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -646,6 +666,46 @@ def build_ui() -> gr.Blocks:
                         fa_out = gr.Markdown()
                         fa_btn.click(finance_agent_analysis, [fa_in], [fa_out])
 
+            # ══ AUTO-AMÉLIORATION ═════════════════════════════════════════════
+            with gr.TabItem("🧬 Auto-Amélioration"):
+                gr.Markdown(
+                    "### L'agent apprend de chaque exécution\n"
+                    "Après chaque réponse de l'Orchestrateur, il évalue sa propre qualité "
+                    "et mémorise des leçons pour s'améliorer automatiquement."
+                )
+                with gr.Row():
+                    si_btn = gr.Button("🔄 Voir les statistiques", variant="primary")
+                    si_rst = gr.Button("🗑️ Réinitialiser", variant="secondary")
+                with gr.Row():
+                    with gr.Column():
+                        si_stats = gr.Markdown("*Clique sur Voir les statistiques*")
+                    with gr.Column():
+                        si_lessons = gr.Dataframe(
+                            headers=["Date", "Domaine", "Score", "Leçon apprise"],
+                            label="Leçons récentes")
+
+                def show_si():
+                    from agent.self_improve import get_stats, get_recent_lessons
+                    stats = get_stats()
+                    lessons = get_recent_lessons(15)
+                    stats_md = (
+                        f"**Runs évalués :** {stats.get('runs', 0)}\n\n"
+                        f"**Score moyen :** {stats.get('avg_score', 0):.1f} / 10"
+                    )
+                    rows = []
+                    for l in reversed(lessons):
+                        ts = l.get("timestamp", "")[:16].replace("T", " ")
+                        rows.append([ts, l.get("domain","?"), f"{l.get('score','?')}/10", l.get("lesson","")[:80]])
+                    return stats_md, rows
+
+                def reset_si():
+                    from pathlib import Path
+                    Path("data/self_improve.json").unlink(missing_ok=True)
+                    return "✅ Réinitialisé.", []
+
+                si_btn.click(show_si, [], [si_stats, si_lessons])
+                si_rst.click(reset_si, [], [si_stats, si_lessons])
+
             # ══ AGENTS ════════════════════════════════════════════════════════
             with gr.TabItem("🤖 Agents"):
                 with gr.Row():
@@ -688,11 +748,20 @@ def build_ui() -> gr.Blocks:
 
 def launch(share: bool = False, port: int = None):
     demo = build_ui()
+    # allowed_paths: autorise Gradio à servir les fichiers de output/ et data/
+    # SANS ça → 403 Forbidden sur toutes les images/vidéos générées
+    allowed = []
+    for d in ("output", "data"):
+        p = Path(d).resolve()
+        p.mkdir(parents=True, exist_ok=True)
+        allowed.append(str(p))
+
     launch_kwargs = {
         "server_port": port or config.GRADIO_PORT,
         "share": share or config.GRADIO_SHARE,
         "server_name": "0.0.0.0",
         "show_error": True,
+        "allowed_paths": allowed,
     }
     try:
         launch_kwargs["theme"] = gr.themes.Soft()
