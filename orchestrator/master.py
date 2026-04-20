@@ -70,6 +70,15 @@ class MasterAgent:
     async def execute(self, goal: str, session_id: str = "master") -> dict:
         logger.info(f"[Master] Goal: {goal[:80]}")
 
+        # Auto-crée les agents/plugins manquants pour cette requête
+        try:
+            from orchestrator.agent_creator import ensure_agents_for_request
+            creation = await ensure_agents_for_request(goal)
+            if creation.get("created"):
+                logger.info(f"[Master] Auto-créé: {creation['created']}")
+        except Exception as e:
+            logger.warning(f"[Master] agent_creator: {e}")
+
         plan = await self._decompose(goal)
         if not plan or not plan.get("tasks"):
             logger.warning("[Master] Décomposition échouée, exécution directe.")

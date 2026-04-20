@@ -24,6 +24,11 @@ ollama>=0.3.0
 groq>=0.9.0
 openai>=1.0.0
 
+# Finance & Data
+yfinance>=0.2.40
+pandas>=2.0.0
+matplotlib>=3.8.0
+
 # Robustesse
 tenacity==8.5.0
 

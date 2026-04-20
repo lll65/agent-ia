@@ -334,77 +334,96 @@ def gen_code(desc, lang, run_it):
     return code, output
 
 
-def gen_project(desc, progress=gr.Progress()):
-    """Génère un projet complet (tous les fichiers) depuis une description."""
-    from llm.client import chat
-    import zipfile, tempfile
-
+def gen_project(desc, proj_type, progress=gr.Progress()):
+    """Génère un projet complet via le plugin FullProjectPlugin (code réel + preview + ZIP)."""
     if not desc.strip():
-        return None, "⚠️ Décris le projet."
+        return None, "", "⚠️ Décris le projet."
 
-    progress(0.1, desc="🧠 Planification du projet...")
-
-    plan_prompt = f"""Tu es un architecte logiciel expert. Génère un projet complet pour: {desc}
-
-Réponds UNIQUEMENT en JSON:
-{{
-  "name": "nom-du-projet",
-  "description": "description courte",
-  "files": {{
-    "main.py": "contenu complet du fichier",
-    "requirements.txt": "contenu",
-    "README.md": "contenu",
-    "Dockerfile": "contenu"
-  }}
-}}
-
-Génère du vrai code fonctionnel et complet dans chaque fichier. Maximum 8 fichiers."""
-
+    progress(0.1, desc="🧠 Génération du code par l'IA...")
     try:
-        raw = chat([
-            {"role": "system", "content": "Tu es un expert en développement. Tu génères du code complet et fonctionnel. Réponds UNIQUEMENT en JSON valide."},
-            {"role": "user", "content": plan_prompt}
-        ], temperature=0.3)
-
-        import re
-        m = re.search(r"\{[\s\S]+\}", raw)
-        if not m:
-            return None, "❌ Impossible de parser le plan."
-        plan = json.loads(m.group())
+        from plugins.builtin.project_builder import FullProjectPlugin
+        result = FullProjectPlugin().run(description=desc, project_type=proj_type)
     except Exception as e:
-        return None, f"❌ Erreur LLM: {e}"
+        return None, "", f"❌ Erreur: {e}"
 
-    progress(0.4, desc="📁 Génération des fichiers...")
+    progress(0.9, desc="📦 Finalisation...")
 
-    proj_name = plan.get("name", "projet")
-    files = plan.get("files", {})
-    out_dir = Path("output") / "projects" / proj_name
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # Parse le résultat pour extraire ZIP et preview
+    zip_path = None
+    preview_path = None
+    for line in result.split("\n"):
+        if line.startswith("ZIP:"):
+            zip_path = line.split("ZIP:", 1)[1].strip()
+        elif line.startswith("Preview:"):
+            preview_path = line.split("Preview:", 1)[1].strip()
 
-    file_list = []
-    for i, (fname, content) in enumerate(files.items()):
-        fpath = out_dir / fname
-        fpath.parent.mkdir(parents=True, exist_ok=True)
-        fpath.write_text(str(content), encoding="utf-8")
-        file_list.append(str(fpath))
-        progress(0.4 + 0.4 * (i+1)/len(files), desc=f"📄 {fname}")
-
-    # ZIP
-    progress(0.9, desc="📦 Création du ZIP...")
-    zip_path = str(Path("output/projects") / f"{proj_name}.zip")
-    with zipfile.ZipFile(zip_path, "w") as zf:
-        for f in file_list:
-            zf.write(f, Path(f).relative_to(out_dir.parent.parent))
+    # Lit le HTML de preview pour l'afficher inline
+    preview_html = ""
+    if preview_path and Path(preview_path).exists():
+        try:
+            preview_html = Path(preview_path).read_text(encoding="utf-8")
+        except Exception:
+            pass
 
     progress(1.0)
-    summary = f"## ✅ Projet `{proj_name}` généré\n\n"
-    summary += f"**{len(files)} fichiers créés :**\n"
-    for fname in files:
-        summary += f"  - `{fname}`\n"
-    summary += f"\n📁 Dossier : `output/projects/{proj_name}/`\n"
-    summary += f"📦 ZIP : `{zip_path}`"
+    summary = result.replace("\n", "\n\n")
+    return zip_path, preview_html, f"✅ {summary}"
 
-    return zip_path, summary
+
+# ═════════════════════════════════════════════════════════════════════════════
+# FINANCE
+# ═════════════════════════════════════════════════════════════════════════════
+
+def analyze_finance(ticker: str, period: str) -> str:
+    if not ticker.strip():
+        return "⚠️ Saisis un ticker (ex: AAPL, BTC-USD, MC.PA)"
+    try:
+        from plugins.builtin.finance import StockAnalysisPlugin
+        return StockAnalysisPlugin().run(ticker=ticker.strip(), period=period)
+    except Exception as e:
+        return f"❌ Erreur: {e}"
+
+def compare_finance(tickers: str, period: str) -> str:
+    if not tickers.strip():
+        return "⚠️ Saisis des tickers séparés par virgule (ex: AAPL,MSFT,GOOGL)"
+    try:
+        from plugins.builtin.finance import MultiStockComparePlugin
+        return MultiStockComparePlugin().run(tickers=tickers, period=period)
+    except Exception as e:
+        return f"❌ Erreur: {e}"
+
+def finance_news(ticker: str) -> str:
+    if not ticker.strip():
+        return "⚠️ Saisis un ticker"
+    try:
+        from plugins.builtin.finance import MarketNewsPlugin
+        return MarketNewsPlugin().run(ticker=ticker.strip())
+    except Exception as e:
+        return f"❌ Erreur: {e}"
+
+def finance_agent_analysis(question: str) -> str:
+    """Lance l'agent finance_analyst complet avec ReAct + outils."""
+    if not question.strip():
+        return "⚠️ Pose une question financière."
+    from agent.core import run_agent
+    from plugins import get_loader
+    cfg = {
+        "id": "finance_ui",
+        "name": "FinanceAgent Pro",
+        "system_prompt": (
+            "Tu es un analyste financier senior expert. "
+            "Tu utilises analyze_stock, compare_stocks et get_market_news pour obtenir des données réelles. "
+            "Tu fournis une analyse complète avec recommandation achat/vente/hold motivée. "
+            "Tu rappelles que tes analyses ne sont pas des conseils financiers officiels."
+        ),
+        "tools": ["analyze_stock", "compare_stocks", "get_market_news", "search_web"],
+        "model": config.LLM_MODEL,
+    }
+    try:
+        result = _run(run_agent(question, cfg, "finance_ui"))
+        return result.get("answer", "Pas de réponse.")
+    except Exception as e:
+        return f"❌ Erreur agent: {e}"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -558,22 +577,85 @@ def build_ui() -> gr.Blocks:
                         c_btn.click(gen_code, [c_desc, c_lang, c_run], [c_out, c_exec])
 
                     with gr.TabItem("🗂️ Projet Complet"):
-                        gr.Markdown("### Génère une application entière en un seul clic\n"
-                                    "Frontend + Backend + Base de données + Docker + README")
-                        p_desc   = gr.Textbox(label="Description du projet", lines=3,
-                                              placeholder="Ex: Application web de todo list avec FastAPI + HTML + SQLite")
-                        p_btn    = gr.Button("🗂️ Générer le projet complet", variant="primary", size="lg")
-                        p_zip    = gr.File(label="📦 Télécharger le projet (ZIP)")
-                        p_out    = gr.Markdown()
-                        p_btn.click(gen_project, [p_desc], [p_zip, p_out])
+                        gr.Markdown(
+                            "### Génère une application entière — vrai code fonctionnel + preview + ZIP\n"
+                            "L'IA génère **tous** les fichiers (HTML, CSS, JS, Python, Docker, README…)"
+                        )
+                        with gr.Row():
+                            with gr.Column(scale=1):
+                                p_desc = gr.Textbox(
+                                    label="Description du projet", lines=4,
+                                    placeholder="Ex: Application web de gestion de tâches avec drag & drop, localStorage, design moderne dark")
+                                p_type = gr.Dropdown(
+                                    ["web", "python-api", "game", "dashboard", "cli", "react"],
+                                    value="web", label="Type de projet")
+                                p_btn  = gr.Button("🗂️ Générer le projet", variant="primary", size="lg")
+                                p_zip  = gr.File(label="📦 Télécharger ZIP")
+                                p_stat = gr.Markdown()
+                            with gr.Column(scale=2):
+                                gr.Markdown("#### 👁️ Preview")
+                                p_prev = gr.HTML(label="", value="<div style='padding:2rem;color:#666;text-align:center'>La preview apparaîtra ici après génération</div>")
+                        p_btn.click(gen_project, [p_desc, p_type], [p_zip, p_prev, p_stat])
+
+            # ══ FINANCE ═══════════════════════════════════════════════════════
+            with gr.TabItem("💹 Finance"):
+                gr.Markdown(
+                    "### Analyse boursière & crypto en temps réel\n"
+                    "Données réelles · RSI · MACD · Bollinger · Recommandation achat/vente"
+                )
+                with gr.Tabs():
+
+                    with gr.TabItem("📊 Analyser une action"):
+                        with gr.Row():
+                            with gr.Column(scale=1):
+                                f_ticker  = gr.Textbox(label="Ticker", placeholder="AAPL · BTC-USD · MC.PA · ETH-USD · NVDA")
+                                f_period  = gr.Dropdown(["1mo","3mo","6mo","1y","2y"], value="6mo", label="Période")
+                                f_btn     = gr.Button("📊 Analyser", variant="primary", size="lg")
+                            with gr.Column(scale=2):
+                                f_out = gr.Markdown()
+                        f_btn.click(analyze_finance, [f_ticker, f_period], [f_out])
+
+                    with gr.TabItem("⚖️ Comparer"):
+                        with gr.Row():
+                            with gr.Column(scale=1):
+                                fc_tickers = gr.Textbox(label="Tickers (séparés par virgule)",
+                                                        placeholder="AAPL,MSFT,GOOGL,NVDA")
+                                fc_period  = gr.Dropdown(["1mo","3mo","6mo","1y"], value="3mo", label="Période")
+                                fc_btn     = gr.Button("⚖️ Comparer", variant="primary")
+                            with gr.Column(scale=2):
+                                fc_out = gr.Markdown()
+                        fc_btn.click(compare_finance, [fc_tickers, fc_period], [fc_out])
+
+                    with gr.TabItem("📰 Actualités"):
+                        with gr.Row():
+                            with gr.Column(scale=1):
+                                fn_ticker = gr.Textbox(label="Ticker", placeholder="AAPL · TSLA · BTC-USD")
+                                fn_btn    = gr.Button("📰 Voir les news", variant="primary")
+                            with gr.Column(scale=2):
+                                fn_out = gr.Markdown()
+                        fn_btn.click(finance_news, [fn_ticker], [fn_out])
+
+                    with gr.TabItem("🤖 Agent Financier"):
+                        gr.Markdown(
+                            "Pose n'importe quelle question financière — l'agent utilise les vrais outils "
+                            "(analyze_stock, compare_stocks, news) et synthétise une réponse complète."
+                        )
+                        fa_in  = gr.Textbox(label="Question", lines=3,
+                                            placeholder="Ex: Faut-il acheter Apple en ce moment? Compare NVDA vs AMD. Analyse le Bitcoin sur 6 mois.")
+                        fa_btn = gr.Button("🤖 Analyser avec l'agent", variant="primary", size="lg")
+                        fa_out = gr.Markdown()
+                        fa_btn.click(finance_agent_analysis, [fa_in], [fa_out])
 
             # ══ AGENTS ════════════════════════════════════════════════════════
             with gr.TabItem("🤖 Agents"):
                 with gr.Row():
                     with gr.Column():
                         gr.Markdown("### Créer un sous-agent")
-                        a_role  = gr.Dropdown(["researcher","coder","video_creator","analyst","writer","generic"],
-                                              value="coder", label="Rôle")
+                        a_role  = gr.Dropdown(
+                            ["researcher","coder","fullstack_dev","finance_analyst","crypto_analyst",
+                             "marketing_expert","copywriter","seo_expert","video_creator","youtube_creator",
+                             "writer","data_scientist","analyst","ecommerce_expert","game_developer","generic"],
+                            value="coder", label="Rôle")
                         a_obj   = gr.Textbox(label="Objectif")
                         a_model = gr.Textbox(label="Modèle (vide = défaut)")
                         a_btn   = gr.Button("➕ Créer", variant="primary")
