@@ -8,11 +8,13 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+import inspect
 import gradio as gr
 from config import config
 
-# ── version Gradio ────────────────────────────────────────────────────────────
+# ── compatibilité Gradio (détecte les paramètres réels plutôt que la version) ─
 _V = int(gr.__version__.split(".")[0])
+_CHATBOT_SUPPORTS_TYPE = "type" in inspect.signature(gr.Chatbot.__init__).parameters
 
 # ── sessions ──────────────────────────────────────────────────────────────────
 SESSIONS_DIR = Path("data/sessions")
@@ -49,7 +51,7 @@ def _to_ollama(history: list) -> list:
 
 
 def _add(history, user_msg, bot_msg):
-    if _V >= 5:
+    if _CHATBOT_SUPPORTS_TYPE:
         return history + [{"role": "user", "content": user_msg},
                           {"role": "assistant", "content": bot_msg}]
     return history + [(user_msg, bot_msg)]
@@ -407,7 +409,7 @@ def build_ui() -> gr.Blocks:
                         ref_btn   = gr.Button("🔄 Rafraîchir", size="sm")
 
                     with gr.Column(scale=4):
-                        if _V >= 5:
+                        if _CHATBOT_SUPPORTS_TYPE:
                             chatbot = gr.Chatbot(height=480, label="", type="messages")
                         else:
                             chatbot = gr.Chatbot(height=480, label="")
