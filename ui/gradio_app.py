@@ -265,7 +265,12 @@ def gen_code(desc, lang, run_it):
                              json={"description": desc, "language": lang})
             return r.json()
     d = _run(_g())
-    return d.get("code", str(d)), d.get("output", "(non exécuté)")
+    code = d.get("code", str(d))
+    if run_it and lang == "python":
+        output = d.get("output", "⚠️ Pas de sortie.")
+    else:
+        output = "💡 Coche 'Exécuter' pour lancer le code Python." if lang == "python" else ""
+    return code, output
 
 
 def gen_project(desc, progress=gr.Progress()):

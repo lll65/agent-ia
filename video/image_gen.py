@@ -1,40 +1,38 @@
 """
-Génération de slides vidéo professionnelles — Pillow, 100% local.
-Layouts différenciés: intro / contenu / CTA / stat / citation.
+Génération de slides vidéo professionnelles — Pillow RGB pur, 100% local.
+Layouts différenciés: intro / contenu / stat / CTA.
 """
 import textwrap
-import math
+import re
 from pathlib import Path
 from typing import Tuple
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
-
-# ── Palettes ──────────────────────────────────────────────────────────────────
+from PIL import Image, ImageDraw, ImageFont
 
 THEMES = {
     "dark": {
-        "bg_top": (10, 10, 20), "bg_bottom": (25, 25, 45),
+        "bg_top": (10, 10, 22), "bg_bottom": (28, 28, 55),
         "accent": (99, 102, 241), "accent2": (167, 139, 250),
-        "text": (255, 255, 255), "subtext": (180, 180, 210),
-        "card": (30, 30, 55, 200),
+        "text": (255, 255, 255), "subtext": (180, 180, 215),
+        "muted": (40, 40, 70),
     },
     "fire": {
-        "bg_top": (15, 5, 0), "bg_bottom": (50, 10, 0),
+        "bg_top": (18, 5, 0), "bg_bottom": (55, 12, 0),
         "accent": (255, 90, 0), "accent2": (255, 200, 0),
-        "text": (255, 255, 255), "subtext": (255, 180, 100),
-        "card": (40, 10, 0, 200),
+        "text": (255, 255, 255), "subtext": (255, 185, 100),
+        "muted": (50, 15, 0),
     },
     "ocean": {
-        "bg_top": (0, 10, 30), "bg_bottom": (0, 40, 80),
-        "accent": (0, 180, 255), "accent2": (100, 220, 255),
-        "text": (255, 255, 255), "subtext": (150, 210, 255),
-        "card": (0, 20, 50, 200),
+        "bg_top": (0, 12, 35), "bg_bottom": (0, 45, 90),
+        "accent": (0, 185, 255), "accent2": (100, 220, 255),
+        "text": (255, 255, 255), "subtext": (150, 215, 255),
+        "muted": (0, 25, 55),
     },
     "gold": {
-        "bg_top": (8, 6, 2), "bg_bottom": (25, 20, 3),
+        "bg_top": (10, 8, 2), "bg_bottom": (28, 22, 4),
         "accent": (212, 175, 55), "accent2": (255, 220, 100),
         "text": (255, 255, 255), "subtext": (220, 200, 120),
-        "card": (20, 15, 0, 200),
+        "muted": (22, 17, 3),
     },
 }
 
@@ -47,13 +45,11 @@ _FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
     "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
-    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
 ]
 
 
-def _load_font(size: int, bold: bool = True) -> ImageFont.FreeTypeFont:
-    candidates = _FONT_CANDIDATES if bold else _FONT_CANDIDATES[::-1]
-    for path in candidates:
+def _load_font(size: int) -> ImageFont.FreeTypeFont:
+    for path in _FONT_CANDIDATES:
         try:
             return ImageFont.truetype(path, size)
         except Exception:
@@ -61,193 +57,214 @@ def _load_font(size: int, bold: bool = True) -> ImageFont.FreeTypeFont:
     return ImageFont.load_default()
 
 
-def _gradient(draw: ImageDraw.Draw, size: Tuple[int, int], top: tuple, bottom: tuple):
-    w, h = size
+def _blend(c1: tuple, c2: tuple, t: float) -> tuple:
+    """Mélange linéaire entre deux couleurs RGB."""
+    return tuple(int(c1[i] + (c2[i] - c1[i]) * t) for i in range(3))
+
+
+def _gradient(img: Image.Image, top: tuple, bottom: tuple):
+    w, h = img.size
+    pixels = img.load()
     for y in range(h):
         t = y / h
-        r = int(top[0] + (bottom[0] - top[0]) * t)
-        g = int(top[1] + (bottom[1] - top[1]) * t)
-        b = int(top[2] + (bottom[2] - top[2]) * t)
-        draw.line([(0, y), (w, y)], fill=(r, g, b))
+        c = _blend(top, bottom, t)
+        for x in range(w):
+            pixels[x, y] = c
 
 
-def _draw_progress(draw, w, h, progress, accent):
+def _dim(color: tuple, factor: float) -> tuple:
+    """Assombrit une couleur (factor < 1)."""
+    return tuple(int(c * factor) for c in color)
+
+
+def _draw_progress(draw: ImageDraw.Draw, w: int, h: int, progress: float, accent: tuple, muted: tuple):
     bar_h = 6
-    y0, y1 = h - bar_h, h
-    draw.rectangle([(0, y0), (w, y1)], fill=(40, 40, 60))
-    bar_w = max(20, int(w * progress))
-    # Gradient progress bar
+    draw.rectangle([(0, h - bar_h), (w, h)], fill=muted)
+    bar_w = max(8, int(w * progress))
     for x in range(bar_w):
-        t = x / bar_w
-        r = int(accent[0] * (0.6 + 0.4 * t))
-        g = int(accent[1] * (0.6 + 0.4 * t))
-        b = int(accent[2] * (0.6 + 0.4 * t))
-        draw.line([(x, y0), (x, y1)], fill=(r, g, b))
+        t = x / max(bar_w, 1)
+        c = _blend(_dim(accent, 0.6), accent, t)
+        draw.line([(x, h - bar_h), (x, h)], fill=c)
 
 
-def _draw_geometric(draw, w, h, accent, accent2):
-    """Décoration géométrique subtile en arrière-plan."""
-    a1 = accent + (18,)
-    a2 = accent2 + (12,)
-    # Cercle en haut à droite
-    draw.ellipse([(w - 200, -100), (w + 50, 150)], outline=a1, width=2)
-    draw.ellipse([(w - 160, -60), (w + 10, 110)], outline=a2, width=1)
-    # Ligne diagonale en bas à gauche
-    draw.line([(-20, h - 80), (160, h + 40)], fill=a1, width=2)
-    draw.line([(0, h - 40), (120, h + 60)], fill=a2, width=1)
+def _draw_corners(draw: ImageDraw.Draw, w: int, h: int, accent: tuple):
+    """Coins décoratifs discrets."""
+    size = 25
+    col = _dim(accent, 0.5)
+    lw = 2
+    # coin haut-gauche
+    draw.line([(20, 20), (20 + size, 20)], fill=col, width=lw)
+    draw.line([(20, 20), (20, 20 + size)], fill=col, width=lw)
+    # coin haut-droite
+    draw.line([(w - 20, 20), (w - 20 - size, 20)], fill=col, width=lw)
+    draw.line([(w - 20, 20), (w - 20, 20 + size)], fill=col, width=lw)
+    # coin bas-gauche
+    draw.line([(20, h - 20), (20 + size, h - 20)], fill=col, width=lw)
+    draw.line([(20, h - 20), (20, h - 20 - size)], fill=col, width=lw)
+    # coin bas-droite
+    draw.line([(w - 20, h - 20), (w - 20 - size, h - 20)], fill=col, width=lw)
+    draw.line([(w - 20, h - 20), (w - 20, h - 20 - size)], fill=col, width=lw)
 
 
-def _text_block(draw, lines, font, x_center, y_start, w, color, shadow=True, line_spacing=1.3):
-    font_size = font.size if hasattr(font, "size") else 30
-    step = int(font_size * line_spacing)
+def _text_centered(draw: ImageDraw.Draw, lines: list, font, cx: int, y: int,
+                   color: tuple, shadow: bool = True, spacing: float = 1.35) -> int:
+    size = font.size if hasattr(font, "size") else 28
+    step = int(size * spacing)
     for line in lines:
-        bbox = draw.textbbox((0, 0), line, font=font)
-        lw = bbox[2] - bbox[0]
-        x = x_center - lw // 2
+        bb = draw.textbbox((0, 0), line, font=font)
+        lw = bb[2] - bb[0]
+        x = cx - lw // 2
         if shadow:
-            draw.text((x + 2, y_start + 2), line, font=font, fill=(0, 0, 0, 120))
-        draw.text((x, y_start), line, font=font, fill=color)
-        y_start += step
-    return y_start
+            draw.text((x + 2, y + 2), line, font=font, fill=_dim(color, 0.15))
+        draw.text((x, y), line, font=font, fill=color)
+        y += step
+    return y
 
 
 # ── Layouts ──────────────────────────────────────────────────────────────────
 
-def _layout_intro(draw, img, w, h, text, palette, index, total):
-    """Slide titre — grand, centré, ligne décorative."""
-    accent = palette["accent"]
-    accent2 = palette["accent2"]
+def _layout_intro(draw, w, h, text, p, index, total):
+    accent, accent2 = p["accent"], p["accent2"]
 
-    _draw_geometric(draw, w, h, accent, accent2)
+    _draw_corners(draw, w, h, accent)
 
-    # Ligne d'accroche en haut
-    draw.line([(40, 60), (w - 40, 60)], fill=accent + (60,), width=1)
+    # Barre horizontale décorative en haut
+    for x in range(40, w - 40):
+        t = (x - 40) / (w - 80)
+        c = _blend(accent, accent2, t)
+        draw.point((x, 55), fill=c)
+    draw.line([(40, 55), (w - 40, 55)], fill=accent, width=2)
 
-    # Numéro de slide
-    fn = _load_font(18, bold=False)
-    draw.text((w // 2 - 15, 30), f"{index+1} / {total}", font=fn, fill=palette["subtext"])
+    # Compteur de slide
+    fn = _load_font(20)
+    label = f"{index+1} / {total}"
+    lb = draw.textbbox((0, 0), label, font=fn)
+    draw.text((w // 2 - (lb[2] - lb[0]) // 2, 28), label, font=fn, fill=p["subtext"])
 
     # Titre principal
-    words = text.split()
-    font_size = 64 if len(words) <= 4 else 52 if len(words) <= 7 else 42
-    font = _load_font(font_size)
-    wrapped = textwrap.fill(text, width=max(10, int(16 * 52 / font_size)))
+    words = len(text.split())
+    fs = 62 if words <= 4 else 50 if words <= 7 else 40
+    font = _load_font(fs)
+    wrapped = textwrap.fill(text, width=max(10, int(16 * 50 / fs)))
     lines = wrapped.split("\n")
-    total_h = len(lines) * int(font_size * 1.3)
-    y = (h - total_h) // 2 - 20
-    _text_block(draw, lines, font, w // 2, y, w, palette["text"])
+    th = len(lines) * int(fs * 1.35)
+    y = (h - th) // 2 - 30
+    _text_centered(draw, lines, font, w // 2, y, p["text"])
 
-    # Trait accentué sous le titre
-    accent_line_y = y + total_h + 20
-    line_w = min(240, w - 80)
-    lx = (w - line_w) // 2
-    draw.rectangle([(lx, accent_line_y), (lx + line_w, accent_line_y + 4)], fill=accent)
+    # Ligne accent sous le titre
+    lend_y = y + th + 18
+    bar_len = min(220, w - 80)
+    bx = (w - bar_len) // 2
+    draw.rectangle([(bx, lend_y), (bx + bar_len, lend_y + 5)], fill=accent)
 
-    _draw_progress(draw, w, h, (index + 1) / total, accent)
+    _draw_progress(draw, w, h, (index + 1) / total, accent, p["muted"])
 
 
-def _layout_content(draw, img, w, h, text, palette, index, total):
-    """Slide contenu — numéro en haut, texte centré, carte colorée."""
-    accent = palette["accent"]
+def _layout_content(draw, w, h, text, p, index, total):
+    accent = p["accent"]
 
-    # Numéro de point grand et stylisé
-    num_font = _load_font(90)
+    # Numéro en filigrane (couleur sombre)
+    num_font = _load_font(120)
     num_str = str(index)
     nb = draw.textbbox((0, 0), num_str, font=num_font)
     nw = nb[2] - nb[0]
-    draw.text((w // 2 - nw // 2, 30), num_str, font=num_font,
-              fill=accent + (40,) if len(accent) == 3 else accent)
+    # Couleur très atténuée pour le filigrane
+    fili_col = _blend(p["bg_bottom"], accent, 0.25)
+    draw.text((w // 2 - nw // 2, 10), num_str, font=num_font, fill=fili_col)
 
     # Ligne séparatrice
-    draw.line([(60, 140), (w - 60, 140)], fill=accent, width=2)
+    draw.line([(50, 148), (w - 50, 148)], fill=accent, width=3)
 
-    # Texte principal
-    font_size = 40 if len(text) < 60 else 32 if len(text) < 120 else 26
-    font = _load_font(font_size)
-    wrapped = textwrap.fill(text, width=int(22 * 32 / font_size))
+    # Texte
+    fs = 40 if len(text) < 60 else 32 if len(text) < 120 else 26
+    font = _load_font(fs)
+    wrapped = textwrap.fill(text, width=int(22 * 32 / fs))
     lines = wrapped.split("\n")
-    total_h = len(lines) * int(font_size * 1.4)
-    y = max(160, (h - total_h) // 2)
-    _text_block(draw, lines, font, w // 2, y, w, palette["text"], line_spacing=1.4)
+    th = len(lines) * int(fs * 1.4)
+    y = max(170, (h - th) // 2 + 20)
+    _text_centered(draw, lines, font, w // 2, y, p["text"], spacing=1.4)
 
-    _draw_progress(draw, w, h, (index + 1) / total, accent)
+    _draw_progress(draw, w, h, (index + 1) / total, accent, p["muted"])
 
 
-def _layout_stat(draw, img, w, h, text, palette, index, total):
-    """Slide statistique — chiffre en énorme, contexte en petit."""
-    accent = palette["accent"]
-    accent2 = palette["accent2"]
+def _layout_stat(draw, w, h, text, p, index, total):
+    accent, accent2 = p["accent"], p["accent2"]
+    _draw_corners(draw, w, h, accent)
 
-    _draw_geometric(draw, w, h, accent, accent2)
-
-    # Cherche un nombre dans le texte pour le mettre en valeur
-    import re
-    numbers = re.findall(r'\d+[%x€$k]?', text)
+    numbers = re.findall(r'\d+[\s]?[%xk€$M]?', text)
     if numbers:
-        big = numbers[0]
-        rest = text.replace(big, "").strip()
-        # Grand chiffre
-        big_font = _load_font(110)
+        big = numbers[0].strip()
+        rest = text[text.find(big) + len(big):].strip(" -–:,.")
+
+        # Grand chiffre coloré
+        big_font = _load_font(105)
         bb = draw.textbbox((0, 0), big, font=big_font)
         bw = bb[2] - bb[0]
-        by = h // 2 - 90
-        draw.text((w // 2 - bw // 2 + 2, by + 2), big, font=big_font, fill=(0, 0, 0))
+        by = h // 2 - 100
+        draw.text((w // 2 - bw // 2 + 2, by + 3), big, font=big_font, fill=_dim(p["text"], 0.1))
         draw.text((w // 2 - bw // 2, by), big, font=big_font, fill=accent)
-        # Contexte
+
+        # Ligne sous le chiffre
+        draw.rectangle([(w // 2 - 60, by + 115), (w // 2 + 60, by + 119)], fill=accent2)
+
+        # Texte contextuel
         if rest:
-            ctx_font = _load_font(28, bold=False)
-            wrapped = textwrap.fill(rest, width=20)
-            _text_block(draw, wrapped.split("\n"), ctx_font, w // 2, by + 130, w, palette["subtext"])
+            ctx_font = _load_font(28)
+            wrapped = textwrap.fill(rest, width=22)
+            _text_centered(draw, wrapped.split("\n"), ctx_font, w // 2, by + 135, p["subtext"])
     else:
-        _layout_content(draw, img, w, h, text, palette, index, total)
+        _layout_content(draw, w, h, text, p, index, total)
         return
 
-    _draw_progress(draw, w, h, (index + 1) / total, accent)
+    _draw_progress(draw, w, h, (index + 1) / total, accent, p["muted"])
 
 
-def _layout_cta(draw, img, w, h, text, palette, index, total):
-    """Slide call-to-action finale — fond accentué, bouton simulé."""
-    accent = palette["accent"]
-    accent2 = palette["accent2"]
+def _layout_cta(draw, w, h, text, p, index, total):
+    accent, accent2 = p["accent"], p["accent2"]
 
-    # Fond spécial pour la slide finale
-    for y in range(h):
-        t = y / h
-        r = int(accent[0] * 0.3 * (1 - t) + palette["bg_bottom"][0] * t)
-        g = int(accent[1] * 0.3 * (1 - t) + palette["bg_bottom"][1] * t)
-        b = int(accent[2] * 0.3 * (1 - t) + palette["bg_bottom"][2] * t)
-        draw.line([(0, y), (w, y)], fill=(r, g, b))
+    # Fond légèrement plus chaud (superpose accent en haut)
+    for y in range(h // 2):
+        t = y / (h // 2)
+        bg = _blend(_dim(accent, 0.25), p["bg_bottom"], t)
+        draw.line([(0, y), (w, y)], fill=bg)
 
-    _draw_geometric(draw, w, h, accent, accent2)
+    _draw_corners(draw, w, h, accent2)
 
-    # Badge "Action"
-    badge_font = _load_font(20)
-    badge = "→ ACTION ←"
+    # Badge "ACTION"
+    badge_font = _load_font(22)
+    badge = "→  ACTION  ←"
     bb = draw.textbbox((0, 0), badge, font=badge_font)
-    bw = bb[2] - bb[0]
-    bx = (w - bw - 30) // 2
-    draw.rounded_rectangle([(bx, h // 2 - 170), (bx + bw + 30, h // 2 - 135)],
-                            radius=12, fill=accent)
-    draw.text((bx + 15, h // 2 - 166), badge, font=badge_font, fill=(255, 255, 255))
+    bw, bh = bb[2] - bb[0], bb[3] - bb[1]
+    pad = 14
+    bx = (w - bw - pad * 2) // 2
+    badge_y = h // 2 - 165
+    # Rectangle arrondi manuel
+    rx, ry = bx, badge_y
+    rw, rh_box = bw + pad * 2, bh + pad
+    draw.rectangle([(rx + 6, ry), (rx + rw - 6, ry + rh_box)], fill=accent)
+    draw.rectangle([(rx, ry + 6), (rx + rw, ry + rh_box - 6)], fill=accent)
+    draw.text((rx + pad, ry + pad // 2), badge, font=badge_font, fill=(255, 255, 255))
 
     # Texte principal
-    font_size = 38 if len(text) < 60 else 30
-    font = _load_font(font_size)
-    wrapped = textwrap.fill(text, width=int(20 * 36 / font_size))
+    fs = 38 if len(text) < 60 else 30
+    font = _load_font(fs)
+    wrapped = textwrap.fill(text, width=int(20 * 36 / fs))
     lines = wrapped.split("\n")
-    total_h = len(lines) * int(font_size * 1.4)
-    y = (h - total_h) // 2 + 20
-    _text_block(draw, lines, font, w // 2, y, w, palette["text"], line_spacing=1.4)
+    th = len(lines) * int(fs * 1.4)
+    y = (h - th) // 2 + 30
+    _text_centered(draw, lines, font, w // 2, y, p["text"], spacing=1.4)
 
-    # Éléments décoratifs bas
-    draw.line([(60, h - 80), (w - 60, h - 80)], fill=accent, width=2)
-    sub_font = _load_font(18, bold=False)
-    draw.text((w // 2 - 40, h - 65), "Slide finale", font=sub_font, fill=palette["subtext"])
+    # Ligne de fin
+    draw.line([(60, h - 70), (w - 60, h - 70)], fill=accent, width=2)
+    fin_font = _load_font(18)
+    fin = "Agis maintenant ✓"
+    fb = draw.textbbox((0, 0), fin, font=fin_font)
+    draw.text((w // 2 - (fb[2] - fb[0]) // 2, h - 58), fin, font=fin_font, fill=p["subtext"])
 
-    _draw_progress(draw, w, h, 1.0, accent)
+    _draw_progress(draw, w, h, 1.0, accent, p["muted"])
 
 
-# ── Fonction principale ───────────────────────────────────────────────────────
+# ── API publique ──────────────────────────────────────────────────────────────
 
 def create_slide(text: str, slide_index: int, total_slides: int,
                  size: Tuple[int, int] = (480, 854), theme: str = "dark",
@@ -256,38 +273,35 @@ def create_slide(text: str, slide_index: int, total_slides: int,
     palette = THEMES.get(theme, THEMES["dark"])
     w, h = size
 
-    img = Image.new("RGBA", size, (0, 0, 0, 255))
-    draw = ImageDraw.Draw(img, "RGBA")
-    _gradient(draw, size, palette["bg_top"], palette["bg_bottom"])
+    img = Image.new("RGB", size)
+    _gradient(img, palette["bg_top"], palette["bg_bottom"])
+    draw = ImageDraw.Draw(img)
 
-    # Sélection automatique du layout
     if layout == "auto":
         if slide_index == 0:
-            actual_layout = "intro"
+            actual = "intro"
         elif slide_index == total_slides - 1:
-            actual_layout = "cta"
+            actual = "cta"
         else:
-            import re
-            has_number = bool(re.search(r'\d+[%x€$k]?', text))
-            actual_layout = "stat" if has_number else "content"
+            actual = "stat" if re.search(r'\d+', text) and len(text) < 80 else "content"
     else:
-        actual_layout = layout
+        actual = layout
 
-    if actual_layout == "intro":
-        _layout_intro(draw, img, w, h, text, palette, slide_index, total_slides)
-    elif actual_layout == "stat":
-        _layout_stat(draw, img, w, h, text, palette, slide_index, total_slides)
-    elif actual_layout == "cta":
-        _layout_cta(draw, img, w, h, text, palette, slide_index, total_slides)
+    if actual == "intro":
+        _layout_intro(draw, w, h, text, palette, slide_index, total_slides)
+    elif actual == "stat":
+        _layout_stat(draw, w, h, text, palette, slide_index, total_slides)
+    elif actual == "cta":
+        _layout_cta(draw, w, h, text, palette, slide_index, total_slides)
     else:
-        _layout_content(draw, img, w, h, text, palette, slide_index, total_slides)
+        _layout_content(draw, w, h, text, palette, slide_index, total_slides)
 
-    return img.convert("RGB")
+    return img
 
 
 def save_slide(text: str, path: str, index: int = 0, total: int = 1,
                theme: str = "dark", layout: str = "auto") -> str:
     img = create_slide(text, index, total, theme=theme, layout=layout)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    img.save(path, "PNG", optimize=False)
+    img.save(path, "PNG")
     return path
