@@ -22,6 +22,14 @@ SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
 AGENT_TRIGGERS = ("agent:", "mode complet:", "plein mode:", "utilise tes outils:", "passe en mode agent")
 
+_FINANCE_HINTS = ("bourse", "action ", "crypto", "bitcoin", "ethereum", "ticker", "rsi", "macd", "analyser aapl",
+                  "analyser tsla", "analyser nvda", "nasdaq", "cac40", "cac 40", "dow jones", "s&p", "trading",
+                  "investir", "portefeuille", "dividende", "cotation", "achat vente action")
+_VIDEO_HINTS   = ("fais une vidéo", "crée une vidéo", "génère une vidéo", "créer une vidéo", "slides sur",
+                  "diaporama", "présentation vidéo")
+_CODE_HINTS    = ("crée un projet", "génère un projet", "génère une application", "crée une application",
+                  "full-stack", "fullstack", "projet complet", "application web complète", "zip téléchargeable")
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -55,6 +63,32 @@ def _add(history, user_msg, bot_msg):
         return history + [{"role": "user", "content": user_msg},
                           {"role": "assistant", "content": bot_msg}]
     return history + [(user_msg, bot_msg)]
+
+
+def _normalize_history(h: list) -> list:
+    """Convertit l'historique sauvegardé au format attendu par le Chatbot courant."""
+    if not h:
+        return []
+    if _CHATBOT_SUPPORTS_TYPE:
+        out = []
+        for m in h:
+            if isinstance(m, dict) and "role" in m:
+                out.append({"role": m["role"], "content": str(m.get("content", ""))})
+            elif isinstance(m, (list, tuple)) and len(m) == 2:
+                if m[0]: out.append({"role": "user",      "content": str(m[0])})
+                if m[1]: out.append({"role": "assistant",  "content": str(m[1])})
+        return out
+    else:
+        out, buf = [], {}
+        for m in h:
+            if isinstance(m, (list, tuple)) and len(m) == 2:
+                out.append([m[0], m[1]])
+            elif isinstance(m, dict) and m.get("role") == "user":
+                buf = {"u": m.get("content", "")}
+            elif isinstance(m, dict) and m.get("role") == "assistant":
+                out.append([buf.get("u", ""), m.get("content", "")])
+                buf = {}
+        return out
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -94,10 +128,14 @@ def _list_sessions():
 # ═════════════════════════════════════════════════════════════════════════════
 
 _FAST_SYS = (
-    "Tu es MasterAgent, un assistant IA personnel intelligent, chaleureux et direct. "
-    "Tu réponds en français de façon concise et naturelle. "
-    "Pour des tâches complexes (code, fichiers, vidéo, recherche web), "
-    "dis à l'utilisateur d'activer le Mode Agent 🔥 ou de préfixer par 'Agent:'."
+    "Tu es MasterAgent-Gros v3, un super-assistant IA personnel ultra-intelligent et polyvalent. "
+    "Tu réponds en français de façon directe, précise et immédiatement utile. "
+    "Tu es expert en : code full-stack, finance quantitative, marketing digital, "
+    "data science, stratégie business, création de contenu et bien plus. "
+    "Tu donnes des réponses structurées avec exemples concrets quand c'est utile. "
+    "Pour des tâches nécessitant des outils (données réelles, génération de fichiers, web), "
+    "active le Mode Agent 🔥 ou préfixe par 'Agent:'. "
+    "Tu ne dis jamais 'je ne sais pas' sans proposer une alternative."
 )
 
 def fast_chat(message: str, history: list) -> str:
@@ -119,12 +157,18 @@ def full_agent(message: str, history: list, sid: str) -> str:
     from agent.core import run_agent
     from plugins import get_loader
     cfg = {
-        "id": sid, "name": "MasterAgent-Gros",
+        "id": sid, "name": "MasterAgent-Gros v3",
         "system_prompt": (
-            "Tu es MasterAgent-Gros, un agent IA ultra-puissant. "
-            "Tu utilises tous les outils disponibles sans hésitation. "
-            "Tu crées du code complet, des fichiers, des projets entiers. "
-            "Tu réponds en français avec des réponses détaillées et utiles."
+            "Tu es MasterAgent-Gros v3, un agent IA surpuissant et auto-évolutif. "
+            "Tu maîtrises tous les domaines : code full-stack, finance quantitative, "
+            "marketing digital, création de contenu, data science, stratégie business. "
+            "Tu utilises TOUS tes outils sans hésitation pour donner des réponses complètes et actionnables. "
+            "Tu génères du VRAI code fonctionnel, de vraies analyses avec données réelles, "
+            "de vrais projets téléchargeables en ZIP. "
+            "Tu t'améliores à chaque interaction grâce à ta mémoire et tes leçons apprises. "
+            "Tu réponds en français avec des réponses structurées, détaillées et immédiatement utiles. "
+            "Tu ne dis jamais 'je ne peux pas' — tu trouves toujours une solution créative. "
+            "Si tu génères du code, il est COMPLET et FONCTIONNEL, pas un squelette."
         ),
         "tools": list(get_loader().list_all().keys()),
         "model": config.LLM_MODEL,
@@ -157,7 +201,18 @@ def send(message: str, history: list, mode: str, sid: str):
     if not message.strip():
         return history, history, ""
     use_agent, clean = _route(message, mode)
-    answer = full_agent(clean, history, sid) if use_agent else fast_chat(clean, history)
+    if use_agent:
+        answer = full_agent(clean, history, sid)
+    else:
+        answer = fast_chat(clean, history)
+        # Smart intent hints — guide l'utilisateur vers le bon onglet
+        low = clean.lower()
+        if any(k in low for k in _FINANCE_HINTS):
+            answer += "\n\n💡 *Pour une analyse complète avec RSI/MACD/Bollinger → onglet **💹 Finance***"
+        elif any(k in low for k in _VIDEO_HINTS):
+            answer += "\n\n💡 *Pour générer une vraie vidéo avec photos et voix → onglet **🎬 Vidéo***"
+        elif any(k in low for k in _CODE_HINTS):
+            answer += "\n\n💡 *Pour un projet complet téléchargeable en ZIP → onglet **💻 Code & Projets → Projet Complet***"
     new_h = _add(history, message, answer)
     existing = _load(sid)
     name = existing.get("name", "Nouvelle") if existing.get("history") else message[:50]
@@ -177,7 +232,7 @@ def load_sess(choice: str):
     if choice and " | " in choice:
         sid = choice.split(" | ")[-1].strip()
         d = _load(sid)
-        h = d.get("history", [])
+        h = _normalize_history(d.get("history", []))
         return h, h, sid
     return [], [], _sid()
 

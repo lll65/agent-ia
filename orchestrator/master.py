@@ -70,12 +70,14 @@ class MasterAgent:
     async def execute(self, goal: str, session_id: str = "master") -> dict:
         logger.info(f"[Master] Goal: {goal[:80]}")
 
+        auto_created = []
         # Auto-crée les agents/plugins manquants pour cette requête
         try:
             from orchestrator.agent_creator import ensure_agents_for_request
             creation = await ensure_agents_for_request(goal)
-            if creation.get("created"):
-                logger.info(f"[Master] Auto-créé: {creation['created']}")
+            auto_created = creation.get("created", [])
+            if auto_created:
+                logger.info(f"[Master] Auto-créé: {auto_created}")
         except Exception as e:
             logger.warning(f"[Master] agent_creator: {e}")
 
@@ -111,7 +113,6 @@ class MasterAgent:
         final = await self._synthesize(goal, synthesis_instruction, results)
 
         # Auto-amélioration : évalue et apprend en arrière-plan
-        auto_created = creation.get("created", []) if "creation" in dir() else []
         try:
             from agent.self_improve import evaluate_and_learn
             asyncio.ensure_future(evaluate_and_learn(goal, final, domain="orchestration"))
@@ -202,8 +203,16 @@ class MasterAgent:
     def _default_config(self) -> dict:
         return {
             "id": "default",
-            "name": "MasterAgent-Gros",
-            "system_prompt": "Tu es un assistant IA polyvalent et puissant. Tu réponds en français.",
+            "name": "MasterAgent-Gros v3",
+            "system_prompt": (
+                "Tu es MasterAgent-Gros v3, un agent IA surpuissant et auto-évolutif. "
+                "Tu maîtrises tous les domaines : code full-stack, finance quantitative, "
+                "marketing digital, création de contenu, data science, stratégie business. "
+                "Tu utilises TOUS tes outils sans hésitation. "
+                "Tu génères du VRAI code fonctionnel, de vraies analyses, de vrais projets. "
+                "Tu ne dis jamais 'je ne peux pas' — tu trouves toujours une solution. "
+                "Tu réponds en français avec des réponses structurées et immédiatement utiles."
+            ),
             "tools": list(get_loader().list_all().keys()),
             "model": config.LLM_MODEL,
         }
