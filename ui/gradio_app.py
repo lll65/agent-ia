@@ -189,67 +189,128 @@ def refresh_sess():
 # VIDÉO
 # ═════════════════════════════════════════════════════════════════════════════
 
-def make_video(topic, style, lang, n_slides, theme, add_audio, progress=gr.Progress()):
-    import httpx
+def make_video(topic, style, lang, n_slides, theme, add_audio, quality,
+               progress=gr.Progress()):
+    """
+    quality="rapide" → slides simples (PIL seul, immédiat)
+    quality="pro"    → pipeline multi-agents (photos réelles, voix, FFmpeg)
+    """
     from pathlib import Path
-    from video.image_gen import save_slide
 
     if not topic.strip():
-        return [], None, "⚠️ Saisis un sujet."
+        return [], None, None, "⚠️ Saisis un sujet."
 
-    # 1. Génère le script
-    progress(0.1, desc="✍️ Génération du script...")
+    if quality == "pro":
+        return _make_video_pro(topic, style, lang, int(n_slides), theme, add_audio, progress)
+    else:
+        return _make_video_fast(topic, style, lang, int(n_slides), theme, add_audio, progress)
+
+
+def _make_video_fast(topic, style, lang, n_slides, theme, add_audio, progress):
+    """Mode rapide — slides PIL sans téléchargement."""
+    from llm.client import chat
+    from video.image_gen import save_slide
+    from pathlib import Path
+
+    progress(0.05, desc="✍️ Génération du script...")
     try:
-        async def _script():
-            async with httpx.AsyncClient(timeout=60) as c:
-                r = await c.post(f"http://localhost:{config.PORT}/video/script",
-                                 json={"topic": topic, "style": style, "lang": lang,
-                                       "slides_count": int(n_slides)})
-                return r.json()
-        data = _run(_script())
-        slides = data.get("slides", [topic])
-    except Exception as e:
-        return [], None, f"❌ Erreur script: {e}"
+        raw = chat([
+            {"role": "system", "content": "Tu crées des scripts vidéo. Réponds UNIQUEMENT en JSON."},
+            {"role": "user", "content": (
+                f'Crée {n_slides} slides pour une vidéo "{style}" sur "{topic}" en {lang}. '
+                f'JSON: {{"slides": ["texte slide 1", "texte slide 2", ...]}}'
+            )},
+        ], temperature=0.8)
+        import json, re
+        m = re.search(r'\{[\s\S]+\}', raw)
+        slides = json.loads(m.group()).get("slides", [topic]) if m else [topic]
+    except Exception:
+        slides = [topic] + [f"Point {i+1}" for i in range(n_slides - 1)]
 
-    # 2. Génère les images
-    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in topic)[:35]
+    safe = re.sub(r"[^\w-]", "_", topic.strip()[:35])
     tmp = Path("output/tmp_preview") / safe
     tmp.mkdir(parents=True, exist_ok=True)
     paths = []
-    for i, txt in enumerate(slides):
+    for i, txt in enumerate(slides[:n_slides]):
         p = str(tmp / f"slide_{i:03d}.png")
         save_slide(txt, p, index=i, total=len(slides), theme=theme)
         paths.append(p)
-        progress(0.1 + 0.5 * (i+1)/len(slides), desc=f"🖼️ Slide {i+1}/{len(slides)}")
+        progress(0.1 + 0.6 * (i + 1) / len(slides), desc=f"🖼️ Slide {i+1}/{len(slides)}")
 
-    # 3. GIF animé
-    progress(0.7, desc="🎞️ Création du GIF...")
-    gif_path = None
+    gif_path = _make_gif(paths, safe)
+    progress(1.0, desc="✅ Terminé!")
+    status = f"✅ **{len(paths)} slides** — mode Rapide · sujet : _{topic}_\n\nPasse en mode **Pro** pour des photos réelles et la voix."
+    return paths, gif_path, None, status
+
+
+def _make_video_pro(topic, style, lang, n_slides, theme, add_audio, progress):
+    """Mode Pro — pipeline multi-agents complet."""
+    import re
+
+    def _on_prog(val, desc):
+        progress(val, desc=desc)
+
+    try:
+        from video.pipeline import create_pro_video
+        result = _run(create_pro_video(
+            topic=topic, style=style, lang=lang,
+            n_slides=n_slides, theme=theme,
+            add_audio=add_audio,
+            on_progress=_on_prog,
+        ))
+    except Exception as e:
+        return [], None, None, f"❌ Erreur pipeline Pro: {e}"
+
+    slide_paths = result.get("slide_paths", [])
+    video_path = result.get("video_path")
+    script = result.get("script", {})
+    title = result.get("title", topic)
+
+    # GIF prévisualisation
+    safe = re.sub(r"[^\w-]", "_", topic.strip()[:35])
+    gif = _make_gif(slide_paths, safe + "_pro")
+
+    # Résumé du script
+    script_txt = f"# {title}\n\n"
+    for i, s in enumerate(script.get("slides", []), 1):
+        script_txt += f"**Slide {i} ({s.get('type','')}):** {s.get('title','')}\n"
+        if s.get("subtitle"):
+            script_txt += f"  ↳ {s['subtitle']}\n"
+        script_txt += f"  🎤 _{s.get('narration','')}_\n\n"
+
+    video_out = video_path if video_path and Path(video_path).exists() else None
+
+    status = f"🏆 **Vidéo Pro terminée!**\n\n**{title}**\n\n{len(slide_paths)} slides · "
+    if video_out:
+        ext = Path(video_out).suffix.upper().lstrip(".")
+        status += f"Fichier {ext} prêt au téléchargement."
+    else:
+        status += "GIF disponible (FFmpeg absent)."
+
+    return slide_paths, gif, video_out, status
+
+
+def _make_gif(paths: list, name: str) -> str | None:
+    from pathlib import Path
+    if not paths:
+        return None
     try:
         from PIL import Image as PILImage
-        frames = [PILImage.open(p) for p in paths]
-        gif_path = f"output/videos/{safe}.gif"
+        frames = []
+        for p in paths:
+            try:
+                frames.append(PILImage.open(p).convert("RGB"))
+            except Exception:
+                pass
+        if not frames:
+            return None
+        gif_path = f"output/videos/{name}.gif"
         Path("output/videos").mkdir(parents=True, exist_ok=True)
         frames[0].save(gif_path, save_all=True, append_images=frames[1:],
-                       duration=2500, loop=0, optimize=True)
-    except Exception as e:
-        pass
-
-    # 4. MP4 en tâche de fond si FFmpeg dispo
-    if add_audio:
-        try:
-            import threading
-            def _mp4():
-                from video.creator import create_video
-                create_video(slides, safe, lang=lang, add_audio=True, theme=theme)
-            threading.Thread(target=_mp4, daemon=True).start()
-        except: pass
-
-    progress(1.0, desc="✅ Terminé!")
-    status = f"✅ **{len(slides)} slides** générées — sujet : _{topic}_"
-    if gif_path:
-        status += "\n\n👆 Onglet **GIF** pour l'aperçu animé · clic droit → Enregistrer"
-    return paths, gif_path, status
+                       duration=2800, loop=0, optimize=True)
+        return gif_path
+    except Exception:
+        return None
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -443,32 +504,41 @@ def build_ui() -> gr.Blocks:
 
             # ══ VIDÉO ═════════════════════════════════════════════════════════
             with gr.TabItem("🎬 Vidéo"):
+                gr.Markdown(
+                    "**⚡ Rapide** — slides PIL immédiates  |  "
+                    "**🏆 Pro** — photos réelles + voix + montage FFmpeg (5-10 min)"
+                )
                 with gr.Row():
                     with gr.Column(scale=1):
-                        v_topic  = gr.Textbox(label="💡 Sujet", lines=2,
-                                              placeholder="Ex: 5 erreurs qui font rater tes ventes Vinted")
-                        v_style  = gr.Dropdown(["éducatif","motivation","humour","tutoriel","choc"],
-                                               value="éducatif", label="🎭 Style")
+                        v_topic   = gr.Textbox(label="💡 Sujet", lines=2,
+                                               placeholder="Ex: 5 erreurs qui font rater tes ventes Vinted")
+                        v_quality = gr.Radio(["rapide", "pro"], value="rapide",
+                                             label="🎚️ Qualité",
+                                             info="Pro = agents spécialisés + vraies photos")
+                        v_style   = gr.Dropdown(["éducatif","motivation","humour","tutoriel","choc","viral"],
+                                                value="éducatif", label="🎭 Style")
                         with gr.Row():
                             v_lang  = gr.Dropdown(["fr","en","es"], value="fr", label="🌍 Langue")
                             v_theme = gr.Dropdown(["dark","fire","ocean","gold"], value="dark", label="🎨 Thème")
-                        v_slides = gr.Slider(3, 10, value=5, step=1, label="📊 Slides")
-                        v_audio  = gr.Checkbox(value=False, label="🔊 Voix TTS (plus lent)")
+                        v_slides = gr.Slider(3, 10, value=6, step=1, label="📊 Slides")
+                        v_audio  = gr.Checkbox(value=False, label="🔊 Voix TTS")
                         v_btn    = gr.Button("🎬 Générer", variant="primary", size="lg")
                         v_status = gr.Markdown("")
 
                     with gr.Column(scale=2):
                         with gr.Tabs():
                             with gr.TabItem("🖼️ Slides"):
-                                v_gallery = gr.Gallery(label="", columns=3, height=400)
+                                v_gallery = gr.Gallery(label="", columns=3, height=420)
                             with gr.TabItem("🎞️ GIF (aperçu)"):
-                                v_gif = gr.Image(label="Aperçu animé — clic droit pour télécharger", height=400)
+                                v_gif = gr.Image(label="Aperçu animé", height=420)
+                            with gr.TabItem("🎥 Télécharger MP4"):
+                                v_video = gr.File(label="Vidéo finale (MP4 ou GIF)")
                             with gr.TabItem("📝 Script"):
-                                v_script = gr.Textbox(label="", lines=12)
+                                v_script = gr.Markdown("")
 
                 v_btn.click(make_video,
-                            [v_topic, v_style, v_lang, v_slides, v_theme, v_audio],
-                            [v_gallery, v_gif, v_status])
+                            [v_topic, v_style, v_lang, v_slides, v_theme, v_audio, v_quality],
+                            [v_gallery, v_gif, v_video, v_status])
 
             # ══ CODE & PROJETS ════════════════════════════════════════════════
             with gr.TabItem("💻 Code & Projets"):
