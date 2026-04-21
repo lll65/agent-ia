@@ -64,9 +64,12 @@ def safe_tool_call(plugin_loader, tool_name: str, params: dict, fallback: str = 
     for attempt in range(1, 4):
         try:
             result = plugin_loader.run(tool_name, params)
-            if not result.startswith("[Plugin") or "Erreur" not in result:
+            # Retente seulement si c'est une vraie erreur plugin (commence par "[Plugin" ET contient "Erreur")
+            is_plugin_error = result.startswith("[Plugin") and "Erreur" in result
+            if not is_plugin_error:
                 return result
             last_error = result
+            logger.warning(f"Tool '{tool_name}' tentative {attempt} → erreur plugin: {result[:80]}")
         except Exception as e:
             last_error = str(e)
             logger.warning(f"Tool '{tool_name}' tentative {attempt} échouée: {e}")

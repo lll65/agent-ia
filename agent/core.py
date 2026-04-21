@@ -50,7 +50,7 @@ def build_system(agent_config: dict, plugins: dict) -> str:
 
 async def llm_call(messages: list, model: str = None) -> str:
     from llm.client import chat
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, lambda: chat(messages, temperature=0.7))
 
 

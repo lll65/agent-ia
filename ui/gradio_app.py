@@ -4,7 +4,10 @@ MasterAgent-Gros — Interface Web
 🔥 Mode Agent  : ReAct + outils + mémoire + sous-agents
 """
 import asyncio
+import concurrent.futures
 import json
+import re
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -36,15 +39,15 @@ _CODE_HINTS    = ("crée un projet", "génère un projet", "génère une applica
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _run(coro):
+    """Lance une coroutine depuis un contexte synchrone, compatible Gradio/FastAPI."""
     try:
-        return asyncio.run(coro)
+        asyncio.get_running_loop()
+        # Il y a déjà une boucle active (FastAPI/Gradio) → thread isolé avec sa propre boucle
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result(timeout=300)
     except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
+        # Pas de boucle active → asyncio.run() direct
+        return asyncio.run(coro)
 
 
 def _to_ollama(history: list) -> list:
@@ -179,9 +182,18 @@ def full_agent(message: str, history: list, sid: str) -> str:
         used = {s["action"] for s in result.get("steps", []) if s.get("action")}
         if used:
             answer += f"\n\n*🔧 Outils : {', '.join(sorted(used))}*"
+        # Auto-amélioration en arrière-plan (thread indépendant)
+        def _bg(t, a):
+            try:
+                from agent.self_improve import evaluate_and_learn
+                asyncio.run(evaluate_and_learn(t, a, domain="chat"))
+            except Exception:
+                pass
+        threading.Thread(target=_bg, args=(message, answer), daemon=True).start()
         return answer
     except Exception as e:
-        return f"❌ Erreur agent: {e}"
+        import traceback
+        return f"❌ Erreur agent: {e}\n\n```\n{traceback.format_exc()[:800]}\n```"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -276,7 +288,6 @@ def _make_video_fast(topic, style, lang, n_slides, theme, add_audio, progress):
                 f'JSON: {{"slides": ["texte slide 1", "texte slide 2", ...]}}'
             )},
         ], temperature=0.8)
-        import json, re
         m = re.search(r'\{[\s\S]+\}', raw)
         slides = json.loads(m.group()).get("slides", [topic]) if m else [topic]
     except Exception:

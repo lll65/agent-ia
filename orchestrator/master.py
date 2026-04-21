@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 from config import config
 from orchestrator.factory import generate_agent_config
 from orchestrator.registry import AgentRegistry
@@ -112,12 +113,15 @@ class MasterAgent:
         results = await self._execute_tasks(agent_configs, session_id)
         final = await self._synthesize(goal, synthesis_instruction, results)
 
-        # Auto-amélioration : évalue et apprend en arrière-plan
-        try:
-            from agent.self_improve import evaluate_and_learn
-            asyncio.ensure_future(evaluate_and_learn(goal, final, domain="orchestration"))
-        except Exception:
-            pass
+        # Auto-amélioration : évalue en arrière-plan dans un thread indépendant
+        # (ensure_future ne survit pas à la fermeture de la boucle asyncio.run())
+        def _bg_improve(t, r):
+            try:
+                from agent.self_improve import evaluate_and_learn
+                asyncio.run(evaluate_and_learn(t, r, domain="orchestration"))
+            except Exception as e:
+                logger.warning(f"[SelfImprove] bg thread: {e}")
+        threading.Thread(target=_bg_improve, args=(goal, final), daemon=True).start()
 
         return {
             "goal": goal,

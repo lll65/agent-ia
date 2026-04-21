@@ -33,8 +33,9 @@ async def evaluate_and_learn(task: str, result: str, domain: str = "general") ->
     Évalue la qualité d'un résultat et en tire une leçon.
     Appeler après chaque réponse importante de l'agent.
     """
-    from llm.client import chat
     import asyncio
+    import re
+    from llm.client import chat
 
     EVAL_PROMPT = f"""Tu évalues la qualité d'une réponse d'agent IA.
 
@@ -54,7 +55,7 @@ Réponds en JSON:
 Score: 1-10 (10 = parfait, 1 = inutile). Sois honnête et critique."""
 
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         raw = await loop.run_in_executor(None, lambda: chat(
             [
                 {"role": "system", "content": "Tu évalues objectivement des réponses IA. JSON uniquement."},
@@ -65,6 +66,7 @@ Score: 1-10 (10 = parfait, 1 = inutile). Sois honnête et critique."""
         import re
         m = re.search(r"\{[\s\S]+\}", raw)
         if not m:
+            logger.warning("[SelfImprove] pas de JSON dans la réponse LLM")
             return {}
         evaluation = json.loads(m.group())
     except Exception as e:
