@@ -95,20 +95,21 @@ def _gen_bg(w: int, h: int, accent: tuple) -> Image.Image:
 
 
 def _overlay(img: Image.Image, accent: tuple) -> Image.Image:
-    """Assombrit + vignette pour lisibilité du texte."""
-    img = ImageEnhance.Brightness(img).enhance(0.40)
+    """Améliore lisibilité sans noircir l'image."""
+    img = ImageEnhance.Brightness(img).enhance(0.90)
     # Légère teinte accent
-    tint = Image.new("RGB", img.size, tuple(min(255, int(c * 0.18)) for c in accent))
-    img = Image.blend(img, tint, 0.35)
-    # Vignette
+    tint = Image.new("RGB", img.size, tuple(min(255, int(c * 0.22)) for c in accent))
+    img = Image.blend(img, tint, 0.22)
+    # Dégradé vertical doux (haut/bas un peu plus sombres, centre lisible)
     w, h = img.size
-    mask = Image.new("L", (w, h), 0)
-    md = ImageDraw.Draw(mask)
-    pad = min(w, h) // 3
-    md.ellipse([(pad, pad * 0.7), (w - pad, h - pad * 0.7)], fill=200)
-    mask = mask.filter(ImageFilter.GaussianBlur(min(w, h) // 3))
+    veil = Image.new("L", (w, h), 0)
+    vd = ImageDraw.Draw(veil)
+    for y in range(h):
+        t = abs((y / max(1, h - 1)) - 0.5) * 2.0  # 0 centre, 1 bords verticaux
+        alpha = int(12 + 70 * (t ** 1.8))          # max ~82 aux bords
+        vd.line([(0, y), (w, y)], fill=alpha)
     black = Image.new("RGB", (w, h), (0, 0, 0))
-    img = Image.composite(img, black, mask)
+    img = Image.composite(black, img, veil)  # assombrit légèrement haut/bas, garde le centre clair
     return img
 
 

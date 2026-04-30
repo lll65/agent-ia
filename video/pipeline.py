@@ -116,6 +116,46 @@ Règles: mots-clés EN ANGLAIS, 3-4 mots, décrivent une scène photographique p
 Ex: "person holding money", "laptop screen coding", "crowd cheering stadium" """
 
 
+def _fallback_script(topic: str, n_slides: int, ad_brief: dict | None = None) -> dict:
+    """Script de secours propre (pas de 'Point 1') quand le LLM échoue."""
+    base = (ad_brief or {}).get("title") or topic
+    bullets = (ad_brief or {}).get("bullets") or []
+    desc = (ad_brief or {}).get("description", "")
+    core_points = bullets[: max(1, n_slides - 2)]
+    while len(core_points) < max(1, n_slides - 2):
+        core_points.append("Résultat concret, rapide et mesurable")
+
+    slides = [{
+        "type": "intro",
+        "title": f"Découvre {base[:30]}",
+        "subtitle": "La solution qui te fait gagner du temps",
+        "narration": f"Aujourd'hui, je te montre pourquoi {base} peut vraiment changer tes résultats.",
+        "bg_keyword": "happy customer startup office",
+        "icon": "🚀",
+        "number": None,
+    }]
+    for p in core_points[: n_slides - 2]:
+        slides.append({
+            "type": "content",
+            "title": p[:60],
+            "subtitle": desc[:90] if desc else "Simple, concret, orienté résultat",
+            "narration": f"Point clé: {p}. Voilà ce que ça change concrètement pour toi.",
+            "bg_keyword": "product demo modern lifestyle",
+            "icon": "✅",
+            "number": None,
+        })
+    slides.append({
+        "type": "cta",
+        "title": "Teste maintenant",
+        "subtitle": "Passe à l'action aujourd'hui",
+        "narration": f"Clique et teste {base}. Tu verras la différence dès les premiers jours.",
+        "bg_keyword": "person clicking phone app",
+        "icon": "🔥",
+        "number": None,
+    })
+    return {"title": f"{base} — vidéo pub", "slides": slides[:n_slides]}
+
+
 def _extract_json(text: str) -> dict | None:
     for pat in [r"```json\s*([\s\S]+?)\s*```", r"```\s*([\s\S]+?)\s*```"]:
         m = re.search(pat, text)
@@ -141,6 +181,16 @@ async def _script_agent(topic: str, style: str, lang: str, n_slides: int,
     if on_progress:
         on_progress(0.08, "🖊️ ScriptAgent — rédaction du script...")
     loop = asyncio.get_event_loop()
+    brief_block = ""
+    if ad_brief:
+        bullets = "\n".join(f"- {b}" for b in ad_brief.get("bullets", []) if b)
+        brief_block = (
+            "\n\nCONTEXTE LANDING PAGE (PUB):\n"
+            f"Titre: {ad_brief.get('title', '')}\n"
+            f"Description: {ad_brief.get('description', '')}\n"
+            f"Points clés:\n{bullets}\n"
+            "Objectif: script ultra-conversion (hook, douleur, bénéfice, preuve, CTA concret)."
+        )
     try:
         raw = await loop.run_in_executor(_EXECUTOR, lambda: chat(
             [
@@ -472,14 +522,7 @@ async def create_pro_video(
     # Agent 1 — Script
     script = await _script_agent(prompt_topic, style, lang, n_slides, on_progress, ad_brief=ad_brief)
     if not script:
-        script = {
-            "title": topic,
-            "slides": [{"type": "intro" if i == 0 else "cta" if i == n_slides - 1 else "content",
-                        "title": topic if i == 0 else f"Point {i}",
-                        "subtitle": None, "narration": topic,
-                        "bg_keyword": "abstract background", "icon": "🎬", "number": None}
-                       for i in range(n_slides)],
-        }
+        script = _fallback_script(prompt_topic, n_slides, ad_brief=ad_brief)
 
     # Agent 2 — Art Director
     keywords = await _art_director_agent(script, on_progress)
