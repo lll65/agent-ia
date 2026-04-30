@@ -565,6 +565,23 @@ async def create_pro_video(
     if on_progress:
         on_progress(1.0, "🏆 Vidéo pro terminée!")
 
+    # Auto-amélioration: apprend des résultats vidéo produits
+    try:
+        from agent.self_improve import evaluate_and_learn
+        summary = {
+            "title": script.get("title", topic),
+            "slides": len(script.get("slides", [])),
+            "video_ready": bool(video_path and Path(video_path).exists()),
+            "used_url_brief": bool(ad_brief),
+        }
+        await evaluate_and_learn(
+            task=f"Créer une vidéo virale sur: {topic}",
+            result=json.dumps(summary, ensure_ascii=False),
+            domain="video",
+        )
+    except Exception:
+        pass
+
     return {
         "video_path": video_path,
         "slide_paths": persisted_slide_paths or slide_paths,
