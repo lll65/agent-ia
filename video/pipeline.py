@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import shutil
+import textwrap
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -21,6 +22,56 @@ from config import config
 logger = logging.getLogger(__name__)
 
 _EXECUTOR = ThreadPoolExecutor(max_workers=4)
+
+
+def _safe_subtitle(text: str, max_len: int = 72) -> str:
+    raw = (text or "").strip().replace("\n", " ")
+    if not raw:
+        return ""
+    clipped = textwrap.shorten(raw, width=max_len, placeholder="…")
+    return clipped.replace(":", r"\:").replace("'", r"\'")
+
+
+def _landing_page_brief(url: str) -> dict:
+    """
+    Extrait un mini brief marketing depuis une URL produit.
+    Retourne: {title, description, bullets}
+    """
+    import requests
+    try:
+        r = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return {}
+        html = r.text[:220000]
+    except Exception:
+        return {}
+
+    def _meta(prop: str) -> str:
+        m = re.search(rf'<meta[^>]+(?:property|name)=["\']{prop}["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+        return m.group(1).strip() if m else ""
+
+    title_m = re.search(r"<title>(.*?)</title>", html, re.I | re.S)
+    title = (title_m.group(1).strip() if title_m else "")[:120]
+    desc = (_meta("og:description") or _meta("description"))[:300]
+    h1 = re.findall(r"<h1[^>]*>(.*?)</h1>", html, re.I | re.S)
+    h2 = re.findall(r"<h2[^>]*>(.*?)</h2>", html, re.I | re.S)
+
+    def _clean(txt: str) -> str:
+        txt = re.sub(r"<[^>]+>", " ", txt)
+        txt = re.sub(r"\s+", " ", txt).strip()
+        return txt
+
+    bullets = []
+    for x in h1[:2] + h2[:4]:
+        c = _clean(x)
+        if 8 <= len(c) <= 90:
+            bullets.append(c)
+
+    return {
+        "title": _clean(title),
+        "description": _clean(desc),
+        "bullets": bullets[:5],
+    }
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
@@ -65,6 +116,46 @@ Règles: mots-clés EN ANGLAIS, 3-4 mots, décrivent une scène photographique p
 Ex: "person holding money", "laptop screen coding", "crowd cheering stadium" """
 
 
+def _fallback_script(topic: str, n_slides: int, ad_brief: dict | None = None) -> dict:
+    """Script de secours propre (pas de 'Point 1') quand le LLM échoue."""
+    base = (ad_brief or {}).get("title") or topic
+    bullets = (ad_brief or {}).get("bullets") or []
+    desc = (ad_brief or {}).get("description", "")
+    core_points = bullets[: max(1, n_slides - 2)]
+    while len(core_points) < max(1, n_slides - 2):
+        core_points.append("Résultat concret, rapide et mesurable")
+
+    slides = [{
+        "type": "intro",
+        "title": f"Découvre {base[:30]}",
+        "subtitle": "La solution qui te fait gagner du temps",
+        "narration": f"Aujourd'hui, je te montre pourquoi {base} peut vraiment changer tes résultats.",
+        "bg_keyword": "happy customer startup office",
+        "icon": "🚀",
+        "number": None,
+    }]
+    for p in core_points[: n_slides - 2]:
+        slides.append({
+            "type": "content",
+            "title": p[:60],
+            "subtitle": desc[:90] if desc else "Simple, concret, orienté résultat",
+            "narration": f"Point clé: {p}. Voilà ce que ça change concrètement pour toi.",
+            "bg_keyword": "product demo modern lifestyle",
+            "icon": "✅",
+            "number": None,
+        })
+    slides.append({
+        "type": "cta",
+        "title": "Teste maintenant",
+        "subtitle": "Passe à l'action aujourd'hui",
+        "narration": f"Clique et teste {base}. Tu verras la différence dès les premiers jours.",
+        "bg_keyword": "person clicking phone app",
+        "icon": "🔥",
+        "number": None,
+    })
+    return {"title": f"{base} — vidéo pub", "slides": slides[:n_slides]}
+
+
 def _extract_json(text: str) -> dict | None:
     for pat in [r"```json\s*([\s\S]+?)\s*```", r"```\s*([\s\S]+?)\s*```"]:
         m = re.search(pat, text)
@@ -85,17 +176,27 @@ def _extract_json(text: str) -> dict | None:
 # ── Agents ────────────────────────────────────────────────────────────────────
 
 async def _script_agent(topic: str, style: str, lang: str, n_slides: int,
-                        on_progress=None) -> dict | None:
+                        on_progress=None, ad_brief: dict | None = None) -> dict | None:
     from llm.client import chat
     if on_progress:
         on_progress(0.08, "🖊️ ScriptAgent — rédaction du script...")
     loop = asyncio.get_event_loop()
+    brief_block = ""
+    if ad_brief:
+        bullets = "\n".join(f"- {b}" for b in ad_brief.get("bullets", []) if b)
+        brief_block = (
+            "\n\nCONTEXTE LANDING PAGE (PUB):\n"
+            f"Titre: {ad_brief.get('title', '')}\n"
+            f"Description: {ad_brief.get('description', '')}\n"
+            f"Points clés:\n{bullets}\n"
+            "Objectif: script ultra-conversion (hook, douleur, bénéfice, preuve, CTA concret)."
+        )
     try:
         raw = await loop.run_in_executor(_EXECUTOR, lambda: chat(
             [
                 {"role": "system", "content": "Tu es un expert en contenu viral. Réponds UNIQUEMENT en JSON valide, sans aucun texte avant ou après."},
                 {"role": "user", "content": SCRIPT_PROMPT.format(
-                    topic=topic, style=style, lang=lang, n_slides=n_slides)},
+                    topic=topic, style=style, lang=lang, n_slides=n_slides) + brief_block},
             ],
             temperature=0.8,
         ))
@@ -232,11 +333,26 @@ async def _editor_agent(slide_paths: list, audio_paths: list, script: dict,
         return _gif_export(slide_paths, output_path, audio_paths)
 
     segments = []
+    slides = script.get("slides", [])
     for i, img_path in enumerate(slide_paths):
         seg = str(tmp_dir / f"seg_{i:03d}.mp4")
         aud = audio_paths[i] if i < len(audio_paths) else None
         dur = _audio_duration(aud) if aud and Path(aud).exists() else 0
         dur = max(dur + 0.5, 4.5)
+        slide = slides[i] if i < len(slides) else {}
+        subtitle = _safe_subtitle(slide.get("subtitle") or slide.get("title", ""))
+        motion = (
+            f"scale={w}:{h}:force_original_aspect_ratio=increase,"
+            f"crop={w}:{h},"
+            f"zoompan=z='min(1.08,1+0.0016*on)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+            f"d={max(1, int(dur * fps))}:s={w}x{h}:fps={fps}"
+        )
+        if subtitle:
+            motion += (
+                f",drawbox=x=22:y=h-220:w=w-44:h=150:color=black@0.35:t=fill"
+                f",drawtext=text='{subtitle}':fontcolor=white:fontsize=36:"
+                f"x=(w-text_w)/2:y=h-165:line_spacing=6:borderw=2:bordercolor=black@0.7"
+            )
 
         if aud and Path(aud).exists():
             cmd = ["ffmpeg", "-y", "-loglevel", "error",
@@ -245,7 +361,7 @@ async def _editor_agent(slide_paths: list, audio_paths: list, script: dict,
                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
                    "-refs", "1", "-bf", "0", "-pix_fmt", "yuv420p",
                    "-c:a", "aac", "-b:a", "128k",
-                   "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2",
+                   "-vf", motion,
                    "-t", str(dur), "-r", str(fps), seg]
         else:
             cmd = ["ffmpeg", "-y", "-loglevel", "error",
@@ -254,7 +370,7 @@ async def _editor_agent(slide_paths: list, audio_paths: list, script: dict,
                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
                    "-refs", "1", "-bf", "0", "-pix_fmt", "yuv420p",
                    "-c:a", "aac", "-b:a", "64k",
-                   "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2",
+                   "-vf", motion,
                    "-t", "4.5", "-r", str(fps), "-shortest", seg]
 
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -272,18 +388,21 @@ async def _editor_agent(slide_paths: list, audio_paths: list, script: dict,
     if len(segments) == 1:
         shutil.copy(segments[0], output_path)
     else:
-        concat = str(tmp_dir / "concat.txt")
-        with open(concat, "w") as f:
-            for s in segments:
-                f.write(f"file '{s}'\n")
-        r = subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
-             "-i", concat, "-c", "copy", output_path],
-            capture_output=True, text=True, timeout=300,
-        )
-        if r.returncode != 0:
-            logger.error(f"[Editor concat] {r.stderr[:300]}")
-            return _gif_export(slide_paths, output_path, audio_paths)
+        # Essai 1: concat avec transitions (rendu "vraie vidéo")
+        if not _concat_with_xfade(segments, output_path):
+            # Essai 2: concat simple ultra-rapide
+            concat = str(tmp_dir / "concat.txt")
+            with open(concat, "w") as f:
+                for s in segments:
+                    f.write(f"file '{s}'\n")
+            r = subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
+                 "-i", concat, "-c", "copy", output_path],
+                capture_output=True, text=True, timeout=300,
+            )
+            if r.returncode != 0:
+                logger.error(f"[Editor concat] {r.stderr[:300]}")
+                return _gif_export(slide_paths, output_path, audio_paths)
 
     if on_progress:
         on_progress(0.92, "✅ Montage terminé")
@@ -320,6 +439,48 @@ def _gif_export(slide_paths: list, output_path: str, audio_paths=None) -> str:
     return ""
 
 
+def _concat_with_xfade(segments: list[str], output_path: str, transition_sec: float = 0.45) -> bool:
+    """Concatène avec transitions xfade + acrossfade pour un rendu plus 'vraie vidéo'."""
+    import subprocess
+    if len(segments) < 2:
+        return False
+    try:
+        inputs = []
+        for s in segments:
+            inputs.extend(["-i", s])
+
+        durations = [_audio_duration(s) for s in segments]
+        offsets = []
+        acc = 0.0
+        for i in range(len(segments) - 1):
+            d = durations[i] if durations[i] > 0 else 4.5
+            acc += max(0.8, d - transition_sec)
+            offsets.append(acc)
+
+        v_prev = "[0:v]"
+        a_prev = "[0:a]"
+        filters = []
+        for i in range(1, len(segments)):
+            v_out = f"[v{i}]"
+            a_out = f"[a{i}]"
+            filters.append(
+                f"{v_prev}[{i}:v]xfade=transition=fade:duration={transition_sec}:offset={offsets[i-1]:.2f}{v_out}"
+            )
+            filters.append(f"{a_prev}[{i}:a]acrossfade=d={transition_sec}{a_out}")
+            v_prev, a_prev = v_out, a_out
+
+        cmd = ["ffmpeg", "-y", "-loglevel", "error", *inputs,
+               "-filter_complex", ";".join(filters),
+               "-map", v_prev, "-map", a_prev,
+               "-c:v", "libx264", "-preset", "medium", "-crf", "23",
+               "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+               output_path]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=420)
+        return r.returncode == 0 and Path(output_path).exists()
+    except Exception:
+        return False
+
+
 # ── Entrée principale ─────────────────────────────────────────────────────────
 
 async def create_pro_video(
@@ -345,17 +506,23 @@ async def create_pro_video(
 
     size = config.VIDEO_RESOLUTION
 
+    # Mode pub: URL -> extraction d'angles depuis landing page
+    detected_url = ""
+    m_url = re.search(r"(https?://[^\s]+)", topic)
+    if m_url:
+        detected_url = m_url.group(1).strip()
+    ad_brief = _landing_page_brief(detected_url) if detected_url else {}
+    prompt_topic = topic
+    if ad_brief:
+        base = ad_brief.get("title") or topic
+        prompt_topic = f"PUB VIRAL pour {base}"
+        if on_progress:
+            on_progress(0.05, "🔎 Analyse du lien produit pour angle publicitaire...")
+
     # Agent 1 — Script
-    script = await _script_agent(topic, style, lang, n_slides, on_progress)
+    script = await _script_agent(prompt_topic, style, lang, n_slides, on_progress, ad_brief=ad_brief)
     if not script:
-        script = {
-            "title": topic,
-            "slides": [{"type": "intro" if i == 0 else "cta" if i == n_slides - 1 else "content",
-                        "title": topic if i == 0 else f"Point {i}",
-                        "subtitle": None, "narration": topic,
-                        "bg_keyword": "abstract background", "icon": "🎬", "number": None}
-                       for i in range(n_slides)],
-        }
+        script = _fallback_script(prompt_topic, n_slides, ad_brief=ad_brief)
 
     # Agent 2 — Art Director
     keywords = await _art_director_agent(script, on_progress)
@@ -365,6 +532,21 @@ async def create_pro_video(
 
     if not slide_paths:
         return {"error": "Aucune slide générée", "slide_paths": [], "script": script}
+
+    # Copie des slides vers un dossier persistant (évite les images cassées dans Gradio)
+    gallery_dir = out_dir / f"{safe}_slides"
+    gallery_dir.mkdir(parents=True, exist_ok=True)
+    persisted_slide_paths = []
+    for i, p in enumerate(slide_paths):
+        src = Path(p)
+        if not src.exists():
+            continue
+        dst = gallery_dir / f"slide_{i:03d}.png"
+        try:
+            shutil.copy(str(src), str(dst))
+            persisted_slide_paths.append(str(dst))
+        except Exception:
+            persisted_slide_paths.append(str(src))
 
     # Agent 4 — Narrator
     audio_paths = []
@@ -383,9 +565,26 @@ async def create_pro_video(
     if on_progress:
         on_progress(1.0, "🏆 Vidéo pro terminée!")
 
+    # Auto-amélioration: apprend des résultats vidéo produits
+    try:
+        from agent.self_improve import evaluate_and_learn
+        summary = {
+            "title": script.get("title", topic),
+            "slides": len(script.get("slides", [])),
+            "video_ready": bool(video_path and Path(video_path).exists()),
+            "used_url_brief": bool(ad_brief),
+        }
+        await evaluate_and_learn(
+            task=f"Créer une vidéo virale sur: {topic}",
+            result=json.dumps(summary, ensure_ascii=False),
+            domain="video",
+        )
+    except Exception:
+        pass
+
     return {
         "video_path": video_path,
-        "slide_paths": slide_paths,
+        "slide_paths": persisted_slide_paths or slide_paths,
         "script": script,
         "title": script.get("title", topic),
     }
