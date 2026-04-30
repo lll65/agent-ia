@@ -3,6 +3,7 @@ Slide builder professionnel — vraies photos de fond (picsum.photos, gratuit).
 Chaque slide = photo + overlay sombre + texte avec ombre + emoji + progress.
 """
 import hashlib
+import re
 import textwrap
 from io import BytesIO
 from pathlib import Path
@@ -58,7 +59,7 @@ def _kw_seed(keyword: str) -> int:
 
 
 def fetch_bg(keyword: str, w: int, h: int) -> Image.Image | None:
-    """Photo réelle depuis picsum.photos (cache local)."""
+    """Photo réelle semi-sémantique (loremflickr), fallback picsum (cache local)."""
     import requests
     seed = _kw_seed(keyword)
     cache = BG_CACHE / f"{seed}_{w}x{h}.jpg"
@@ -68,6 +69,13 @@ def fetch_bg(keyword: str, w: int, h: int) -> Image.Image | None:
         except Exception:
             cache.unlink(missing_ok=True)
     try:
+        query = re.sub(r"[^a-zA-Z0-9, ]", " ", keyword).strip().replace(" ", ",")
+        if query:
+            r = requests.get(f"https://loremflickr.com/{w}/{h}/{query}?lock={seed}",
+                             timeout=16, allow_redirects=True)
+            if r.status_code == 200 and r.content:
+                cache.write_bytes(r.content)
+                return Image.open(BytesIO(r.content)).convert("RGB")
         r = requests.get(f"https://picsum.photos/seed/{seed}/{w}/{h}",
                          timeout=15, allow_redirects=True)
         if r.status_code == 200:
@@ -95,20 +103,21 @@ def _gen_bg(w: int, h: int, accent: tuple) -> Image.Image:
 
 
 def _overlay(img: Image.Image, accent: tuple) -> Image.Image:
-    """Assombrit + vignette pour lisibilité du texte."""
-    img = ImageEnhance.Brightness(img).enhance(0.40)
+    """Améliore lisibilité sans noircir l'image."""
+    img = ImageEnhance.Brightness(img).enhance(0.90)
     # Légère teinte accent
-    tint = Image.new("RGB", img.size, tuple(min(255, int(c * 0.18)) for c in accent))
-    img = Image.blend(img, tint, 0.35)
-    # Vignette
+    tint = Image.new("RGB", img.size, tuple(min(255, int(c * 0.22)) for c in accent))
+    img = Image.blend(img, tint, 0.22)
+    # Dégradé vertical doux (haut/bas un peu plus sombres, centre lisible)
     w, h = img.size
-    mask = Image.new("L", (w, h), 0)
-    md = ImageDraw.Draw(mask)
-    pad = min(w, h) // 3
-    md.ellipse([(pad, pad * 0.7), (w - pad, h - pad * 0.7)], fill=200)
-    mask = mask.filter(ImageFilter.GaussianBlur(min(w, h) // 3))
+    veil = Image.new("L", (w, h), 0)
+    vd = ImageDraw.Draw(veil)
+    for y in range(h):
+        t = abs((y / max(1, h - 1)) - 0.5) * 2.0  # 0 centre, 1 bords verticaux
+        alpha = int(12 + 70 * (t ** 1.8))          # max ~82 aux bords
+        vd.line([(0, y), (w, y)], fill=alpha)
     black = Image.new("RGB", (w, h), (0, 0, 0))
-    img = Image.composite(img, black, mask)
+    img = Image.composite(black, img, veil)  # assombrit légèrement haut/bas, garde le centre clair
     return img
 
 
@@ -154,7 +163,7 @@ def _intro(draw, data, p, w, h):
     _draw_emoji(draw, draw, data.get("icon", "🎬"), cx, int(h * 0.18), 70)
 
     title = data.get("title", "")
-    fs = 60 if len(title) <= 18 else 48 if len(title) <= 30 else 38
+    fs = 72 if len(title) <= 18 else 58 if len(title) <= 30 else 46
     font = _font(fs)
     lines = textwrap.fill(title, width=max(8, int(14 * 52 / fs))).split("\n")
     th = len(lines) * int(fs * 1.3)
@@ -185,7 +194,7 @@ def _content(draw, data, p, w, h):
     draw.rectangle([(45, icon_y + 20), (w - 45, icon_y + 24)], fill=accent)
 
     title = data.get("title", "")
-    fs = 42 if len(title) <= 22 else 34 if len(title) <= 40 else 27
+    fs = 52 if len(title) <= 22 else 42 if len(title) <= 40 else 34
     font = _font(fs)
     lines = textwrap.fill(title, width=max(8, int(16 * 38 / fs))).split("\n")
     y = icon_y + 38
@@ -196,7 +205,7 @@ def _content(draw, data, p, w, h):
     draw.rectangle([(cx - 45, y + 8), (cx + 45, y + 12)], fill=tuple(int(c * 0.7) for c in accent))
 
     if data.get("subtitle"):
-        sf = _font(24)
+        sf = _font(30)
         y += 24
         for line in textwrap.fill(data["subtitle"], 24).split("\n"):
             _shadow(draw, line, sf, cx, y, p["sub"])
@@ -211,7 +220,7 @@ def _stat(draw, data, p, w, h):
 
     number = str(data.get("number", "") or "")
     if number:
-        nf = _font(105)
+        nf = _font(122)
         nb = draw.textbbox((0, 0), number, font=nf)
         nw = nb[2] - nb[0]
         ny = h // 2 - 75
@@ -224,7 +233,7 @@ def _stat(draw, data, p, w, h):
         y = h // 2 - 30
 
     title = data.get("title", "")
-    fs = 36 if len(title) <= 30 else 28
+    fs = 46 if len(title) <= 30 else 36
     font = _font(fs)
     for line in textwrap.fill(title, width=max(8, int(18 * 32 / fs))).split("\n"):
         _shadow(draw, line, font, cx, y, p["text"])
@@ -247,14 +256,14 @@ def _cta(draw, data, p, w, h):
     # Bouton coloré
     btn_y = h // 2 - 65
     draw.rectangle([(35, btn_y), (w - 35, btn_y + 52)], fill=accent)
-    bf = _font(25)
+    bf = _font(30)
     btn_text = "PASSE À L'ACTION"
     bb = draw.textbbox((0, 0), btn_text, font=bf)
     bw = bb[2] - bb[0]
     draw.text((cx - bw // 2, btn_y + 14), btn_text, font=bf, fill=(255, 255, 255))
 
     title = data.get("title", "")
-    fs = 38 if len(title) <= 22 else 30 if len(title) <= 40 else 24
+    fs = 50 if len(title) <= 22 else 40 if len(title) <= 40 else 32
     font = _font(fs)
     y = btn_y + 70
     for line in textwrap.fill(title, width=max(8, int(16 * 34 / fs))).split("\n"):

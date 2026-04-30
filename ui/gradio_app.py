@@ -615,8 +615,8 @@ def build_ui() -> gr.Blocks:
                 )
                 with gr.Row():
                     with gr.Column(scale=1):
-                        v_topic   = gr.Textbox(label="💡 Sujet", lines=2,
-                                               placeholder="Ex: 5 erreurs qui font rater tes ventes Vinted")
+                        v_topic   = gr.Textbox(label="💡 Sujet ou lien produit", lines=2,
+                                               placeholder="Ex: https://monsite.com/produit-x  ou  5 erreurs qui font rater tes ventes Vinted")
                         v_quality = gr.Radio(["rapide", "pro"], value="rapide",
                                              label="🎚️ Qualité",
                                              info="Pro = agents spécialisés + vraies photos")
