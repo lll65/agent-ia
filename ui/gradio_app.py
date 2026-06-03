@@ -929,10 +929,6 @@ def launch(share: bool = False, port: int = None):
         "show_error": True,
         "allowed_paths": allowed,
     }
-    try:
-        launch_kwargs["theme"] = gr.themes.Soft()
-    except Exception:
-        pass
     demo.launch(**launch_kwargs)
 
 
