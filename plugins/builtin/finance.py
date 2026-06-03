@@ -38,8 +38,12 @@ class StockAnalysisPlugin(Plugin):
             delta = close.diff()
             gain = delta.where(delta > 0, 0.0).rolling(14).mean()
             loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
-            rs = gain / loss.replace(0, float("nan"))
-            rsi = float(100 - 100 / (1 + rs.iloc[-1]))
+            loss_val = loss.iloc[-1]
+            gain_val = gain.iloc[-1]
+            if loss_val == 0:
+                rsi = 100.0 if gain_val > 0 else float("nan")
+            else:
+                rsi = float(100 - 100 / (1 + gain_val / loss_val))
 
             # MACD
             ema12 = close.ewm(span=12, adjust=False).mean()

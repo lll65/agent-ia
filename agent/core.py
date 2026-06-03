@@ -155,6 +155,6 @@ async def run_agent(
             mem.remember(agent_id, "assistant", llm_out)
             return {"answer": llm_out, "steps": steps, "iterations": iteration + 1}
 
-    last = steps[-1].get("llm_output", "Limite d'itérations atteinte.")
+    last = steps[-1].get("llm_output", "Limite d'itérations atteinte.") if steps else "Limite d'itérations atteinte."
     mem.remember(agent_id, "assistant", last)
     return {"answer": last, "steps": steps, "iterations": config.MAX_ITERATIONS}

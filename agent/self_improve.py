@@ -63,12 +63,15 @@ Score: 1-10 (10 = parfait, 1 = inutile). Sois honnête et critique."""
             ],
             temperature=0.3,
         ))
-        import re
         m = re.search(r"\{[\s\S]+\}", raw)
         if not m:
             logger.warning("[SelfImprove] pas de JSON dans la réponse LLM")
             return {}
-        evaluation = json.loads(m.group())
+        try:
+            evaluation = json.loads(m.group())
+        except json.JSONDecodeError:
+            logger.warning("[SelfImprove] JSON invalide dans la réponse LLM")
+            return {}
     except Exception as e:
         logger.warning(f"[SelfImprove] évaluation échouée: {e}")
         return {}

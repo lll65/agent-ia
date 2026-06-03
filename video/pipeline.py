@@ -588,13 +588,3 @@ async def create_pro_video(
         "script": script,
         "title": script.get("title", topic),
     }
-    brief_block = ""
-    if ad_brief:
-        bullets = "\n".join(f"- {b}" for b in ad_brief.get("bullets", []))
-        brief_block = (
-            "\n\nCONTEXTE LANDING PAGE (PUB):\n"
-            f"Titre: {ad_brief.get('title', '')}\n"
-            f"Description: {ad_brief.get('description', '')}\n"
-            f"Points clés:\n{bullets}\n"
-            "Objectif: script orienté conversion (hook fort, douleur, bénéfice, preuve, CTA)."
-        )

@@ -54,7 +54,9 @@ async def ask_llm_for_code(description: str, language: str) -> str:
                     continue
                 if inside:
                     code_lines.append(line)
-            code = "\n".join(code_lines).strip()
+            extracted = "\n".join(code_lines).strip()
+            if extracted:
+                code = extracted
         return code
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Erreur LLM: {e}")
@@ -72,7 +74,8 @@ async def generate_code(req: GenerateRequest):
 @router.post("/execute", response_model=ExecuteResponse)
 async def execute_code(req: ExecuteRequest):
     output = exec_python(req.code)
-    success = "Erreur" not in output and "Error" not in output
+    error_patterns = ("Traceback (most recent call last)", "SyntaxError:", "NameError:", "TypeError:", "ValueError:", "ImportError:", "IndentationError:")
+    success = not any(p in output for p in error_patterns)
     return ExecuteResponse(output=output, success=success)
 
 
