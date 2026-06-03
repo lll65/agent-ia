@@ -8,11 +8,16 @@ class WebSearchPlugin(Plugin):
 
     def run(self, query: str, max_results: int = 5) -> str:
         from duckduckgo_search import DDGS
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=max_results))
+        try:
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=max_results))
+        except Exception as e:
+            return f"Recherche indisponible: {e}"
         if not results:
             return "Aucun résultat trouvé."
         lines = []
         for r in results:
-            lines.append(f"**{r.get('title', '')}**\n{r.get('body', '')}\nURL: {r.get('href', '')}")
+            title = str(r.get("title", "")).replace("<", "&lt;").replace(">", "&gt;")
+            body = str(r.get("body", "")).replace("<", "&lt;").replace(">", "&gt;")
+            lines.append(f"**{title}**\n{body}\nURL: {r.get('href', '')}")
         return "\n\n".join(lines)

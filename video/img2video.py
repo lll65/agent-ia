@@ -49,7 +49,8 @@ async def _build_motion_prompt(description: str, domain: str = "img2video") -> s
              {"role": "user", "content": user_msg}],
             temperature=0.65,
         ))
-        return raw.strip().splitlines()[0][:200]
+        lines = [l for l in raw.strip().splitlines() if l.strip()]
+        return lines[0][:200] if lines else "slow cinematic push forward, subtle parallax, photorealistic motion"
     except Exception:
         return "slow cinematic push forward, subtle parallax, photorealistic motion"
 
@@ -198,7 +199,12 @@ def _hf_bytes_to_720p(raw_bytes: bytes, output_path: str,
                "-crf", "18", "-pix_fmt", "yuv420p",
                "-t", str(min_dur), "-r", str(fps), output_path]
 
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        logger.error("[hf_bytes_to_720p] Timeout FFmpeg")
+        Path(tmp_path).unlink(missing_ok=True)
+        return False
     Path(tmp_path).unlink(missing_ok=True)
     return res.returncode == 0 and Path(output_path).exists()
 
