@@ -380,6 +380,65 @@ def _make_gif(paths: list, name: str) -> str | None:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# IMAGE → VIDÉO RÉALISTE
+# ═════════════════════════════════════════════════════════════════════════════
+
+def make_img2video(image_file, description, motion_prompt, duration, progress=gr.Progress()):
+    """Transforme une image en vidéo réaliste 720p via img2video pipeline."""
+    import re
+    from pathlib import Path
+
+    if image_file is None:
+        return None, "⚠️ Charge une image d'abord."
+
+    progress(0.05, desc="🖼️ Chargement de l'image...")
+
+    img_path = str(image_file)
+    safe = re.sub(r"[^\w-]", "_", Path(img_path).stem)[:40]
+    out_dir = Path("output/videos")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = str(out_dir / f"{safe}_realistic.mp4")
+
+    steps = []
+
+    def _on_prog(val, desc):
+        if desc:
+            steps.append(desc)
+        if val is not None:
+            progress(val, desc=desc or "...")
+
+    async def _run_gen():
+        from video.img2video import generate_realistic_video
+        return await generate_realistic_video(
+            image_path=img_path,
+            output_path=out_path,
+            description=description or "",
+            motion_prompt=motion_prompt or "",
+            duration=max(float(duration), 5.0),
+            on_progress=_on_prog,
+            max_loops=2,
+        )
+
+    result = _run(_run_gen())
+
+    if "error" in result:
+        return None, f"❌ Erreur: {result['error']}\n\n" + "\n".join(steps)
+
+    hf_note = ""
+    if result.get("method") == "ffmpeg_ken_burns":
+        hf_note = "\n\n💡 **Astuce**: Ajoute un `HF_API_TOKEN` dans `.env` pour activer Stable Video Diffusion (vidéos encore plus réalistes)."
+
+    status = (
+        f"✅ **Vidéo générée!**\n\n"
+        f"- Méthode: `{result.get('method')}`\n"
+        f"- Score qualité: **{result.get('score')}/10**\n"
+        f"- Tentatives: {result.get('attempts')}\n"
+        f"{hf_note}"
+    )
+    return result["video_path"], status
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # CODE
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -644,6 +703,47 @@ def build_ui() -> gr.Blocks:
                 v_btn.click(make_video,
                             [v_topic, v_style, v_lang, v_slides, v_theme, v_audio, v_quality],
                             [v_gallery, v_gif, v_video, v_status])
+
+            # ══ IMAGE → VIDÉO RÉALISTE ════════════════════════════════════════
+            with gr.TabItem("🖼️→🎬 Réaliste"):
+                gr.Markdown(
+                    "### Image → Vidéo réaliste 720p · 5s minimum · 100% gratuit\n"
+                    "**Méthode 1** (si `HF_API_TOKEN` configuré): Stable Video Diffusion via HuggingFace API\n\n"
+                    "**Méthode 2** (fallback automatique): Effet Ken Burns haute qualité via FFmpeg\n\n"
+                    "L'agent optimise automatiquement le mouvement et se ré-essaie si nécessaire."
+                )
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        iv_image = gr.Image(
+                            label="🖼️ Image source", type="filepath",
+                            sources=["upload", "clipboard"],
+                            height=280,
+                        )
+                        iv_desc = gr.Textbox(
+                            label="📝 Description de l'image (optionnel)",
+                            placeholder="Ex: coucher de soleil sur la mer, plage déserte...",
+                            lines=2,
+                        )
+                        iv_prompt = gr.Textbox(
+                            label="🎥 Indication de mouvement (optionnel)",
+                            placeholder="Ex: slow camera pan right, gentle waves motion",
+                            lines=1,
+                        )
+                        iv_duration = gr.Slider(
+                            minimum=5, maximum=15, value=5, step=1,
+                            label="⏱️ Durée (secondes)",
+                        )
+                        iv_btn = gr.Button("🎬 Générer la vidéo", variant="primary", size="lg")
+                        iv_status = gr.Markdown("")
+
+                    with gr.Column(scale=2):
+                        iv_video = gr.Video(label="🎥 Vidéo générée", height=450)
+
+                iv_btn.click(
+                    make_img2video,
+                    [iv_image, iv_desc, iv_prompt, iv_duration],
+                    [iv_video, iv_status],
+                )
 
             # ══ CODE & PROJETS ════════════════════════════════════════════════
             with gr.TabItem("💻 Code & Projets"):
