@@ -125,14 +125,22 @@ async def full_status():
 # ── Lancement ─────────────────────────────────────────────────────────────────
 
 def start_gradio():
-    """Lance Gradio dans un thread daemon."""
+    """Lance Gradio dans un thread daemon avec son propre event loop asyncio."""
     import threading
+    import asyncio
+
     def _run():
+        # Python 3.10+ exige un event loop actif pour asyncio.Lock() (utilisé par la queue Gradio)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
             from ui.gradio_app import launch
             launch()
         except Exception as e:
             logger.error(f"Erreur Gradio: {e}", exc_info=True)
+        finally:
+            loop.close()
+
     t = threading.Thread(target=_run, daemon=True, name="gradio")
     t.start()
     return t
