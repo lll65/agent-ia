@@ -929,6 +929,7 @@ def launch(share: bool = False, port: int = None):
         "show_error": True,
         "allowed_paths": allowed,
     }
+    demo.queue()
     demo.launch(**launch_kwargs)
 
 
