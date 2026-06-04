@@ -43,37 +43,35 @@ def _space_predict(space_id: str, image_path: str,
                    hf_token: Optional[str] = None,
                    status_cb=None) -> Optional[str]:
     """
-    Appelle un HuggingFace Space public via gradio_client.
+    Appelle un HuggingFace Space public.
+    1er essai : gradio_client (API discovery automatique)
+    2e essai  : HTTP direct Gradio 4.x queue+SSE (si pas d'API exposée)
     Gratuit à vie — aucun crédit, aucun compte requis.
-    Retourne le chemin local de la vidéo téléchargée, ou None.
     """
+    if status_cb:
+        status_cb(f"🔌 Connexion à {space_id}...")
+    logger.info(f"[HF Space] Connexion à {space_id}")
+
+    try_http = False
+
+    # ── Méthode 1 : gradio_client ────────────────────────────────────────────
     try:
         from gradio_client import Client, handle_file
-    except ImportError:
-        logger.error("[HF Space] gradio_client non installé")
-        return None
-
-    try:
-        if status_cb:
-            status_cb(f"🔌 Connexion à {space_id}...")
-        logger.info(f"[HF Space] Connexion à {space_id}")
 
         client = Client(space_id, hf_token=hf_token or None, verbose=False)
 
-        # Découverte automatique des endpoints disponibles
         endpoints = []
         try:
             api = client.view_api(print_info=False, return_format="dict")
             endpoints = list(api.get("named_endpoints", {}).keys())
-            logger.info(f"[HF Space] Endpoints trouvés: {endpoints}")
+            logger.info(f"[HF Space] Endpoints: {endpoints}")
         except Exception:
             pass
 
-        # Ordre de priorité des endpoints courants
-        for ep in (endpoints or ["/predict", "/video", "/generate", "/run"]):
+        for ep in (endpoints or ["/predict", "/video", "/generate", "/run", "/infer"]):
             try:
                 if status_cb:
-                    status_cb(f"🎬 {space_id} → endpoint {ep}...")
+                    status_cb(f"🎬 {space_id} → {ep}...")
                 result = client.predict(
                     handle_file(str(Path(image_path).resolve())),
                     api_name=ep,
@@ -82,7 +80,7 @@ def _space_predict(space_id: str, image_path: str,
                     path = result[0] if isinstance(result, (list, tuple)) else result
                     path = str(path)
                     if Path(path).exists() and Path(path).stat().st_size > 10_000:
-                        logger.info(f"[HF Space] ✅ {space_id} — vidéo: {path}")
+                        logger.info(f"[HF Space] ✅ {space_id} ({ep})")
                         if status_cb:
                             status_cb(f"✅ {space_id} — succès!")
                         return path
@@ -90,11 +88,100 @@ def _space_predict(space_id: str, image_path: str,
                 logger.debug(f"[HF Space] {space_id} {ep}: {ep_err}")
                 continue
 
+        try_http = True  # connecté mais aucun endpoint fonctionnel
+
     except Exception as e:
-        msg = str(e)
-        logger.warning(f"[HF Space] {space_id}: {msg}")
+        err = str(e)
+        if any(k in err for k in ("getaddrinfo", "Name or service", "nodename", "No address")):
+            logger.warning(f"[HF Space] {space_id}: DNS introuvable")
+            return None
+        if "Could not fetch api info" in err or "No API found" in err:
+            logger.info(f"[HF Space] {space_id} sans API Gradio → HTTP direct")
+            try_http = True
+        else:
+            logger.warning(f"[HF Space] {space_id}: {err[:100]}")
+            if status_cb:
+                status_cb(f"⚠️ {space_id}: {err[:60]}")
+            return None
+
+    if not try_http:
+        return None
+
+    # ── Méthode 2 : HTTP direct (Gradio 4.x queue + SSE) ────────────────────
+    import base64, uuid, json as _json
+    try:
+        import httpx
+    except ImportError:
+        return None
+
+    owner, name = space_id.split("/", 1)
+    space_url = f"https://{owner}-{name}.hf.space".replace("_", "-").lower()
+
+    with open(image_path, "rb") as f:
+        img_b64 = "data:image/jpeg;base64," + base64.b64encode(f.read()).decode()
+
+    hdrs = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
+    session_hash = uuid.uuid4().hex[:8]
+
+    try:
         if status_cb:
-            status_cb(f"⚠️ {space_id}: {msg[:80]}")
+            status_cb(f"🌐 {space_id} — connexion directe...")
+
+        with httpx.Client(timeout=30.0, headers=hdrs, follow_redirects=True) as http:
+            r = http.post(f"{space_url}/queue/join", json={
+                "data": [{"name": "image.jpg", "data": img_b64}],
+                "fn_index": 0,
+                "session_hash": session_hash,
+            })
+            if r.status_code != 200:
+                logger.warning(f"[HF Space HTTP] {space_id}: queue/join {r.status_code}")
+                return None
+
+        with httpx.Client(follow_redirects=True, headers=hdrs) as http:
+            with http.stream("GET",
+                    f"{space_url}/queue/data?session_hash={session_hash}",
+                    timeout=180.0) as resp:
+                for line in resp.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    try:
+                        event = _json.loads(line[5:])
+                    except Exception:
+                        continue
+                    msg = event.get("msg", "")
+                    if msg == "process_completed":
+                        out = event.get("output", {}).get("data", [])
+                        if not out:
+                            return None
+                        v = out[0]
+                        for _ in range(3):
+                            if isinstance(v, dict):
+                                v = (v.get("video") or v.get("url") or
+                                     v.get("name") or v.get("path") or
+                                     next(iter(v.values()), None))
+                        if not v or not isinstance(v, str):
+                            return None
+                        if v.startswith("http"):
+                            with httpx.Client(timeout=120.0) as dl:
+                                vr = dl.get(v)
+                                if vr.status_code == 200 and len(vr.content) > 10_000:
+                                    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+                                        tmp.write(vr.content)
+                                        logger.info(f"[HF Space HTTP] ✅ {space_id}")
+                                        if status_cb:
+                                            status_cb(f"✅ {space_id}!")
+                                        return tmp.name
+                        elif Path(v).exists() and Path(v).stat().st_size > 10_000:
+                            return v
+                        return None
+                    elif msg in ("process_errored", "queue_full"):
+                        logger.warning(f"[HF Space HTTP] {space_id}: {msg}")
+                        return None
+
+    except Exception as e:
+        logger.warning(f"[HF Space HTTP] {space_id}: {e}")
+        if status_cb:
+            status_cb(f"⚠️ {space_id} HTTP: {str(e)[:60]}")
 
     return None
 
