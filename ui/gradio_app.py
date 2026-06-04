@@ -383,8 +383,15 @@ def _make_gif(paths: list, name: str) -> str | None:
 # IMAGE → VIDÉO RÉALISTE
 # ═════════════════════════════════════════════════════════════════════════════
 
-def make_img2video(image_file, description, motion_prompt, duration, progress=gr.Progress()):
-    """Transforme une image en vidéo réaliste 720p via img2video pipeline."""
+_FORMATS = {
+    "Portrait 9:16 (TikTok/Reels)": (720, 1280),
+    "Paysage 16:9 (YouTube)":       (1280, 720),
+    "Carré 1:1 (Instagram)":        (720, 720),
+}
+
+
+def make_img2video(image_file, description, motion_prompt, duration, fmt, progress=gr.Progress()):
+    """Transforme une image en vidéo réaliste via img2video pipeline."""
     import re
     from pathlib import Path
 
@@ -393,6 +400,7 @@ def make_img2video(image_file, description, motion_prompt, duration, progress=gr
 
     progress(0.05, desc="🖼️ Chargement de l'image...")
 
+    w, h = _FORMATS.get(fmt, (720, 1280))
     img_path = str(image_file)
     safe = re.sub(r"[^\w-]", "_", Path(img_path).stem)[:40]
     out_dir = Path("output/videos")
@@ -414,6 +422,8 @@ def make_img2video(image_file, description, motion_prompt, duration, progress=gr
             output_path=out_path,
             description=description or "",
             motion_prompt=motion_prompt or "",
+            width=w,
+            height=h,
             duration=max(float(duration), 5.0),
             on_progress=_on_prog,
             max_loops=2,
@@ -707,9 +717,9 @@ def build_ui() -> gr.Blocks:
             # ══ IMAGE → VIDÉO RÉALISTE ════════════════════════════════════════
             with gr.TabItem("🖼️→🎬 Réaliste"):
                 gr.Markdown(
-                    "### Image → Vidéo réaliste 720p · 5s minimum · 100% gratuit\n"
+                    "### Image → Vidéo réaliste · 5s minimum · 100% gratuit\n"
                     "**Méthode 1** (si `HF_API_TOKEN` configuré): Stable Video Diffusion via HuggingFace API\n\n"
-                    "**Méthode 2** (fallback automatique): Effet Ken Burns haute qualité via FFmpeg\n\n"
+                    "**Méthode 2** (fallback automatique): Ken Burns cinématique — zoom + pan diagonal + vignette\n\n"
                     "L'agent optimise automatiquement le mouvement et se ré-essaie si nécessaire."
                 )
                 with gr.Row():
@@ -717,16 +727,21 @@ def build_ui() -> gr.Blocks:
                         iv_image = gr.Image(
                             label="🖼️ Image source", type="filepath",
                             sources=["upload", "clipboard"],
-                            height=280,
+                            height=260,
+                        )
+                        iv_format = gr.Radio(
+                            choices=list(_FORMATS.keys()),
+                            value="Portrait 9:16 (TikTok/Reels)",
+                            label="📐 Format",
                         )
                         iv_desc = gr.Textbox(
                             label="📝 Description de l'image (optionnel)",
-                            placeholder="Ex: coucher de soleil sur la mer, plage déserte...",
+                            placeholder="Ex: château dans la forêt brumeuse...",
                             lines=2,
                         )
                         iv_prompt = gr.Textbox(
                             label="🎥 Indication de mouvement (optionnel)",
-                            placeholder="Ex: slow camera pan right, gentle waves motion",
+                            placeholder="Ex: slow camera push forward, gentle fog motion",
                             lines=1,
                         )
                         iv_duration = gr.Slider(
@@ -737,11 +752,11 @@ def build_ui() -> gr.Blocks:
                         iv_status = gr.Markdown("")
 
                     with gr.Column(scale=2):
-                        iv_video = gr.Video(label="🎥 Vidéo générée", height=450)
+                        iv_video = gr.Video(label="🎥 Vidéo générée", height=500)
 
                 iv_btn.click(
                     make_img2video,
-                    [iv_image, iv_desc, iv_prompt, iv_duration],
+                    [iv_image, iv_desc, iv_prompt, iv_duration, iv_format],
                     [iv_video, iv_status],
                 )
 

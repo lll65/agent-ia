@@ -21,8 +21,8 @@ _HF_API_BASE = "https://api-inference.huggingface.co/models/{}"
 _QUALITY_THRESHOLD = 6   # score LLM min avant d'arrêter de réessayer
 _DEFAULT_DUR = 5.0
 _DEFAULT_FPS = 24
-_DEFAULT_W = 1280
-_DEFAULT_H = 720
+_DEFAULT_W = 720     # portrait par défaut (9:16)
+_DEFAULT_H = 1280
 
 
 # ── Prompt ─────────────────────────────────────────────────────────────────────
@@ -118,8 +118,8 @@ def _ken_burns(image_path: str, output_path: str,
                duration: float = _DEFAULT_DUR, fps: int = _DEFAULT_FPS,
                w: int = _DEFAULT_W, h: int = _DEFAULT_H) -> bool:
     """
-    Zoom lent + légère translation via FFmpeg — toujours disponible, 720p.
-    L'image est d'abord mise à l'échelle 2x pour laisser de la marge au zoom.
+    Ken Burns cinématique: zoom progressif + pan diagonal + vignette.
+    Input mis à 3x pour donner de la matière au zoom/pan.
     """
     import shutil
     if not shutil.which("ffmpeg"):
@@ -127,18 +127,22 @@ def _ken_burns(image_path: str, output_path: str,
         return False
 
     frames = int(duration * fps)
+    # Pan en pixels dans l'espace input (= 3x output)
+    pan_x = int(w * 0.25)
+    pan_y = int(h * 0.15)
+
     vf = (
-        # 1. Mise à l'échelle 2x pour que le zoom ait de la matière
-        f"scale={w * 2}:{h * 2}:force_original_aspect_ratio=increase,"
-        f"crop={w * 2}:{h * 2},"
-        # 2. Zoom progressif centré (1.0 → 1.35)
+        # Mise à l'échelle 3x pour laisser de la marge au zoom + pan
+        f"scale={w * 3}:{h * 3}:force_original_aspect_ratio=increase,"
+        f"crop={w * 3}:{h * 3},"
+        # Zoom linéaire 1.0→1.35 + pan diagonal progressif
         f"zoompan="
-        f"z='if(lte(on,1),1.0,min(1.35,zoom+0.001))':"
-        f"x='iw/2-(iw/zoom/2)':"
-        f"y='ih/2-(ih/zoom/2)':"
+        f"z='1.0+0.35*on/{frames}':"
+        f"x='iw/2-(iw/zoom/2)+{pan_x}*on/{frames}':"
+        f"y='ih/2-(ih/zoom/2)+{pan_y}*on/{frames}':"
         f"d={frames}:s={w}x{h}:fps={fps},"
-        # 3. Résolution finale propre
-        f"scale={w}:{h}"
+        # Vignette douce (assombrit les bords → effet cinéma)
+        f"vignette=PI/4"
     )
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
@@ -150,7 +154,7 @@ def _ken_burns(image_path: str, output_path: str,
         output_path,
     ]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         if res.returncode != 0:
             logger.error(f"[KenBurns] {res.stderr[:300]}")
         return res.returncode == 0 and Path(output_path).exists()
