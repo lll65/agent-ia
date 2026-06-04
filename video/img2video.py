@@ -277,7 +277,12 @@ def _space_predict(space_id: str, image_path: str,
 
 async def _call_hf_spaces(image_path: str, hf_token: str = "",
                            on_progress=None) -> Optional[str]:
-    """Essaie tous les spaces HF en séquence."""
+    """
+    Essaie tous les spaces HF en séquence.
+    Si tous échouent (spaces en veille), déclenche leur réveil et réessaie.
+    Un espace HF en veille sert /config depuis le CDN (200) mais retourne 404
+    sur tous les endpoints POST — il faut un GET sur / pour le réveiller.
+    """
     loop = asyncio.get_event_loop()
 
     def _status(msg):
@@ -285,6 +290,37 @@ async def _call_hf_spaces(image_path: str, hf_token: str = "",
         if on_progress:
             on_progress(None, msg)
 
+    # ── Premier passage (déclenche aussi le réveil via GET /config) ──────────
+    for space_id in _HF_SPACES:
+        result = await loop.run_in_executor(
+            None, _space_predict, space_id, image_path, hf_token or None, _status
+        )
+        if result:
+            return result
+
+    # ── Réveil explicite + attente ────────────────────────────────────────────
+    _status("⏳ Spaces HF en veille — réveil en cours, attente 50s...")
+
+    def _trigger_wakeup():
+        try:
+            import httpx
+            with httpx.Client(timeout=8.0, follow_redirects=True) as http:
+                for sid in _HF_SPACES:
+                    owner, name = sid.split("/", 1)
+                    url = f"https://{owner}-{name}.hf.space".replace("_", "-").lower()
+                    try:
+                        http.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                        logger.info(f"[HF Space] Réveil GET → {url}")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    await loop.run_in_executor(None, _trigger_wakeup)
+    await asyncio.sleep(50)
+
+    # ── Deuxième passage après réveil ─────────────────────────────────────────
+    _status("🔄 Réessai après réveil des spaces...")
     for space_id in _HF_SPACES:
         result = await loop.run_in_executor(
             None, _space_predict, space_id, image_path, hf_token or None, _status
