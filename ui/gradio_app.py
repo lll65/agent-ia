@@ -432,11 +432,18 @@ def make_img2video(image_file, description, motion_prompt, duration, fmt, progre
     result = _run(_run_gen())
 
     if "error" in result:
-        return None, f"❌ Erreur: {result['error']}\n\n" + "\n".join(steps)
+        # Cherche si une erreur HF est dans les étapes
+        hf_errors = [s for s in steps if "⚠️ HF SVD" in s]
+        detail = "\n\n**Détail HF:**\n" + "\n".join(hf_errors) if hf_errors else ""
+        return None, f"❌ Erreur: {result['error']}{detail}\n\n" + "\n".join(steps)
 
     hf_note = ""
     if result.get("method") == "ffmpeg_ken_burns":
-        hf_note = "\n\n💡 **Astuce**: Ajoute un `HF_API_TOKEN` dans `.env` pour activer Stable Video Diffusion (vidéos encore plus réalistes)."
+        hf_errors = [s for s in steps if "⚠️ HF SVD" in s]
+        if hf_errors:
+            hf_note = f"\n\n⚠️ **SVD a échoué** — raison: {hf_errors[-1].replace('⚠️ HF SVD: ', '')}"
+        else:
+            hf_note = "\n\n💡 Ajoute `HF_API_TOKEN` dans `.env` pour activer Stable Video Diffusion."
 
     status = (
         f"✅ **Vidéo générée!**\n\n"
