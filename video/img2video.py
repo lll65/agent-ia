@@ -95,7 +95,7 @@ def _space_predict(space_id: str, image_path: str,
         if any(k in err for k in ("getaddrinfo", "Name or service", "nodename", "No address")):
             logger.warning(f"[HF Space] {space_id}: DNS introuvable")
             return None
-        if "Could not fetch api info" in err or "No API found" in err:
+        if any(k in err for k in ("Could not fetch api info", "No API found", "Expecting value")):
             logger.info(f"[HF Space] {space_id} sans API Gradio → HTTP direct")
             try_http = True
         else:
@@ -127,12 +127,38 @@ def _space_predict(space_id: str, image_path: str,
         if status_cb:
             status_cb(f"🌐 {space_id} — connexion directe...")
 
+        payload_base = {"data": [{"name": "image.jpg", "data": img_b64}], "fn_index": 0}
         with httpx.Client(timeout=30.0, headers=hdrs, follow_redirects=True) as http:
-            r = http.post(f"{space_url}/queue/join", json={
-                "data": [{"name": "image.jpg", "data": img_b64}],
-                "fn_index": 0,
-                "session_hash": session_hash,
-            })
+            r = http.post(f"{space_url}/queue/join",
+                         json={**payload_base, "session_hash": session_hash})
+            if r.status_code == 404:
+                # Gradio ancien → /run/predict (synchrone, attend le résultat)
+                try:
+                    r2 = http.post(f"{space_url}/run/predict", json=payload_base,
+                                   timeout=180.0)
+                    if r2.status_code == 200:
+                        out = r2.json().get("data", [])
+                        v = out[0] if out else None
+                        for _ in range(3):
+                            if isinstance(v, dict):
+                                v = (v.get("video") or v.get("url") or
+                                     v.get("name") or v.get("path") or
+                                     next(iter(v.values()), None))
+                        if v and isinstance(v, str) and v.startswith("http"):
+                            vr = http.get(v, timeout=120.0)
+                            if vr.status_code == 200 and len(vr.content) > 10_000:
+                                with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+                                    tmp.write(vr.content)
+                                    logger.info(f"[HF Space HTTP] ✅ {space_id} /run/predict")
+                                    if status_cb:
+                                        status_cb(f"✅ {space_id}!")
+                                    return tmp.name
+                        elif v and isinstance(v, str) and Path(v).exists():
+                            if Path(v).stat().st_size > 10_000:
+                                return v
+                except Exception as e2:
+                    logger.debug(f"[HF Space HTTP] {space_id} /run/predict: {e2}")
+                return None
             if r.status_code != 200:
                 logger.warning(f"[HF Space HTTP] {space_id}: queue/join {r.status_code}")
                 return None
