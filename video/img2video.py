@@ -57,11 +57,15 @@ async def _build_motion_prompt(description: str, domain: str = "img2video") -> s
 
 # ── HuggingFace SVD ────────────────────────────────────────────────────────────
 
+_hf_last_error: str = ""   # visible dans les logs UI
+
+
 async def _call_hf_svd(image_path: str, hf_token: str) -> Optional[bytes]:
     """
     Envoie l'image à HuggingFace SVD, reçoit la vidéo en bytes.
-    Essaie les modèles dans l'ordre de qualité décroissante.
+    Stocke le dernier message d'erreur dans _hf_last_error pour l'UI.
     """
+    global _hf_last_error
     import httpx
 
     with open(image_path, "rb") as f:
@@ -84,28 +88,45 @@ async def _call_hf_svd(image_path: str, hf_token: str) -> Optional[bytes]:
                     if r.status_code == 200:
                         if len(r.content) > 50_000:
                             logger.info(f"[HF-SVD] OK {model} ({len(r.content)//1024} KB)")
+                            _hf_last_error = ""
                             return r.content
-                        logger.warning(f"[HF-SVD] Réponse trop petite ({len(r.content)} B)")
+                        logger.warning(f"[HF-SVD] Réponse trop petite ({len(r.content)} B): {r.text[:100]}")
+                        _hf_last_error = f"Réponse invalide du modèle ({len(r.content)} B)"
                         break
+
+                    elif r.status_code == 401:
+                        _hf_last_error = "Token HuggingFace invalide ou expiré"
+                        logger.error(f"[HF-SVD] 401 Token invalide")
+                        return None
+
+                    elif r.status_code == 403:
+                        _hf_last_error = "Licence SVD non acceptée — va sur huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt et clique 'Agree and access repository'"
+                        logger.error(f"[HF-SVD] 403 Accès refusé (licence non acceptée)")
+                        return None
 
                     elif r.status_code == 503:
                         wait = min(int(r.headers.get("X-Wait-For-Model", "25")), 45)
+                        _hf_last_error = f"Modèle en chargement ({model})..."
                         logger.info(f"[HF-SVD] Modèle en chargement, attente {wait}s")
                         await asyncio.sleep(wait)
 
                     elif r.status_code == 429:
+                        _hf_last_error = "Rate limit HuggingFace — réessaie dans quelques minutes"
                         logger.warning("[HF-SVD] Rate limit, attente 30s")
                         await asyncio.sleep(30)
 
                     else:
+                        _hf_last_error = f"Erreur HTTP {r.status_code}: {r.text[:120]}"
                         logger.warning(f"[HF-SVD] {model} HTTP {r.status_code}: {r.text[:150]}")
                         break
 
                 except httpx.TimeoutException:
+                    _hf_last_error = f"Timeout sur {model} (modèle trop lent)"
                     logger.warning(f"[HF-SVD] Timeout (tentative {attempt + 1}/3)")
                     if attempt < 2:
                         await asyncio.sleep(5)
                 except Exception as e:
+                    _hf_last_error = str(e)
                     logger.warning(f"[HF-SVD] Erreur: {e}")
                     break
 
@@ -312,9 +333,11 @@ async def generate_realistic_video(
         # ── Essai HuggingFace SVD ──────────────────────────────────────
         if hf_token:
             if on_progress:
-                on_progress(pct + 0.05, "🤗 HuggingFace SVD...")
+                on_progress(pct + 0.05, "🤗 HuggingFace SVD — génération IA en cours...")
             try:
                 video_bytes = await _call_hf_svd(image_path, hf_token)
+                if _hf_last_error and on_progress:
+                    on_progress(None, f"⚠️ HF SVD: {_hf_last_error}")
                 if video_bytes:
                     success = _hf_bytes_to_720p(
                         video_bytes, attempt_out, duration, fps, width, height
