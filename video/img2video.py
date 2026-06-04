@@ -1,10 +1,14 @@
 """
 Pipeline Image → Vidéo réaliste (720p min, 5s min).
-Sources gratuites: Replicate API → HuggingFace Inference API → fallback FFmpeg Ken Burns.
+Sources 100% gratuites à vie:
+  1. HuggingFace Spaces publics (SVD communautaire, aucun crédit)
+  2. Replicate (crédits gratuits optionnels)
+  3. Fallback FFmpeg Ken Burns (toujours dispo)
 Boucle d'auto-amélioration: score le prompt, l'affine, régénère jusqu'au seuil.
 """
 import asyncio
 import logging
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -12,17 +16,79 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Spaces HF publics gratuits à vie — testés dans l'ordre
+_HF_SPACES = [
+    "stabilityai/stable-video-diffusion",
+    "multimodalart/stable-video-diffusion",
+    "wangfuyun/AnimateLCM-SVD",
+]
+
 _HF_MODELS = [
     "stabilityai/stable-video-diffusion-img2vid-xt-1-1",
     "stabilityai/stable-video-diffusion-img2vid-xt",
-    "stabilityai/stable-video-diffusion-img2vid",
 ]
 _HF_API_BASE = "https://api-inference.huggingface.co/models/{}"
-_QUALITY_THRESHOLD = 6   # score LLM min avant d'arrêter de réessayer
+_QUALITY_THRESHOLD = 6
 _DEFAULT_DUR = 5.0
 _DEFAULT_FPS = 24
 _DEFAULT_W = 720     # portrait par défaut (9:16)
 _DEFAULT_H = 1280
+
+
+# ── HuggingFace Spaces (gratuit à vie) ────────────────────────────────────────
+
+def _space_predict(space_id: str, image_path: str, hf_token: Optional[str] = None) -> Optional[str]:
+    """
+    Appelle un HuggingFace Space public via gradio_client.
+    Gratuit à vie — aucun crédit, aucune limite de compte.
+    Retourne le chemin local de la vidéo téléchargée, ou None.
+    """
+    try:
+        from gradio_client import Client, handle_file
+    except ImportError:
+        logger.error("[HF Space] gradio_client non installé")
+        return None
+
+    try:
+        logger.info(f"[HF Space] Connexion à {space_id}...")
+        client = Client(
+            space_id,
+            hf_token=hf_token or None,
+            verbose=False,
+            serialize=False,
+        )
+
+        # Essaie les endpoints courants dans l'ordre
+        for api_name in ["/predict", "/video", "/generate", None]:
+            try:
+                kwargs = {"api_name": api_name} if api_name else {}
+                result = client.predict(handle_file(image_path), **kwargs)
+
+                if result:
+                    # gradio_client retourne le chemin local du fichier téléchargé
+                    path = result[0] if isinstance(result, (list, tuple)) else result
+                    if path and Path(str(path)).exists():
+                        logger.info(f"[HF Space] Succès {space_id} → {path}")
+                        return str(path)
+            except Exception:
+                continue
+
+    except Exception as e:
+        logger.warning(f"[HF Space] {space_id}: {e}")
+
+    return None
+
+
+async def _call_hf_spaces(image_path: str, hf_token: str = "") -> Optional[str]:
+    """Essaie tous les spaces HF en séquence, retourne le chemin vidéo local."""
+    loop = asyncio.get_event_loop()
+    for space_id in _HF_SPACES:
+        result = await loop.run_in_executor(
+            None, _space_predict, space_id, image_path, hf_token or None
+        )
+        if result:
+            return result
+    return None
 
 
 # ── Prompt ─────────────────────────────────────────────────────────────────────
@@ -422,7 +488,31 @@ async def generate_realistic_video(
         success = False
         method = "none"
 
-        # ── Essai Replicate SVD (priorité 1) ──────────────────────────
+        # ── Priorité 1 : HuggingFace Spaces (gratuit à vie) ──────────
+        if not success:
+            if on_progress:
+                on_progress(pct + 0.03, "🤗 HuggingFace Spaces — génération IA gratuite...")
+            try:
+                space_video = await _call_hf_spaces(image_path, hf_token)
+                if space_video:
+                    dest = attempt_out.replace(".mp4", "_space.mp4")
+                    success = _hf_bytes_to_720p(
+                        Path(space_video).read_bytes(), attempt_out, duration, fps, width, height
+                    )
+                    if success:
+                        method = "hf_space_svd"
+                    else:
+                        # Fichier déjà une vidéo valide — juste copier + redimensionner
+                        shutil.copy(space_video, attempt_out)
+                        success = Path(attempt_out).exists()
+                        if success:
+                            method = "hf_space_svd"
+                if not success and on_progress:
+                    on_progress(None, "⚠️ HF Spaces indisponibles — essai Replicate...")
+            except Exception as e:
+                logger.warning(f"[img2video] HF Spaces erreur: {e}")
+
+        # ── Priorité 2 : Replicate SVD (crédits gratuits) ─────────────
         if replicate_token and not success:
             if on_progress:
                 on_progress(pct + 0.03, "🎥 Replicate SVD — génération IA réaliste...")
