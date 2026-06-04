@@ -16,13 +16,6 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Spaces HF publics gratuits à vie — testés dans l'ordre
-_HF_SPACES = [
-    "stabilityai/stable-video-diffusion",
-    "multimodalart/stable-video-diffusion",
-    "wangfuyun/AnimateLCM-SVD",
-]
-
 _HF_MODELS = [
     "stabilityai/stable-video-diffusion-img2vid-xt-1-1",
     "stabilityai/stable-video-diffusion-img2vid-xt",
@@ -37,10 +30,21 @@ _DEFAULT_H = 1280
 
 # ── HuggingFace Spaces (gratuit à vie) ────────────────────────────────────────
 
-def _space_predict(space_id: str, image_path: str, hf_token: Optional[str] = None) -> Optional[str]:
+# Spaces HF publics gratuits à vie — testés dans l'ordre
+_HF_SPACES = [
+    "waloneai/SDXT-Image-To-Video",
+    "stabilityai/stable-video-diffusion",
+    "multimodalart/stable-video-diffusion",
+    "wangfuyun/AnimateLCM-SVD",
+]
+
+
+def _space_predict(space_id: str, image_path: str,
+                   hf_token: Optional[str] = None,
+                   status_cb=None) -> Optional[str]:
     """
     Appelle un HuggingFace Space public via gradio_client.
-    Gratuit à vie — aucun crédit, aucune limite de compte.
+    Gratuit à vie — aucun crédit, aucun compte requis.
     Retourne le chemin local de la vidéo téléchargée, ou None.
     """
     try:
@@ -50,44 +54,68 @@ def _space_predict(space_id: str, image_path: str, hf_token: Optional[str] = Non
         return None
 
     try:
-        logger.info(f"[HF Space] Connexion à {space_id}...")
-        client = Client(
-            space_id,
-            hf_token=hf_token or None,
-            verbose=False,
-            serialize=False,
-        )
+        if status_cb:
+            status_cb(f"🔌 Connexion à {space_id}...")
+        logger.info(f"[HF Space] Connexion à {space_id}")
 
-        # Essaie les endpoints courants dans l'ordre
-        for api_name in ["/predict", "/video", "/generate", None]:
+        client = Client(space_id, hf_token=hf_token or None, verbose=False)
+
+        # Découverte automatique des endpoints disponibles
+        endpoints = []
+        try:
+            api = client.view_api(print_info=False, return_format="dict")
+            endpoints = list(api.get("named_endpoints", {}).keys())
+            logger.info(f"[HF Space] Endpoints trouvés: {endpoints}")
+        except Exception:
+            pass
+
+        # Ordre de priorité des endpoints courants
+        for ep in (endpoints or ["/predict", "/video", "/generate", "/run"]):
             try:
-                kwargs = {"api_name": api_name} if api_name else {}
-                result = client.predict(handle_file(image_path), **kwargs)
-
+                if status_cb:
+                    status_cb(f"🎬 {space_id} → endpoint {ep}...")
+                result = client.predict(
+                    handle_file(str(Path(image_path).resolve())),
+                    api_name=ep,
+                )
                 if result:
-                    # gradio_client retourne le chemin local du fichier téléchargé
                     path = result[0] if isinstance(result, (list, tuple)) else result
-                    if path and Path(str(path)).exists():
-                        logger.info(f"[HF Space] Succès {space_id} → {path}")
-                        return str(path)
-            except Exception:
+                    path = str(path)
+                    if Path(path).exists() and Path(path).stat().st_size > 10_000:
+                        logger.info(f"[HF Space] ✅ {space_id} — vidéo: {path}")
+                        if status_cb:
+                            status_cb(f"✅ {space_id} — succès!")
+                        return path
+            except Exception as ep_err:
+                logger.debug(f"[HF Space] {space_id} {ep}: {ep_err}")
                 continue
 
     except Exception as e:
-        logger.warning(f"[HF Space] {space_id}: {e}")
+        msg = str(e)
+        logger.warning(f"[HF Space] {space_id}: {msg}")
+        if status_cb:
+            status_cb(f"⚠️ {space_id}: {msg[:80]}")
 
     return None
 
 
-async def _call_hf_spaces(image_path: str, hf_token: str = "") -> Optional[str]:
-    """Essaie tous les spaces HF en séquence, retourne le chemin vidéo local."""
+async def _call_hf_spaces(image_path: str, hf_token: str = "",
+                           on_progress=None) -> Optional[str]:
+    """Essaie tous les spaces HF en séquence."""
     loop = asyncio.get_event_loop()
+
+    def _status(msg):
+        logger.info(f"[HF Spaces] {msg}")
+        if on_progress:
+            on_progress(None, msg)
+
     for space_id in _HF_SPACES:
         result = await loop.run_in_executor(
-            None, _space_predict, space_id, image_path, hf_token or None
+            None, _space_predict, space_id, image_path, hf_token or None, _status
         )
         if result:
             return result
+
     return None
 
 
@@ -493,7 +521,7 @@ async def generate_realistic_video(
             if on_progress:
                 on_progress(pct + 0.03, "🤗 HuggingFace Spaces — génération IA gratuite...")
             try:
-                space_video = await _call_hf_spaces(image_path, hf_token)
+                space_video = await _call_hf_spaces(image_path, hf_token, on_progress=on_progress)
                 if space_video:
                     dest = attempt_out.replace(".mp4", "_space.mp4")
                     success = _hf_bytes_to_720p(
