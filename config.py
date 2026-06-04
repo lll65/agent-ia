@@ -9,8 +9,9 @@ class Config:
     # API Keys cloud
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
     XAI_API_KEY = os.getenv("XAI_API_KEY", "")
-    HF_API_TOKEN = os.getenv("HF_API_TOKEN", "")           # HuggingFace (gratuit sur hf.co/settings/tokens)
-    REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")  # Replicate (crédits gratuits sur replicate.com)
+    HF_API_TOKEN = os.getenv("HF_API_TOKEN", "")
+    REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
+    LOCAL_SVD_URL = os.getenv("LOCAL_SVD_URL", "")         # Ex: http://192.168.1.100:9876
 
     # LLM local via Ollama (fallback si pas de clé cloud)
     OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
