@@ -1,6 +1,6 @@
 """
 Pipeline Image → Vidéo réaliste (720p min, 5s min).
-Sources gratuites: HuggingFace Inference API (SVD) → fallback FFmpeg Ken Burns.
+Sources gratuites: Replicate API → HuggingFace Inference API → fallback FFmpeg Ken Burns.
 Boucle d'auto-amélioration: score le prompt, l'affine, régénère jusqu'au seuil.
 """
 import asyncio
@@ -58,6 +58,97 @@ async def _build_motion_prompt(description: str, domain: str = "img2video") -> s
 # ── HuggingFace SVD ────────────────────────────────────────────────────────────
 
 _hf_last_error: str = ""   # visible dans les logs UI
+
+# ── Replicate API (SVD) ────────────────────────────────────────────────────────
+
+async def _call_replicate_svd(image_path: str, replicate_token: str,
+                               motion_prompt: str = "", duration: float = 5.0) -> Optional[str]:
+    """
+    Appelle Replicate stability-ai/stable-video-diffusion.
+    Retourne l'URL de la vidéo générée, ou None si échec.
+    """
+    import httpx, base64
+
+    with open(image_path, "rb") as f:
+        img_b64 = "data:image/jpeg;base64," + base64.b64encode(f.read()).decode()
+
+    headers = {
+        "Authorization": f"Token {replicate_token}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "version": "3f0457e4619daac51203dedb472816fd4af51f3149fa7a9e0b5ffcf1b8172438",
+        "input": {
+            "image": img_b64,
+            "sizing_strategy": "maintain_aspect_ratio",
+            "frames_per_second": 6,
+            "motion_bucket_id": 127,
+            "cond_aug": 0.02,
+            "decoding_t": 7,
+            "video_length": "25_frames_with_svd_xt",
+        }
+    }
+
+    async with httpx.AsyncClient(timeout=300.0) as client:
+        try:
+            # Crée la prédiction
+            r = await client.post(
+                "https://api.replicate.com/v1/predictions",
+                headers=headers, json=payload
+            )
+            if r.status_code not in (200, 201):
+                logger.error(f"[Replicate] Création échouée {r.status_code}: {r.text[:200]}")
+                return None
+
+            pred = r.json()
+            pred_url = pred.get("urls", {}).get("get", "")
+            if not pred_url:
+                return None
+
+            # Polling jusqu'au résultat (max 5 min)
+            for _ in range(60):
+                await asyncio.sleep(5)
+                poll = await client.get(pred_url, headers=headers)
+                data = poll.json()
+                status = data.get("status", "")
+
+                if status == "succeeded":
+                    output = data.get("output")
+                    if isinstance(output, list) and output:
+                        return output[0]
+                    if isinstance(output, str):
+                        return output
+                    return None
+
+                elif status in ("failed", "canceled"):
+                    logger.error(f"[Replicate] Prédiction échouée: {data.get('error', '')}")
+                    return None
+
+            logger.error("[Replicate] Timeout polling")
+            return None
+
+        except Exception as e:
+            logger.error(f"[Replicate] Erreur: {e}")
+            return None
+
+
+async def _download_video(url: str, output_path: str,
+                           min_dur: float, fps: int, w: int, h: int) -> bool:
+    """Télécharge la vidéo depuis une URL et la convertit en 720p."""
+    import httpx, shutil
+
+    if not shutil.which("ffmpeg"):
+        return False
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        try:
+            r = await client.get(url)
+            if r.status_code != 200:
+                return False
+            return _hf_bytes_to_720p(r.content, output_path, min_dur, fps, w, h)
+        except Exception as e:
+            logger.error(f"[download_video] {e}")
+            return False
 
 
 async def _call_hf_svd(image_path: str, hf_token: str) -> Optional[bytes]:
@@ -308,6 +399,7 @@ async def generate_realistic_video(
     from config import config
 
     hf_token = getattr(config, "HF_API_TOKEN", "")
+    replicate_token = getattr(config, "REPLICATE_API_TOKEN", "")
     out_dir = Path(output_path).parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -330,8 +422,26 @@ async def generate_realistic_video(
         success = False
         method = "none"
 
-        # ── Essai HuggingFace SVD ──────────────────────────────────────
-        if hf_token:
+        # ── Essai Replicate SVD (priorité 1) ──────────────────────────
+        if replicate_token and not success:
+            if on_progress:
+                on_progress(pct + 0.03, "🎥 Replicate SVD — génération IA réaliste...")
+            try:
+                video_url = await _call_replicate_svd(
+                    image_path, replicate_token, motion_prompt, duration
+                )
+                if video_url:
+                    success = await _download_video(video_url, attempt_out, duration, fps, width, height)
+                    if success:
+                        method = "replicate_svd"
+                else:
+                    if on_progress:
+                        on_progress(None, "⚠️ Replicate SVD échoué — essai HuggingFace...")
+            except Exception as e:
+                logger.warning(f"[img2video] Replicate erreur: {e}")
+
+        # ── Essai HuggingFace SVD (priorité 2) ────────────────────────
+        if hf_token and not success:
             if on_progress:
                 on_progress(pct + 0.05, "🤗 HuggingFace SVD — génération IA en cours...")
             try:
