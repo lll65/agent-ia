@@ -107,7 +107,7 @@ def _space_predict(space_id: str, image_path: str,
     if not try_http:
         return None
 
-    # ── Méthode 2 : HTTP direct (Gradio 4.x queue + SSE) ────────────────────
+    # ── Méthode 2 : HTTP direct (Gradio 3/4/5 multi-versions) ───────────────
     import base64, uuid, json as _json
     try:
         import httpx
@@ -122,92 +122,155 @@ def _space_predict(space_id: str, image_path: str,
 
     hdrs = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
     session_hash = uuid.uuid4().hex[:8]
+    data_input = [{"name": "image.jpg", "data": img_b64}]
+
+    def _unwrap(v):
+        for _ in range(4):
+            if not isinstance(v, dict):
+                break
+            v = (v.get("video") or v.get("url") or v.get("name") or
+                 v.get("path") or next(iter(v.values()), None))
+        return v if isinstance(v, str) and v else None
+
+    def _save(http_client, v):
+        if not v:
+            return None
+        if v.startswith("http"):
+            try:
+                r = http_client.get(v, timeout=120.0)
+                if r.status_code == 200 and len(r.content) > 10_000:
+                    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+                        tmp.write(r.content)
+                        return tmp.name
+            except Exception:
+                pass
+        elif Path(v).exists() and Path(v).stat().st_size > 10_000:
+            return v
+        return None
+
+    if status_cb:
+        status_cb(f"🌐 {space_id} — connexion directe...")
 
     try:
-        if status_cb:
-            status_cb(f"🌐 {space_id} — connexion directe...")
+        with httpx.Client(headers=hdrs, follow_redirects=True) as http:
 
-        payload_base = {"data": [{"name": "image.jpg", "data": img_b64}], "fn_index": 0}
-        with httpx.Client(timeout=30.0, headers=hdrs, follow_redirects=True) as http:
-            r = http.post(f"{space_url}/queue/join",
-                         json={**payload_base, "session_hash": session_hash})
-            if r.status_code == 404:
-                # Gradio ancien → /run/predict (synchrone, attend le résultat)
+            # Lire le bon chemin API depuis /config (peut différer du root)
+            api_base = space_url
+            try:
+                cfg = (http.get(f"{space_url}/config", timeout=10.0).json() or {})
+                root = cfg.get("root", "") or ""
+                if root.startswith("http"):
+                    api_base = root.rstrip("/")
+                elif root and root not in ("/", ""):
+                    api_base = f"{space_url}{root.rstrip('/')}"
+            except Exception:
+                pass
+
+            # ── Gradio 5.x: POST /call/{fn} → SSE /call/{fn}/{event_id} ─────
+            for fn in ("predict", "video", "generate", "infer", "run"):
                 try:
-                    r2 = http.post(f"{space_url}/run/predict", json=payload_base,
-                                   timeout=180.0)
-                    if r2.status_code == 200:
-                        out = r2.json().get("data", [])
-                        v = out[0] if out else None
-                        for _ in range(3):
-                            if isinstance(v, dict):
-                                v = (v.get("video") or v.get("url") or
-                                     v.get("name") or v.get("path") or
-                                     next(iter(v.values()), None))
-                        if v and isinstance(v, str) and v.startswith("http"):
-                            vr = http.get(v, timeout=120.0)
-                            if vr.status_code == 200 and len(vr.content) > 10_000:
-                                with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-                                    tmp.write(vr.content)
-                                    logger.info(f"[HF Space HTTP] ✅ {space_id} /run/predict")
-                                    if status_cb:
-                                        status_cb(f"✅ {space_id}!")
-                                    return tmp.name
-                        elif v and isinstance(v, str) and Path(v).exists():
-                            if Path(v).stat().st_size > 10_000:
-                                return v
-                except Exception as e2:
-                    logger.debug(f"[HF Space HTTP] {space_id} /run/predict: {e2}")
-                return None
-            if r.status_code != 200:
-                logger.warning(f"[HF Space HTTP] {space_id}: queue/join {r.status_code}")
-                return None
-
-        with httpx.Client(follow_redirects=True, headers=hdrs) as http:
-            with http.stream("GET",
-                    f"{space_url}/queue/data?session_hash={session_hash}",
-                    timeout=180.0) as resp:
-                for line in resp.iter_lines():
-                    if not line.startswith("data:"):
+                    r5 = http.post(f"{api_base}/call/{fn}",
+                                  json={"data": data_input}, timeout=30.0)
+                    if r5.status_code != 200:
                         continue
-                    try:
-                        event = _json.loads(line[5:])
-                    except Exception:
+                    event_id = (r5.json() or {}).get("event_id", "")
+                    if not event_id:
                         continue
-                    msg = event.get("msg", "")
-                    if msg == "process_completed":
-                        out = event.get("output", {}).get("data", [])
-                        if not out:
-                            return None
-                        v = out[0]
-                        for _ in range(3):
-                            if isinstance(v, dict):
-                                v = (v.get("video") or v.get("url") or
-                                     v.get("name") or v.get("path") or
-                                     next(iter(v.values()), None))
-                        if not v or not isinstance(v, str):
-                            return None
-                        if v.startswith("http"):
-                            with httpx.Client(timeout=120.0) as dl:
-                                vr = dl.get(v)
-                                if vr.status_code == 200 and len(vr.content) > 10_000:
-                                    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-                                        tmp.write(vr.content)
-                                        logger.info(f"[HF Space HTTP] ✅ {space_id}")
+                    logger.info(f"[HF Space] Gradio5 {space_id} /call/{fn} → {event_id}")
+                    with http.stream("GET", f"{api_base}/call/{fn}/{event_id}",
+                                    timeout=180.0) as resp:
+                        for line in resp.iter_lines():
+                            if not line.startswith("data:"):
+                                continue
+                            try:
+                                ev = _json.loads(line[5:])
+                            except Exception:
+                                continue
+                            ev_type = ""
+                            if isinstance(ev, dict):
+                                ev_type = ev.get("type", ev.get("msg", ""))
+                            elif isinstance(ev, list):
+                                v = _unwrap(ev[0] if ev else None)
+                                if v:
+                                    p = _save(http, v)
+                                    if p:
+                                        logger.info(f"[HF Space HTTP] ✅ {space_id} G5/{fn}")
                                         if status_cb:
                                             status_cb(f"✅ {space_id}!")
-                                        return tmp.name
-                        elif Path(v).exists() and Path(v).stat().st_size > 10_000:
-                            return v
-                        return None
-                    elif msg in ("process_errored", "queue_full"):
-                        logger.warning(f"[HF Space HTTP] {space_id}: {msg}")
-                        return None
+                                        return p
+                                continue
+                            if "complete" in ev_type or "succeed" in ev_type:
+                                out = ev.get("output") or ev.get("data") or []
+                                if isinstance(out, dict):
+                                    out = out.get("data", [])
+                                v = _unwrap(out[0] if out else None)
+                                p = _save(http, v) if v else None
+                                if p:
+                                    logger.info(f"[HF Space HTTP] ✅ {space_id} G5/{fn}")
+                                    if status_cb:
+                                        status_cb(f"✅ {space_id}!")
+                                    return p
+                                break
+                            elif "error" in ev_type:
+                                logger.debug(f"[HF Space] {space_id} G5 error: {ev}")
+                                break
+                    break
+                except Exception as e5:
+                    logger.debug(f"[HF Space] {space_id} /call/{fn}: {e5}")
+                    continue
+
+            # ── Gradio 4.x: POST /queue/join → SSE /queue/data ───────────────
+            try:
+                r4 = http.post(f"{api_base}/queue/join", json={
+                    "data": data_input, "fn_index": 0, "session_hash": session_hash,
+                }, timeout=30.0)
+                if r4.status_code == 200:
+                    with http.stream("GET",
+                            f"{api_base}/queue/data?session_hash={session_hash}",
+                            timeout=180.0) as resp:
+                        for line in resp.iter_lines():
+                            if not line.startswith("data:"):
+                                continue
+                            try:
+                                ev = _json.loads(line[5:])
+                            except Exception:
+                                continue
+                            if ev.get("msg") == "process_completed":
+                                out = ev.get("output", {}).get("data", [])
+                                v = _unwrap(out[0] if out else None)
+                                p = _save(http, v) if v else None
+                                if p:
+                                    logger.info(f"[HF Space HTTP] ✅ {space_id} G4")
+                                    if status_cb:
+                                        status_cb(f"✅ {space_id}!")
+                                    return p
+                                break
+                            elif ev.get("msg") in ("process_errored", "queue_full"):
+                                break
+            except Exception as e4:
+                logger.debug(f"[HF Space] {space_id} G4 queue: {e4}")
+
+            # ── Gradio 3.x: POST /run/predict (synchrone) ────────────────────
+            try:
+                r3 = http.post(f"{api_base}/run/predict",
+                              json={"data": data_input, "fn_index": 0},
+                              timeout=180.0)
+                if r3.status_code == 200:
+                    out = r3.json().get("data", [])
+                    v = _unwrap(out[0] if out else None)
+                    p = _save(http, v) if v else None
+                    if p:
+                        logger.info(f"[HF Space HTTP] ✅ {space_id} G3")
+                        if status_cb:
+                            status_cb(f"✅ {space_id}!")
+                        return p
+            except Exception as e3:
+                logger.debug(f"[HF Space] {space_id} /run/predict: {e3}")
 
     except Exception as e:
         logger.warning(f"[HF Space HTTP] {space_id}: {e}")
         if status_cb:
-            status_cb(f"⚠️ {space_id} HTTP: {str(e)[:60]}")
+            status_cb(f"⚠️ {space_id}: {str(e)[:60]}")
 
     return None
 
