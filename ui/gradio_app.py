@@ -390,13 +390,28 @@ _FORMATS = {
 }
 
 
+def _video_html(video_path: str) -> str:
+    """Encode la vidéo en base64 pour l'afficher directement sans passer par Gradio."""
+    import base64
+    try:
+        data = Path(video_path).read_bytes()
+        b64  = base64.b64encode(data).decode()
+        return (
+            '<video controls autoplay loop muted playsinline '
+            'style="width:100%;max-height:520px;border-radius:10px;background:#000">'
+            f'<source src="data:video/mp4;base64,{b64}" type="video/mp4">'
+            'Ton navigateur ne supporte pas la lecture vidéo.</video>'
+        )
+    except Exception as e:
+        return f"<div style='color:#f85149'>Erreur affichage vidéo: {e}</div>"
+
+
 def make_img2video(image_file, description, motion_prompt, duration, fmt, progress=gr.Progress()):
     """Transforme une image en vidéo réaliste via img2video pipeline."""
     import re
-    from pathlib import Path
 
     if image_file is None:
-        return None, "⚠️ Charge une image d'abord."
+        return "<div style='color:#8b949e;padding:1rem'>⚠️ Charge une image d'abord.</div>", None, "⚠️ Charge une image d'abord."
 
     progress(0.05, desc="🖼️ Chargement de l'image...")
 
@@ -432,27 +447,34 @@ def make_img2video(image_file, description, motion_prompt, duration, fmt, progre
     result = _run(_run_gen())
 
     if "error" in result:
-        # Cherche si une erreur HF est dans les étapes
-        hf_errors = [s for s in steps if "⚠️ HF SVD" in s]
-        detail = "\n\n**Détail HF:**\n" + "\n".join(hf_errors) if hf_errors else ""
-        return None, f"❌ Erreur: {result['error']}{detail}\n\n" + "\n".join(steps)
+        return (
+            "<div style='color:#f85149;padding:1rem'>❌ Génération échouée.</div>",
+            None,
+            f"❌ Erreur: {result['error']}",
+        )
 
-    hf_note = ""
-    if result.get("method") == "ffmpeg_ken_burns":
-        hf_errors = [s for s in steps if "⚠️ HF SVD" in s]
-        if hf_errors:
-            hf_note = f"\n\n⚠️ **SVD a échoué** — raison: {hf_errors[-1].replace('⚠️ HF SVD: ', '')}"
-        else:
-            hf_note = "\n\n💡 Ajoute `HF_API_TOKEN` dans `.env` pour activer Stable Video Diffusion."
+    video_path = result["video_path"]
+    method     = result.get("method", "?")
+    score      = result.get("score", 0)
+    attempts   = result.get("attempts", 1)
+
+    svd_note = ""
+    if method == "ffmpeg_ken_burns":
+        svd_note = "\n\n💡 Ken Burns cinématique · Lance le serveur SVD sur ton PC GPU pour la vraie IA."
+    elif method == "local_svd":
+        svd_note = "\n\n🖥️ Générée par ton PC GPU via SVD — qualité maximale!"
 
     status = (
         f"✅ **Vidéo générée!**\n\n"
-        f"- Méthode: `{result.get('method')}`\n"
-        f"- Score qualité: **{result.get('score')}/10**\n"
-        f"- Tentatives: {result.get('attempts')}\n"
-        f"{hf_note}"
+        f"- Méthode : `{method}`\n"
+        f"- Score qualité : **{score}/10**\n"
+        f"- Tentatives : {attempts}"
+        f"{svd_note}"
     )
-    return result["video_path"], status
+
+    html  = _video_html(video_path)
+    fpath = video_path if Path(video_path).exists() else None
+    return html, fpath, status
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -782,16 +804,22 @@ def build_ui() -> gr.Blocks:
                             minimum=5, maximum=15, value=5, step=1,
                             label="⏱️ Durée (secondes)",
                         )
-                        iv_btn = gr.Button("🎬 Générer la vidéo", variant="primary", size="lg")
+                        iv_btn    = gr.Button("🎬 Générer la vidéo", variant="primary", size="lg")
                         iv_status = gr.Markdown("")
+                        iv_file   = gr.File(label="⬇️ Télécharger le MP4")
 
                     with gr.Column(scale=2):
-                        iv_video = gr.Video(label="🎥 Vidéo générée", height=500)
+                        iv_video = gr.HTML(
+                            value="<div style='height:400px;display:flex;align-items:center;"
+                                  "justify-content:center;color:#8b949e;font-size:1.1rem;"
+                                  "border:1px dashed #30363d;border-radius:10px'>"
+                                  "🎬 La vidéo apparaîtra ici</div>"
+                        )
 
                 iv_btn.click(
                     make_img2video,
                     [iv_image, iv_desc, iv_prompt, iv_duration, iv_format],
-                    [iv_video, iv_status],
+                    [iv_video, iv_file, iv_status],
                 )
 
             # ══ CODE & PROJETS ════════════════════════════════════════════════
