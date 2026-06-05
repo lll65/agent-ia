@@ -32,6 +32,9 @@ matplotlib>=3.8.0
 # Robustesse
 tenacity==8.5.0
 
+# Vidéo IA (fal.ai — crédits gratuits à l'inscription → fal.ai/dashboard/keys)
+fal-client>=0.10.0
+
 # UI
 gradio==4.36.1
 

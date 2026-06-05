@@ -365,6 +365,89 @@ async def _build_motion_prompt(description: str, domain: str = "img2video") -> s
 
 _hf_last_error: str = ""   # visible dans les logs UI
 
+# ── fal.ai SVD (vraie IA, crédits gratuits) ────────────────────────────────────
+
+async def _call_fal_svd(image_path: str, fal_key: str, on_progress=None) -> Optional[str]:
+    """
+    Vidéo IA réaliste via fal.ai (stable-video-diffusion).
+    Inscription gratuite sur fal.ai → ~5$ de crédits offerts → ~0.02-0.05$/vidéo.
+    Durée réelle : 1-3 minutes (vraie inférence SVD dans le cloud).
+    """
+    try:
+        import os as _os
+        _os.environ["FAL_KEY"] = fal_key
+        import fal_client
+    except ImportError:
+        logger.warning("[FAL] fal-client non installé: pip install fal-client")
+        return None
+
+    if on_progress:
+        on_progress(None, "🤖 fal.ai SVD — génération IA réaliste (1-3 min)...")
+
+    loop = asyncio.get_event_loop()
+    import httpx as _httpx
+
+    try:
+        # Upload de l'image vers fal.ai
+        def _upload():
+            with open(image_path, "rb") as f:
+                return fal_client.upload(f.read(), "image/jpeg")
+
+        if on_progress:
+            on_progress(None, "⬆️ Upload de l'image vers fal.ai...")
+        image_url = await loop.run_in_executor(None, _upload)
+        logger.info(f"[FAL] Image uploadée: {image_url}")
+
+        # Génération SVD
+        def _generate():
+            return fal_client.subscribe(
+                "fal-ai/stable-video-diffusion",
+                arguments={
+                    "image_url": image_url,
+                    "motion_bucket_id": 127,
+                    "cond_aug": 0.02,
+                    "fps": 7,
+                    "frames": 25,
+                },
+                with_logs=False,
+            )
+
+        if on_progress:
+            on_progress(None, "🧠 Inférence SVD sur les serveurs fal.ai...")
+        result = await loop.run_in_executor(None, _generate)
+
+        video_url = None
+        if isinstance(result, dict):
+            vid = result.get("video") or {}
+            video_url = (vid.get("url") if isinstance(vid, dict) else vid) or result.get("video_url")
+
+        if not video_url:
+            logger.warning(f"[FAL] Pas d'URL vidéo: {str(result)[:200]}")
+            return None
+
+        logger.info(f"[FAL] Vidéo générée: {video_url}")
+        if on_progress:
+            on_progress(None, "⬇️ Téléchargement de la vidéo IA...")
+
+        async with _httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.get(video_url)
+            if r.status_code == 200 and len(r.content) > 10_000:
+                with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+                    tmp.write(r.content)
+                    logger.info(f"[FAL] ✅ Vidéo IA téléchargée ({len(r.content)//1024} KB)")
+                    if on_progress:
+                        on_progress(None, "✅ fal.ai SVD — vidéo IA générée!")
+                    return tmp.name
+
+        logger.warning("[FAL] Téléchargement échoué")
+    except Exception as e:
+        logger.warning(f"[FAL] Erreur: {e}")
+        if on_progress:
+            on_progress(None, f"⚠️ fal.ai: {str(e)[:80]}")
+
+    return None
+
+
 # ── Serveur SVD local (PC avec GPU) ────────────────────────────────────────────
 
 async def _call_local_svd(image_path: str, api_url: str,
@@ -795,6 +878,26 @@ async def generate_realistic_video(
                 logger.warning(f"[img2video] Local SVD erreur: {e}")
 
         # HF Spaces SVD supprimé — aucun space public n'expose d'API (404 permanent)
+
+        # ── Priorité 1 : fal.ai SVD (vraie IA, ~0.02$/vidéo, crédits gratuits) ──
+        fal_key = getattr(config, "FAL_API_KEY", "")
+        if fal_key and not success:
+            if on_progress:
+                on_progress(pct + 0.03, "🤖 fal.ai — génération IA réaliste (1-3 min)...")
+            try:
+                fal_video = await _call_fal_svd(image_path, fal_key, on_progress)
+                if fal_video:
+                    success = _hf_bytes_to_720p(
+                        Path(fal_video).read_bytes(), attempt_out, duration, fps, width, height
+                    )
+                    if not success:
+                        shutil.copy(fal_video, attempt_out)
+                        success = Path(attempt_out).exists()
+                    if success:
+                        method = "fal_svd"
+                        Path(fal_video).unlink(missing_ok=True)
+            except Exception as e:
+                logger.warning(f"[img2video] fal.ai erreur: {e}")
 
         # ── Priorité 2 : Replicate SVD (crédits gratuits) ─────────────
         if replicate_token and not success:

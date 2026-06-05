@@ -11,6 +11,7 @@ class Config:
     XAI_API_KEY = os.getenv("XAI_API_KEY", "")
     HF_API_TOKEN = os.getenv("HF_API_TOKEN", "")
     REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
+    FAL_API_KEY = os.getenv("FAL_API_KEY", "")             # fal.ai → fal.ai/dashboard/keys
     LOCAL_SVD_URL = os.getenv("LOCAL_SVD_URL", "")         # Ex: http://192.168.1.100:9876
 
     # LLM local via Ollama (fallback si pas de clé cloud)
