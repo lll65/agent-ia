@@ -365,7 +365,54 @@ async def _build_motion_prompt(description: str, domain: str = "img2video") -> s
 
 _hf_last_error: str = ""   # visible dans les logs UI
 
-# ── Replicate API (SVD) ────────────────────────────────────────────────────────
+# ── Serveur SVD local (PC avec GPU) ────────────────────────────────────────────
+
+async def _call_local_svd(image_path: str, api_url: str,
+                           on_progress=None) -> Optional[str]:
+    """
+    Appelle le serveur video/svd_server.py tournant sur le PC GPU.
+    Retourne le chemin local du fichier MP4, ou None si échec.
+    """
+    import httpx
+
+    base = api_url.rstrip("/")
+    if on_progress:
+        on_progress(None, f"🖥️ Serveur SVD local ({base})...")
+
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            # Vérification santé
+            try:
+                h = await client.get(f"{base}/health", timeout=5.0)
+                if h.status_code != 200:
+                    logger.warning(f"[LocalSVD] health check échoué: {h.status_code}")
+                    return None
+                info = h.json()
+                logger.info(f"[LocalSVD] Connecté — {info}")
+            except Exception as e:
+                logger.warning(f"[LocalSVD] Serveur inaccessible ({base}): {e}")
+                return None
+
+            # Génération
+            with open(image_path, "rb") as f:
+                r = await client.post(
+                    f"{base}/generate",
+                    files={"image": ("image.jpg", f, "image/jpeg")},
+                )
+
+            if r.status_code == 200 and len(r.content) > 10_000:
+                with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+                    tmp.write(r.content)
+                    logger.info(f"[LocalSVD] ✅ vidéo reçue ({len(r.content)//1024} KB)")
+                    if on_progress:
+                        on_progress(None, "✅ SVD local — vidéo générée!")
+                    return tmp.name
+
+            logger.warning(f"[LocalSVD] Réponse inattendue: {r.status_code} — {r.text[:200]}")
+    except Exception as e:
+        logger.warning(f"[LocalSVD] Erreur: {e}")
+
+    return None
 
 async def _call_replicate_svd(image_path: str, replicate_token: str,
                                motion_prompt: str = "", duration: float = 5.0) -> Optional[str]:
@@ -706,6 +753,7 @@ async def generate_realistic_video(
 
     hf_token = getattr(config, "HF_API_TOKEN", "")
     replicate_token = getattr(config, "REPLICATE_API_TOKEN", "")
+    local_svd_url = getattr(config, "LOCAL_SVD_URL", "")
     out_dir = Path(output_path).parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -727,6 +775,24 @@ async def generate_realistic_video(
         attempt_out = str(out_dir / f"_tmp_{loop_i}.mp4")
         success = False
         method = "none"
+
+        # ── Priorité 0 : Serveur SVD local (PC GPU — meilleur choix) ────
+        if local_svd_url and not success:
+            if on_progress:
+                on_progress(pct + 0.02, "🖥️ SVD local (PC GPU)...")
+            try:
+                local_video = await _call_local_svd(image_path, local_svd_url, on_progress)
+                if local_video:
+                    success = _hf_bytes_to_720p(
+                        Path(local_video).read_bytes(), attempt_out, duration, fps, width, height
+                    )
+                    if not success:
+                        shutil.copy(local_video, attempt_out)
+                        success = Path(attempt_out).exists()
+                    if success:
+                        method = "local_svd"
+            except Exception as e:
+                logger.warning(f"[img2video] Local SVD erreur: {e}")
 
         # ── Priorité 1 : HuggingFace Spaces (gratuit à vie) ──────────
         if not success:

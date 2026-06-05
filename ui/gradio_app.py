@@ -516,23 +516,28 @@ def gen_project(desc, proj_type, progress=gr.Progress()):
 # FINANCE
 # ═════════════════════════════════════════════════════════════════════════════
 
-def analyze_finance(ticker: str, period: str) -> str:
+def analyze_finance(ticker: str, period: str):
     if not ticker.strip():
-        return "⚠️ Saisis un ticker (ex: AAPL, BTC-USD, MC.PA)"
+        return "⚠️ Saisis un ticker (ex: AAPL, BTC-USD, MC.PA)", None
     try:
-        from plugins.builtin.finance import StockAnalysisPlugin
-        return StockAnalysisPlugin().run(ticker=ticker.strip(), period=period)
+        from plugins.builtin.finance import StockAnalysisPlugin, generate_stock_chart
+        analysis = StockAnalysisPlugin().run(ticker=ticker.strip(), period=period)
+        chart    = generate_stock_chart(ticker.strip(), period)
+        return analysis, chart
     except Exception as e:
-        return f"❌ Erreur: {e}"
+        return f"❌ Erreur: {e}", None
 
-def compare_finance(tickers: str, period: str) -> str:
+def compare_finance(tickers: str, period: str):
     if not tickers.strip():
-        return "⚠️ Saisis des tickers séparés par virgule (ex: AAPL,MSFT,GOOGL)"
+        return "⚠️ Saisis des tickers séparés par virgule (ex: AAPL,MSFT,GOOGL)", None
     try:
-        from plugins.builtin.finance import MultiStockComparePlugin
-        return MultiStockComparePlugin().run(tickers=tickers, period=period)
+        from plugins.builtin.finance import MultiStockComparePlugin, generate_compare_chart
+        analysis = MultiStockComparePlugin().run(tickers=tickers, period=period)
+        symbols  = [t.strip().upper() for t in tickers.split(",") if t.strip()][:8]
+        chart    = generate_compare_chart(symbols, period)
+        return analysis, chart
     except Exception as e:
-        return f"❌ Erreur: {e}"
+        return f"❌ Erreur: {e}", None
 
 def finance_news(ticker: str) -> str:
     if not ticker.strip():
@@ -543,22 +548,44 @@ def finance_news(ticker: str) -> str:
     except Exception as e:
         return f"❌ Erreur: {e}"
 
+def market_dashboard_fn() -> str:
+    try:
+        from plugins.builtin.finance import MarketDashboardPlugin
+        return MarketDashboardPlugin().run()
+    except Exception as e:
+        return f"❌ Erreur dashboard: {e}"
+
+def portfolio_analyze_fn(positions_text: str):
+    if not positions_text.strip():
+        return (
+            "⚠️ Saisis tes positions (une par ligne) :\n\n"
+            "```\nAAPL 10 150.00\nBTC-USD 0.5 42000\nNVDA 3 800\n```",
+            None,
+        )
+    try:
+        from plugins.builtin.finance import analyze_portfolio
+        return analyze_portfolio(positions_text)
+    except Exception as e:
+        return f"❌ Erreur: {e}", None
+
 def finance_agent_analysis(question: str) -> str:
     """Lance l'agent finance_analyst complet avec ReAct + outils."""
     if not question.strip():
         return "⚠️ Pose une question financière."
     from agent.core import run_agent
-    from plugins import get_loader
     cfg = {
         "id": "finance_ui",
         "name": "FinanceAgent Pro",
         "system_prompt": (
-            "Tu es un analyste financier senior expert. "
-            "Tu utilises analyze_stock, compare_stocks et get_market_news pour obtenir des données réelles. "
-            "Tu fournis une analyse complète avec recommandation achat/vente/hold motivée. "
-            "Tu rappelles que tes analyses ne sont pas des conseils financiers officiels."
+            "Tu es un analyste financier senior expert et trader professionnel. "
+            "Tu utilises analyze_stock, compare_stocks, get_market_news et market_dashboard "
+            "pour obtenir des données réelles avant de répondre. "
+            "Tu fournis une analyse complète avec niveaux clés, catalyseurs, risques "
+            "et une recommandation achat/vente/hold clairement motivée par les données. "
+            "Tu utilises des tableaux Markdown pour la clarté. "
+            "Tu rappelles que tes analyses sont algorithmiques et non des conseils financiers officiels."
         ),
-        "tools": ["analyze_stock", "compare_stocks", "get_market_news", "search_web"],
+        "tools": ["analyze_stock", "compare_stocks", "get_market_news", "market_dashboard", "search_web"],
         "model": config.LLM_MODEL,
     }
     try:
@@ -809,31 +836,78 @@ def build_ui() -> gr.Blocks:
             with gr.TabItem("💹 Finance"):
                 gr.Markdown(
                     "### Analyse boursière & crypto en temps réel\n"
-                    "Données réelles · RSI · MACD · Bollinger · Recommandation achat/vente"
+                    "Données réelles · RSI · MACD · Bollinger · Graphiques · Portefeuille · Dashboard"
                 )
                 with gr.Tabs():
 
-                    with gr.TabItem("📊 Analyser une action"):
+                    # ── Dashboard ─────────────────────────────────────────────
+                    with gr.TabItem("🌐 Dashboard"):
+                        gr.Markdown("Vue d'ensemble instantanée — indices, crypto, forex, matières premières")
+                        db_btn = gr.Button("🔄 Actualiser le dashboard", variant="primary", size="lg")
+                        db_out = gr.Markdown()
+                        db_btn.click(market_dashboard_fn, [], [db_out])
+
+                    # ── Analyser ──────────────────────────────────────────────
+                    with gr.TabItem("📊 Analyser"):
                         with gr.Row():
                             with gr.Column(scale=1):
-                                f_ticker  = gr.Textbox(label="Ticker", placeholder="AAPL · BTC-USD · MC.PA · ETH-USD · NVDA")
-                                f_period  = gr.Dropdown(["1mo","3mo","6mo","1y","2y"], value="6mo", label="Période")
-                                f_btn     = gr.Button("📊 Analyser", variant="primary", size="lg")
+                                f_ticker = gr.Textbox(
+                                    label="Ticker",
+                                    placeholder="AAPL · BTC-USD · MC.PA · ETH-USD · NVDA",
+                                )
+                                f_period = gr.Dropdown(
+                                    ["1mo", "3mo", "6mo", "1y", "2y"], value="6mo", label="Période"
+                                )
+                                f_btn = gr.Button("📊 Analyser", variant="primary", size="lg")
                             with gr.Column(scale=2):
                                 f_out = gr.Markdown()
-                        f_btn.click(analyze_finance, [f_ticker, f_period], [f_out])
+                        f_chart = gr.Image(label="📈 Graphique technique", show_label=True)
+                        f_btn.click(analyze_finance, [f_ticker, f_period], [f_out, f_chart])
 
+                    # ── Comparer ──────────────────────────────────────────────
                     with gr.TabItem("⚖️ Comparer"):
                         with gr.Row():
                             with gr.Column(scale=1):
-                                fc_tickers = gr.Textbox(label="Tickers (séparés par virgule)",
-                                                        placeholder="AAPL,MSFT,GOOGL,NVDA")
-                                fc_period  = gr.Dropdown(["1mo","3mo","6mo","1y"], value="3mo", label="Période")
-                                fc_btn     = gr.Button("⚖️ Comparer", variant="primary")
+                                fc_tickers = gr.Textbox(
+                                    label="Tickers (séparés par virgule)",
+                                    placeholder="AAPL,MSFT,GOOGL,NVDA",
+                                )
+                                fc_period = gr.Dropdown(
+                                    ["1mo", "3mo", "6mo", "1y"], value="3mo", label="Période"
+                                )
+                                fc_btn = gr.Button("⚖️ Comparer", variant="primary", size="lg")
                             with gr.Column(scale=2):
                                 fc_out = gr.Markdown()
-                        fc_btn.click(compare_finance, [fc_tickers, fc_period], [fc_out])
+                        fc_chart = gr.Image(label="📊 Performance comparée (base 0%)")
+                        fc_btn.click(compare_finance, [fc_tickers, fc_period], [fc_out, fc_chart])
 
+                    # ── Portefeuille ──────────────────────────────────────────
+                    with gr.TabItem("💼 Portefeuille"):
+                        gr.Markdown(
+                            "Saisis tes positions, une par ligne : **TICKER QUANTITE PRIX_ACHAT**\n\n"
+                            "Exemple : `AAPL 10 150.00` · `BTC-USD 0.5 42000` · `MC.PA 3 650`  "
+                            "(le prix d'achat est optionnel si tu veux juste voir la valeur)"
+                        )
+                        with gr.Row():
+                            with gr.Column(scale=1):
+                                pf_in = gr.Textbox(
+                                    label="Mes positions",
+                                    lines=10,
+                                    placeholder=(
+                                        "AAPL 10 150.00\n"
+                                        "MSFT 5 280.00\n"
+                                        "BTC-USD 0.1 42000\n"
+                                        "NVDA 3 800.00\n"
+                                        "ETH-USD 2 2000"
+                                    ),
+                                )
+                                pf_btn = gr.Button("💼 Analyser mon portefeuille", variant="primary", size="lg")
+                            with gr.Column(scale=2):
+                                pf_out = gr.Markdown()
+                        pf_chart = gr.Image(label="📊 Allocation & Performance")
+                        pf_btn.click(portfolio_analyze_fn, [pf_in], [pf_out, pf_chart])
+
+                    # ── Actualités ────────────────────────────────────────────
                     with gr.TabItem("📰 Actualités"):
                         with gr.Row():
                             with gr.Column(scale=1):
@@ -843,13 +917,18 @@ def build_ui() -> gr.Blocks:
                                 fn_out = gr.Markdown()
                         fn_btn.click(finance_news, [fn_ticker], [fn_out])
 
+                    # ── Agent Financier ───────────────────────────────────────
                     with gr.TabItem("🤖 Agent Financier"):
                         gr.Markdown(
-                            "Pose n'importe quelle question financière — l'agent utilise les vrais outils "
-                            "(analyze_stock, compare_stocks, news) et synthétise une réponse complète."
+                            "Pose n'importe quelle question — l'agent récupère les données réelles "
+                            "(analyze_stock, compare_stocks, market_dashboard, news) et synthétise "
+                            "une analyse complète avec recommandation motivée."
                         )
-                        fa_in  = gr.Textbox(label="Question", lines=3,
-                                            placeholder="Ex: Faut-il acheter Apple en ce moment? Compare NVDA vs AMD. Analyse le Bitcoin sur 6 mois.")
+                        fa_in  = gr.Textbox(
+                            label="Question",
+                            lines=3,
+                            placeholder="Ex: Faut-il acheter Apple en ce moment ? Compare NVDA vs AMD. Analyse le BTC sur 6 mois.",
+                        )
                         fa_btn = gr.Button("🤖 Analyser avec l'agent", variant="primary", size="lg")
                         fa_out = gr.Markdown()
                         fa_btn.click(finance_agent_analysis, [fa_in], [fa_out])
