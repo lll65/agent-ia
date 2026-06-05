@@ -794,29 +794,7 @@ async def generate_realistic_video(
             except Exception as e:
                 logger.warning(f"[img2video] Local SVD erreur: {e}")
 
-        # ── Priorité 1 : HuggingFace Spaces (gratuit à vie) ──────────
-        if not success:
-            if on_progress:
-                on_progress(pct + 0.03, "🤗 HuggingFace Spaces — génération IA gratuite...")
-            try:
-                space_video = await _call_hf_spaces(image_path, hf_token, on_progress=on_progress)
-                if space_video:
-                    dest = attempt_out.replace(".mp4", "_space.mp4")
-                    success = _hf_bytes_to_720p(
-                        Path(space_video).read_bytes(), attempt_out, duration, fps, width, height
-                    )
-                    if success:
-                        method = "hf_space_svd"
-                    else:
-                        # Fichier déjà une vidéo valide — juste copier + redimensionner
-                        shutil.copy(space_video, attempt_out)
-                        success = Path(attempt_out).exists()
-                        if success:
-                            method = "hf_space_svd"
-                if not success and on_progress:
-                    on_progress(None, "⚠️ HF Spaces indisponibles — essai Replicate...")
-            except Exception as e:
-                logger.warning(f"[img2video] HF Spaces erreur: {e}")
+        # HF Spaces SVD supprimé — aucun space public n'expose d'API (404 permanent)
 
         # ── Priorité 2 : Replicate SVD (crédits gratuits) ─────────────
         if replicate_token and not success:
