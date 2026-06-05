@@ -12,6 +12,22 @@ from datetime import datetime
 from pathlib import Path
 
 import inspect
+
+# Patch de compatibilité : HfFolder supprimé dans huggingface_hub ≥ 0.24
+import huggingface_hub as _hfh
+if not hasattr(_hfh, "HfFolder"):
+    class _HfFolderCompat:
+        @staticmethod
+        def get_token():
+            try:
+                return _hfh.get_token()
+            except Exception:
+                return None
+        @staticmethod
+        def save_token(token, new_format=True):
+            pass
+    _hfh.HfFolder = _HfFolderCompat
+
 import gradio as gr
 from config import config
 

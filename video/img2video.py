@@ -675,17 +675,17 @@ def _ken_burns(image_path: str, output_path: str,
         return False
 
     frames = int(duration * fps)
-    # Pan en pixels dans l'espace input (= 3x output)
-    pan_x = int(w * 0.25)
-    pan_y = int(h * 0.15)
+    # 2x au lieu de 3x pour éviter les malloc failures sur Windows (x264)
+    pan_x = int(w * 0.18)
+    pan_y = int(h * 0.12)
 
     vf = (
-        # Mise à l'échelle 3x pour laisser de la marge au zoom + pan
-        f"scale={w * 3}:{h * 3}:force_original_aspect_ratio=increase,"
-        f"crop={w * 3}:{h * 3},"
-        # Zoom linéaire 1.0→1.35 + pan diagonal progressif
+        # Mise à l'échelle 2x pour laisser de la marge au zoom + pan
+        f"scale={w * 2}:{h * 2}:force_original_aspect_ratio=increase,"
+        f"crop={w * 2}:{h * 2},"
+        # Zoom linéaire 1.0→1.30 + pan diagonal progressif
         f"zoompan="
-        f"z='1.0+0.35*on/{frames}':"
+        f"z='1.0+0.30*on/{frames}':"
         f"x='iw/2-(iw/zoom/2)+{pan_x}*on/{frames}':"
         f"y='ih/2-(ih/zoom/2)+{pan_y}*on/{frames}':"
         f"d={frames}:s={w}x{h}:fps={fps},"
@@ -696,8 +696,9 @@ def _ken_burns(image_path: str, output_path: str,
         "ffmpeg", "-y", "-loglevel", "error",
         "-loop", "1", "-framerate", str(fps), "-i", image_path,
         "-vf", vf,
-        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "20",
         "-pix_fmt", "yuv420p",
+        "-x264-params", "threads=2:ref=1",
         "-t", str(duration), "-r", str(fps),
         output_path,
     ]
