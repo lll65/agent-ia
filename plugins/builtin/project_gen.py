@@ -82,29 +82,55 @@ class CreateProjectPlugin(Plugin):
 
 class VideoScriptPlugin(Plugin):
     name = "create_video_script"
-    description = "Génère un script de vidéo virale (slides percutantes)."
+    description = "Génère un VRAI script de vidéo virale sur-mesure (3 hooks, structure rétention timecodée, B-roll, CTA, titre+hashtags)."
     parameters = {
         "topic": {"type": "string", "description": "Sujet de la vidéo", "required": True},
-        "style": {"type": "string", "description": "Style: éducatif | motivation | humour | tutoriel", "required": False},
+        "style": {"type": "string", "description": "Style: éducatif | motivation | humour | tutoriel | storytelling", "required": False},
+        "duration": {"type": "string", "description": "Durée cible: 30s | 45s | 60s | 90s", "required": False},
     }
 
-    def run(self, topic: str, style: str = "éducatif") -> str:
+    def run(self, topic: str, style: str = "éducatif", duration: str = "45s") -> str:
+        # 1) Génération sur-mesure via LLM
+        try:
+            from llm.client import chat
+            prompt = (
+                f"Écris un script de vidéo courte virale (TikTok/Reels/Shorts) prêt à tourner.\n"
+                f"Sujet : {topic}\nStyle : {style}\nDurée cible : {duration}\n\n"
+                "Structure imposée :\n"
+                "1. **3 variantes de HOOK** (0-3s) qui scotchent, numérotées\n"
+                "2. **SCRIPT beat par beat** avec timecodes — texte dit + ce qui est montré à l'écran\n"
+                "3. **B-roll / visuels** suggérés pour chaque segment\n"
+                "4. **CALL TO ACTION** final percutant\n"
+                "5. **TITRE + DESCRIPTION** optimisés + 8 hashtags pertinents\n\n"
+                "Sois concret, rythmé, orienté rétention. Réponds en Markdown structuré, en français."
+            )
+            out = chat(
+                [{"role": "system", "content": "Tu es un scénariste de contenu viral. Tu écris des scripts prêts à filmer, pas des plans génériques."},
+                 {"role": "user", "content": prompt}],
+                temperature=0.85,
+            )
+            if out and len(out.strip()) > 80:
+                return out.strip()
+        except Exception:
+            pass
+
+        # 2) Fallback statique si LLM indisponible
         return textwrap.dedent(f"""\
-            === SCRIPT VIDÉO VIRALE ({style.upper()}) ===
+            === SCRIPT VIDÉO VIRALE ({style.upper()}) — {duration} ===
             Sujet: {topic}
 
-            [SLIDE 1 — ACCROCHE 0-3s]
-            Fait surprenant ou question choc sur: {topic}
+            [HOOK 0-3s] — 3 variantes à tester
+            1. "Personne ne te dit ça sur {topic}..."
+            2. "J'ai testé {topic} pendant 30 jours, voici le résultat."
+            3. "Arrête de faire ça avec {topic}."
 
-            [SLIDE 2-4 — DÉVELOPPEMENT]
+            [DÉVELOPPEMENT]
             • Point clé 1 — explication simple
             • Point clé 2 — exemple concret / histoire courte
             • Twist / révélation inattendue
 
-            [SLIDE 5 — CALL TO ACTION]
-            "Sauvegarde si tu veux retenir ça 💡"
-            "Commente ton avis 👇"
-            "Suis pour plus de {topic}"
+            [CALL TO ACTION]
+            "Sauvegarde si ça t'a servi 💡 — Suis pour plus de {topic}"
 
             FORMAT: Vertical 9:16 | Sous-titres | Musique tendance en fond
         """)

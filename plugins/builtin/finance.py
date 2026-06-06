@@ -779,16 +779,55 @@ class MarketNewsPlugin(Plugin):
             import yfinance as yf
         except ImportError:
             return "❌ pip install yfinance"
+
+        def _parse(n: dict) -> tuple:
+            """Gère l'ancien ET le nouveau schéma yfinance."""
+            # Nouveau schéma : tout est sous 'content'
+            c = n.get("content") if isinstance(n.get("content"), dict) else n
+            title = c.get("title") or n.get("title") or "?"
+            pub = (c.get("provider") or {}).get("displayName") if isinstance(c.get("provider"), dict) else None
+            pub = pub or n.get("publisher") or "?"
+            url = ""
+            if isinstance(c.get("canonicalUrl"), dict):
+                url = c["canonicalUrl"].get("url", "")
+            url = url or c.get("clickThroughUrl", {}).get("url", "") if isinstance(c.get("clickThroughUrl"), dict) else url
+            url = url or n.get("link") or ""
+            summary = c.get("summary") or c.get("description") or ""
+            return title, pub, url, summary
+
         try:
             news = yf.Ticker(ticker.upper()).news or []
-            if not news:
-                return f"Aucune news pour {ticker}."
-            lines = [f"## 📰 Actualités {ticker.upper()} — {min(8, len(news))} dernières\n"]
-            for n in news[:8]:
-                title = n.get("title", "?")
-                pub   = n.get("publisher", "?")
-                url   = n.get("link", "")
-                lines.append(f"**{title}**  \n*{pub}* — {url}\n")
-            return "\n".join(lines)
+            items = [_parse(n) for n in news[:8]]
+            items = [it for it in items if it[0] and it[0] != "?"]
+
+            if items:
+                lines = [f"## 📰 Actualités {ticker.upper()} — {len(items)} dernières\n"]
+                for title, pub, url, summary in items:
+                    lines.append(f"**{title}**  \n*{pub}*" + (f" — {url}" if url else ""))
+                    if summary:
+                        lines.append(f"> {summary[:220]}")
+                    lines.append("")
+                return "\n".join(lines)
         except Exception as e:
-            return f"Erreur news {ticker}: {e}"
+            err = str(e)
+        else:
+            err = ""
+
+        # Fallback : recherche d'actualités web si yfinance ne renvoie rien
+        try:
+            from duckduckgo_search import DDGS
+            q = f"{ticker.upper()} stock news"
+            with DDGS() as ddgs:
+                res = list(ddgs.news(q, max_results=6, region="fr-fr"))
+            if res:
+                lines = [f"## 📰 Actualités {ticker.upper()} (web)\n"]
+                for r in res:
+                    t = str(r.get("title", "?"))
+                    s = str(r.get("source", ""))
+                    u = r.get("url", "")
+                    lines.append(f"**{t}**  \n*{s}* — {u}\n")
+                return "\n".join(lines)
+        except Exception:
+            pass
+
+        return f"Aucune actualité trouvée pour {ticker}." + (f" ({err})" if err else "")
