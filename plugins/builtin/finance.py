@@ -597,8 +597,61 @@ class StockAnalysisPlugin(Plugin):
                     lines.append(f"- {b}")
                 lines.append("")
 
+            # ── Plan de trading concret (entrée / objectifs / stop) ──────────
+            atr_ref = atr_v if atr_v and atr_v > 0 else price * 0.02
+            lines.append("### 📋 Plan de Trading")
+            if score >= 1.5:
+                entry = price
+                supports = [s for s in [bb_lo, sma50, sma200, l52] if s and s < price]
+                sl = max(supports) if supports else entry - 2 * atr_ref
+                sl = max(sl, entry - 2.5 * atr_ref)          # borne: pas trop loin
+                resists = sorted([r for r in [bb_up, sma50, sma200, h52] if r and r > price])
+                tp1 = resists[0] if resists else entry + 2 * atr_ref
+                tp2 = resists[1] if len(resists) > 1 else entry + 4 * atr_ref
+                risk, reward = entry - sl, tp1 - entry
+                rr = reward / risk if risk > 0 else 0
+                rr_sig = "✅ favorable" if rr >= 2 else ("🟡 correct" if rr >= 1 else "🔴 défavorable")
+                lines.append("**Sens : 🟢 LONG (position acheteuse)**")
+                lines.append("")
+                lines.append("| Niveau | Prix | Distance |")
+                lines.append("|---|---|---|")
+                lines.append(f"| 🎯 Zone d'entrée | {entry:.4f} | — |")
+                lines.append(f"| 🟢 Objectif 1 (TP1) | {tp1:.4f} | {(tp1/entry-1)*100:+.2f}% |")
+                lines.append(f"| 🟢 Objectif 2 (TP2) | {tp2:.4f} | {(tp2/entry-1)*100:+.2f}% |")
+                lines.append(f"| 🔴 Stop-loss | {sl:.4f} | {(sl/entry-1)*100:+.2f}% |")
+                lines.append("")
+                lines.append(f"**Ratio risque/rendement : {rr:.1f}:1** — {rr_sig}")
+            elif score <= -1.5:
+                entry = price
+                resists = [r for r in [bb_up, sma50, sma200, h52] if r and r > price]
+                sl = min(resists) if resists else entry + 2 * atr_ref
+                sl = min(sl, entry + 2.5 * atr_ref)
+                supports = sorted([s for s in [bb_lo, sma50, sma200, l52] if s and s < price], reverse=True)
+                tp1 = supports[0] if supports else entry - 2 * atr_ref
+                tp2 = supports[1] if len(supports) > 1 else entry - 4 * atr_ref
+                risk, reward = sl - entry, entry - tp1
+                rr = reward / risk if risk > 0 else 0
+                rr_sig = "✅ favorable" if rr >= 2 else ("🟡 correct" if rr >= 1 else "🔴 défavorable")
+                lines.append("**Sens : 🔴 Éviter / alléger (pression vendeuse)**")
+                lines.append("")
+                lines.append("| Niveau | Prix | Distance |")
+                lines.append("|---|---|---|")
+                lines.append(f"| ⛔ Sortie / pas d'achat | {entry:.4f} | — |")
+                lines.append(f"| 🟢 Zone de rachat 1 | {tp1:.4f} | {(tp1/entry-1)*100:+.2f}% |")
+                lines.append(f"| 🟢 Zone de rachat 2 | {tp2:.4f} | {(tp2/entry-1)*100:+.2f}% |")
+                lines.append("")
+                lines.append(f"Attends un repli vers **{tp1:.4f}** ({(tp1/entry-1)*100:+.2f}%) avant d'envisager une entrée.")
+            else:
+                sup = max([s for s in [bb_lo, sma50, sma200, l52] if s and s < price], default=price - 2 * atr_ref)
+                res = min([r for r in [bb_up, sma50, sma200, h52] if r and r > price], default=price + 2 * atr_ref)
+                lines.append("**Sens : ⚪ Neutre — attendre une cassure**")
+                lines.append("")
+                lines.append(f"- 🟢 **Acheter** si cassure au-dessus de **{res:.4f}** ({(res/price-1)*100:+.2f}%)")
+                lines.append(f"- 🔴 **Vendre** si cassure sous **{sup:.4f}** ({(sup/price-1)*100:+.2f}%)")
+            lines.append("")
+
             lines.append("---")
-            lines.append("*⚠️ Analyse algorithmique — pas un conseil financier. DYOR.*")
+            lines.append("*Analyse technique automatisée — gère toujours ton risque (taille de position + stop-loss).*")
             return "\n".join(lines)
 
         except Exception as e:
