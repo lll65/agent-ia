@@ -597,8 +597,61 @@ class StockAnalysisPlugin(Plugin):
                     lines.append(f"- {b}")
                 lines.append("")
 
+            # ── Plan de trading concret (entrée / objectifs / stop) ──────────
+            atr_ref = atr_v if atr_v and atr_v > 0 else price * 0.02
+            lines.append("### 📋 Plan de Trading")
+            if score >= 1.5:
+                entry = price
+                supports = [s for s in [bb_lo, sma50, sma200, l52] if s and s < price]
+                sl = max(supports) if supports else entry - 2 * atr_ref
+                sl = max(sl, entry - 2.5 * atr_ref)          # borne: pas trop loin
+                resists = sorted([r for r in [bb_up, sma50, sma200, h52] if r and r > price])
+                tp1 = resists[0] if resists else entry + 2 * atr_ref
+                tp2 = resists[1] if len(resists) > 1 else entry + 4 * atr_ref
+                risk, reward = entry - sl, tp1 - entry
+                rr = reward / risk if risk > 0 else 0
+                rr_sig = "✅ favorable" if rr >= 2 else ("🟡 correct" if rr >= 1 else "🔴 défavorable")
+                lines.append("**Sens : 🟢 LONG (position acheteuse)**")
+                lines.append("")
+                lines.append("| Niveau | Prix | Distance |")
+                lines.append("|---|---|---|")
+                lines.append(f"| 🎯 Zone d'entrée | {entry:.4f} | — |")
+                lines.append(f"| 🟢 Objectif 1 (TP1) | {tp1:.4f} | {(tp1/entry-1)*100:+.2f}% |")
+                lines.append(f"| 🟢 Objectif 2 (TP2) | {tp2:.4f} | {(tp2/entry-1)*100:+.2f}% |")
+                lines.append(f"| 🔴 Stop-loss | {sl:.4f} | {(sl/entry-1)*100:+.2f}% |")
+                lines.append("")
+                lines.append(f"**Ratio risque/rendement : {rr:.1f}:1** — {rr_sig}")
+            elif score <= -1.5:
+                entry = price
+                resists = [r for r in [bb_up, sma50, sma200, h52] if r and r > price]
+                sl = min(resists) if resists else entry + 2 * atr_ref
+                sl = min(sl, entry + 2.5 * atr_ref)
+                supports = sorted([s for s in [bb_lo, sma50, sma200, l52] if s and s < price], reverse=True)
+                tp1 = supports[0] if supports else entry - 2 * atr_ref
+                tp2 = supports[1] if len(supports) > 1 else entry - 4 * atr_ref
+                risk, reward = sl - entry, entry - tp1
+                rr = reward / risk if risk > 0 else 0
+                rr_sig = "✅ favorable" if rr >= 2 else ("🟡 correct" if rr >= 1 else "🔴 défavorable")
+                lines.append("**Sens : 🔴 Éviter / alléger (pression vendeuse)**")
+                lines.append("")
+                lines.append("| Niveau | Prix | Distance |")
+                lines.append("|---|---|---|")
+                lines.append(f"| ⛔ Sortie / pas d'achat | {entry:.4f} | — |")
+                lines.append(f"| 🟢 Zone de rachat 1 | {tp1:.4f} | {(tp1/entry-1)*100:+.2f}% |")
+                lines.append(f"| 🟢 Zone de rachat 2 | {tp2:.4f} | {(tp2/entry-1)*100:+.2f}% |")
+                lines.append("")
+                lines.append(f"Attends un repli vers **{tp1:.4f}** ({(tp1/entry-1)*100:+.2f}%) avant d'envisager une entrée.")
+            else:
+                sup = max([s for s in [bb_lo, sma50, sma200, l52] if s and s < price], default=price - 2 * atr_ref)
+                res = min([r for r in [bb_up, sma50, sma200, h52] if r and r > price], default=price + 2 * atr_ref)
+                lines.append("**Sens : ⚪ Neutre — attendre une cassure**")
+                lines.append("")
+                lines.append(f"- 🟢 **Acheter** si cassure au-dessus de **{res:.4f}** ({(res/price-1)*100:+.2f}%)")
+                lines.append(f"- 🔴 **Vendre** si cassure sous **{sup:.4f}** ({(sup/price-1)*100:+.2f}%)")
+            lines.append("")
+
             lines.append("---")
-            lines.append("*⚠️ Analyse algorithmique — pas un conseil financier. DYOR.*")
+            lines.append("*Analyse technique automatisée — gère toujours ton risque (taille de position + stop-loss).*")
             return "\n".join(lines)
 
         except Exception as e:
@@ -726,16 +779,55 @@ class MarketNewsPlugin(Plugin):
             import yfinance as yf
         except ImportError:
             return "❌ pip install yfinance"
+
+        def _parse(n: dict) -> tuple:
+            """Gère l'ancien ET le nouveau schéma yfinance."""
+            # Nouveau schéma : tout est sous 'content'
+            c = n.get("content") if isinstance(n.get("content"), dict) else n
+            title = c.get("title") or n.get("title") or "?"
+            pub = (c.get("provider") or {}).get("displayName") if isinstance(c.get("provider"), dict) else None
+            pub = pub or n.get("publisher") or "?"
+            url = ""
+            if isinstance(c.get("canonicalUrl"), dict):
+                url = c["canonicalUrl"].get("url", "")
+            url = url or c.get("clickThroughUrl", {}).get("url", "") if isinstance(c.get("clickThroughUrl"), dict) else url
+            url = url or n.get("link") or ""
+            summary = c.get("summary") or c.get("description") or ""
+            return title, pub, url, summary
+
         try:
             news = yf.Ticker(ticker.upper()).news or []
-            if not news:
-                return f"Aucune news pour {ticker}."
-            lines = [f"## 📰 Actualités {ticker.upper()} — {min(8, len(news))} dernières\n"]
-            for n in news[:8]:
-                title = n.get("title", "?")
-                pub   = n.get("publisher", "?")
-                url   = n.get("link", "")
-                lines.append(f"**{title}**  \n*{pub}* — {url}\n")
-            return "\n".join(lines)
+            items = [_parse(n) for n in news[:8]]
+            items = [it for it in items if it[0] and it[0] != "?"]
+
+            if items:
+                lines = [f"## 📰 Actualités {ticker.upper()} — {len(items)} dernières\n"]
+                for title, pub, url, summary in items:
+                    lines.append(f"**{title}**  \n*{pub}*" + (f" — {url}" if url else ""))
+                    if summary:
+                        lines.append(f"> {summary[:220]}")
+                    lines.append("")
+                return "\n".join(lines)
         except Exception as e:
-            return f"Erreur news {ticker}: {e}"
+            err = str(e)
+        else:
+            err = ""
+
+        # Fallback : recherche d'actualités web si yfinance ne renvoie rien
+        try:
+            from duckduckgo_search import DDGS
+            q = f"{ticker.upper()} stock news"
+            with DDGS() as ddgs:
+                res = list(ddgs.news(q, max_results=6, region="fr-fr"))
+            if res:
+                lines = [f"## 📰 Actualités {ticker.upper()} (web)\n"]
+                for r in res:
+                    t = str(r.get("title", "?"))
+                    s = str(r.get("source", ""))
+                    u = r.get("url", "")
+                    lines.append(f"**{t}**  \n*{s}* — {u}\n")
+                return "\n".join(lines)
+        except Exception:
+            pass
+
+        return f"Aucune actualité trouvée pour {ticker}." + (f" ({err})" if err else "")
