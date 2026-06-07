@@ -285,19 +285,63 @@ def _generate_portfolio_chart(rows: list, total_value: float) -> str | None:
         return None
 
 
+# ─── Résolution noms communs → tickers ───────────────────────────────────────
+
+_NAME_TO_TICKER: dict[str, str] = {
+    # Actions françaises
+    "valneva": "VLA.PA", "soitec": "SOI.PA", "lvmh": "MC.PA",
+    "airbus": "AIR.PA", "bnp": "BNP.PA", "sanofi": "SAN.PA",
+    "total": "TTE.PA", "totalenergies": "TTE.PA",
+    "kering": "KER.PA", "hermes": "RMS.PA", "hermès": "RMS.PA",
+    "loreal": "OR.PA", "l'oreal": "OR.PA", "l'oréal": "OR.PA",
+    "renault": "RNO.PA", "orange": "ORA.PA", "carrefour": "CA.PA",
+    "danone": "BN.PA", "schneider": "SU.PA", "thales": "HO.PA",
+    "michelin": "ML.PA", "capgemini": "CAP.PA", "dassault": "DSY.PA",
+    "safran": "SAF.PA", "alstom": "ALO.PA", "worldline": "WLN.PA",
+    "teleperformance": "TEP.PA", "pernod": "RI.PA", "veolia": "VIE.PA",
+    "stellantis": "STLAM.MI", "stmicro": "STMPA.PA", "st": "STMPA.PA",
+    "sg": "GLE.PA", "societegenerale": "GLE.PA",
+    "creditagricole": "ACA.PA",
+    # Actions US
+    "apple": "AAPL", "tesla": "TSLA", "nvidia": "NVDA",
+    "amazon": "AMZN", "microsoft": "MSFT", "google": "GOOGL",
+    "alphabet": "GOOGL", "meta": "META", "netflix": "NFLX",
+    "amd": "AMD", "intel": "INTC", "palantir": "PLTR", "arm": "ARM",
+    "qualcomm": "QCOM", "broadcom": "AVGO",
+    # Crypto
+    "bitcoin": "BTC-USD", "btc": "BTC-USD",
+    "ethereum": "ETH-USD", "eth": "ETH-USD",
+    "solana": "SOL-USD", "sol": "SOL-USD",
+    "bnb": "BNB-USD", "xrp": "XRP-USD",
+    "cardano": "ADA-USD", "ada": "ADA-USD",
+    "avalanche": "AVAX-USD", "avax": "AVAX-USD",
+    # Matières
+    "or": "GC=F", "gold": "GC=F",
+    "petrole": "CL=F", "pétrole": "CL=F", "oil": "CL=F",
+    "argent": "SI=F", "silver": "SI=F",
+}
+
+
+def _resolve_ticker(raw: str) -> str:
+    """Convertit un nom commun en ticker Yahoo Finance."""
+    key = raw.lower().strip().replace("-", "").replace(" ", "")
+    return _NAME_TO_TICKER.get(key) or _NAME_TO_TICKER.get(raw.lower().strip()) or raw.upper()
+
+
 # ─── Portfolio public ─────────────────────────────────────────────────────────
 
 def analyze_portfolio(positions_text: str) -> tuple:
     """
     Analyse un portefeuille depuis texte.
-    Format: une ligne par position — TICKER QUANTITE [PRIX_ACHAT]
+    Format: une ligne par position — TICKER/NOM QUANTITE [PRIX_ACHAT]
     Retourne (markdown_str, chart_path_or_None).
     """
     try:
         import yfinance as yf
         import pandas as pd
+        _yf_ok = True
     except ImportError:
-        return "❌ pip install yfinance pandas", None
+        _yf_ok = False
 
     raw_lines = [l.strip() for l in positions_text.strip().split("\n")
                  if l.strip() and not l.strip().startswith("#")]
@@ -309,10 +353,14 @@ def analyze_portfolio(positions_text: str) -> tuple:
             errors.append(f"Format invalide: `{line}`")
             continue
         try:
+            ticker_raw = parts[0]
+            # Résolution nom → ticker (ex: "valneva" → "VLA.PA")
+            ticker = _resolve_ticker(ticker_raw)
             positions.append({
-                "ticker":    parts[0].upper(),
-                "qty":       float(parts[1].replace(",", ".")),
-                "buy_price": float(parts[2].replace(",", ".")) if len(parts) > 2 else None,
+                "ticker":      ticker,
+                "ticker_orig": ticker_raw,
+                "qty":         float(parts[1].replace(",", ".")),
+                "buy_price":   float(parts[2].replace(",", ".")) if len(parts) > 2 else None,
             })
         except ValueError:
             errors.append(f"Erreur de format: `{line}`")
@@ -320,48 +368,73 @@ def analyze_portfolio(positions_text: str) -> tuple:
     if not positions:
         return (
             "❌ Aucune position valide.\n\n"
-            "**Format** (une par ligne) :\n```\nAAPL 10 150.00\nBTC-USD 0.5 42000\nMC.PA 3 650\n```",
+            "**Format** (une par ligne) :\n```\nAAPL 10 150.00\n"
+            "valneva 25 4.10\nBTC-USD 0.5 42000\nMC.PA 3 650\n```\n\n"
+            "Tu peux utiliser les noms (apple, tesla, valneva…) ou les tickers directs.",
             None,
         )
 
     rows, total_value, total_cost = [], 0.0, 0.0
 
     for p in positions:
-        try:
-            tk   = yf.Ticker(p["ticker"])
-            info = tk.info or {}
-            hist = tk.history(period="5d")
-            if hist.empty:
-                rows.append({**p, "error": "Données indisponibles"})
-                continue
+        cur_price = None
+        chg_24h   = 0.0
+        name      = p["ticker_orig"]
+        currency  = ""
 
-            cur_price = float(hist["Close"].iloc[-1])
-            prev_p    = float(hist["Close"].iloc[-2]) if len(hist) > 1 else cur_price
-            chg_24h   = (cur_price / prev_p - 1) * 100
-            cur_value = cur_price * p["qty"]
-            cost      = p["buy_price"] * p["qty"] if p["buy_price"] else None
-            pnl       = cur_value - cost if cost else None
-            pnl_pct   = (cur_price / p["buy_price"] - 1) * 100 if p["buy_price"] else None
+        # Essai 1: yfinance
+        if _yf_ok:
+            try:
+                tk   = yf.Ticker(p["ticker"])
+                info = tk.info or {}
+                hist = tk.history(period="5d")
+                if not hist.empty:
+                    close     = hist["Close"].squeeze().dropna()
+                    cur_price = float(close.iloc[-1])
+                    prev_p    = float(close.iloc[-2]) if len(close) > 1 else cur_price
+                    chg_24h   = (cur_price / prev_p - 1) * 100
+                    name      = (info.get("shortName") or p["ticker"])[:18]
+                    currency  = info.get("currency", "")
+            except Exception:
+                pass
 
-            total_value += cur_value
-            if cost:
-                total_cost += cost
+        # Essai 2: HTTP fallback si yfinance absent ou données vides
+        if cur_price is None:
+            d = _fetch_ticker_http(p["ticker"], "5d")
+            if not d:
+                d = _fetch_ticker_http(p["ticker"], "1mo")
+            if d:
+                cur_price = d["price"]
+                chg_24h   = d["chg"]
+                name      = d["name"][:18]
+                currency  = d["currency"]
 
-            rows.append({
-                "ticker":    p["ticker"],
-                "name":      (info.get("shortName") or p["ticker"])[:18],
-                "qty":       p["qty"],
-                "buy_price": p["buy_price"],
-                "cur_price": cur_price,
-                "chg_24h":   chg_24h,
-                "cur_value": cur_value,
-                "cost":      cost,
-                "pnl":       pnl,
-                "pnl_pct":   pnl_pct,
-                "currency":  info.get("currency", ""),
-            })
-        except Exception as e:
-            rows.append({**p, "error": str(e)})
+        if cur_price is None:
+            rows.append({**p, "name": name, "error": "Prix introuvable (ticker invalide?)"})
+            continue
+
+        cur_value = cur_price * p["qty"]
+        cost      = p["buy_price"] * p["qty"] if p["buy_price"] else None
+        pnl       = cur_value - cost if cost else None
+        pnl_pct   = (cur_price / p["buy_price"] - 1) * 100 if p["buy_price"] else None
+
+        total_value += cur_value
+        if cost:
+            total_cost += cost
+
+        rows.append({
+            "ticker":    p["ticker"],
+            "name":      name,
+            "qty":       p["qty"],
+            "buy_price": p["buy_price"],
+            "cur_price": cur_price,
+            "chg_24h":   chg_24h,
+            "cur_value": cur_value,
+            "cost":      cost,
+            "pnl":       pnl,
+            "pnl_pct":   pnl_pct,
+            "currency":  currency,
+        })
 
     valid = [r for r in rows if "error" not in r]
     out   = ["## 💼 Mon Portefeuille\n"]

@@ -48,10 +48,12 @@ _FINANCE_HINTS = (
     "achat vente action", "faut il acheter", "vaut-il acheter", "vaut il acheter",
     "analyse technique", "analyse fondamentale", "support résistance", "tendance",
     "bullish", "bearish", "haussier", "baissier", "cours de", "prix de l'action",
-    "bitcoin", "ethereum", "solana", "soitec", "apple stock", "nvidia stock",
-    "tesla stock", "amazon stock", "bonne action", "meilleure action", "action à acheter",
+    "bitcoin", "ethereum", "solana", "soitec", "valneva", "renault", "orange bourse",
+    "apple stock", "nvidia stock", "tesla stock", "amazon stock",
+    "bonne action", "meilleure action", "action à acheter",
     "crypto à acheter", "altcoin", "defi", "nft", "matières premières", "or ", "pétrole",
     "forex", "euro dollar", "dollar", "taux d'intérêt", "banque centrale",
+    "sanofi", "lvmh", "airbus", "bnp", "total bourse", "kering", "hermes bourse",
 )
 _VIDEO_HINTS   = ("fais une vidéo", "crée une vidéo", "génère une vidéo", "créer une vidéo", "slides sur",
                   "diaporama", "présentation vidéo")
@@ -626,11 +628,35 @@ def market_dashboard_fn() -> str:
     except Exception as e:
         return f"❌ Erreur dashboard: {e}"
 
+_PORTFOLIOS_FILE = Path("data/portfolios.json")
+
+
+def _pf_load_all() -> dict:
+    if _PORTFOLIOS_FILE.exists():
+        try:
+            return json.loads(_PORTFOLIOS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _pf_save(name: str, text: str):
+    all_pf = _pf_load_all()
+    all_pf[name.strip()] = {"positions": text, "updated": datetime.now().isoformat()}
+    _PORTFOLIOS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _PORTFOLIOS_FILE.write_text(json.dumps(all_pf, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _pf_list() -> list[str]:
+    return list(_pf_load_all().keys())
+
+
 def portfolio_analyze_fn(positions_text: str):
     if not positions_text.strip():
         return (
             "⚠️ Saisis tes positions (une par ligne) :\n\n"
-            "```\nAAPL 10 150.00\nBTC-USD 0.5 42000\nNVDA 3 800\n```",
+            "```\nAAPL 10 150.00\nvalneva 25 4.10\nBTC-USD 0.5 42000\n```\n\n"
+            "Tu peux utiliser les noms (apple, tesla, valneva…) ou les tickers Yahoo Finance.",
             None,
         )
     try:
@@ -638,6 +664,33 @@ def portfolio_analyze_fn(positions_text: str):
         return analyze_portfolio(positions_text)
     except Exception as e:
         return f"❌ Erreur: {e}", None
+
+
+def portfolio_save_fn(name: str, text: str):
+    if not name.strip():
+        return gr.update(), gr.update(choices=_pf_list()), "⚠️ Donne un nom au portefeuille."
+    if not text.strip():
+        return gr.update(), gr.update(choices=_pf_list()), "⚠️ Saisis d'abord tes positions."
+    _pf_save(name.strip(), text)
+    return gr.update(choices=_pf_list(), value=name.strip()), gr.update(choices=_pf_list()), f"✅ '{name}' sauvegardé."
+
+
+def portfolio_load_fn(name: str):
+    if not name:
+        return gr.update(), ""
+    all_pf = _pf_load_all()
+    if name in all_pf:
+        return all_pf[name]["positions"], f"✅ '{name}' chargé."
+    return gr.update(), f"⚠️ Portefeuille '{name}' introuvable."
+
+
+def portfolio_delete_fn(name: str):
+    if not name:
+        return gr.update(choices=_pf_list()), "", "⚠️ Sélectionne un portefeuille."
+    all_pf = _pf_load_all()
+    all_pf.pop(name, None)
+    _PORTFOLIOS_FILE.write_text(json.dumps(all_pf, ensure_ascii=False, indent=2), encoding="utf-8")
+    return gr.update(choices=_pf_list(), value=None), "", f"🗑️ '{name}' supprimé."
 
 def _fetch_yahoo_direct(ticker: str, period: str = "3mo") -> str:
     """Requête HTTP directe vers l'API Yahoo Finance — contourne les bugs yfinance."""
@@ -736,14 +789,27 @@ def finance_agent_analysis(question: str) -> str:
     ticker_prompt = (
         f"Question: \"{question}\"\n\n"
         "Extrais les symboles boursiers exacts mentionnés ou sous-entendus.\n"
-        "Conversions obligatoires:\n"
-        "Soitec→SOI.PA | Apple→AAPL | Tesla→TSLA | Nvidia→NVDA | Amazon→AMZN\n"
-        "Microsoft→MSFT | Google/Alphabet→GOOGL | Meta→META | Netflix→NFLX\n"
+        "Conversions OBLIGATOIRES (utilise EXACTEMENT ces tickers Yahoo Finance):\n"
+        "--- Actions US ---\n"
+        "Apple→AAPL | Tesla→TSLA | Nvidia→NVDA | Amazon→AMZN | Microsoft→MSFT\n"
+        "Google/Alphabet→GOOGL | Meta→META | Netflix→NFLX | AMD→AMD | Intel→INTC\n"
+        "Palantir→PLTR | Arm→ARM | Broadcom→AVGO | ASML→ASML | Qualcomm→QCOM\n"
+        "--- Actions françaises (Euronext Paris) ---\n"
+        "Soitec→SOI.PA | LVMH→MC.PA | Airbus→AIR.PA | BNP→BNP.PA | Sanofi→SAN.PA\n"
+        "TotalEnergies/Total→TTE.PA | Kering→KER.PA | Hermès→RMS.PA | L'Oréal→OR.PA\n"
+        "Valneva→VLA.PA | Renault→RNO.PA | Orange→ORA.PA | Carrefour→CA.PA\n"
+        "Danone→BN.PA | Schneider→SU.PA | Thales→HO.PA | Michelin→ML.PA\n"
+        "Capgemini→CAP.PA | Dassault Systèmes→DSY.PA | Safran→SAF.PA | Vivendi→VIV.PA\n"
+        "Alstom→ALO.PA | Worldline→WLN.PA | Teleperformance→TEP.PA | Pernod→RI.PA\n"
+        "Veolia→VIE.PA | EssilorLuxottica→EL.PA | STMicroelectronics→STMPA.PA\n"
+        "Stellantis→STLAM.MI | Société Générale→GLE.PA | Crédit Agricole→ACA.PA\n"
+        "--- Crypto ---\n"
         "Bitcoin→BTC-USD | Ethereum→ETH-USD | Solana→SOL-USD | BNB→BNB-USD\n"
-        "Total→TTE.PA | LVMH→MC.PA | Airbus→AIR.PA | BNP→BNP.PA | Sanofi→SAN.PA\n"
-        "Kering→KER.PA | Hermès→RMS.PA | Stellantis→STLAM.MI | Or→GC=F | Pétrole→CL=F\n"
-        "CAC40→^FCHI | S&P500→^GSPC | NASDAQ→^IXIC | EUR/USD→EURUSD=X\n"
-        "Si question générale sur marché/investissement sans actif précis → GENERAL\n"
+        "XRP→XRP-USD | Cardano→ADA-USD | Avalanche→AVAX-USD | Polkadot→DOT-USD\n"
+        "--- Indices / Forex / Matières ---\n"
+        "Or→GC=F | Pétrole→CL=F | CAC40→^FCHI | S&P500→^GSPC | NASDAQ→^IXIC\n"
+        "EUR/USD→EURUSD=X | Dollar→DX-Y.NYB\n"
+        "Si question générale sans actif précis → GENERAL\n"
         "Réponds UNIQUEMENT avec les tickers séparés par virgule, ou GENERAL."
     )
     try:
@@ -759,6 +825,15 @@ def finance_agent_analysis(question: str) -> str:
     tickers = [t for t in tokens if _re.match(r"^\^?[A-Z]{1,5}[\-\.]?[A-Z0-9]{0,4}(=F|=X)?$", t) and t != "GENERAL"][:3]
     is_general = not tickers or "GENERAL" in ticker_raw
 
+    # Variantes alternatives à essayer si le ticker principal échoue
+    _TICKER_ALTS: dict[str, list[str]] = {
+        "VALN": ["VLA.PA", "VALN"],        # Valneva : Paris = VLA.PA, NASDAQ = VALN
+        "VLA.PA": ["VLA.PA", "VALN"],
+        "STLAM.MI": ["STLAM.MI", "STLA"],  # Stellantis
+        "STMPA.PA": ["STMPA.PA", "STM"],   # STMicro
+        "EL.PA": ["EL.PA", "ESLOY"],       # EssilorLuxottica
+    }
+
     # ── 2. Récupérer les données réelles ──────────────────────────────────────
     data_blocks = []
 
@@ -768,25 +843,39 @@ def finance_agent_analysis(question: str) -> str:
         news_plugin  = MarketNewsPlugin()
 
         for tk in tickers:
-            # Essai 1: plugin StockAnalysis (yfinance Ticker.history + yf.download)
+            # Essai 1: plugin StockAnalysis avec le ticker principal + ses variantes
             analysis = None
-            for period in ("3mo", "6mo", "1mo", "1y"):
-                try:
-                    result = stock_plugin.run(ticker=tk, period=period)
-                    if result and "❌" not in result[:10] and "Erreur" not in result[:20]:
-                        analysis = result
-                        break
-                except Exception:
-                    pass
+            tk_used = tk
+            candidates = _TICKER_ALTS.get(tk, [tk])
+            if tk not in candidates:
+                candidates = [tk] + candidates
+
+            for candidate in candidates:
+                if analysis:
+                    break
+                for period in ("3mo", "6mo", "1mo", "1y"):
+                    try:
+                        result = stock_plugin.run(ticker=candidate, period=period)
+                        if result and "❌" not in result[:10] and "Erreur" not in result[:20]:
+                            analysis = result
+                            tk_used = candidate
+                            break
+                    except Exception:
+                        pass
 
             if analysis:
-                data_blocks.append(f"## Analyse technique {tk}\n{analysis}")
+                data_blocks.append(f"## Analyse technique {tk_used}\n{analysis}")
             else:
-                # Essai 2: requête HTTP directe vers Yahoo Finance (contourne yfinance)
-                direct_data = _fetch_yahoo_direct(tk)
+                # Essai 2: requête HTTP directe vers Yahoo Finance pour chaque variante
+                direct_data = ""
+                for candidate in candidates:
+                    direct_data = _fetch_yahoo_direct(candidate)
+                    if direct_data:
+                        tk_used = candidate
+                        break
                 if direct_data:
                     data_blocks.append(
-                        f"## {tk} — Données Yahoo Finance (HTTP direct):\n{direct_data}"
+                        f"## {tk_used} — Données Yahoo Finance (HTTP direct):\n{direct_data}"
                     )
                 else:
                     # Essai 3: recherche web DuckDuckGo
@@ -796,16 +885,21 @@ def finance_agent_analysis(question: str) -> str:
                             f"## {tk} — données web (yfinance indisponible):\n{web_data}"
                         )
                     else:
-                        # Aucune donnée temps réel — demander au LLM analyse basée sur ses connaissances
+                        # Aucune source ne répond — analyse qualitative uniquement
                         data_blocks.append(
                             f"## {tk} — données temps réel non accessibles\n"
                             f"Ticker: {tk}\n"
-                            f"Les sources de données (yfinance, Yahoo Finance, DuckDuckGo) "
-                            f"ne répondent pas pour ce ticker en ce moment.\n"
-                            f"INSTRUCTION: Fournis une analyse complète basée sur tes connaissances "
-                            f"d'entraînement pour ce ticker (secteur, historique, fondamentaux, "
-                            f"tendances connues jusqu'à fin 2024). Indique que c'est basé sur "
-                            f"tes connaissances, puis donne quand même une recommandation chiffrée."
+                            f"Tickers essayés: {', '.join(candidates)}\n"
+                            f"INSTRUCTION STRICTE: Les données temps réel sont introuvables.\n"
+                            f"Tu DOIS:\n"
+                            f"- Donner une analyse QUALITATIVE: secteur, positionnement, "
+                            f"risques principaux, catalyseurs potentiels (basé sur tes connaissances)\n"
+                            f"- NE PAS inventer de chiffres précis (P/E, capitalisation, cours, CA, "
+                            f"résultats financiers) — ces données seraient fausses et dangereuses\n"
+                            f"- Donner une orientation générale (PLUTÔT HAUSSIER / BAISSIER / NEUTRE) "
+                            f"justifiée par des éléments qualitatifs uniquement\n"
+                            f"- Indiquer clairement que le prix actuel est inconnu et qu'il faut "
+                            f"vérifier sur Yahoo Finance ou Boursorama avant tout achat"
                         )
 
             # Actualités
@@ -839,17 +933,21 @@ def finance_agent_analysis(question: str) -> str:
     # ── 3. LLM synthétise avec les vraies données ─────────────────────────────
     system_prompt = (
         "Tu es un trader et analyste financier d'élite, ex-gérant de fonds. "
-        "Tu réponds TOUJOURS avec une analyse complète ET une recommandation tranchée — sans jamais refuser. "
         "RÈGLES ABSOLUES:\n"
-        "1. Si tu as des données réelles → analyse chiffrée complète + OUI/NON/ATTENDRE + niveaux précis.\n"
-        "2. Si les données temps réel manquent → tu donnes UNE SEULE ligne '⚠️ Données temps réel indisponibles' "
-        "puis tu analyses immédiatement avec tes connaissances (secteur, historique, fondamentaux, "
-        "tendances récentes que tu connais jusqu'à fin 2024). Tu DOIS donner une zone d'entrée estimée, "
-        "un TP1, un TP2, un stop-loss approximatifs basés sur la volatilité typique du secteur.\n"
-        "3. Tu ne dis JAMAIS 'je ne peux pas sans données' ni 'consulter un professionnel' — JAMAIS.\n"
-        "4. Format: tableaux Markdown, chiffres, recommandation en gras.\n"
-        "5. Termine par: 'Stop-loss suggéré: [prix ou %]' — une seule ligne.\n"
-        "6. Sur la question 'faut-il acheter X': OUI/NON/ATTENDRE + 3 raisons chiffrées. Point final."
+        "1. Si tu as des DONNÉES RÉELLES → analyse chiffrée complète + OUI/NON/ATTENDRE "
+        "+ zone d'entrée, TP1, TP2, stop-loss issus des données. Chiffres précis tirés des données UNIQUEMENT.\n"
+        "2. Si les données sont PARTIELLES (web ou HTTP) → analyse avec ce que tu as, "
+        "indique la source, donne une recommandation OUI/NON/ATTENDRE motivée.\n"
+        "3. Si les données sont ABSENTES (INSTRUCTION STRICTE dans le contexte) → "
+        "INTERDIT d'inventer P/E, capitalisation, cours, CA, résultats financiers — "
+        "ces chiffres seraient faux et nuire à l'utilisateur. "
+        "Donne UNIQUEMENT: orientation sectorielle qualitative + risques + catalyseurs + "
+        "recommandation PLUTÔT HAUSSIER/BAISSIER/NEUTRE sans niveaux de prix inventés. "
+        "Dis clairement: 'Prix actuel inconnu — vérifie sur Yahoo Finance ou Boursorama avant d'agir.'\n"
+        "4. Tu ne dis JAMAIS 'consulter un professionnel' — tu donnes une opinion directe.\n"
+        "5. Format: tableaux Markdown quand tu as des données, texte structuré sinon.\n"
+        "6. Sur 'faut-il acheter X': si données → OUI/NON + 3 raisons chiffrées + SL. "
+        "Si pas de données → orientation + risques + 'vérifie le prix actuel d'abord'."
     )
 
     user_msg = (
@@ -1176,28 +1274,61 @@ def build_ui() -> gr.Blocks:
                     # ── Portefeuille ──────────────────────────────────────────
                     with gr.TabItem("💼 Portefeuille"):
                         gr.Markdown(
-                            "Saisis tes positions, une par ligne : **TICKER QUANTITE PRIX_ACHAT**\n\n"
-                            "Exemple : `AAPL 10 150.00` · `BTC-USD 0.5 42000` · `MC.PA 3 650`  "
-                            "(le prix d'achat est optionnel si tu veux juste voir la valeur)"
+                            "**TICKER/NOM QUANTITE PRIX_ACHAT** — une ligne par position\n\n"
+                            "Accepte les noms : `valneva 25 4.10` · `apple 10 150` · `bitcoin 0.1 60000`\n"
+                            "Ou les tickers directs : `VLA.PA 25 4.10` · `AAPL 10 150` · `BTC-USD 0.1 60000`"
                         )
                         with gr.Row():
                             with gr.Column(scale=1):
+                                # Sauvegarde / chargement
+                                with gr.Row():
+                                    pf_name = gr.Textbox(
+                                        label="Nom du portefeuille",
+                                        placeholder="Mon portefeuille principal",
+                                        scale=3,
+                                    )
+                                    pf_save_btn = gr.Button("💾 Sauver", scale=1, size="sm")
+                                with gr.Row():
+                                    pf_dd = gr.Dropdown(
+                                        choices=_pf_list(),
+                                        label="Charger un portefeuille sauvegardé",
+                                        value=None, scale=3,
+                                    )
+                                    pf_load_btn   = gr.Button("📂 Charger", scale=1, size="sm")
+                                    pf_delete_btn = gr.Button("🗑️", scale=0, size="sm", variant="secondary")
+                                pf_status = gr.Markdown("")
+
                                 pf_in = gr.Textbox(
-                                    label="Mes positions",
+                                    label="Positions",
                                     lines=10,
                                     placeholder=(
+                                        "valneva 25 4.10\n"
                                         "AAPL 10 150.00\n"
-                                        "MSFT 5 280.00\n"
-                                        "BTC-USD 0.1 42000\n"
-                                        "NVDA 3 800.00\n"
-                                        "ETH-USD 2 2000"
+                                        "BTC-USD 0.1 60000\n"
+                                        "MC.PA 3 650.00\n"
+                                        "NVDA 2 800.00"
                                     ),
                                 )
-                                pf_btn = gr.Button("💼 Analyser mon portefeuille", variant="primary", size="lg")
+                                pf_btn = gr.Button("💼 Analyser", variant="primary", size="lg")
+
                             with gr.Column(scale=2):
                                 pf_out = gr.Markdown()
+
                         pf_chart = gr.Image(label="📊 Allocation & Performance")
+
                         pf_btn.click(portfolio_analyze_fn, [pf_in], [pf_out, pf_chart])
+                        pf_save_btn.click(
+                            portfolio_save_fn, [pf_name, pf_in],
+                            [pf_dd, pf_dd, pf_status],
+                        )
+                        pf_load_btn.click(
+                            portfolio_load_fn, [pf_dd],
+                            [pf_in, pf_status],
+                        )
+                        pf_delete_btn.click(
+                            portfolio_delete_fn, [pf_dd],
+                            [pf_dd, pf_in, pf_status],
+                        )
 
                     # ── Actualités ────────────────────────────────────────────
                     with gr.TabItem("📰 Actualités"):
