@@ -9,7 +9,7 @@ from plugins.base import Plugin
 # ─── HTTP fallback (fonctionne sans yfinance) ─────────────────────────────────
 
 def _fetch_ticker_http(ticker: str, period: str = "1mo") -> dict:
-    """Récupère prix + variation via l'API Yahoo Finance directement."""
+    """Récupère prix + variation + série historique via l'API Yahoo Finance directement."""
     try:
         import requests
         url = (
@@ -30,11 +30,18 @@ def _fetch_ticker_http(ticker: str, period: str = "1mo") -> dict:
         if not result:
             return {}
         rr = result[0]
-        meta = rr.get("meta") or {}
-        closes = (rr.get("indicators") or {}).get("quote", [{}])[0].get("close") or []
-        closes = [c for c in closes if c is not None]
-        if not closes:
+        meta       = rr.get("meta") or {}
+        ts_raw     = rr.get("timestamp") or []
+        closes_raw = (rr.get("indicators") or {}).get("quote", [{}])[0].get("close") or []
+        # Pair timestamps + closes, filter None values
+        if ts_raw and len(ts_raw) == len(closes_raw):
+            pairs = [(t, c) for t, c in zip(ts_raw, closes_raw) if c is not None]
+        else:
+            pairs = [(i, c) for i, c in enumerate(closes_raw) if c is not None]
+        if not pairs:
             return {}
+        timestamps = [p[0] for p in pairs]
+        closes     = [p[1] for p in pairs]
         price = closes[-1]
         prev  = closes[-2] if len(closes) > 1 else price
         chg   = (price - prev) / prev * 100 if prev else 0
@@ -44,14 +51,16 @@ def _fetch_ticker_http(ticker: str, period: str = "1mo") -> dict:
         if abs(c1m) > _perf_lim:
             c1m = None  # anomalie de données
         return {
-            "price":    price,
-            "chg":      chg,
-            "currency": meta.get("currency", ""),
-            "name":     meta.get("longName") or meta.get("shortName") or ticker,
-            "h":        max(closes),
-            "l":        min(closes),
-            "perf":     c1m,
-            "n":        len(closes),
+            "price":      price,
+            "chg":        chg,
+            "currency":   meta.get("currency", ""),
+            "name":       meta.get("longName") or meta.get("shortName") or ticker,
+            "h":          max(closes),
+            "l":          min(closes),
+            "perf":       c1m,
+            "n":          len(closes),
+            "closes":     closes,
+            "timestamps": timestamps,
         }
     except Exception:
         return {}
@@ -219,32 +228,51 @@ def generate_compare_chart(tickers: list, period: str = "3mo") -> str | None:
         return None
 
 
-def _generate_portfolio_chart(rows: list, total_value: float) -> str | None:
+def _generate_portfolio_chart(
+    rows: list, total_value: float, hist_data: dict | None = None
+) -> str | None:
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        import matplotlib.gridspec as gridspec
         from pathlib import Path
+        from datetime import datetime
 
         BG, BORDER = "#0d1117", "#30363d"
-        TEXT = "#e6edf3"
+        TEXT  = "#e6edf3"
+        TCLR  = "#8b949e"
+        GRID  = "#21262d"
         PALETTE = ["#58a6ff", "#3fb950", "#bc8cff", "#f0883e", "#ff7b72",
                    "#ffa657", "#79c0ff", "#56d364", "#d2a8ff", "#ffb3b3"]
 
-        with_pnl = [r for r in rows if r.get("pnl_pct") is not None]
-        n = 2 if with_pnl else 1
-        fig, axes = plt.subplots(1, n, figsize=(13 if n == 2 else 7, 6), facecolor=BG)
-        if n == 1:
-            axes = [axes]
+        with_pnl    = [r for r in rows if r.get("pnl_pct") is not None]
+        has_history = bool(
+            hist_data and any(len(v.get("closes", [])) >= 5 for v in hist_data.values())
+        )
 
-        # Pie
-        ax_pie = axes[0]
+        if has_history:
+            fig = plt.figure(figsize=(14, 11), facecolor=BG)
+            gs  = gridspec.GridSpec(2, 2, height_ratios=[1.4, 1], hspace=0.45, wspace=0.35)
+            ax_pie  = fig.add_subplot(gs[0, 0])
+            ax_bar  = fig.add_subplot(gs[0, 1]) if with_pnl else None
+            ax_line = fig.add_subplot(gs[1, :])
+        else:
+            n = 2 if with_pnl else 1
+            fig, axes = plt.subplots(1, n, figsize=(13 if n == 2 else 7, 6), facecolor=BG)
+            if n == 1:
+                axes = [axes]
+            ax_pie  = axes[0]
+            ax_bar  = axes[1] if n == 2 else None
+            ax_line = None
+
+        # ── Pie (allocation) ────────────────────────────────────────────────────
         ax_pie.set_facecolor(BG)
         labels = [r["ticker"] for r in rows]
         sizes  = [r["cur_value"] / total_value * 100 for r in rows]
         colors = PALETTE[: len(labels)]
 
-        wedges, texts, pcts = ax_pie.pie(
+        _, _, pcts = ax_pie.pie(
             sizes, labels=labels, colors=colors, autopct="%1.1f%%",
             startangle=90, textprops={"color": TEXT, "fontsize": 9},
             wedgeprops={"edgecolor": BG, "linewidth": 2}, pctdistance=0.75,
@@ -253,27 +281,71 @@ def _generate_portfolio_chart(rows: list, total_value: float) -> str | None:
             pt.set_color(TEXT); pt.set_fontsize(8)
         ax_pie.set_title("Allocation", color=TEXT, fontsize=12, pad=10)
 
-        # Bar P&L
-        if with_pnl:
-            ax_bar = axes[1]
+        # ── Bar (P&L%) ──────────────────────────────────────────────────────────
+        if with_pnl and ax_bar is not None:
             ax_bar.set_facecolor(BG)
-            ax_bar.tick_params(colors="#8b949e", labelsize=9)
+            ax_bar.tick_params(colors=TCLR, labelsize=9)
             for sp in ax_bar.spines.values():
                 sp.set_color(BORDER)
-            ax_bar.grid(axis="y", color="#21262d", linewidth=0.5, alpha=0.6)
-            ax_bar.axhline(y=0, color="#8b949e", linewidth=0.8)
+            ax_bar.grid(axis="y", color=GRID, linewidth=0.5, alpha=0.6)
+            ax_bar.axhline(y=0, color=TCLR, linewidth=0.8)
 
-            tks   = [r["ticker"] for r in with_pnl]
-            vals  = [r["pnl_pct"] for r in with_pnl]
+            tks     = [r["ticker"] for r in with_pnl]
+            vals    = [r["pnl_pct"] for r in with_pnl]
             bcolors = ["#3fb950" if v >= 0 else "#f85149" for v in vals]
 
             bars = ax_bar.bar(tks, vals, color=bcolors, edgecolor=BG, linewidth=1.5, width=0.6)
             ax_bar.set_title("Performance par Position (%)", color=TEXT, fontsize=12, pad=10)
 
             for bar, val in zip(bars, vals):
-                off = 0.3 if val >= 0 else -1.2
-                ax_bar.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + off,
-                            f"{val:+.1f}%", ha="center", va="bottom", color=TEXT, fontsize=8)
+                off = max(abs(val) * 0.03, 0.3) * (1 if val >= 0 else -1)
+                ax_bar.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + off,
+                    f"{val:+.1f}%", ha="center",
+                    va="bottom" if val >= 0 else "top",
+                    color=TEXT, fontsize=8,
+                )
+
+        # ── Line (évolution 1 mois) ─────────────────────────────────────────────
+        if has_history and ax_line is not None:
+            ax_line.set_facecolor(BG)
+            ax_line.tick_params(colors=TCLR, labelsize=8)
+            for sp in ax_line.spines.values():
+                sp.set_color(BORDER)
+            ax_line.grid(color=GRID, linewidth=0.5, alpha=0.7)
+
+            entries  = [(tk, v) for tk, v in hist_data.items() if len(v.get("closes", [])) >= 5]
+            min_len  = min(len(v["closes"]) for _, v in entries)
+            timeline = [
+                sum(v["closes"][-(min_len - i)] * v["qty"] for _, v in entries)
+                for i in range(min_len)
+            ]
+
+            # Try to build real dates from timestamps
+            sample_ts = entries[0][1].get("timestamps", [])
+            if sample_ts and len(sample_ts) >= min_len:
+                x_axis = [datetime.fromtimestamp(ts) for ts in sample_ts[-min_len:]]
+                ax_line.plot(x_axis, timeline, color="#58a6ff", linewidth=2, zorder=4)
+                ax_line.fill_between(x_axis, timeline, alpha=0.12, color="#58a6ff")
+                ax_line.tick_params(axis="x", rotation=20, labelsize=7)
+            else:
+                x_axis = list(range(min_len))
+                ax_line.plot(x_axis, timeline, color="#58a6ff", linewidth=2, zorder=4)
+                ax_line.fill_between(x_axis, timeline, alpha=0.12, color="#58a6ff")
+
+            ref       = timeline[0]
+            last_v    = timeline[-1]
+            chg_t_pct = (last_v / ref - 1) * 100 if ref else 0
+            icon      = "▲" if chg_t_pct >= 0 else "▼"
+            col_t     = "#3fb950" if chg_t_pct >= 0 else "#f85149"
+            ax_line.axhline(y=ref, color=TCLR, linewidth=0.8, linestyle="--", alpha=0.5)
+            ax_line.set_title(
+                f"Évolution du portefeuille — 1 mois    {icon} {chg_t_pct:+.2f}%",
+                color=TEXT, fontsize=12, pad=8, loc="left",
+            )
+            # color title pct part
+            ax_line.set_ylabel("Valeur (€)", color=TCLR, fontsize=9)
 
         plt.tight_layout(pad=2)
         Path("output/charts").mkdir(parents=True, exist_ok=True)
@@ -308,6 +380,21 @@ _NAME_TO_TICKER: dict[str, str] = {
     "alphabet": "GOOGL", "meta": "META", "netflix": "NFLX",
     "amd": "AMD", "intel": "INTC", "palantir": "PLTR", "arm": "ARM",
     "qualcomm": "QCOM", "broadcom": "AVGO",
+    # ETFs PEA (Euronext Paris) — tickers directs
+    "panx": "PANX.PA", "panx.pa": "PANX.PA",
+    "wpea": "WPEA.PA", "wpea.pa": "WPEA.PA",
+    "pust": "PUST.PA", "pust.pa": "PUST.PA",
+    "psp5": "PSP5.PA", "psp5.pa": "PSP5.PA",
+    "paeem": "PAEEM.PA",
+    "ewld": "EWLD.PA",
+    "mwrd": "MWRD.PA",
+    "cndx": "CNDX.PA",
+    "lcwd": "LCWD.PA",
+    "wsri": "WSRI.PA",
+    "ep500": "EP500.PA",
+    # ETFs US communs
+    "spy": "SPY", "qqq": "QQQ", "voo": "VOO", "vti": "VTI",
+    "iwda": "IWDA.AS", "vwce": "VWCE.DE", "xwld": "XWLD.PA",
     # Crypto
     "bitcoin": "BTC-USD", "btc": "BTC-USD",
     "ethereum": "ETH-USD", "eth": "ETH-USD",
@@ -321,11 +408,48 @@ _NAME_TO_TICKER: dict[str, str] = {
     "argent": "SI=F", "silver": "SI=F",
 }
 
+# Patterns de mots-clés pour résolution ETFs multi-mots
+_ETF_KEYWORDS: list[tuple[frozenset, str]] = [
+    (frozenset({"amundi", "nasdaq"}), "PANX.PA"),
+    (frozenset({"amundi", "world"}), "WPEA.PA"),
+    (frozenset({"amundi", "msci", "world"}), "WPEA.PA"),
+    (frozenset({"amundi", "sp500"}), "PSP5.PA"),
+    (frozenset({"amundi", "s&p"}), "PSP5.PA"),
+    (frozenset({"amundi", "emerging"}), "PAEEM.PA"),
+    (frozenset({"amundi", "stoxx"}), "MEH.PA"),
+    (frozenset({"lyxor", "nasdaq"}), "PUST.PA"),
+    (frozenset({"lyxor", "world"}), "EWLD.PA"),
+    (frozenset({"lyxor", "sp500"}), "PSP5.PA"),
+    (frozenset({"lyxor", "s&p"}), "PSP5.PA"),
+    (frozenset({"ishares", "nasdaq"}), "CNDX.PA"),
+    (frozenset({"ishares", "core", "world"}), "IWDA.AS"),
+    (frozenset({"ishares", "world"}), "IWDA.AS"),
+    (frozenset({"xtrackers", "world"}), "XWLD.PA"),
+    (frozenset({"vanguard", "world"}), "VWCE.DE"),
+    (frozenset({"vanguard", "sp500"}), "VOO"),
+    (frozenset({"blackrock", "world"}), "IWDA.AS"),
+    (frozenset({"spdr", "sp500"}), "SPY"),
+    (frozenset({"invesco", "nasdaq"}), "QQQ"),
+]
+
 
 def _resolve_ticker(raw: str) -> str:
-    """Convertit un nom commun en ticker Yahoo Finance."""
-    key = raw.lower().strip().replace("-", "").replace(" ", "")
-    return _NAME_TO_TICKER.get(key) or _NAME_TO_TICKER.get(raw.lower().strip()) or raw.upper()
+    """Convertit un nom commun ou multi-mots en ticker Yahoo Finance."""
+    # 1. Exact match (clé normalisée sans espaces/tirets)
+    key = raw.lower().strip().replace("-", "").replace(" ", "").replace("'", "")
+    result = _NAME_TO_TICKER.get(key) or _NAME_TO_TICKER.get(raw.lower().strip())
+    if result:
+        return result
+
+    # 2. Keyword matching pour noms multi-mots (ETFs, fonds, etc.)
+    if " " in raw.strip() or len(raw) > 12:
+        words = set(raw.lower().replace("-", " ").replace("/", " ").replace("'", " ").split())
+        for kw_set, ticker in _ETF_KEYWORDS:
+            if kw_set.issubset(words):
+                return ticker
+
+    # 3. Mot unique ou non reconnu → majuscules (ticker direct)
+    return raw.split()[0].upper() if " " in raw.strip() else raw.upper()
 
 
 # ─── Portfolio public ─────────────────────────────────────────────────────────
@@ -333,7 +457,7 @@ def _resolve_ticker(raw: str) -> str:
 def analyze_portfolio(positions_text: str) -> tuple:
     """
     Analyse un portefeuille depuis texte.
-    Format: une ligne par position — TICKER/NOM QUANTITE [PRIX_ACHAT]
+    Format: TICKER/NOM QUANTITE [PRIX_ACHAT]  — supporte noms multi-mots et # commentaires
     Retourne (markdown_str, chart_path_or_None).
     """
     try:
@@ -343,71 +467,136 @@ def analyze_portfolio(positions_text: str) -> tuple:
     except ImportError:
         _yf_ok = False
 
-    raw_lines = [l.strip() for l in positions_text.strip().split("\n")
-                 if l.strip() and not l.strip().startswith("#")]
-    positions, errors = [], []
+    raw_lines = [l.strip() for l in positions_text.strip().split("\n") if l.strip()]
+    positions: list[dict] = []
+    errors: list[str]     = []
 
     for line in raw_lines:
+        # Ignorer les lignes de commentaire pures
+        if line.startswith("#"):
+            continue
+        # Striper les commentaires inline
+        if "#" in line:
+            line = line[:line.index("#")].strip()
+        if not line:
+            continue
+
         parts = line.split()
         if len(parts) < 2:
             errors.append(f"Format invalide: `{line}`")
             continue
+
+        ticker_raw: str | None = None
+        qty:        float | None = None
+        buy_price:  float | None = None
+
+        # Stratégie 1: premier token = ticker/nom, second = quantité (nombre)
         try:
+            qty_test   = float(parts[1].replace(",", "."))
             ticker_raw = parts[0]
-            # Résolution nom → ticker (ex: "valneva" → "VLA.PA")
-            ticker = _resolve_ticker(ticker_raw)
-            positions.append({
-                "ticker":      ticker,
-                "ticker_orig": ticker_raw,
-                "qty":         float(parts[1].replace(",", ".")),
-                "buy_price":   float(parts[2].replace(",", ".")) if len(parts) > 2 else None,
-            })
+            qty        = qty_test
+            if len(parts) > 2:
+                try:
+                    buy_price = float(parts[2].replace(",", "."))
+                except ValueError:
+                    buy_price = None
         except ValueError:
+            # Stratégie 2 (noms multi-mots ETFs): détecter les N derniers tokens numériques
+            # Ex: "Amundi Nasdaq UCITS ETF PEA 19 5.29" → name="Amundi Nasdaq…", qty=19, price=5.29
+            name_parts = list(parts)
+            num_tail: list[float] = []
+            while name_parts:
+                try:
+                    val = float(name_parts[-1].replace(",", "."))
+                    num_tail.insert(0, val)
+                    name_parts.pop()
+                except ValueError:
+                    break
+            if len(num_tail) >= 1 and name_parts:
+                ticker_raw = " ".join(name_parts)
+                qty        = num_tail[0]
+                buy_price  = num_tail[1] if len(num_tail) > 1 else None
+            else:
+                errors.append(f"Erreur de format: `{line}`")
+                continue
+
+        if ticker_raw is None or qty is None or qty <= 0:
             errors.append(f"Erreur de format: `{line}`")
+            continue
+
+        ticker = _resolve_ticker(ticker_raw)
+        positions.append({
+            "ticker":      ticker,
+            "ticker_orig": ticker_raw,
+            "qty":         qty,
+            "buy_price":   buy_price,
+        })
 
     if not positions:
         return (
             "❌ Aucune position valide.\n\n"
-            "**Format** (une par ligne) :\n```\nAAPL 10 150.00\n"
-            "valneva 25 4.10\nBTC-USD 0.5 42000\nMC.PA 3 650\n```\n\n"
-            "Tu peux utiliser les noms (apple, tesla, valneva…) ou les tickers directs.",
+            "**Format** (une ligne par position) :\n"
+            "```\n"
+            "AAPL 10 150.00\n"
+            "valneva 25 4.10\n"
+            "BTC-USD 0.5 42000\n"
+            "MC.PA 3 650\n"
+            "Amundi Nasdaq UCITS ETF PEA 100 5.29  # ETF multi-mots ok\n"
+            "PANX.PA 50 25.00  # ticker direct ETF\n"
+            "```\n\n"
+            "Tu peux utiliser les noms (apple, tesla, valneva…), "
+            "les tickers directs (AAPL, VLA.PA…) ou les noms complets d'ETF.",
             None,
         )
 
-    rows, total_value, total_cost = [], 0.0, 0.0
+    rows: list[dict]              = []
+    total_value: float            = 0.0
+    total_cost:  float            = 0.0
+    hist_data:   dict[str, dict]  = {}  # ticker → {closes, timestamps, qty}
 
     for p in positions:
-        cur_price = None
-        chg_24h   = 0.0
-        name      = p["ticker_orig"]
-        currency  = ""
+        cur_price: float | None = None
+        chg_24h:   float        = 0.0
+        name:      str          = p["ticker_orig"][:20]
+        currency:  str          = ""
 
-        # Essai 1: yfinance
+        # Essai 1: yfinance (1mo pour avoir l'historique timeline)
         if _yf_ok:
             try:
                 tk   = yf.Ticker(p["ticker"])
                 info = tk.info or {}
-                hist = tk.history(period="5d")
+                hist = tk.history(period="1mo")
                 if not hist.empty:
                     close     = hist["Close"].squeeze().dropna()
                     cur_price = float(close.iloc[-1])
                     prev_p    = float(close.iloc[-2]) if len(close) > 1 else cur_price
                     chg_24h   = (cur_price / prev_p - 1) * 100
-                    name      = (info.get("shortName") or p["ticker"])[:18]
+                    name      = (info.get("shortName") or p["ticker"])[:20]
                     currency  = info.get("currency", "")
+                    hist_data[p["ticker"]] = {
+                        "closes":     close.tolist(),
+                        "timestamps": [],
+                        "qty":        p["qty"],
+                    }
             except Exception:
                 pass
 
         # Essai 2: HTTP fallback si yfinance absent ou données vides
         if cur_price is None:
-            d = _fetch_ticker_http(p["ticker"], "5d")
+            d = _fetch_ticker_http(p["ticker"], "1mo")
             if not d:
-                d = _fetch_ticker_http(p["ticker"], "1mo")
+                d = _fetch_ticker_http(p["ticker"], "5d")
             if d:
                 cur_price = d["price"]
                 chg_24h   = d["chg"]
-                name      = d["name"][:18]
+                name      = d["name"][:20]
                 currency  = d["currency"]
+                if d.get("closes"):
+                    hist_data[p["ticker"]] = {
+                        "closes":     d["closes"],
+                        "timestamps": d.get("timestamps", []),
+                        "qty":        p["qty"],
+                    }
 
         if cur_price is None:
             rows.append({**p, "name": name, "error": "Prix introuvable (ticker invalide?)"})
@@ -415,11 +604,11 @@ def analyze_portfolio(positions_text: str) -> tuple:
 
         cur_value = cur_price * p["qty"]
         cost      = p["buy_price"] * p["qty"] if p["buy_price"] else None
-        pnl       = cur_value - cost if cost else None
+        pnl       = cur_value - cost if cost is not None else None
         pnl_pct   = (cur_price / p["buy_price"] - 1) * 100 if p["buy_price"] else None
 
         total_value += cur_value
-        if cost:
+        if cost is not None:
             total_cost += cost
 
         rows.append({
@@ -436,34 +625,68 @@ def analyze_portfolio(positions_text: str) -> tuple:
             "currency":  currency,
         })
 
-    valid = [r for r in rows if "error" not in r]
-    out   = ["## 💼 Mon Portefeuille\n"]
+    valid    = [r for r in rows if "error" not in r]
+    with_pnl = [r for r in valid if r["pnl_pct"] is not None]
+    out      = ["## 💼 Mon Portefeuille\n"]
 
-    # Résumé global
+    # ── Résumé global ─────────────────────────────────────────────────────────
     if total_value > 0:
-        out.append("### 📊 Résumé")
+        out.append("### 📊 Résumé Global")
+        out.append("| | |")
+        out.append("|---|---|")
+        out.append(f"| **Valeur totale** | **{total_value:,.2f}** |")
+
         if total_cost > 0:
             total_pnl     = total_value - total_cost
             total_pnl_pct = (total_value / total_cost - 1) * 100
-            icon = "🟢" if total_pnl >= 0 else "🔴"
-            out.append("| | |")
-            out.append("|---|---|")
-            out.append(f"| Valeur totale | **{total_value:,.2f}** |")
-            out.append(f"| Coût total | {total_cost:,.2f} |")
-            out.append(f"| **P&L Total** | {icon} **{total_pnl:+,.2f} ({total_pnl_pct:+.2f}%)** |")
-        else:
-            out.append(f"**Valeur totale : {total_value:,.2f}**")
+            icon_pnl = "🟢" if total_pnl >= 0 else "🔴"
+            out.append(f"| Coût total investi | {total_cost:,.2f} |")
+            out.append(
+                f"| **P&L Total** | {icon_pnl} "
+                f"**{total_pnl:+,.2f}  ({total_pnl_pct:+.2f}%)** |"
+            )
+
+        # Gain / perte du jour
+        daily_gain     = sum(r["chg_24h"] / 100 * r["cur_value"] for r in valid)
+        daily_gain_pct = daily_gain / total_value * 100 if total_value > 0 else 0
+        icon_day = "🟢" if daily_gain >= 0 else "🔴"
+        out.append(
+            f"| Variation du jour | {icon_day} "
+            f"{daily_gain:+,.2f}  ({daily_gain_pct:+.2f}%) |"
+        )
+        out.append(f"| Nombre de lignes | {len(valid)} actif(s) |")
         out.append("")
 
-    # Tableau positions
+    # ── Best / Worst performer ─────────────────────────────────────────────────
+    if with_pnl:
+        best  = max(with_pnl, key=lambda x: x["pnl_pct"])
+        worst = min(with_pnl, key=lambda x: x["pnl_pct"])
+        out.append("### 🏆 Top / Flop")
+        out.append("| | Ticker | P&L% | P&L |")
+        out.append("|---|---|---|---|")
+        out.append(
+            f"| 🏆 Meilleure | **{best['ticker']}** "
+            f"| 🟢 {best['pnl_pct']:+.2f}% "
+            f"| {best['pnl']:+,.2f} |"
+        )
+        out.append(
+            f"| ⚠️ Moins bonne | **{worst['ticker']}** "
+            f"| 🔴 {worst['pnl_pct']:+.2f}% "
+            f"| {worst['pnl']:+,.2f} |"
+        )
+        out.append("")
+
+    # ── Tableau positions ──────────────────────────────────────────────────────
     out.append("### Positions")
     out.append("| Ticker | Nom | Qté | Px achat | Px actuel | 24h | Valeur | P&L | P&L% |")
     out.append("|---|---|---|---|---|---|---|---|---|")
 
     for r in rows:
         if "error" in r:
-            out.append(f"| **{r.get('ticker','')}** | ❌ {r['error'][:20]} "
-                       f"| {r.get('qty','')} | — | — | — | — | — | — |")
+            out.append(
+                f"| **{r.get('ticker','')}** | ❌ {r['error'][:20]} "
+                f"| {r.get('qty','')} | — | — | — | — | — | — |"
+            )
             continue
 
         pnl_str     = f"{'🟢' if r['pnl'] >= 0 else '🔴'} {r['pnl']:+,.2f}" if r["pnl"] is not None else "—"
@@ -471,15 +694,17 @@ def analyze_portfolio(positions_text: str) -> tuple:
         chg_str     = f"{'🟢' if r['chg_24h'] >= 0 else '🔴'} {r['chg_24h']:+.2f}%"
         buy_str     = f"{r['buy_price']:.4f}" if r["buy_price"] else "—"
         price_str   = f"{r['cur_price']:,.2f}" if r["cur_price"] >= 100 else f"{r['cur_price']:.4f}"
-
         out.append(
             f"| **{r['ticker']}** | {r['name']} | {r['qty']} | {buy_str} "
             f"| **{price_str}** | {chg_str} | {r['cur_value']:,.2f} | {pnl_str} | {pnl_pct_str} |"
         )
 
-    # Allocation visuelle
+    # ── Allocation visuelle ────────────────────────────────────────────────────
     if valid and total_value > 0:
         out.append("\n### Allocation")
+        out.append(
+            "*La barre montre le poids de chaque position dans le portefeuille total.*\n"
+        )
         for r in sorted(valid, key=lambda x: x["cur_value"], reverse=True):
             pct = r["cur_value"] / total_value * 100
             bar = _pct_bar(pct, 25)
@@ -490,7 +715,11 @@ def analyze_portfolio(positions_text: str) -> tuple:
         for e in errors:
             out.append(f"- {e}")
 
-    chart_path = _generate_portfolio_chart(valid, total_value) if valid and total_value > 0 else None
+    chart_path = (
+        _generate_portfolio_chart(valid, total_value, hist_data)
+        if valid and total_value > 0
+        else None
+    )
     return "\n".join(out), chart_path
 
 
