@@ -29,7 +29,7 @@ def _groq_chat(messages: list, model: str, temperature: float) -> str:
         model=model,
         messages=messages,
         temperature=temperature,
-        max_tokens=2048,
+        max_tokens=4096,
     )
     return resp.choices[0].message.content
 
@@ -41,7 +41,7 @@ def _xai_chat(messages: list, model: str, temperature: float) -> str:
         model=model,
         messages=messages,
         temperature=temperature,
-        max_tokens=2048,
+        max_tokens=4096,
     )
     return resp.choices[0].message.content
 

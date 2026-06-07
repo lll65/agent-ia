@@ -607,33 +607,111 @@ def portfolio_analyze_fn(positions_text: str):
         return f"❌ Erreur: {e}", None
 
 def finance_agent_analysis(question: str) -> str:
-    """Lance l'agent finance_analyst complet avec ReAct + outils."""
+    """
+    Pipeline direct garanti : extraction ticker → données réelles → synthèse LLM.
+    Contourne le ReAct pour s'assurer que les outils sont TOUJOURS appelés.
+    """
     if not question.strip():
         return "⚠️ Pose une question financière."
-    from agent.core import run_agent
-    cfg = {
-        "id": "finance_ui",
-        "name": "FinanceAgent Pro",
-        "system_prompt": (
-            "Tu es un trader et analyste financier d'élite, ancien gérant de fonds. "
-            "Quand on te demande une bonne action ou un bon placement, tu RÉPONDS avec des tickers "
-            "précis et un classement clair — tu ne te défiles jamais derrière 'ça dépend' ou 'consulte un conseiller'. "
-            "Tu appelles TOUJOURS analyze_stock / compare_stocks / get_market_news / market_dashboard "
-            "pour travailler sur des données RÉELLES avant de trancher. "
-            "Pour chaque idée : conviction (forte/moyenne/faible), zone d'entrée, objectifs (TP1/TP2), "
-            "stop-loss, horizon de temps, et les catalyseurs à surveiller. "
-            "Tu présentes tout en tableaux Markdown clairs. Tu parles comme en salle de marché : "
-            "direct, chiffré, sans langue de bois. Une seule courte ligne 'Risque' factuelle suffit — "
-            "jamais de sermon ni de disclaimer répété."
-        ),
-        "tools": ["analyze_stock", "compare_stocks", "get_market_news", "market_dashboard", "search_web"],
-        "model": config.LLM_MODEL,
-    }
+
+    from llm.client import chat as llm_chat
+
+    # ── 1. Extraire le(s) ticker(s) via LLM (rapide, température 0) ──────────
+    ticker_prompt = (
+        f"Question: \"{question}\"\n\n"
+        "Extrais les symboles boursiers exacts mentionnés ou sous-entendus.\n"
+        "Règles:\n"
+        "- Soitec → SOI.PA  |  Apple → AAPL  |  Bitcoin → BTC-USD  |  Total → TTE.PA\n"
+        "- LVMH → MC.PA  |  Airbus → AIR.PA  |  BNP → BNP.PA  |  Sanofi → SAN.PA\n"
+        "- Tesla → TSLA  |  Nvidia → NVDA  |  Amazon → AMZN  |  Microsoft → MSFT\n"
+        "- Ethereum → ETH-USD  |  Or → GC=F  |  Pétrole → CL=F  |  CAC40 → ^FCHI\n"
+        "- Si question générale sur 'bonnes actions' / 'marché' sans ticker précis → GENERAL\n"
+        "Réponds UNIQUEMENT avec les tickers séparés par virgule, ou GENERAL. Rien d'autre."
+    )
     try:
-        result = _run(run_agent(question, cfg, "finance_ui"))
-        return result.get("answer", "Pas de réponse.")
+        ticker_raw = llm_chat(
+            [{"role": "user", "content": ticker_prompt}],
+            temperature=0.0,
+        ).strip().upper().replace(" ", "")
+    except Exception:
+        ticker_raw = "GENERAL"
+
+    # Extraire uniquement les tokens qui ressemblent à des tickers
+    import re as _re
+    # Séparer sur virgules et espaces, puis garder seulement les tokens de format ticker
+    tokens = _re.split(r"[,\s]+", ticker_raw)
+    tickers = [t for t in tokens if _re.match(r"^\^?[A-Z]{1,5}[\-\.]?[A-Z0-9]{0,4}(=F|=X)?$", t) and t != "GENERAL"][:3]
+    is_general = not tickers or "GENERAL" in ticker_raw
+
+    # ── 2. Récupérer les données réelles ──────────────────────────────────────
+    data_blocks = []
+
+    if not is_general and tickers:
+        from plugins.builtin.finance import StockAnalysisPlugin, MarketNewsPlugin, MultiStockComparePlugin
+        stock_plugin = StockAnalysisPlugin()
+        news_plugin  = MarketNewsPlugin()
+        for tk in tickers:
+            try:
+                analysis = stock_plugin.run(ticker=tk, period="3mo")
+                data_blocks.append(f"## Analyse technique {tk}\n{analysis}")
+            except Exception as e:
+                data_blocks.append(f"## {tk} — erreur: {e}")
+            try:
+                news = news_plugin.run(ticker=tk)
+                if news and "Aucune" not in news and "❌" not in news:
+                    data_blocks.append(f"## Actualités {tk}\n{news[:600]}")
+            except Exception:
+                pass
+        if len(tickers) > 1:
+            try:
+                cmp = MultiStockComparePlugin().run(",".join(tickers), "3mo")
+                data_blocks.append(f"## Comparaison\n{cmp}")
+            except Exception:
+                pass
+    else:
+        # Question générale → dashboard complet
+        from plugins.builtin.finance import MarketDashboardPlugin, MultiStockComparePlugin
+        try:
+            data_blocks.append(f"## Dashboard marchés\n{MarketDashboardPlugin().run()}")
+            # Top 5 actions à surveiller pour contexte
+            top = MultiStockComparePlugin().run("AAPL,NVDA,MSFT,AMZN,TSLA", "1mo")
+            data_blocks.append(f"## Top US 1 mois\n{top}")
+        except Exception as e:
+            data_blocks.append(f"Erreur dashboard: {e}")
+
+    data_context = "\n\n".join(data_blocks)
+    if not data_context.strip():
+        data_context = "Données indisponibles (problème réseau ou ticker invalide)."
+
+    # ── 3. LLM synthétise avec les vraies données ─────────────────────────────
+    system_prompt = (
+        "Tu es un trader et analyste financier d'élite. "
+        "On t'a fourni les DONNÉES RÉELLES récupérées à l'instant. "
+        "Tu réponds directement à la question en te basant UNIQUEMENT sur ces données. "
+        "Format: tableaux Markdown, chiffres exacts des données, recommandation tranchée. "
+        "Si achat → donne zone d'entrée, TP1, TP2, stop-loss issus des données. "
+        "Si on te demande 'faut-il acheter X' → dis OUI ou NON avec ta conviction (forte/moyenne/faible) ET pourquoi en 3 bullets. "
+        "Une seule ligne 'Stop-loss suggéré: X' à la fin. Pas de disclaimer, pas de sermon."
+    )
+
+    user_msg = (
+        f"DONNÉES RÉELLES (récupérées maintenant):\n\n{data_context}\n\n"
+        f"---\nQUESTION: {question}\n\n"
+        "Réponds directement en français avec une analyse complète, des chiffres précis et une recommandation claire."
+    )
+
+    try:
+        answer = llm_chat(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.5,
+        )
+        return answer or data_context
     except Exception as e:
-        return f"❌ Erreur agent: {e}"
+        # Fallback : retourner les données brutes si LLM plante
+        return f"⚠️ Synthèse LLM échouée ({e}) — Données brutes:\n\n{data_context[:4000]}"
 
 
 # ═════════════════════════════════════════════════════════════════════════════

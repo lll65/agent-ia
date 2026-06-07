@@ -84,6 +84,26 @@ def parse_response(text: str) -> tuple:
     return None, None, text.strip()
 
 
+_STUB_KEYWORDS = (
+    "attendre", "en cours", "analyse en cours", "à analyser", "dépend",
+    "consulter un professionnel", "je ne peux pas", "indisponible",
+    "je n'ai pas accès", "données manquantes", "impossible de",
+    "attentes les résultats", "attends les résultats",
+)
+
+def _is_stub_answer(text: str, tool_calls_made: int) -> bool:
+    """Détecte une réponse paresseuse : le LLM répond sans avoir utilisé ses outils."""
+    if tool_calls_made > 0:
+        return False
+    t = text.lower()
+    if any(kw in t for kw in _STUB_KEYWORDS):
+        return True
+    # Réponse trop courte sans aucun chiffre = probablement générique
+    if len(text.strip()) < 400 and not any(c.isdigit() for c in text):
+        return True
+    return False
+
+
 async def run_agent(
     task: str,
     agent_config: dict,
@@ -123,11 +143,26 @@ async def run_agent(
     messages = [{"role": "system", "content": system}]
     if context:
         messages.append({"role": "assistant", "content": f"[Contexte mémoriel]\n{context}"})
-    messages.append({"role": "user", "content": task})
+
+    # Injecter le rappel outil dans le message utilisateur si l'agent a des outils requis
+    required_tools = agent_config.get("tools") or []
+    task_msg = task
+    if required_tools:
+        task_msg += (
+            f"\n\n[INSTRUCTION SYSTÈME: Tu as accès à {len(required_tools)} outil(s). "
+            f"Commence TOUJOURS par utiliser tes outils pour obtenir des données réelles "
+            f"avant de répondre. Premier outil disponible: {required_tools[0]}]"
+        )
+    messages.append({"role": "user", "content": task_msg})
     mem.remember(agent_id, "user", task)
 
     steps = []
-    for iteration in range(config.MAX_ITERATIONS):
+    tool_calls_made = 0
+    stub_retries = 0
+    MAX_STUB_RETRIES = 2
+
+    iteration = 0
+    while iteration < config.MAX_ITERATIONS:
         try:
             llm_out = await llm_call(messages)
         except Exception as e:
@@ -138,6 +173,25 @@ async def run_agent(
         step = {"iteration": iteration + 1, "llm_output": llm_out}
         action, params, final = parse_response(llm_out)
 
+        # ── Détection réponse paresseuse (aucun outil appelé, réponse vague) ──
+        response_text = final or llm_out
+        if (final or (not action)) and required_tools and stub_retries < MAX_STUB_RETRIES:
+            if _is_stub_answer(response_text, tool_calls_made):
+                stub_retries += 1
+                first_tool = required_tools[0]
+                logger.warning(f"[core] Réponse stub iter {iteration+1} — forçage outil '{first_tool}' (retry {stub_retries}/{MAX_STUB_RETRIES})")
+                messages.append({"role": "assistant", "content": llm_out})
+                messages.append({"role": "user", "content": (
+                    f"⛔ ERREUR : Tu as répondu sans utiliser tes outils. C'est interdit.\n"
+                    f"Tu DOIS d'abord appeler '{first_tool}' pour avoir des données RÉELLES.\n"
+                    f"Réponds MAINTENANT en utilisant ce format exact:\n"
+                    f"THOUGHT: Je vais récupérer les données réelles avec {first_tool}\n"
+                    f"ACTION: {first_tool}\n"
+                    f"PARAMS: {{\"ticker\": \"...\"}}"
+                )})
+                # Ne pas incrémenter iteration — rejouer sans compter comme une itération normale
+                continue
+
         if final:
             steps.append(step)
             mem.remember(agent_id, "assistant", final)
@@ -146,16 +200,23 @@ async def run_agent(
         if action:
             observation = safe_tool_call(loader, action, params or {})
             health_monitor.record(action, "Erreur" not in observation)
+            tool_calls_made += 1
             step["action"] = action
             step["params"] = params
             step["observation"] = observation[:500]
             steps.append(step)
             messages.append({"role": "assistant", "content": llm_out})
-            messages.append({"role": "user", "content": f"OBSERVATION [{action}]: {observation}\n\nContinue ton analyse ou donne ta réponse FINAL:"})
+            messages.append({"role": "user", "content": (
+                f"OBSERVATION [{action}]: {observation}\n\n"
+                f"Continue ton analyse. Si tu as toutes les données nécessaires, "
+                f"donne ta réponse FINAL complète et chiffrée:"
+            )})
         else:
             steps.append(step)
             mem.remember(agent_id, "assistant", llm_out)
             return {"answer": llm_out, "steps": steps, "iterations": iteration + 1}
+
+        iteration += 1
 
     last = steps[-1].get("llm_output", "Limite d'itérations atteinte.") if steps else "Limite d'itérations atteinte."
     mem.remember(agent_id, "assistant", last)
