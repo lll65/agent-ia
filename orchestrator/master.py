@@ -17,20 +17,39 @@ logger = logging.getLogger(__name__)
 
 
 DECOMPOSE_PROMPT = """Tu reçois un objectif complexe. Décompose-le en 2-4 sous-tâches concrètes.
+Sois sélectif: si l'objectif est simple (1 domaine, 1 étape), crée UNE seule tâche.
 
 Objectif: {goal}
 
 Réponds UNIQUEMENT avec ce JSON (sans markdown, sans explication):
 {{
+  "complexity": "simple|moderate|complex",
   "tasks": [
     {{"role": "researcher", "objective": "...", "instruction": "...", "parallel": false}},
     {{"role": "coder", "objective": "...", "instruction": "...", "parallel": true}}
   ],
-  "synthesis_instruction": "Combine les résultats en une réponse structurée"
+  "synthesis_instruction": "Combine les résultats en une réponse structurée avec sections claires"
 }}
 
-Rôles disponibles: researcher, coder, video_creator, analyst, writer, generic
-parallel=true si la tâche est indépendante des autres."""
+Rôles disponibles (choisis le plus adapté):
+- researcher: recherche web, collecte d'infos, vérification de faits
+- coder: code Python, scripts, algorithmes, debug
+- fullstack_dev: projets web complets React/Vue/FastAPI avec frontend et backend
+- finance_analyst: analyse boursière, crypto, trading, portefeuille, recommandations achat/vente
+- crypto_analyst: cryptomonnaies, DeFi, on-chain, cycles de marché
+- marketing_expert: stratégies marketing, SEO, réseaux sociaux, growth hacking
+- copywriter: textes persuasifs, landing pages, emails, scripts vidéo
+- seo_expert: optimisation SEO technique et éditorial, keywords, contenu
+- video_creator: scripts vidéo TikTok/Reels/YouTube, hooks, CTAs
+- youtube_creator: scripts YouTube détaillés, titres SEO, miniatures, watch time
+- writer: articles, ebooks, études de cas, newsletters
+- data_scientist: analyse de données, ML, visualisations Python
+- analyst: analyse business, KPIs, rapports stratégiques
+- ecommerce_expert: e-commerce, dropshipping, fiches produit, pricing
+- game_developer: jeux web HTML5/JS, logique de jeu, canvas
+- generic: assistant polyvalent pour tout autre type de tâche
+
+parallel=true si la tâche est VRAIMENT indépendante des autres résultats."""
 
 
 SYNTHESIS_PROMPT = """Tu es le coordinateur final. Synthétise les résultats de plusieurs agents spécialisés.
@@ -41,7 +60,13 @@ Instruction de synthèse: {synthesis_instruction}
 Résultats des agents:
 {results}
 
-Produis une réponse finale complète, bien structurée et directement utile. En français."""
+Produis une réponse finale COMPLÈTE et STRUCTURÉE en français:
+- Commence par un résumé exécutif (2-3 phrases)
+- Développe chaque point avec les données/code/analyses fournis par les agents
+- Termine par les prochaines étapes concrètes recommandées
+- Utilise des titres Markdown, tableaux et listes pour la clarté
+- Inclus TOUS les éléments importants (code, chiffres, recommandations) des agents
+Ne raccourcis pas — l'utilisateur veut tous les détails."""
 
 
 def _extract_json(text: str) -> dict | None:
@@ -81,6 +106,11 @@ class MasterAgent:
                 logger.info(f"[Master] Auto-créé: {auto_created}")
         except Exception as e:
             logger.warning(f"[Master] agent_creator: {e}")
+
+        if self._is_simple(goal):
+            logger.info("[Master] Objectif simple → exécution directe sans décomposition")
+            result = await run_agent(goal, self._default_config(), session_id)
+            return {"goal": goal, "mode": "direct", "answer": result["answer"], "steps": result.get("steps", [])}
 
         plan = await self._decompose(goal)
         if not plan or not plan.get("tasks"):
@@ -220,3 +250,16 @@ class MasterAgent:
             "tools": list(get_loader().list_all().keys()),
             "model": config.LLM_MODEL,
         }
+
+    def _is_simple(self, goal: str) -> bool:
+        """Heuristique: détecte si l'objectif est trop simple pour décomposer."""
+        low = goal.lower()
+        # Court = simple
+        if len(goal.split()) < 8:
+            return True
+        # Questions directes
+        simple_starts = ("qu'est-ce que", "c'est quoi", "définition de", "comment dire",
+                         "traduis", "résume", "explique simplement", "donne-moi un exemple")
+        if any(low.startswith(s) for s in simple_starts):
+            return True
+        return False

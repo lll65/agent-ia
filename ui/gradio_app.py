@@ -41,9 +41,18 @@ SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
 AGENT_TRIGGERS = ("agent:", "mode complet:", "plein mode:", "utilise tes outils:", "passe en mode agent")
 
-_FINANCE_HINTS = ("bourse", "action ", "crypto", "bitcoin", "ethereum", "ticker", "rsi", "macd", "analyser aapl",
-                  "analyser tsla", "analyser nvda", "nasdaq", "cac40", "cac 40", "dow jones", "s&p", "trading",
-                  "investir", "portefeuille", "dividende", "cotation", "achat vente action")
+_FINANCE_HINTS = (
+    "bourse", "action ", "crypto", "bitcoin", "ethereum", "ticker", "rsi", "macd",
+    "analyser aapl", "analyser tsla", "analyser nvda", "nasdaq", "cac40", "cac 40",
+    "dow jones", "s&p", "trading", "investir", "portefeuille", "dividende", "cotation",
+    "achat vente action", "faut il acheter", "vaut-il acheter", "vaut il acheter",
+    "analyse technique", "analyse fondamentale", "support résistance", "tendance",
+    "bullish", "bearish", "haussier", "baissier", "cours de", "prix de l'action",
+    "bitcoin", "ethereum", "solana", "soitec", "apple stock", "nvidia stock",
+    "tesla stock", "amazon stock", "bonne action", "meilleure action", "action à acheter",
+    "crypto à acheter", "altcoin", "defi", "nft", "matières premières", "or ", "pétrole",
+    "forex", "euro dollar", "dollar", "taux d'intérêt", "banque centrale",
+)
 _VIDEO_HINTS   = ("fais une vidéo", "crée une vidéo", "génère une vidéo", "créer une vidéo", "slides sur",
                   "diaporama", "présentation vidéo")
 _CODE_HINTS    = ("crée un projet", "génère un projet", "génère une application", "crée une application",
@@ -147,14 +156,15 @@ def _list_sessions():
 # ═════════════════════════════════════════════════════════════════════════════
 
 _FAST_SYS = (
-    "Tu es MasterAgent-Gros v3, un super-assistant IA personnel ultra-intelligent et polyvalent. "
-    "Tu réponds en français de façon directe, précise et immédiatement utile. "
-    "Tu es expert en : code full-stack, finance quantitative, marketing digital, "
-    "data science, stratégie business, création de contenu et bien plus. "
-    "Tu donnes des réponses structurées avec exemples concrets quand c'est utile. "
-    "Pour des tâches nécessitant des outils (données réelles, génération de fichiers, web), "
+    "Tu es MasterAgent-Gros v3, un super-assistant IA personnel de haut niveau. "
+    "Tu réponds en français de façon directe, précise, structurée et immédiatement actionnable. "
+    "Tu es expert en : code full-stack (React/FastAPI/Node), finance quantitative et trading, "
+    "marketing digital et copywriting, data science et ML, stratégie business, création de contenu viral. "
+    "Tu donnes des réponses concrètes avec des chiffres, des exemples et des recommandations tranchées. "
+    "Tu assumes tes opinions et tu ne te défiles pas derrière 'ça dépend'. "
+    "Pour des données réelles (cours de bourse, météo, web) ou générer des fichiers : "
     "active le Mode Agent 🔥 ou préfixe par 'Agent:'. "
-    "Tu ne dis jamais 'je ne sais pas' sans proposer une alternative."
+    "Tu ne dis jamais 'je ne sais pas' sans proposer une alternative concrète."
 )
 
 def fast_chat(message: str, history: list) -> str:
@@ -216,31 +226,39 @@ def full_agent(message: str, history: list, sid: str) -> str:
 # ROUTING
 # ═════════════════════════════════════════════════════════════════════════════
 
+def _is_finance_question(message: str) -> bool:
+    """Détecte si le message est une question financière nécessitant des données réelles."""
+    low = message.lower()
+    return any(hint in low for hint in _FINANCE_HINTS)
+
+
 def _route(message: str, mode: str):
-    """Retourne (use_agent, message_nettoyé)."""
-    if mode == "agent": return True, message
+    """Retourne (use_agent, use_finance, message_nettoyé)."""
+    if mode == "agent":
+        return True, False, message
     low = message.lower().strip()
     for t in AGENT_TRIGGERS:
         if low.startswith(t):
-            return True, message[len(t):].strip() or message
-    return False, message
+            return True, False, message[len(t):].strip() or message
+    return False, False, message
 
 def send(message: str, history: list, mode: str, sid: str):
     if not message.strip():
         return history, history, ""
-    use_agent, clean = _route(message, mode)
+    use_agent, _use_finance, clean = _route(message, mode)
     if use_agent:
         answer = full_agent(clean, history, sid)
     else:
-        answer = fast_chat(clean, history)
-        # Smart intent hints — guide l'utilisateur vers le bon onglet
-        low = clean.lower()
-        if any(k in low for k in _FINANCE_HINTS):
-            answer += "\n\n💡 *Pour une analyse complète avec RSI/MACD/Bollinger → onglet **💹 Finance***"
-        elif any(k in low for k in _VIDEO_HINTS):
-            answer += "\n\n💡 *Pour générer une vraie vidéo avec photos et voix → onglet **🎬 Vidéo***"
-        elif any(k in low for k in _CODE_HINTS):
-            answer += "\n\n💡 *Pour un projet complet téléchargeable en ZIP → onglet **💻 Code & Projets → Projet Complet***"
+        if not use_agent and _is_finance_question(clean):
+            answer = finance_agent_analysis(clean)
+        else:
+            answer = fast_chat(clean, history)
+            # Smart intent hints — guide l'utilisateur vers le bon onglet
+            low = clean.lower()
+            if any(k in low for k in _VIDEO_HINTS):
+                answer += "\n\n💡 *Pour générer une vraie vidéo avec photos et voix → onglet **🎬 Vidéo***"
+            elif any(k in low for k in _CODE_HINTS):
+                answer += "\n\n💡 *Pour un projet complet téléchargeable en ZIP → onglet **💻 Code & Projets → Projet Complet***"
     new_h = _add(history, message, answer)
     existing = _load(sid)
     name = existing.get("name", "Nouvelle") if existing.get("history") else message[:50]
@@ -606,39 +624,60 @@ def portfolio_analyze_fn(positions_text: str):
     except Exception as e:
         return f"❌ Erreur: {e}", None
 
+def _search_financial_web(ticker: str) -> str:
+    """Fallback: cherche des données financières via DuckDuckGo si yfinance échoue."""
+    try:
+        from duckduckgo_search import DDGS
+        queries = [
+            f"{ticker} cours bourse prix aujourd'hui analyse technique",
+            f"{ticker} stock price RSI analysis buy sell",
+        ]
+        lines = []
+        with DDGS() as ddgs:
+            for q in queries[:1]:
+                for r in ddgs.text(q, max_results=4, region="fr-fr"):
+                    title = str(r.get("title", ""))
+                    body = str(r.get("body", ""))[:400]
+                    lines.append(f"• {title}: {body}")
+        return "\n".join(lines) if lines else ""
+    except Exception:
+        return ""
+
+
 def finance_agent_analysis(question: str) -> str:
     """
     Pipeline direct garanti : extraction ticker → données réelles → synthèse LLM.
-    Contourne le ReAct pour s'assurer que les outils sont TOUJOURS appelés.
+    Fallback web search si yfinance indisponible.
     """
     if not question.strip():
         return "⚠️ Pose une question financière."
 
     from llm.client import chat as llm_chat
+    import re as _re
 
-    # ── 1. Extraire le(s) ticker(s) via LLM (rapide, température 0) ──────────
+    # ── 1. Extraire le(s) ticker(s) via LLM ───────────────────────────────────
     ticker_prompt = (
         f"Question: \"{question}\"\n\n"
         "Extrais les symboles boursiers exacts mentionnés ou sous-entendus.\n"
-        "Règles:\n"
-        "- Soitec → SOI.PA  |  Apple → AAPL  |  Bitcoin → BTC-USD  |  Total → TTE.PA\n"
-        "- LVMH → MC.PA  |  Airbus → AIR.PA  |  BNP → BNP.PA  |  Sanofi → SAN.PA\n"
-        "- Tesla → TSLA  |  Nvidia → NVDA  |  Amazon → AMZN  |  Microsoft → MSFT\n"
-        "- Ethereum → ETH-USD  |  Or → GC=F  |  Pétrole → CL=F  |  CAC40 → ^FCHI\n"
-        "- Si question générale sur 'bonnes actions' / 'marché' sans ticker précis → GENERAL\n"
-        "Réponds UNIQUEMENT avec les tickers séparés par virgule, ou GENERAL. Rien d'autre."
+        "Conversions obligatoires:\n"
+        "Soitec→SOI.PA | Apple→AAPL | Tesla→TSLA | Nvidia→NVDA | Amazon→AMZN\n"
+        "Microsoft→MSFT | Google/Alphabet→GOOGL | Meta→META | Netflix→NFLX\n"
+        "Bitcoin→BTC-USD | Ethereum→ETH-USD | Solana→SOL-USD | BNB→BNB-USD\n"
+        "Total→TTE.PA | LVMH→MC.PA | Airbus→AIR.PA | BNP→BNP.PA | Sanofi→SAN.PA\n"
+        "Kering→KER.PA | Hermès→RMS.PA | Stellantis→STLAM.MI | Or→GC=F | Pétrole→CL=F\n"
+        "CAC40→^FCHI | S&P500→^GSPC | NASDAQ→^IXIC | EUR/USD→EURUSD=X\n"
+        "Si question générale sur marché/investissement sans actif précis → GENERAL\n"
+        "Réponds UNIQUEMENT avec les tickers séparés par virgule, ou GENERAL."
     )
     try:
         ticker_raw = llm_chat(
             [{"role": "user", "content": ticker_prompt}],
             temperature=0.0,
-        ).strip().upper().replace(" ", "")
+        ).strip().upper()
     except Exception:
         ticker_raw = "GENERAL"
 
-    # Extraire uniquement les tokens qui ressemblent à des tickers
-    import re as _re
-    # Séparer sur virgules et espaces, puis garder seulement les tokens de format ticker
+    # Extraire uniquement les tokens format ticker
     tokens = _re.split(r"[,\s]+", ticker_raw)
     tickers = [t for t in tokens if _re.match(r"^\^?[A-Z]{1,5}[\-\.]?[A-Z0-9]{0,4}(=F|=X)?$", t) and t != "GENERAL"][:3]
     is_general = not tickers or "GENERAL" in ticker_raw
@@ -650,18 +689,41 @@ def finance_agent_analysis(question: str) -> str:
         from plugins.builtin.finance import StockAnalysisPlugin, MarketNewsPlugin, MultiStockComparePlugin
         stock_plugin = StockAnalysisPlugin()
         news_plugin  = MarketNewsPlugin()
+
         for tk in tickers:
-            try:
-                analysis = stock_plugin.run(ticker=tk, period="3mo")
+            # Essai 1: analyse technique yfinance (3mo)
+            analysis = None
+            for period in ("3mo", "6mo", "1mo"):
+                try:
+                    result = stock_plugin.run(ticker=tk, period=period)
+                    if result and "❌" not in result[:10] and "Erreur" not in result[:20]:
+                        analysis = result
+                        break
+                except Exception:
+                    pass
+
+            if analysis:
                 data_blocks.append(f"## Analyse technique {tk}\n{analysis}")
-            except Exception as e:
-                data_blocks.append(f"## {tk} — erreur: {e}")
+            else:
+                # Fallback: recherche web
+                web_data = _search_financial_web(tk)
+                if web_data:
+                    data_blocks.append(
+                        f"## {tk} — données yfinance indisponibles, données web:\n{web_data}"
+                    )
+                else:
+                    data_blocks.append(
+                        f"## {tk} — données non disponibles (ticker peut-être invalide ou marché fermé)"
+                    )
+
+            # Actualités
             try:
                 news = news_plugin.run(ticker=tk)
                 if news and "Aucune" not in news and "❌" not in news:
-                    data_blocks.append(f"## Actualités {tk}\n{news[:600]}")
+                    data_blocks.append(f"## Actualités {tk}\n{news[:700]}")
             except Exception:
                 pass
+
         if len(tickers) > 1:
             try:
                 cmp = MultiStockComparePlugin().run(",".join(tickers), "3mo")
@@ -669,29 +731,30 @@ def finance_agent_analysis(question: str) -> str:
             except Exception:
                 pass
     else:
-        # Question générale → dashboard complet
         from plugins.builtin.finance import MarketDashboardPlugin, MultiStockComparePlugin
         try:
             data_blocks.append(f"## Dashboard marchés\n{MarketDashboardPlugin().run()}")
-            # Top 5 actions à surveiller pour contexte
             top = MultiStockComparePlugin().run("AAPL,NVDA,MSFT,AMZN,TSLA", "1mo")
-            data_blocks.append(f"## Top US 1 mois\n{top}")
+            data_blocks.append(f"## Top 5 US (1 mois)\n{top}")
         except Exception as e:
-            data_blocks.append(f"Erreur dashboard: {e}")
+            web = _search_financial_web("market overview stocks today")
+            data_blocks.append(f"## Marché (données web)\n{web}" if web else f"Erreur dashboard: {e}")
 
     data_context = "\n\n".join(data_blocks)
     if not data_context.strip():
-        data_context = "Données indisponibles (problème réseau ou ticker invalide)."
+        data_context = "Données financières non disponibles pour cette requête."
 
     # ── 3. LLM synthétise avec les vraies données ─────────────────────────────
     system_prompt = (
         "Tu es un trader et analyste financier d'élite. "
-        "On t'a fourni les DONNÉES RÉELLES récupérées à l'instant. "
-        "Tu réponds directement à la question en te basant UNIQUEMENT sur ces données. "
-        "Format: tableaux Markdown, chiffres exacts des données, recommandation tranchée. "
+        "Tu as devant toi les DONNÉES RÉELLES récupérées à l'instant. "
+        "Tu réponds directement à la question en te basant sur ces données. "
+        "Format: tableaux Markdown, chiffres exacts tirés des données, recommandation tranchée. "
         "Si achat → donne zone d'entrée, TP1, TP2, stop-loss issus des données. "
-        "Si on te demande 'faut-il acheter X' → dis OUI ou NON avec ta conviction (forte/moyenne/faible) ET pourquoi en 3 bullets. "
-        "Une seule ligne 'Stop-loss suggéré: X' à la fin. Pas de disclaimer, pas de sermon."
+        "Si on te demande 'faut-il acheter X' → dis OUI ou NON (avec conviction forte/moyenne/faible) "
+        "ET 3 raisons chiffrées tirées des données. "
+        "Si les données sont partielles ou web-only, fais ton analyse avec ce que tu as — ne refuse pas de répondre. "
+        "Une seule ligne 'Stop-loss suggéré: X' à la fin. Pas de disclaimer, pas de sermon, pas de 'consulter un professionnel'."
     )
 
     user_msg = (
@@ -701,17 +764,15 @@ def finance_agent_analysis(question: str) -> str:
     )
 
     try:
-        answer = llm_chat(
+        return llm_chat(
             [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_msg},
             ],
             temperature=0.5,
-        )
-        return answer or data_context
+        ) or data_context
     except Exception as e:
-        # Fallback : retourner les données brutes si LLM plante
-        return f"⚠️ Synthèse LLM échouée ({e}) — Données brutes:\n\n{data_context[:4000]}"
+        return f"⚠️ Erreur LLM ({e})\n\nDonnées brutes:\n\n{data_context[:4000]}"
 
 
 # ═════════════════════════════════════════════════════════════════════════════

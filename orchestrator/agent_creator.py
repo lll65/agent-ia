@@ -38,16 +38,22 @@ Réponds UNIQUEMENT en JSON:
 }}
 
 Domaines couverts à créer si manquants:
-- finance_analyst: analyse boursière, crypto, investissement
-- fullstack_dev: projets web complets, React, Vue, FastAPI
-- data_scientist: analyse de données, ML, visualisation
-- marketing_expert: copywriting, SEO, campagnes, growth hacking
+- finance_analyst: analyse boursière, crypto, investissement, trading, recommandations achat/vente
+- crypto_analyst: cryptomonnaies spécifiques, DeFi, NFT, on-chain analytics
+- fullstack_dev: projets web complets, React, Vue, FastAPI, Node, Docker
+- data_scientist: analyse de données, ML, pandas, scikit-learn, visualisation
+- marketing_expert: copywriting, SEO, campagnes, growth hacking, réseaux sociaux
 - legal_assistant: contrats, RGPD, analyse juridique simple
-- health_coach: nutrition, sport, bien-être
-- game_developer: jeux web, logique de jeu
-- youtube_creator: scripts YouTube, SEO vidéo, miniatures
-- ecommerce_expert: Shopify, dropshipping, fiches produit
-- automation_expert: scripts d'automatisation, Selenium, APIs
+- health_coach: nutrition, sport, bien-être, régimes
+- game_developer: jeux web HTML5/JS, logique de jeu, canvas, physics
+- youtube_creator: scripts YouTube SEO, miniatures, watch time, monétisation
+- ecommerce_expert: Shopify, dropshipping, fiches produit, publicité Facebook/TikTok
+- automation_expert: scripts d'automatisation, Selenium, APIs REST, cron jobs
+- writer: articles SEO, ebooks, études de cas, newsletters, ghostwriting
+- copywriter: landing pages, emails marketing, scripts de vente, AIDA/PAS
+- video_creator: scripts TikTok/Reels/Shorts, hooks 3s, rétention, CTAs
+- seo_expert: audit technique SEO, mots-clés, clusters de contenu, netlinking
+- analyst: KPIs business, tableaux de bord, rapports stratégiques, benchmarks
 
 Génère uniquement ce qui est VRAIMENT manquant pour traiter la requête.
 Si plugin inexistant mais difficile (ex: scraping temps réel), utilise search_web à la place."""

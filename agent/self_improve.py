@@ -37,64 +37,73 @@ async def evaluate_and_learn(task: str, result: str, domain: str = "general") ->
     import re
     from llm.client import chat
 
+    # Ne pas évaluer les erreurs ou réponses très courtes
+    if not result or len(result.strip()) < 50 or result.startswith("❌"):
+        return {}
+
     EVAL_PROMPT = f"""Tu évalues la qualité d'une réponse d'agent IA.
 
 Tâche originale: {task[:300]}
 
-Résultat produit: {result[:600]}
+Résultat produit: {result[:800]}
 
 Réponds en JSON:
 {{
   "score": 7,
-  "strengths": "Ce qui est bien dans cette réponse",
-  "weaknesses": "Ce qui manque ou pourrait être amélioré",
-  "lesson": "Une règle courte que l'agent doit retenir pour faire mieux la prochaine fois",
+  "strengths": "Ce qui est bien dans cette réponse (1-2 points)",
+  "weaknesses": "Ce qui manque ou pourrait être amélioré (1-2 points)",
+  "lesson": "UNE règle courte et ACTIONNABLE que l'agent doit retenir pour faire mieux (max 20 mots)",
   "domain": "{domain}"
 }}
 
-Score: 1-10 (10 = parfait, 1 = inutile). Sois honnête et critique."""
+Score: 1-10 (10=parfait, 7=bon, 5=moyen, 3=mauvais). Sois honnête et spécifique.
+Une réponse avec des données réelles, des chiffres et une recommandation claire vaut 8+.
+Une réponse vague, générique ou avec des disclaimers excessifs vaut 3 ou moins."""
 
     try:
         loop = asyncio.get_running_loop()
         raw = await loop.run_in_executor(None, lambda: chat(
             [
-                {"role": "system", "content": "Tu évalues objectivement des réponses IA. JSON uniquement."},
+                {"role": "system", "content": "Tu évalues objectivement des réponses IA. JSON uniquement, concis."},
                 {"role": "user", "content": EVAL_PROMPT},
             ],
-            temperature=0.3,
+            temperature=0.2,
         ))
         m = re.search(r"\{[\s\S]+\}", raw)
         if not m:
-            logger.warning("[SelfImprove] pas de JSON dans la réponse LLM")
             return {}
         try:
             evaluation = json.loads(m.group())
         except json.JSONDecodeError:
-            logger.warning("[SelfImprove] JSON invalide dans la réponse LLM")
             return {}
     except Exception as e:
         logger.warning(f"[SelfImprove] évaluation échouée: {e}")
         return {}
 
-    # Stocke la leçon
-    data = _load()
-    lesson = {
-        "timestamp": datetime.now().isoformat(),
-        "domain": domain,
-        "score": evaluation.get("score", 5),
-        "lesson": evaluation.get("lesson", ""),
-        "weaknesses": evaluation.get("weaknesses", ""),
-    }
-    data["lessons"].append(lesson)
-    data["lessons"] = data["lessons"][-_MAX_LESSONS:]  # garde les plus récentes
+    # Stocke la leçon (seulement si score < 8 → il y a quelque chose à améliorer)
+    score = evaluation.get("score", 5)
+    lesson_text = evaluation.get("lesson", "")
 
-    runs = data["stats"]["runs"] + 1
-    prev_avg = data["stats"]["avg_score"]
-    data["stats"]["runs"] = runs
-    data["stats"]["avg_score"] = round((prev_avg * (runs - 1) + lesson["score"]) / runs, 2)
+    if lesson_text and score < 8:
+        data = _load()
+        lesson = {
+            "timestamp": datetime.now().isoformat(),
+            "domain": domain,
+            "score": score,
+            "lesson": lesson_text,
+            "weaknesses": evaluation.get("weaknesses", ""),
+        }
+        data["lessons"].append(lesson)
+        data["lessons"] = data["lessons"][-_MAX_LESSONS:]
 
-    _save(data)
-    logger.info(f"[SelfImprove] Score {lesson['score']}/10 — leçon: {lesson['lesson'][:60]}")
+        runs = data["stats"]["runs"] + 1
+        prev_avg = data["stats"]["avg_score"]
+        data["stats"]["runs"] = runs
+        data["stats"]["avg_score"] = round((prev_avg * (runs - 1) + score) / runs, 2)
+
+        _save(data)
+        logger.info(f"[SelfImprove] Score {score}/10 — leçon: {lesson_text[:70]}")
+
     return evaluation
 
 
