@@ -525,11 +525,16 @@ def analyze_portfolio(positions_text: str) -> tuple:
             continue
 
         ticker = _resolve_ticker(ticker_raw)
+        # Signaler si le nom a été auto-résolu vers un ticker différent
+        resolved_note = (
+            f"→ {ticker}" if ticker.upper() != ticker_raw.upper().split()[0] else None
+        )
         positions.append({
-            "ticker":      ticker,
-            "ticker_orig": ticker_raw,
-            "qty":         qty,
-            "buy_price":   buy_price,
+            "ticker":        ticker,
+            "ticker_orig":   ticker_raw,
+            "qty":           qty,
+            "buy_price":     buy_price,
+            "resolved_note": resolved_note,
         })
 
     if not positions:
@@ -611,18 +616,31 @@ def analyze_portfolio(positions_text: str) -> tuple:
         if cost is not None:
             total_cost += cost
 
+        # Détecte si le prix actuel semble incohérent avec le prix d'achat (possible mauvais ticker)
+        price_warning = None
+        if p["buy_price"] and cur_price:
+            ratio = cur_price / p["buy_price"]
+            if ratio > 8 or ratio < 0.12:
+                price_warning = (
+                    f"⚠️ Prix actuel ({cur_price:.2f}) très éloigné du prix d'achat ({p['buy_price']:.2f}) "
+                    f"— vérifie que le ticker **{p['ticker']}** est bien le bon !"
+                )
+
         rows.append({
-            "ticker":    p["ticker"],
-            "name":      name,
-            "qty":       p["qty"],
-            "buy_price": p["buy_price"],
-            "cur_price": cur_price,
-            "chg_24h":   chg_24h,
-            "cur_value": cur_value,
-            "cost":      cost,
-            "pnl":       pnl,
-            "pnl_pct":   pnl_pct,
-            "currency":  currency,
+            "ticker":        p["ticker"],
+            "ticker_orig":   p["ticker_orig"],
+            "resolved_note": p.get("resolved_note"),
+            "name":          name,
+            "qty":           p["qty"],
+            "buy_price":     p["buy_price"],
+            "cur_price":     cur_price,
+            "chg_24h":       chg_24h,
+            "cur_value":     cur_value,
+            "cost":          cost,
+            "pnl":           pnl,
+            "pnl_pct":       pnl_pct,
+            "currency":      currency,
+            "price_warning": price_warning,
         })
 
     valid    = [r for r in rows if "error" not in r]
@@ -709,6 +727,32 @@ def analyze_portfolio(positions_text: str) -> tuple:
             pct = r["cur_value"] / total_value * 100
             bar = _pct_bar(pct, 25)
             out.append(f"**{r['ticker']:<10}** `{bar}` {pct:.1f}%  ({r['cur_value']:,.2f})")
+
+    # ── Résolutions automatiques (noms → tickers) ─────────────────────────────
+    resolved_notes = [
+        f"- `{r['ticker_orig']}` → **{r['ticker']}** *(auto-résolu)*"
+        for r in rows
+        if r.get("resolved_note") and "error" not in r
+    ]
+    if resolved_notes:
+        out.append("\n### 🔀 Résolutions automatiques")
+        out.append(
+            "*Ces noms ont été convertis automatiquement en tickers Yahoo Finance. "
+            "Si le prix semble faux, utilise le ticker direct de ton courtier.*"
+        )
+        for n in resolved_notes:
+            out.append(n)
+
+    # ── Avertissements prix incohérents ────────────────────────────────────────
+    price_warns = [r["price_warning"] for r in rows if r.get("price_warning")]
+    if price_warns:
+        out.append("\n### ⚠️ Prix suspects — vérification recommandée")
+        for w in price_warns:
+            out.append(f"- {w}")
+        out.append(
+            "\n*Pour éviter les confusions, utilise le code ticker exact visible "
+            "sur Boursorama / Trade Republic / ton courtier (ex: `PANX.PA`, `WPEA.PA`…)*"
+        )
 
     if errors:
         out.append("\n### ⚠️ Erreurs de parsing")
