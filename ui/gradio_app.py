@@ -628,11 +628,35 @@ def market_dashboard_fn() -> str:
     except Exception as e:
         return f"❌ Erreur dashboard: {e}"
 
+_PORTFOLIOS_FILE = Path("data/portfolios.json")
+
+
+def _pf_load_all() -> dict:
+    if _PORTFOLIOS_FILE.exists():
+        try:
+            return json.loads(_PORTFOLIOS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _pf_save(name: str, text: str):
+    all_pf = _pf_load_all()
+    all_pf[name.strip()] = {"positions": text, "updated": datetime.now().isoformat()}
+    _PORTFOLIOS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _PORTFOLIOS_FILE.write_text(json.dumps(all_pf, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _pf_list() -> list[str]:
+    return list(_pf_load_all().keys())
+
+
 def portfolio_analyze_fn(positions_text: str):
     if not positions_text.strip():
         return (
             "⚠️ Saisis tes positions (une par ligne) :\n\n"
-            "```\nAAPL 10 150.00\nBTC-USD 0.5 42000\nNVDA 3 800\n```",
+            "```\nAAPL 10 150.00\nvalneva 25 4.10\nBTC-USD 0.5 42000\n```\n\n"
+            "Tu peux utiliser les noms (apple, tesla, valneva…) ou les tickers Yahoo Finance.",
             None,
         )
     try:
@@ -640,6 +664,33 @@ def portfolio_analyze_fn(positions_text: str):
         return analyze_portfolio(positions_text)
     except Exception as e:
         return f"❌ Erreur: {e}", None
+
+
+def portfolio_save_fn(name: str, text: str):
+    if not name.strip():
+        return gr.update(), gr.update(choices=_pf_list()), "⚠️ Donne un nom au portefeuille."
+    if not text.strip():
+        return gr.update(), gr.update(choices=_pf_list()), "⚠️ Saisis d'abord tes positions."
+    _pf_save(name.strip(), text)
+    return gr.update(choices=_pf_list(), value=name.strip()), gr.update(choices=_pf_list()), f"✅ '{name}' sauvegardé."
+
+
+def portfolio_load_fn(name: str):
+    if not name:
+        return gr.update(), ""
+    all_pf = _pf_load_all()
+    if name in all_pf:
+        return all_pf[name]["positions"], f"✅ '{name}' chargé."
+    return gr.update(), f"⚠️ Portefeuille '{name}' introuvable."
+
+
+def portfolio_delete_fn(name: str):
+    if not name:
+        return gr.update(choices=_pf_list()), "", "⚠️ Sélectionne un portefeuille."
+    all_pf = _pf_load_all()
+    all_pf.pop(name, None)
+    _PORTFOLIOS_FILE.write_text(json.dumps(all_pf, ensure_ascii=False, indent=2), encoding="utf-8")
+    return gr.update(choices=_pf_list(), value=None), "", f"🗑️ '{name}' supprimé."
 
 def _fetch_yahoo_direct(ticker: str, period: str = "3mo") -> str:
     """Requête HTTP directe vers l'API Yahoo Finance — contourne les bugs yfinance."""
@@ -1223,28 +1274,61 @@ def build_ui() -> gr.Blocks:
                     # ── Portefeuille ──────────────────────────────────────────
                     with gr.TabItem("💼 Portefeuille"):
                         gr.Markdown(
-                            "Saisis tes positions, une par ligne : **TICKER QUANTITE PRIX_ACHAT**\n\n"
-                            "Exemple : `AAPL 10 150.00` · `BTC-USD 0.5 42000` · `MC.PA 3 650`  "
-                            "(le prix d'achat est optionnel si tu veux juste voir la valeur)"
+                            "**TICKER/NOM QUANTITE PRIX_ACHAT** — une ligne par position\n\n"
+                            "Accepte les noms : `valneva 25 4.10` · `apple 10 150` · `bitcoin 0.1 60000`\n"
+                            "Ou les tickers directs : `VLA.PA 25 4.10` · `AAPL 10 150` · `BTC-USD 0.1 60000`"
                         )
                         with gr.Row():
                             with gr.Column(scale=1):
+                                # Sauvegarde / chargement
+                                with gr.Row():
+                                    pf_name = gr.Textbox(
+                                        label="Nom du portefeuille",
+                                        placeholder="Mon portefeuille principal",
+                                        scale=3,
+                                    )
+                                    pf_save_btn = gr.Button("💾 Sauver", scale=1, size="sm")
+                                with gr.Row():
+                                    pf_dd = gr.Dropdown(
+                                        choices=_pf_list(),
+                                        label="Charger un portefeuille sauvegardé",
+                                        value=None, scale=3,
+                                    )
+                                    pf_load_btn   = gr.Button("📂 Charger", scale=1, size="sm")
+                                    pf_delete_btn = gr.Button("🗑️", scale=0, size="sm", variant="secondary")
+                                pf_status = gr.Markdown("")
+
                                 pf_in = gr.Textbox(
-                                    label="Mes positions",
+                                    label="Positions",
                                     lines=10,
                                     placeholder=(
+                                        "valneva 25 4.10\n"
                                         "AAPL 10 150.00\n"
-                                        "MSFT 5 280.00\n"
-                                        "BTC-USD 0.1 42000\n"
-                                        "NVDA 3 800.00\n"
-                                        "ETH-USD 2 2000"
+                                        "BTC-USD 0.1 60000\n"
+                                        "MC.PA 3 650.00\n"
+                                        "NVDA 2 800.00"
                                     ),
                                 )
-                                pf_btn = gr.Button("💼 Analyser mon portefeuille", variant="primary", size="lg")
+                                pf_btn = gr.Button("💼 Analyser", variant="primary", size="lg")
+
                             with gr.Column(scale=2):
                                 pf_out = gr.Markdown()
+
                         pf_chart = gr.Image(label="📊 Allocation & Performance")
+
                         pf_btn.click(portfolio_analyze_fn, [pf_in], [pf_out, pf_chart])
+                        pf_save_btn.click(
+                            portfolio_save_fn, [pf_name, pf_in],
+                            [pf_dd, pf_dd, pf_status],
+                        )
+                        pf_load_btn.click(
+                            portfolio_load_fn, [pf_dd],
+                            [pf_in, pf_status],
+                        )
+                        pf_delete_btn.click(
+                            portfolio_delete_fn, [pf_dd],
+                            [pf_dd, pf_in, pf_status],
+                        )
 
                     # ── Actualités ────────────────────────────────────────────
                     with gr.TabItem("📰 Actualités"):
