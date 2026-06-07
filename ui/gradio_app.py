@@ -624,21 +624,81 @@ def portfolio_analyze_fn(positions_text: str):
     except Exception as e:
         return f"❌ Erreur: {e}", None
 
+def _fetch_yahoo_direct(ticker: str, period: str = "3mo") -> str:
+    """Requête HTTP directe vers l'API Yahoo Finance — contourne les bugs yfinance."""
+    try:
+        import requests, json
+        from datetime import datetime, timedelta
+        interval = "1d"
+        url = (
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+            f"?interval={interval}&range={period}"
+        )
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/json",
+        }
+        resp = requests.get(url, headers=headers, timeout=12)
+        if resp.status_code != 200:
+            return ""
+        data = resp.json()
+        result = data.get("chart", {}).get("result", [])
+        if not result:
+            return ""
+        r = result[0]
+        meta  = r.get("meta", {})
+        closes = r.get("indicators", {}).get("quote", [{}])[0].get("close", [])
+        closes = [c for c in closes if c is not None]
+        if not closes:
+            return ""
+        price      = closes[-1]
+        prev_price = closes[-2] if len(closes) > 1 else price
+        chg_pct    = (price - prev_price) / prev_price * 100 if prev_price else 0
+        h_period   = max(closes)
+        l_period   = min(closes)
+        perf       = (price / closes[0] - 1) * 100 if closes[0] else 0
+        currency   = meta.get("currency", "")
+        name       = meta.get("longName") or meta.get("shortName") or ticker
+        lines = [
+            f"Source: Yahoo Finance direct",
+            f"Nom: {name}",
+            f"Prix actuel: {price:.2f} {currency}",
+            f"Variation séance: {chg_pct:+.2f}%",
+            f"Haut période ({period}): {h_period:.2f}",
+            f"Bas période ({period}): {l_period:.2f}",
+            f"Performance période: {perf:+.2f}%",
+            f"Nb séances: {len(closes)}",
+        ]
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def _search_financial_web(ticker: str) -> str:
     """Fallback: cherche des données financières via DuckDuckGo si yfinance échoue."""
     try:
         from duckduckgo_search import DDGS
         queries = [
             f"{ticker} cours bourse prix aujourd'hui analyse technique",
-            f"{ticker} stock price RSI analysis buy sell",
+            f"{ticker} stock price RSI buy sell signal",
         ]
         lines = []
         with DDGS() as ddgs:
-            for q in queries[:1]:
-                for r in ddgs.text(q, max_results=4, region="fr-fr"):
-                    title = str(r.get("title", ""))
-                    body = str(r.get("body", ""))[:400]
-                    lines.append(f"• {title}: {body}")
+            for q in queries:
+                try:
+                    for r in ddgs.text(q, max_results=3, region="fr-fr"):
+                        title = str(r.get("title", ""))
+                        body  = str(r.get("body",  ""))[:300]
+                        if title:
+                            lines.append(f"• {title}: {body}")
+                except Exception:
+                    pass
+                if len(lines) >= 6:
+                    break
         return "\n".join(lines) if lines else ""
     except Exception:
         return ""
@@ -691,9 +751,9 @@ def finance_agent_analysis(question: str) -> str:
         news_plugin  = MarketNewsPlugin()
 
         for tk in tickers:
-            # Essai 1: analyse technique yfinance (3mo)
+            # Essai 1: plugin StockAnalysis (yfinance Ticker.history + yf.download)
             analysis = None
-            for period in ("3mo", "6mo", "1mo"):
+            for period in ("3mo", "6mo", "1mo", "1y"):
                 try:
                     result = stock_plugin.run(ticker=tk, period=period)
                     if result and "❌" not in result[:10] and "Erreur" not in result[:20]:
@@ -705,16 +765,31 @@ def finance_agent_analysis(question: str) -> str:
             if analysis:
                 data_blocks.append(f"## Analyse technique {tk}\n{analysis}")
             else:
-                # Fallback: recherche web
-                web_data = _search_financial_web(tk)
-                if web_data:
+                # Essai 2: requête HTTP directe vers Yahoo Finance (contourne yfinance)
+                direct_data = _fetch_yahoo_direct(tk)
+                if direct_data:
                     data_blocks.append(
-                        f"## {tk} — données yfinance indisponibles, données web:\n{web_data}"
+                        f"## {tk} — Données Yahoo Finance (HTTP direct):\n{direct_data}"
                     )
                 else:
-                    data_blocks.append(
-                        f"## {tk} — données non disponibles (ticker peut-être invalide ou marché fermé)"
-                    )
+                    # Essai 3: recherche web DuckDuckGo
+                    web_data = _search_financial_web(tk)
+                    if web_data:
+                        data_blocks.append(
+                            f"## {tk} — données web (yfinance indisponible):\n{web_data}"
+                        )
+                    else:
+                        # Aucune donnée temps réel — demander au LLM analyse basée sur ses connaissances
+                        data_blocks.append(
+                            f"## {tk} — données temps réel non accessibles\n"
+                            f"Ticker: {tk}\n"
+                            f"Les sources de données (yfinance, Yahoo Finance, DuckDuckGo) "
+                            f"ne répondent pas pour ce ticker en ce moment.\n"
+                            f"INSTRUCTION: Fournis une analyse complète basée sur tes connaissances "
+                            f"d'entraînement pour ce ticker (secteur, historique, fondamentaux, "
+                            f"tendances connues jusqu'à fin 2024). Indique que c'est basé sur "
+                            f"tes connaissances, puis donne quand même une recommandation chiffrée."
+                        )
 
             # Actualités
             try:
@@ -746,15 +821,18 @@ def finance_agent_analysis(question: str) -> str:
 
     # ── 3. LLM synthétise avec les vraies données ─────────────────────────────
     system_prompt = (
-        "Tu es un trader et analyste financier d'élite. "
-        "Tu as devant toi les DONNÉES RÉELLES récupérées à l'instant. "
-        "Tu réponds directement à la question en te basant sur ces données. "
-        "Format: tableaux Markdown, chiffres exacts tirés des données, recommandation tranchée. "
-        "Si achat → donne zone d'entrée, TP1, TP2, stop-loss issus des données. "
-        "Si on te demande 'faut-il acheter X' → dis OUI ou NON (avec conviction forte/moyenne/faible) "
-        "ET 3 raisons chiffrées tirées des données. "
-        "Si les données sont partielles ou web-only, fais ton analyse avec ce que tu as — ne refuse pas de répondre. "
-        "Une seule ligne 'Stop-loss suggéré: X' à la fin. Pas de disclaimer, pas de sermon, pas de 'consulter un professionnel'."
+        "Tu es un trader et analyste financier d'élite, ex-gérant de fonds. "
+        "Tu réponds TOUJOURS avec une analyse complète ET une recommandation tranchée — sans jamais refuser. "
+        "RÈGLES ABSOLUES:\n"
+        "1. Si tu as des données réelles → analyse chiffrée complète + OUI/NON/ATTENDRE + niveaux précis.\n"
+        "2. Si les données temps réel manquent → tu donnes UNE SEULE ligne '⚠️ Données temps réel indisponibles' "
+        "puis tu analyses immédiatement avec tes connaissances (secteur, historique, fondamentaux, "
+        "tendances récentes que tu connais jusqu'à fin 2024). Tu DOIS donner une zone d'entrée estimée, "
+        "un TP1, un TP2, un stop-loss approximatifs basés sur la volatilité typique du secteur.\n"
+        "3. Tu ne dis JAMAIS 'je ne peux pas sans données' ni 'consulter un professionnel' — JAMAIS.\n"
+        "4. Format: tableaux Markdown, chiffres, recommandation en gras.\n"
+        "5. Termine par: 'Stop-loss suggéré: [prix ou %]' — une seule ligne.\n"
+        "6. Sur la question 'faut-il acheter X': OUI/NON/ATTENDRE + 3 raisons chiffrées. Point final."
     )
 
     user_msg = (

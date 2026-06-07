@@ -390,13 +390,56 @@ class StockAnalysisPlugin(Plugin):
 
         try:
             stock = yf.Ticker(ticker.upper())
-            info  = stock.info or {}
-            hist  = stock.history(period=period)
+            info  = {}
+            try:
+                info = stock.info or {}
+            except Exception:
+                pass
+
+            # Essayer plusieurs méthodes pour récupérer les données historiques
+            hist = pd.DataFrame()
+            for _kwargs in [
+                {"period": period},
+                {"period": period, "auto_adjust": True, "actions": False},
+                {"period": "6mo"},
+                {"period": "1y"},
+            ]:
+                try:
+                    h = stock.history(**_kwargs)
+                    if not h.empty:
+                        hist = h
+                        break
+                except Exception:
+                    pass
+
+            # Fallback: yf.download() (parfois plus fiable pour les actions européennes)
+            if hist.empty:
+                try:
+                    df = yf.download(
+                        ticker.upper(), period=period,
+                        progress=False, auto_adjust=True,
+                    )
+                    if not df.empty:
+                        # yf.download renvoie un MultiIndex si plusieurs tickers
+                        if isinstance(df.columns, pd.MultiIndex):
+                            df.columns = df.columns.droplevel(1)
+                        hist = df
+                except Exception:
+                    pass
+
             if hist.empty:
                 return f"❌ Aucune donnée pour {ticker}. Vérifie le symbole (ex: AAPL, BTC-USD, MC.PA)."
 
             close = hist["Close"]
-            vol   = hist["Volume"]
+            vol   = hist.get("Volume", pd.Series(dtype=float))
+            # yf.download peut renvoyer une Series ou un DataFrame colonne unique
+            if hasattr(close, "squeeze"):
+                close = close.squeeze()
+            if hasattr(vol, "squeeze"):
+                vol = vol.squeeze()
+            close = close.dropna()
+            if len(close) < 5:
+                return f"❌ Données insuffisantes pour {ticker} ({len(close)} points seulement)."
 
             price = float(close.iloc[-1])
             prev  = float(close.iloc[-2]) if len(close) > 1 else price
@@ -431,8 +474,11 @@ class StockAnalysisPlugin(Plugin):
             except Exception:
                 atr_v = atr_pct = 0
 
-            avg_vol   = float(vol.rolling(20).mean().iloc[-1])
-            cur_vol   = float(vol.iloc[-1])
+            try:
+                avg_vol   = float(vol.rolling(20).mean().iloc[-1]) if len(vol) > 0 else 0.0
+                cur_vol   = float(vol.iloc[-1]) if len(vol) > 0 else 0.0
+            except Exception:
+                avg_vol = cur_vol = 0.0
             vol_ratio = cur_vol / avg_vol if avg_vol > 0 else 1.0
 
             score, bull, bear = 0.0, [], []
