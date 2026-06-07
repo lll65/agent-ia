@@ -39,12 +39,12 @@ class MemoryManager:
             return []
         return self.chroma.search(agent_id, query, n)
 
-    def build_context(self, agent_id: str, current_task: str, recent_limit: int = 10) -> str:
+    def build_context(self, agent_id: str, current_task: str, recent_limit: int = 12) -> str:
         """
         Construit le contexte complet pour l'agent:
         1. Résumé des échanges passés (si disponible)
-        2. Souvenirs pertinents à la tâche courante
-        3. Messages récents
+        2. Souvenirs pertinents à la tâche courante (ChromaDB)
+        3. Messages récents (SQLite)
         """
         parts = []
 
@@ -52,17 +52,29 @@ class MemoryManager:
         if agent_id in self._summary_cache:
             parts.append(f"[CONTEXTE PASSÉ]\n{self._summary_cache[agent_id]}")
 
-        # Mémoire sémantique
+        # Mémoire sémantique (top 4 au lieu de 3)
         if self.chroma.available:
-            relevant = self.recall_relevant(agent_id, current_task, n=3)
+            relevant = self.recall_relevant(agent_id, current_task, n=4)
             if relevant:
-                mem_text = "\n".join(f"- {r['text'][:200]}" for r in relevant)
-                parts.append(f"[SOUVENIRS PERTINENTS]\n{mem_text}")
+                # Filtre les doublons avec l'historique récent
+                seen = set()
+                unique = []
+                for r in relevant:
+                    key = r['text'][:80]
+                    if key not in seen:
+                        seen.add(key)
+                        unique.append(r)
+                if unique:
+                    mem_text = "\n".join(f"- {r['text'][:250]}" for r in unique)
+                    parts.append(f"[SOUVENIRS PERTINENTS]\n{mem_text}")
 
-        # Historique récent
+        # Historique récent (12 messages au lieu de 10)
         recent = self.recall_recent(agent_id, recent_limit)
         if recent:
-            history_text = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in recent)
+            history_text = "\n".join(
+                f"{m['role'].upper()}: {m['content'][:400]}"
+                for m in recent
+            )
             parts.append(f"[HISTORIQUE RÉCENT]\n{history_text}")
 
         return "\n\n".join(parts)
