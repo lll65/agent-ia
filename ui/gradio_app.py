@@ -1275,8 +1275,11 @@ def build_ui() -> gr.Blocks:
                     with gr.TabItem("💼 Portefeuille"):
                         gr.Markdown(
                             "**TICKER/NOM QUANTITE PRIX_ACHAT** — une ligne par position\n\n"
-                            "Accepte les noms : `valneva 25 4.10` · `apple 10 150` · `bitcoin 0.1 60000`\n"
-                            "Ou les tickers directs : `VLA.PA 25 4.10` · `AAPL 10 150` · `BTC-USD 0.1 60000`"
+                            "- Noms simples : `valneva 25 4.10` · `apple 10 150` · `bitcoin 0.1 60000`\n"
+                            "- Tickers directs : `VLA.PA 25 4.10` · `AAPL 10 150` · `BTC-USD 0.1 60000`\n"
+                            "- ETFs multi-mots : `Amundi Nasdaq PEA 100 5.29` · `PANX.PA 100 5.29`\n"
+                            "- Commentaires : `AAPL 10 150  # achat jan 2024` (tout après `#` est ignoré)\n\n"
+                            "**Allocation** = poids de chaque ligne dans la valeur totale du portefeuille."
                         )
                         with gr.Row():
                             with gr.Column(scale=1):
@@ -1300,13 +1303,15 @@ def build_ui() -> gr.Blocks:
 
                                 pf_in = gr.Textbox(
                                     label="Positions",
-                                    lines=10,
+                                    lines=12,
                                     placeholder=(
                                         "valneva 25 4.10\n"
                                         "AAPL 10 150.00\n"
                                         "BTC-USD 0.1 60000\n"
                                         "MC.PA 3 650.00\n"
-                                        "NVDA 2 800.00"
+                                        "NVDA 2 800.00\n"
+                                        "PANX.PA 100 25.00  # Amundi Nasdaq PEA\n"
+                                        "Amundi World PEA 50 35.50"
                                     ),
                                 )
                                 pf_btn = gr.Button("💼 Analyser", variant="primary", size="lg")
