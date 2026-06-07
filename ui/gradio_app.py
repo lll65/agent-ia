@@ -173,9 +173,19 @@ def fast_chat(message: str, history: list) -> str:
     msgs.extend(_to_ollama(history))
     msgs.append({"role": "user", "content": message})
     try:
-        return chat(msgs, temperature=0.7)
+        answer = chat(msgs, temperature=0.7)
     except Exception as e:
         return f"❌ LLM indisponible: {e}"
+    # Auto-amélioration pour les questions substantielles (> 5 mots)
+    if answer and len(message.split()) > 5:
+        def _bg(t, a):
+            try:
+                from agent.self_improve import evaluate_and_learn
+                asyncio.run(evaluate_and_learn(t, a, domain="chat"))
+            except Exception:
+                pass
+        threading.Thread(target=_bg, args=(message, answer), daemon=True).start()
+    return answer
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -578,7 +588,12 @@ def analyze_finance(ticker: str, period: str):
     try:
         from plugins.builtin.finance import StockAnalysisPlugin, generate_stock_chart
         analysis = StockAnalysisPlugin().run(ticker=ticker.strip(), period=period)
-        chart    = generate_stock_chart(ticker.strip(), period)
+        # Si yfinance manque, le plugin renvoie une erreur ❌ → on tente la cascade
+        if analysis.startswith("❌") and "yfinance" in analysis:
+            direct = _fetch_yahoo_direct(ticker.strip(), period)
+            if direct:
+                analysis = f"*⚠️ yfinance absent — données Yahoo Finance HTTP*\n\n{direct}"
+        chart = generate_stock_chart(ticker.strip(), period)
         return analysis, chart
     except Exception as e:
         return f"❌ Erreur: {e}", None
@@ -663,6 +678,8 @@ def _fetch_yahoo_direct(ticker: str, period: str = "3mo") -> str:
         perf       = (price / closes[0] - 1) * 100 if closes[0] else 0
         currency   = meta.get("currency", "")
         name       = meta.get("longName") or meta.get("shortName") or ticker
+        # Sanity check : performance irréaliste → anomalie de données
+        perf_display = f"{perf:+.2f}%" if perf is not None and abs(perf) < 200 else "N/A (données aberrantes)"
         lines = [
             f"Source: Yahoo Finance direct",
             f"Nom: {name}",
@@ -670,7 +687,7 @@ def _fetch_yahoo_direct(ticker: str, period: str = "3mo") -> str:
             f"Variation séance: {chg_pct:+.2f}%",
             f"Haut période ({period}): {h_period:.2f}",
             f"Bas période ({period}): {l_period:.2f}",
-            f"Performance période: {perf:+.2f}%",
+            f"Performance période: {perf_display}",
             f"Nb séances: {len(closes)}",
         ]
         return "\n".join(lines)
@@ -842,7 +859,7 @@ def finance_agent_analysis(question: str) -> str:
     )
 
     try:
-        return llm_chat(
+        answer = llm_chat(
             [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_msg},
@@ -851,6 +868,17 @@ def finance_agent_analysis(question: str) -> str:
         ) or data_context
     except Exception as e:
         return f"⚠️ Erreur LLM ({e})\n\nDonnées brutes:\n\n{data_context[:4000]}"
+
+    # Auto-amélioration en arrière-plan
+    def _bg_finance(q, a):
+        try:
+            from agent.self_improve import evaluate_and_learn
+            import asyncio
+            asyncio.run(evaluate_and_learn(q, a, domain="finance"))
+        except Exception:
+            pass
+    threading.Thread(target=_bg_finance, args=(question, answer), daemon=True).start()
+    return answer
 
 
 # ═════════════════════════════════════════════════════════════════════════════

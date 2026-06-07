@@ -6,7 +6,57 @@ Dashboard marchés, portefeuille P&L, comparaison multi-actifs.
 from plugins.base import Plugin
 
 
-# ─── Helpers internes ─────────────────────────────────────────────────────────
+# ─── HTTP fallback (fonctionne sans yfinance) ─────────────────────────────────
+
+def _fetch_ticker_http(ticker: str, period: str = "1mo") -> dict:
+    """Récupère prix + variation via l'API Yahoo Finance directement."""
+    try:
+        import requests
+        url = (
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+            f"?interval=1d&range={period}"
+        )
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+        }
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code != 200:
+            return {}
+        data = r.json()
+        result = (data.get("chart") or {}).get("result") or []
+        if not result:
+            return {}
+        rr = result[0]
+        meta = rr.get("meta") or {}
+        closes = (rr.get("indicators") or {}).get("quote", [{}])[0].get("close") or []
+        closes = [c for c in closes if c is not None]
+        if not closes:
+            return {}
+        price = closes[-1]
+        prev  = closes[-2] if len(closes) > 1 else price
+        chg   = (price - prev) / prev * 100 if prev else 0
+        # Sanity check : performance max 150% sur 1 mois, 300% sur 1 an
+        _perf_lim = 150 if period in ("1mo", "3mo") else 400
+        c1m = (price / closes[0] - 1) * 100 if closes[0] else 0
+        if abs(c1m) > _perf_lim:
+            c1m = None  # anomalie de données
+        return {
+            "price":    price,
+            "chg":      chg,
+            "currency": meta.get("currency", ""),
+            "name":     meta.get("longName") or meta.get("shortName") or ticker,
+            "h":        max(closes),
+            "l":        min(closes),
+            "perf":     c1m,
+            "n":        len(closes),
+        }
+    except Exception:
+        return {}
+
+
 
 def _rsi(close, period=14):
     import pandas as pd
@@ -710,12 +760,6 @@ class MarketDashboardPlugin(Plugin):
     parameters = {}
 
     def run(self) -> str:
-        try:
-            import yfinance as yf
-            import pandas as pd
-        except ImportError:
-            return "❌ pip install yfinance pandas"
-
         from datetime import datetime
         groups = {
             "📈 INDICES":         [("^GSPC","S&P 500"),("^IXIC","NASDAQ"),("^DJI","Dow Jones"),("^FCHI","CAC 40"),("^VIX","VIX")],
@@ -724,7 +768,17 @@ class MarketDashboardPlugin(Plugin):
             "🏦 FOREX":           [("EURUSD=X","EUR/USD"),("GBPUSD=X","GBP/USD"),("JPY=X","USD/JPY"),("DX-Y.NYB","DXY")],
         }
 
+        # Tente yfinance en premier, repli HTTP si manquant
+        try:
+            import yfinance as yf
+            import pandas as pd
+            _yf_ok = True
+        except ImportError:
+            _yf_ok = False
+
         lines = [f"## 🌐 Dashboard Marchés — {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"]
+        if not _yf_ok:
+            lines.append("*⚠️ yfinance absent — données via Yahoo Finance HTTP (RSI non calculé)*\n")
 
         for category, items in groups.items():
             lines.append(f"### {category}")
@@ -732,23 +786,47 @@ class MarketDashboardPlugin(Plugin):
             lines.append("|---|---|---|---|---|---|")
             for sym, label in items:
                 try:
-                    h = yf.Ticker(sym).history(period="1mo")
-                    if h.empty:
-                        lines.append(f"| {label} | — | — | — | — | — |"); continue
-                    close  = h["Close"]
-                    price  = float(close.iloc[-1])
-                    c24h   = (price / float(close.iloc[-2]) - 1) * 100 if len(close) > 1 else 0
-                    c1m    = (price / float(close.iloc[0]) - 1) * 100
-                    rv     = _rsi(close)
-                    c24_s  = f"{'🟢' if c24h >= 0 else '🔴'} {c24h:+.2f}%"
-                    c1m_s  = f"{c1m:+.1f}%"
-                    rsi_s  = f"{rv:.0f}" if not pd.isna(rv) else "—"
-                    sig    = "⚠️ Suracheté" if not pd.isna(rv) and rv > 70 else (
-                             "🔥 Survendu" if not pd.isna(rv) and rv < 30 else "✅ Neutre")
-                    p_fmt  = f"{price:,.2f}" if price >= 1 else f"{price:.6f}"
+                    if _yf_ok:
+                        h = yf.Ticker(sym).history(period="1mo")
+                        if h.empty:
+                            raise ValueError("empty")
+                        close  = h["Close"].squeeze().dropna()
+                        price  = float(close.iloc[-1])
+                        c24h   = (price / float(close.iloc[-2]) - 1) * 100 if len(close) > 1 else 0
+                        c1m    = (price / float(close.iloc[0]) - 1) * 100
+                        rv     = _rsi(close)
+                        c24_s  = f"{'🟢' if c24h >= 0 else '🔴'} {c24h:+.2f}%"
+                        c1m_s  = f"{c1m:+.1f}%"
+                        rsi_s  = f"{rv:.0f}" if not pd.isna(rv) else "—"
+                        sig    = "⚠️ Suracheté" if not pd.isna(rv) and rv > 70 else (
+                                 "🔥 Survendu" if not pd.isna(rv) and rv < 30 else "✅ Neutre")
+                    else:
+                        d = _fetch_ticker_http(sym, "1mo")
+                        if not d:
+                            raise ValueError("no http data")
+                        price  = d["price"]
+                        c24h   = d["chg"]
+                        c1m    = d.get("perf") or 0
+                        c24_s  = f"{'🟢' if c24h >= 0 else '🔴'} {c24h:+.2f}%"
+                        c1m_s  = f"{c1m:+.1f}%" if d.get("perf") is not None else "—"
+                        rsi_s  = "—"
+                        sig    = "✅ OK"
+
+                    p_fmt = f"{price:,.2f}" if price >= 1 else f"{price:.6f}"
                     lines.append(f"| **{label}** | {p_fmt} | {c24_s} | {c1m_s} | {rsi_s} | {sig} |")
                 except Exception:
-                    lines.append(f"| {label} | — | — | — | — | — |")
+                    # Ultime fallback HTTP si yfinance échoue pour ce ticker
+                    try:
+                        d = _fetch_ticker_http(sym, "1mo")
+                        if d:
+                            p_fmt = f"{d['price']:,.2f}" if d["price"] >= 1 else f"{d['price']:.6f}"
+                            c24_s = f"{'🟢' if d['chg'] >= 0 else '🔴'} {d['chg']:+.2f}%"
+                            c1m_s = f"{d['perf']:+.1f}%" if d.get("perf") is not None else "—"
+                            lines.append(f"| **{label}** | {p_fmt} | {c24_s} | {c1m_s} | — | ✅ |")
+                        else:
+                            lines.append(f"| {label} | — | — | — | — | — |")
+                    except Exception:
+                        lines.append(f"| {label} | — | — | — | — | — |")
             lines.append("")
 
         return "\n".join(lines)
@@ -766,15 +844,21 @@ class MultiStockComparePlugin(Plugin):
         try:
             import yfinance as yf
             import pandas as pd
+            _yf_ok = True
         except ImportError:
-            return "❌ pip install yfinance pandas"
+            _yf_ok = False
+            pd = None
 
         symbols = [t.strip().upper() for t in tickers.split(",") if t.strip()][:8]
         rows = []
 
         for sym in symbols:
             try:
+                if not _yf_ok:
+                    raise ImportError("yfinance absent")
                 h = yf.Ticker(sym).history(period=period)["Close"]
+                if hasattr(h, "squeeze"):
+                    h = h.squeeze().dropna()
                 if h.empty:
                     rows.append({"ticker": sym, "error": True}); continue
                 ret    = (h.iloc[-1] / h.iloc[0] - 1) * 100
@@ -785,11 +869,23 @@ class MultiStockComparePlugin(Plugin):
                 rows.append({"ticker": sym, "ret": ret, "vol": vol,
                              "rsi": rv, "sharpe": sharpe, "icon": icon})
             except Exception:
-                rows.append({"ticker": sym, "error": True})
+                # Fallback HTTP pour ce ticker
+                try:
+                    d = _fetch_ticker_http(sym, period)
+                    if d and d.get("perf") is not None:
+                        ret    = d["perf"]
+                        icon   = "🟢" if ret > 5 else ("🔴" if ret < -5 else "⚪")
+                        rows.append({"ticker": sym, "ret": ret, "vol": 0,
+                                     "rsi": 50, "sharpe": 0, "icon": icon,
+                                     "http": True})
+                    else:
+                        rows.append({"ticker": sym, "error": True})
+                except Exception:
+                    rows.append({"ticker": sym, "error": True})
 
         valid = [r for r in rows if "error" not in r]
         if not valid:
-            return "❌ Aucune donnée récupérée."
+            return "❌ Aucune donnée récupérée (yfinance absent et HTTP fallback échoué).\n\nInstalle yfinance : `pip install yfinance pandas`"
 
         valid.sort(key=lambda x: x["ret"], reverse=True)
         out = [f"## ⚖️ Comparaison — {period.upper()}\n"]
@@ -823,8 +919,10 @@ class MarketNewsPlugin(Plugin):
     def run(self, ticker: str) -> str:
         try:
             import yfinance as yf
+            _yf_ok = True
         except ImportError:
-            return "❌ pip install yfinance"
+            _yf_ok = False
+            yf = None
 
         def _parse(n: dict) -> tuple:
             """Gère l'ancien ET le nouveau schéma yfinance."""
@@ -841,23 +939,23 @@ class MarketNewsPlugin(Plugin):
             summary = c.get("summary") or c.get("description") or ""
             return title, pub, url, summary
 
-        try:
-            news = yf.Ticker(ticker.upper()).news or []
-            items = [_parse(n) for n in news[:8]]
-            items = [it for it in items if it[0] and it[0] != "?"]
+        err = ""
+        if _yf_ok:
+            try:
+                news = yf.Ticker(ticker.upper()).news or []
+                items = [_parse(n) for n in news[:8]]
+                items = [it for it in items if it[0] and it[0] != "?"]
 
-            if items:
-                lines = [f"## 📰 Actualités {ticker.upper()} — {len(items)} dernières\n"]
-                for title, pub, url, summary in items:
-                    lines.append(f"**{title}**  \n*{pub}*" + (f" — {url}" if url else ""))
-                    if summary:
-                        lines.append(f"> {summary[:220]}")
-                    lines.append("")
-                return "\n".join(lines)
-        except Exception as e:
-            err = str(e)
-        else:
-            err = ""
+                if items:
+                    lines = [f"## 📰 Actualités {ticker.upper()} — {len(items)} dernières\n"]
+                    for title, pub, url, summary in items:
+                        lines.append(f"**{title}**  \n*{pub}*" + (f" — {url}" if url else ""))
+                        if summary:
+                            lines.append(f"> {summary[:220]}")
+                        lines.append("")
+                    return "\n".join(lines)
+            except Exception as e:
+                err = str(e)
 
         # Fallback : recherche d'actualités web si yfinance ne renvoie rien
         try:
