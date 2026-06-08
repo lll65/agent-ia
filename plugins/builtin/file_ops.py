@@ -14,17 +14,26 @@ def _safe_path(path: str) -> Path:
 
 class WriteFilePlugin(Plugin):
     name = "write_file"
-    description = "Écrit du contenu dans un fichier (dans le dossier output/)."
+    description = "Écrit du contenu dans un fichier (dans le dossier output/). Paramètres: path (ou filename), content."
     parameters = {
-        "path": {"type": "string", "description": "Chemin relatif du fichier", "required": True},
-        "content": {"type": "string", "description": "Contenu à écrire", "required": True},
+        "path":     {"type": "string", "description": "Chemin relatif du fichier", "required": False},
+        "filename": {"type": "string", "description": "Alias de path (accepté aussi)", "required": False},
+        "content":  {"type": "string", "description": "Contenu à écrire", "required": True},
     }
 
-    def run(self, path: str, content: str) -> str:
-        full = _safe_path(path)
+    def validate(self, kwargs: dict) -> tuple[bool, str]:
+        if "content" not in kwargs:
+            return False, "Paramètres manquants: ['content']"
+        if not kwargs.get("path") and not kwargs.get("filename"):
+            return False, "Paramètres manquants: ['path'] — fournis le chemin du fichier"
+        return True, ""
+
+    def run(self, content: str, path: str = "", filename: str = "", **_) -> str:
+        resolved = path or filename
+        full = _safe_path(resolved)
         full.parent.mkdir(parents=True, exist_ok=True)
         full.write_text(content, encoding="utf-8")
-        return f"Fichier écrit: {full}"
+        return f"✅ Fichier écrit: {full}"
 
 
 class ReadFilePlugin(Plugin):

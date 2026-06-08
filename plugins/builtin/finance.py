@@ -1257,12 +1257,12 @@ class MultiStockComparePlugin(Plugin):
 
 class MarketNewsPlugin(Plugin):
     name = "get_market_news"
-    description = "Dernières nouvelles financières pour un ticker ou le marché."
+    description = "Dernières nouvelles financières. Paramètre ticker: ex 'AAPL', 'MC.PA', ou 'marché' pour les news générales."
     parameters = {
-        "ticker": {"type": "string", "description": "Ticker (ex: AAPL) ou 'marché' pour les news générales", "required": True},
+        "ticker": {"type": "string", "description": "Ticker boursier (ex: AAPL, MC.PA) ou 'marché' pour les news générales. Défaut: 'marché'", "required": False},
     }
 
-    def run(self, ticker: str) -> str:
+    def run(self, ticker: str = "marché") -> str:
         try:
             import yfinance as yf
             _yf_ok = True
