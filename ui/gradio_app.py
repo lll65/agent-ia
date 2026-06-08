@@ -1526,18 +1526,38 @@ def build_ui() -> gr.Blocks:
                             label="Leçons récentes")
 
                 def show_si():
-                    from agent.self_improve import get_stats, get_recent_lessons
-                    stats = get_stats()
-                    lessons = get_recent_lessons(15)
-                    stats_md = (
-                        f"**Runs évalués :** {stats.get('runs', 0)}\n\n"
-                        f"**Score moyen :** {stats.get('avg_score', 0):.1f} / 10"
-                    )
-                    rows = []
-                    for l in reversed(lessons):
-                        ts = l.get("timestamp", "")[:16].replace("T", " ")
-                        rows.append([ts, l.get("domain","?"), f"{l.get('score','?')}/10", l.get("lesson","")[:80]])
-                    return stats_md, rows
+                    try:
+                        import importlib, sys
+                        # Force reload si le module a été auto-modifié
+                        mod_name = "agent.self_improve"
+                        if mod_name in sys.modules:
+                            importlib.reload(sys.modules[mod_name])
+                        from agent.self_improve import get_stats, get_recent_lessons
+                        stats = get_stats()
+                        lessons = get_recent_lessons(15)
+                        runs = stats.get("runs", 0)
+                        avg = stats.get("avg_score", 0.0)
+                        try:
+                            avg_str = f"{float(avg):.1f}"
+                        except (TypeError, ValueError):
+                            avg_str = str(avg)
+                        stats_md = (
+                            f"**Runs évalués :** {runs}\n\n"
+                            f"**Score moyen :** {avg_str} / 10"
+                        )
+                        rows = []
+                        for l in reversed(list(lessons)):
+                            ts = str(l.get("timestamp", ""))[:16].replace("T", " ")
+                            score_val = l.get("score", "?")
+                            rows.append([
+                                ts,
+                                str(l.get("domain", "?")),
+                                f"{score_val}/10",
+                                str(l.get("lesson", ""))[:80],
+                            ])
+                        return stats_md, rows
+                    except Exception as e:
+                        return f"❌ Erreur chargement statistiques: {e}", []
 
                 def reset_si():
                     from pathlib import Path
