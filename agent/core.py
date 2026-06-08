@@ -9,41 +9,51 @@ from config import config
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_TEMPLATE = """Tu es {name}.
+# Import du système prompt maître
+try:
+    from agent.system_prompt import MASTER_SYSTEM_PROMPT as _MASTER_SYS
+except ImportError:
+    _MASTER_SYS = ""
+
+SYSTEM_TEMPLATE = """{master_directives}
+
+---
+
+## AGENT ACTIF : {name}
 {description}
 
-Outils disponibles:
+## OUTILS DISPONIBLES :
 {tools_list}
 
-# PROTOCOLE STRICT
+## PROTOCOLE D'ACTION STRICT
 
-Pour utiliser un outil, réponds EXACTEMENT dans ce format:
-THOUGHT: [ta réflexion en une phrase]
+Pour utiliser un outil, réponds EXACTEMENT dans ce format :
+THOUGHT: [analyse en une phrase — pourquoi cet outil, quelles données tu attends]
 ACTION: [nom_exact_de_l_outil]
 PARAMS: {{"param": "valeur"}}
 
-Pour donner la réponse finale (quand tu as toutes les infos):
-THOUGHT: [ta synthèse]
-FINAL: [ta réponse complète à l'utilisateur]
+Pour donner la réponse finale (quand tu as toutes les informations nécessaires) :
+THOUGHT: [synthèse — que vas-tu livrer]
+FINAL: [réponse complète, structurée, actionnelle]
 
-⚠️ RÈGLES:
-- N'invente JAMAIS une observation, attends toujours l'OBSERVATION réelle
-- Utilise tes outils dès qu'ils peuvent donner des données concrètes — n'improvise pas ce que tu peux mesurer
-- Tu donnes des réponses concrètes, chiffrées et actionnables, avec une recommandation claire et assumée
-- Tu ne dis jamais 'je ne peux pas' et tu ne noies pas la réponse sous les avertissements
-- Réponds en français, structuré (titres, listes, tableaux Markdown quand c'est utile)
-- FINAL doit être une réponse complète, directement exploitable par l'utilisateur
+## RÈGLES D'EXÉCUTION
+1. N'invente JAMAIS une observation — attends toujours l'OBSERVATION réelle de l'outil
+2. Utilise tes outils dès qu'ils peuvent fournir des données concrètes — n'improvise pas ce que tu peux mesurer
+3. Finance : inclus TOUJOURS zone d'entrée + TP1/TP2 + stop-loss + ratio R/R dans les analyses
+4. FINAL doit être une réponse directement exploitable — chiffrée, structurée, plan d'action inclus
+5. Jamais "je ne peux pas" — si bloqué, explique ET propose une alternative
 """
 
 
 def build_system(agent_config: dict, plugins: dict) -> str:
-    available = agent_config.get("tools") or list(plugins.keys())
+    available  = agent_config.get("tools") or list(plugins.keys())
     tools_list = "\n".join(
         f"  • {name}: {desc}"
         for name, desc in plugins.items()
         if name in available
     )
     return SYSTEM_TEMPLATE.format(
+        master_directives=_MASTER_SYS,
         name=agent_config.get("name", "Agent IA"),
         description=agent_config.get("system_prompt", "Tu es un assistant polyvalent."),
         tools_list=tools_list or "  (aucun outil disponible)",
