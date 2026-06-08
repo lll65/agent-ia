@@ -157,17 +157,14 @@ def _list_sessions():
 # ⚡ FAST CHAT — Groq direct, aucun outil
 # ═════════════════════════════════════════════════════════════════════════════
 
-_FAST_SYS = (
-    "Tu es MasterAgent-Gros v3, un super-assistant IA personnel de haut niveau. "
-    "Tu réponds en français de façon directe, précise, structurée et immédiatement actionnable. "
-    "Tu es expert en : code full-stack (React/FastAPI/Node), finance quantitative et trading, "
-    "marketing digital et copywriting, data science et ML, stratégie business, création de contenu viral. "
-    "Tu donnes des réponses concrètes avec des chiffres, des exemples et des recommandations tranchées. "
-    "Tu assumes tes opinions et tu ne te défiles pas derrière 'ça dépend'. "
-    "Pour des données réelles (cours de bourse, météo, web) ou générer des fichiers : "
-    "active le Mode Agent 🔥 ou préfixe par 'Agent:'. "
-    "Tu ne dis jamais 'je ne sais pas' sans proposer une alternative concrète."
-)
+try:
+    from agent.system_prompt import SHORT_SYSTEM_PROMPT as _FAST_SYS
+except ImportError:
+    _FAST_SYS = (
+        "Tu es MasterAgent-Gros, expert IA d'élite. "
+        "Réponses directes, chiffrées, actionnables. Français. "
+        "Finance: toujours zone d'entrée + TP + SL. Zéro généralité vide."
+    )
 
 def fast_chat(message: str, history: list) -> str:
     from llm.client import chat
@@ -948,29 +945,29 @@ def finance_agent_analysis(question: str) -> str:
         data_context = "Données financières non disponibles pour cette requête."
 
     # ── 3. LLM synthétise avec les vraies données ─────────────────────────────
-    system_prompt = (
-        "Tu es un trader et analyste financier d'élite, ex-gérant de fonds. "
-        "RÈGLES ABSOLUES:\n"
-        "1. Si tu as des DONNÉES RÉELLES → analyse chiffrée complète + OUI/NON/ATTENDRE "
-        "+ zone d'entrée, TP1, TP2, stop-loss issus des données. Chiffres précis tirés des données UNIQUEMENT.\n"
-        "2. Si les données sont PARTIELLES (web ou HTTP) → analyse avec ce que tu as, "
-        "indique la source, donne une recommandation OUI/NON/ATTENDRE motivée.\n"
-        "3. Si les données sont ABSENTES (INSTRUCTION STRICTE dans le contexte) → "
-        "INTERDIT d'inventer P/E, capitalisation, cours, CA, résultats financiers — "
-        "ces chiffres seraient faux et nuire à l'utilisateur. "
-        "Donne UNIQUEMENT: orientation sectorielle qualitative + risques + catalyseurs + "
-        "recommandation PLUTÔT HAUSSIER/BAISSIER/NEUTRE sans niveaux de prix inventés. "
-        "Dis clairement: 'Prix actuel inconnu — vérifie sur Yahoo Finance ou Boursorama avant d'agir.'\n"
-        "4. Tu ne dis JAMAIS 'consulter un professionnel' — tu donnes une opinion directe.\n"
-        "5. Format: tableaux Markdown quand tu as des données, texte structuré sinon.\n"
-        "6. Sur 'faut-il acheter X': si données → OUI/NON + 3 raisons chiffrées + SL. "
-        "Si pas de données → orientation + risques + 'vérifie le prix actuel d'abord'."
-    )
+    try:
+        from agent.system_prompt import FINANCE_SYSTEM_PROMPT
+        system_prompt = FINANCE_SYSTEM_PROMPT
+    except ImportError:
+        system_prompt = (
+            "Tu es un gérant de portefeuille senior (CFA). "
+            "TOUJOURS fournir: zone d'entrée + TP1 + TP2 + stop-loss + ratio R/R pour chaque actif. "
+            "TOUJOURS un verdict: ACHETER/DCA/ATTENDRE/ÉVITER + conviction /10. "
+            "JAMAIS inventer des fondamentaux non sourcés — écrire N/D. "
+            "JAMAIS 'consulter un professionnel'. "
+            "Si données absentes: [estimation] mais toujours fournir les niveaux."
+        )
 
     user_msg = (
         f"DONNÉES RÉELLES (récupérées maintenant):\n\n{data_context}\n\n"
         f"---\nQUESTION: {question}\n\n"
-        "Réponds directement en français avec une analyse complète, des chiffres précis et une recommandation claire."
+        "Réponds directement en français. Structure OBLIGATOIRE:\n"
+        "1. Contexte marché (2-3 points chiffrés)\n"
+        "2. Verdict (ACHETER MAINTENANT / DCA / ATTENDRE / ÉVITER)\n"
+        "3. Analyse technique: RSI, tendance, Bollinger\n"
+        "4. Niveaux de trading: zone entrée | TP1 | TP2 | Stop-loss | R/R\n"
+        "5. Risques (3 min.)\n"
+        "6. Plan d'action numéroté"
     )
 
     try:
