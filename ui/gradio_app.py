@@ -625,6 +625,105 @@ def market_dashboard_fn() -> str:
     except Exception as e:
         return f"❌ Erreur dashboard: {e}"
 
+# ═════════════════════════════════════════════════════════════════════════════
+# AUTO-MODIFICATION DE CODE
+# ═════════════════════════════════════════════════════════════════════════════
+
+def self_modify_fn(request: str) -> str:
+    """
+    Pipeline d'auto-modification: l'agent lit le code, génère un patch, l'applique
+    de façon sécurisée (backup + validation + rollback auto).
+    """
+    if not request.strip():
+        return "⚠️ Décris l'amélioration à apporter."
+
+    from llm.client import chat as llm_chat
+    from agent.self_modify import read_source, apply_modification, ALLOWED_FILES
+    import re as _re
+
+    out = ["## 🔧 Auto-modification\n"]
+
+    # 1. Le LLM choisit le fichier à modifier
+    file_list = "\n".join(f"- {f}" for f in sorted(ALLOWED_FILES))
+    pick_prompt = (
+        f"Demande d'amélioration: \"{request}\"\n\n"
+        f"Fichiers modifiables:\n{file_list}\n\n"
+        "Quel SEUL fichier faut-il modifier ? Réponds UNIQUEMENT avec le chemin exact."
+    )
+    try:
+        target_file = llm_chat([{"role": "user", "content": pick_prompt}], temperature=0.0).strip()
+        target_file = target_file.strip("`'\" \n")
+        # Match contre la whitelist
+        target_file = next((f for f in ALLOWED_FILES if f in target_file), target_file)
+    except Exception as e:
+        return f"❌ Erreur sélection fichier: {e}"
+
+    if target_file not in ALLOWED_FILES:
+        return (
+            f"❌ Fichier ciblé non autorisé: `{target_file}`\n\n"
+            f"Fichiers modifiables:\n{file_list}"
+        )
+
+    out.append(f"📄 Fichier ciblé: `{target_file}`")
+
+    # 2. Lecture du code actuel
+    current_code = read_source(target_file)
+    if current_code.startswith("❌"):
+        return current_code
+
+    # 3. Le LLM génère le nouveau code COMPLET
+    gen_prompt = (
+        f"Tu es un ingénieur Python senior. Voici le code actuel de `{target_file}`:\n\n"
+        f"```python\n{current_code}\n```\n\n"
+        f"DEMANDE: {request}\n\n"
+        "Génère le fichier COMPLET modifié. Règles:\n"
+        "- Garde tout le code existant qui fonctionne\n"
+        "- Applique UNIQUEMENT le changement demandé\n"
+        "- Code propre, gestion d'erreurs, compatible avec l'existant\n"
+        "- INTERDIT: os.system, subprocess, eval, exec, accès .env/tokens\n"
+        "- Réponds UNIQUEMENT avec le code Python complet dans un bloc ```python"
+    )
+    try:
+        raw = llm_chat(
+            [
+                {"role": "system", "content": "Tu génères du code Python complet et fonctionnel. Bloc de code uniquement."},
+                {"role": "user", "content": gen_prompt},
+            ],
+            temperature=0.1,
+        )
+    except Exception as e:
+        return f"❌ Erreur génération: {e}"
+
+    # Extraction du bloc de code
+    m = _re.search(r"```(?:python)?\s*\n(.*?)```", raw, _re.DOTALL)
+    new_code = m.group(1) if m else raw
+    new_code = new_code.strip() + "\n"
+
+    if len(new_code) < 50:
+        return "❌ Le code généré est trop court — modification annulée par sécurité."
+
+    # 4. Application sécurisée
+    result = apply_modification(target_file, new_code, reason=request[:200])
+    out.append("\n" + result["message"])
+
+    if result["ok"]:
+        out.append(
+            "\n\n*Le module a été rechargé. Recharge la page si l'effet n'apparaît "
+            "pas immédiatement. Utilise ↩️ pour annuler si besoin.*"
+        )
+    return "\n".join(out)
+
+
+def self_modify_rollback_fn() -> str:
+    from agent.self_modify import rollback_last
+    return "## ↩️ Rollback\n\n" + rollback_last()["message"]
+
+
+def self_modify_status_fn() -> str:
+    from plugins.builtin.self_modify_plugin import SelfModStatusPlugin
+    return SelfModStatusPlugin().run()
+
+
 _PORTFOLIOS_FILE = Path("data/portfolios.json")
 
 
@@ -1447,6 +1546,37 @@ def build_ui() -> gr.Blocks:
 
                 si_btn.click(show_si, [], [si_stats, si_lessons])
                 si_rst.click(reset_si, [], [si_stats, si_lessons])
+
+                # ── Auto-modification de code ────────────────────────────────
+                gr.Markdown("---\n### 🔧 Auto-modification de code")
+                gr.Markdown(
+                    "L'agent peut réécrire son propre code (system_prompt, finance_deep, "
+                    "self_improve, finance plugin). Chaque modification est **sécurisée** : "
+                    "backup automatique, validation syntaxe + import, rollback si échec.\n\n"
+                    "Décris l'amélioration souhaitée — l'agent lit le code concerné, "
+                    "génère le patch, le valide et l'applique."
+                )
+                with gr.Row():
+                    with gr.Column(scale=2):
+                        sm_request = gr.Textbox(
+                            label="Amélioration à apporter",
+                            lines=3,
+                            placeholder=(
+                                "Ex: Ajoute le calcul du MACD dans finance_deep.py\n"
+                                "Ex: Ajoute l'ETF Amundi MSCI India à l'univers PEA\n"
+                                "Ex: Renforce la règle anti-hallucination dans le system prompt"
+                            ),
+                        )
+                        with gr.Row():
+                            sm_btn      = gr.Button("🔧 Générer & appliquer", variant="primary")
+                            sm_rollback = gr.Button("↩️ Annuler dernière modif", variant="secondary")
+                            sm_status_btn = gr.Button("📋 État / journal", variant="secondary")
+                    with gr.Column(scale=3):
+                        sm_out = gr.Markdown("*Décris une amélioration et clique sur Générer.*")
+
+                sm_btn.click(self_modify_fn, [sm_request], [sm_out])
+                sm_rollback.click(self_modify_rollback_fn, [], [sm_out])
+                sm_status_btn.click(self_modify_status_fn, [], [sm_out])
 
             # ══ AGENTS ════════════════════════════════════════════════════════
             with gr.TabItem("🤖 Agents"):
