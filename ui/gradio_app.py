@@ -774,6 +774,23 @@ def _search_financial_web(ticker: str) -> str:
         return ""
 
 
+
+def deep_finance_fn(question: str):
+    """
+    Wrapper Gradio pour l'agent financier professionnel.
+    Yields accumulated markdown (streaming).
+    """
+    if not question.strip():
+        yield "⚠️ Pose ta question (ex: 'J'ai 600€ à investir en PEA ETF, que faire ?')"
+        return
+    try:
+        from agent.finance_deep import deep_finance_research
+        for chunk in deep_finance_research(question):
+            yield chunk
+    except Exception as e:
+        yield f"❌ Erreur: {e}"
+
+
 def finance_agent_analysis(question: str) -> str:
     """
     Pipeline direct garanti : extraction ticker → données réelles → synthèse LLM.
@@ -1360,6 +1377,39 @@ def build_ui() -> gr.Blocks:
                         fa_btn = gr.Button("🤖 Analyser avec l'agent", variant="primary", size="lg")
                         fa_out = gr.Markdown()
                         fa_btn.click(finance_agent_analysis, [fa_in], [fa_out])
+
+                    # ── Conseiller Pro (deep research streaming) ──────────────
+                    with gr.TabItem("🎯 Conseiller Pro"):
+                        gr.Markdown(
+                            "### Agent financier professionnel — analyse multi-sources\n\n"
+                            "Scan de l'univers ETF PEA • Données marché temps réel • "
+                            "Scoring technique RSI/SMA/momentum • Recherche web • "
+                            "Rapport structuré avec allocation exacte et plan d'action.\n\n"
+                            "**Durée typique : 2-4 minutes.** L'analyse tourne en streaming — "
+                            "tu vois la progression en direct."
+                        )
+                        pro_in = gr.Textbox(
+                            label="Ta question",
+                            lines=3,
+                            placeholder=(
+                                "J'ai 600€ à investir sur PEA en ETF, que recommandes-tu ?\n"
+                                "Faut-il acheter des ETF Nasdaq PEA maintenant ou attendre ?\n"
+                                "Construis-moi un portefeuille PEA diversifié avec 2000€."
+                            ),
+                        )
+                        pro_btn = gr.Button(
+                            "🚀 Lancer l'analyse complète",
+                            variant="primary",
+                            size="lg",
+                        )
+                        pro_out = gr.Markdown(
+                            value="*L'analyse apparaît ici en temps réel...*"
+                        )
+                        pro_btn.click(
+                            deep_finance_fn,
+                            inputs=[pro_in],
+                            outputs=[pro_out],
+                        )
 
             # ══ AUTO-AMÉLIORATION ═════════════════════════════════════════════
             with gr.TabItem("🧬 Auto-Amélioration"):
