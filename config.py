@@ -9,6 +9,7 @@ class Config:
     # API Keys cloud
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
     XAI_API_KEY = os.getenv("XAI_API_KEY", "")
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")     # Google AI Studio → ai.google.dev (gratuit, sans CB)
     HF_API_TOKEN = os.getenv("HF_API_TOKEN", "")
     REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
     FAL_API_KEY = os.getenv("FAL_API_KEY", "")             # fal.ai → fal.ai/dashboard/keys
@@ -18,20 +19,29 @@ class Config:
     OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
     OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "tinyllama")
 
+    # Modèles cloud (surchargeable via .env)
+    GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    XAI_MODEL = os.getenv("XAI_MODEL", "grok-beta")
+    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
     @property
     def LLM_PROVIDER(self) -> str:
         if self.GROQ_API_KEY:
             return "groq"
         if self.XAI_API_KEY:
             return "xai"
+        if self.GEMINI_API_KEY:
+            return "gemini"
         return "ollama"
 
     @property
     def LLM_MODEL(self) -> str:
         if self.GROQ_API_KEY:
-            return os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+            return self.GROQ_MODEL
         if self.XAI_API_KEY:
-            return os.getenv("XAI_MODEL", "grok-beta")
+            return self.XAI_MODEL
+        if self.GEMINI_API_KEY:
+            return self.GEMINI_MODEL
         return self.OLLAMA_MODEL
 
     # Serveur API
