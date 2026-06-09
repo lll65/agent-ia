@@ -231,3 +231,122 @@ async def run_agent(
     last = steps[-1].get("llm_output", "Limite d'itérations atteinte.") if steps else "Limite d'itérations atteinte."
     mem.remember(agent_id, "assistant", last)
     return {"answer": last, "steps": steps, "iterations": config.MAX_ITERATIONS}
+
+
+def _extract_thought(llm_out: str) -> str:
+    """Extrait la section THOUGHT: d'une sortie LLM."""
+    m = re.search(r"THOUGHT:\s*(.+?)(?=\n(?:ACTION|FINAL|PARAMS):|$)", llm_out, re.DOTALL | re.IGNORECASE)
+    return m.group(1).strip()[:200] if m else ""
+
+
+async def run_agent_stream(
+    task: str,
+    agent_config: dict,
+    agent_id: str = "default",
+    plugin_loader=None,
+    memory_manager=None,
+):
+    """
+    Async generator — même logique que run_agent mais yield chaque étape ReAct.
+    Permet d'afficher le raisonnement en temps réel dans l'UI.
+
+    Yields dicts:
+      {"type": "thought",      "text": str, "iteration": int}
+      {"type": "action",       "tool": str, "params": dict, "iteration": int}
+      {"type": "observation",  "tool": str, "result": str,  "iteration": int}
+      {"type": "final",        "answer": str, "iterations": int}
+    """
+    from plugins import get_loader
+    from memory import get_memory
+    from agent.self_heal import safe_tool_call, health_monitor
+    from memory.summarizer import summarize_messages
+
+    loader = plugin_loader or get_loader()
+    mem    = memory_manager or get_memory()
+    system = build_system(agent_config, loader.list_all())
+
+    if mem.should_summarize(agent_id):
+        recent = mem.recall_recent(agent_id, limit=config.SUMMARY_THRESHOLD)
+        try:
+            summary = await summarize_messages(recent)
+            mem.cache_summary(agent_id, summary)
+        except Exception:
+            pass
+
+    try:
+        from agent.self_improve import get_improvement_context
+        domain  = agent_config.get("role", "general")
+        lessons = get_improvement_context(domain=domain, max_lessons=4)
+        if lessons:
+            system = system + f"\n\n{lessons}"
+    except Exception:
+        pass
+
+    context  = mem.build_context(agent_id, task, recent_limit=6)
+    messages = [{"role": "system", "content": system}]
+    if context:
+        messages.append({"role": "assistant", "content": f"[Contexte mémoriel]\n{context}"})
+
+    required_tools = agent_config.get("tools") or []
+    task_msg = task
+    if required_tools:
+        task_msg += (
+            f"\n\n[INSTRUCTION SYSTÈME: Tu as accès à {len(required_tools)} outil(s). "
+            f"Commence TOUJOURS par utiliser tes outils. Premier outil: {required_tools[0]}]"
+        )
+    messages.append({"role": "user", "content": task_msg})
+    mem.remember(agent_id, "user", task)
+
+    tool_calls_made = 0
+    stub_retries    = 0
+
+    for iteration in range(config.MAX_ITERATIONS):
+        try:
+            llm_out = await llm_call(messages)
+        except Exception as e:
+            yield {"type": "final", "answer": f"❌ LLM indisponible: {e}", "iterations": iteration}
+            return
+
+        thought = _extract_thought(llm_out)
+        action, params, final = parse_response(llm_out)
+
+        # Stub detection
+        response_text = final or llm_out
+        if (final or not action) and required_tools and stub_retries < 2:
+            if _is_stub_answer(response_text, tool_calls_made):
+                stub_retries += 1
+                first_tool = required_tools[0]
+                messages.append({"role": "assistant", "content": llm_out})
+                messages.append({"role": "user", "content": (
+                    f"⛔ Tu as répondu sans outil. Utilise '{first_tool}' maintenant.\n"
+                    f"THOUGHT: Je vais récupérer les données réelles\nACTION: {first_tool}\nPARAMS: {{}}"
+                )})
+                continue
+
+        if thought:
+            yield {"type": "thought", "text": thought, "iteration": iteration + 1}
+
+        if final:
+            mem.remember(agent_id, "assistant", final)
+            yield {"type": "final", "answer": final, "iterations": iteration + 1}
+            return
+
+        if action:
+            yield {"type": "action", "tool": action, "params": params or {}, "iteration": iteration + 1}
+            observation = safe_tool_call(loader, action, params or {})
+            health_monitor.record(action, "Erreur" not in observation)
+            tool_calls_made += 1
+            yield {"type": "observation", "tool": action, "result": observation[:400], "iteration": iteration + 1}
+            messages.append({"role": "assistant", "content": llm_out})
+            messages.append({"role": "user", "content": (
+                f"OBSERVATION [{action}]: {observation}\n\n"
+                "Continue. Si tu as toutes les données, donne ta réponse FINAL:"
+            )})
+        else:
+            mem.remember(agent_id, "assistant", llm_out)
+            yield {"type": "final", "answer": llm_out, "iterations": iteration + 1}
+            return
+
+    last = f"⚠️ Limite de {config.MAX_ITERATIONS} itérations atteinte."
+    mem.remember(agent_id, "assistant", last)
+    yield {"type": "final", "answer": last, "iterations": config.MAX_ITERATIONS}

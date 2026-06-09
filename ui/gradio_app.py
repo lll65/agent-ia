@@ -192,43 +192,63 @@ def fast_chat(message: str, history: list) -> str:
 # ═════════════════════════════════════════════════════════════════════════════
 
 def full_agent(message: str, history: list, sid: str) -> str:
-    from agent.core import run_agent
+    from agent.core import run_agent_stream
     from plugins import get_loader
     cfg = {
-        "id": sid, "name": "MasterAgent-Gros v3",
+        "id": sid, "name": "MasterAgent-Gros v4",
         "system_prompt": (
-            "Tu es MasterAgent-Gros v3, un agent IA surpuissant et auto-évolutif. "
+            "Tu es MasterAgent-Gros v4, un agent IA surpuissant et auto-évolutif. "
             "Tu maîtrises tous les domaines : code full-stack, finance quantitative, "
-            "marketing digital, création de contenu, data science, stratégie business. "
-            "Tu utilises TOUS tes outils sans hésitation pour donner des réponses complètes et actionnables. "
-            "Tu génères du VRAI code fonctionnel, de vraies analyses avec données réelles, "
-            "de vrais projets téléchargeables en ZIP. "
-            "Tu t'améliores à chaque interaction grâce à ta mémoire et tes leçons apprises. "
-            "Tu réponds en français avec des réponses structurées, détaillées et immédiatement utiles. "
-            "Tu ne dis jamais 'je ne peux pas' — tu trouves toujours une solution créative. "
-            "Si tu génères du code, il est COMPLET et FONCTIONNEL, pas un squelette."
+            "création de contenu, data science, stratégie business. "
+            "Tu utilises TOUS tes outils sans hésitation pour des réponses chiffrées et actionnables. "
+            "Tu t'améliores à chaque interaction. Tu réponds en français. "
+            "Tu ne dis jamais 'je ne peux pas' — tu trouves toujours une solution."
         ),
         "tools": list(get_loader().list_all().keys()),
         "model": config.LLM_MODEL,
     }
+    trace_lines: list[str] = []
+    final_answer = ""
+    iters = 0
     try:
-        result = _run(run_agent(message, cfg, sid))
-        answer = result.get("answer", "Pas de réponse.")
-        used = {s["action"] for s in result.get("steps", []) if s.get("action")}
-        if used:
-            answer += f"\n\n*🔧 Outils : {', '.join(sorted(used))}*"
-        # Auto-amélioration en arrière-plan (thread indépendant)
-        def _bg(t, a):
-            try:
-                from agent.self_improve import evaluate_and_learn
-                asyncio.run(evaluate_and_learn(t, a, domain="chat"))
-            except Exception:
-                pass
-        threading.Thread(target=_bg, args=(message, answer), daemon=True).start()
-        return answer
+        async def _collect():
+            nonlocal final_answer, iters
+            async for step in run_agent_stream(message, cfg, sid):
+                if step["type"] == "thought":
+                    trace_lines.append(f"**💭** {step['text']}")
+                elif step["type"] == "action":
+                    p = json.dumps(step.get("params", {}), ensure_ascii=False)
+                    trace_lines.append(f"**⚡ `{step['tool']}`** `{p[:120]}`")
+                elif step["type"] == "observation":
+                    trace_lines.append(f"> 👁️ {step['result'][:200]}")
+                    trace_lines.append("")
+                elif step["type"] == "final":
+                    final_answer = step["answer"]
+                    iters = step.get("iterations", 0)
+        _run(_collect())
     except Exception as e:
         import traceback
-        return f"❌ Erreur agent: {e}\n\n```\n{traceback.format_exc()[:800]}\n```"
+        return f"❌ Erreur agent: {e}\n\n```\n{traceback.format_exc()[:600]}\n```"
+
+    used_tools = [l.split("`")[1] for l in trace_lines if l.startswith("**⚡")]
+    if used_tools:
+        final_answer += f"\n\n*🔧 Outils: {', '.join(dict.fromkeys(used_tools))} — {iters} étapes*"
+
+    if trace_lines:
+        trace_md = "\n".join(trace_lines)
+        final_answer += (
+            f"\n\n<details><summary>💭 Voir le raisonnement ({iters} étapes)</summary>\n\n"
+            f"{trace_md}\n\n</details>"
+        )
+
+    def _bg(t, a):
+        try:
+            from agent.self_improve import evaluate_and_learn
+            asyncio.run(evaluate_and_learn(t, a, domain="chat"))
+        except Exception:
+            pass
+    threading.Thread(target=_bg, args=(message, final_answer), daemon=True).start()
+    return final_answer
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1119,14 +1139,14 @@ def add_plugin(code):
     get_loader().reload_user_plugins()
     return f"✅ Plugin chargé : {list(get_loader().list_all().keys())}"
 
-def run_master(goal, progress=gr.Progress()):
+def run_master(goal):
     from orchestrator import get_master
     if not goal.strip():
-        return "⚠️ Saisis un objectif complexe."
+        yield "⚠️ Saisis un objectif complexe."
+        return
+    yield "## 🧠 Orchestrateur — Analyse en cours...\n\n⏳ Décomposition de l'objectif en sous-tâches..."
     try:
-        progress(0.05, desc="🔍 Analyse de la requête...")
         result = _run(get_master().execute(goal))
-        progress(0.95, desc="✅ Synthèse terminée")
 
         mode = result.get("mode", "?")
         out = f"## ✅ Résultat — mode **{mode}**\n\n"
@@ -1143,12 +1163,12 @@ def run_master(goal, progress=gr.Progress()):
             out += "\n---\n\n"
 
         out += result.get("answer", "_Pas de réponse._")
-        return out
+        yield out
 
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
-        return f"❌ **Erreur orchestrateur**\n\n```\n{tb[:1500]}\n```\n\n*Vérifie le terminal pour plus de détails.*"
+        yield f"❌ **Erreur orchestrateur**\n\n```\n{tb[:1500]}\n```"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
