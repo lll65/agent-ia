@@ -29,8 +29,11 @@ class WriteFilePlugin(Plugin):
         return True, ""
 
     def run(self, content: str, path: str = "", filename: str = "", **_) -> str:
-        resolved = path or filename
-        full = _safe_path(resolved)
+        # Normalise l'alias 'filename' → 'path' (le LLM envoie souvent 'filename')
+        path = path or filename
+        if not path:
+            return "❌ Paramètre 'path' manquant (chemin relatif du fichier à écrire)."
+        full = _safe_path(path)
         full.parent.mkdir(parents=True, exist_ok=True)
         full.write_text(content, encoding="utf-8")
         return f"✅ Fichier écrit: {full}"

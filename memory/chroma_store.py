@@ -59,8 +59,12 @@ class ChromaStore:
         col = self._get_collection(agent_id)
         if col is None:
             return []
+        # ChromaDB lève une erreur si n_results <= 0 (collection vide ou n négatif)
+        limit = min(n, col.count())
+        if limit <= 0:
+            return []
         try:
-            kwargs = {"query_texts": [query], "n_results": min(n, col.count())}
+            kwargs = {"query_texts": [query], "n_results": limit}
             if where:
                 kwargs["where"] = where
             results = col.query(**kwargs)
