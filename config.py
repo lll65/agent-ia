@@ -10,6 +10,7 @@ class Config:
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
     XAI_API_KEY = os.getenv("XAI_API_KEY", "")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")     # Google AI Studio → ai.google.dev (gratuit, sans CB)
+    CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY", "") # Cerebras → cloud.cerebras.ai (gratuit, inference ultra-rapide)
     HF_API_TOKEN = os.getenv("HF_API_TOKEN", "")
     REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
     FAL_API_KEY = os.getenv("FAL_API_KEY", "")             # fal.ai → fal.ai/dashboard/keys
@@ -23,6 +24,7 @@ class Config:
     GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
     XAI_MODEL = os.getenv("XAI_MODEL", "grok-beta")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    CEREBRAS_MODEL = os.getenv("CEREBRAS_MODEL", "llama-3.3-70b")
 
     @property
     def LLM_PROVIDER(self) -> str:
@@ -30,6 +32,8 @@ class Config:
             return "groq"
         if self.XAI_API_KEY:
             return "xai"
+        if self.CEREBRAS_API_KEY:
+            return "cerebras"
         if self.GEMINI_API_KEY:
             return "gemini"
         return "ollama"
@@ -40,6 +44,8 @@ class Config:
             return self.GROQ_MODEL
         if self.XAI_API_KEY:
             return self.XAI_MODEL
+        if self.CEREBRAS_API_KEY:
+            return self.CEREBRAS_MODEL
         if self.GEMINI_API_KEY:
             return self.GEMINI_MODEL
         return self.OLLAMA_MODEL
