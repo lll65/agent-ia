@@ -54,6 +54,16 @@ PEA_STOCKS: dict[str, dict] = {
     # Cycliques
     "RNO.PA":    {"name": "Renault",         "sector": "Auto",            "cap": "mid"},
     "ML.PA":     {"name": "Michelin",        "sector": "Auto",            "cap": "large"},
+    # Biotech / Santé small-mid
+    "VLA.PA":    {"name": "Valneva",           "sector": "Biotech/Vaccins",  "cap": "small"},
+    "OSE.PA":    {"name": "OSE Immunotherapeutics","sector": "Biotech",       "cap": "micro"},
+    "DBV.PA":    {"name": "DBV Technologies",  "sector": "Biotech",          "cap": "small"},
+    "ERF.PA":    {"name": "Eurofins Scientific","sector": "Laboratoires",    "cap": "large"},
+    "OPT.PA":    {"name": "Optics Balzers",    "sector": "Optique",          "cap": "micro"},
+    # Industrie / Défense
+    "HO.PA":     {"name": "Thales",            "sector": "Défense/Électro",  "cap": "large"},
+    "AM.PA":     {"name": "Dassault Aviation", "sector": "Défense/Aéro",     "cap": "large"},
+    "LDL.PA":    {"name": "Latecoere",         "sector": "Aéronautique",     "cap": "small"},
 }
 
 MARKET_INDICES: dict[str, str] = {
@@ -350,8 +360,8 @@ Structure OBLIGATOIRE:
 [Justification en 2 phrases avec les données ci-dessus]
 
 ## 🏆 Allocation Recommandée
-[TABLEAU: ETF/Action | Montant | Nb Parts | Prix/Part | Zone Entrée | TP1 | TP2 | SL | R/R | Signal RSI]
-[Logique de diversification: pourquoi ces choix]
+[TABLEAU compact (max 6 colonnes): Actif | Montant€ | Zone Entrée | TP1/TP2 | SL | R/R]
+[1 ligne par position. Logique de diversification en dessous du tableau.]
 
 ## 📊 Analyse Technique par Position
 [Pour chaque position: RSI actuel, tendance SMA, signal MACD (si dispo), niveau Bollinger, momentum]
@@ -431,8 +441,29 @@ def deep_finance_research(question: str) -> Generator[str, None, None]:
     acct        = intent.get("account_type") or "PEA"
     risk        = intent.get("risk_profile") or "équilibré"
     horizon     = intent.get("time_horizon") or "long"
-    want_stocks = intent.get("want_stocks", False)
-    want_etf    = not want_stocks or intent.get("want_etf", True)
+    specific_tickers_raw = [t.upper() for t in (intent.get("specific_tickers") or [])]
+    # Normalize: add .PA suffix if missing and looks like French ticker
+    specific_tickers: list[str] = []
+    for t in specific_tickers_raw:
+        if "." not in t and len(t) <= 6:
+            specific_tickers.append(t + ".PA")
+        else:
+            specific_tickers.append(t)
+
+    # Also check question text for known stock names
+    _q_low = question.lower()
+    _name_to_ticker = {v["name"].lower(): k for k, v in PEA_STOCKS.items()}
+    for name_low, ticker in _name_to_ticker.items():
+        if name_low in _q_low and ticker not in specific_tickers:
+            specific_tickers.append(ticker)
+
+    # If specific tickers detected, force want_stocks=True
+    if specific_tickers:
+        want_stocks = True
+        want_etf = intent.get("want_etf", False)  # only ETF if explicitly asked
+
+    want_stocks = intent.get("want_stocks", False) or bool(specific_tickers)
+    want_etf    = (not want_stocks or intent.get("want_etf", False)) and not specific_tickers
     prefs       = [p.lower() for p in (intent.get("preferences") or [])]
 
     yield emit(
@@ -541,6 +572,15 @@ def deep_finance_research(question: str) -> Generator[str, None, None]:
         else:
             candidates = dict(list(PEA_STOCKS.items())[:10])  # top 10 par défaut
 
+        # Always include explicitly requested tickers
+        for tk in specific_tickers:
+            if tk not in candidates:
+                if tk in PEA_STOCKS:
+                    candidates[tk] = PEA_STOCKS[tk]
+                else:
+                    # Dynamic lookup — try fetching even if not in our universe
+                    candidates[tk] = {"name": tk, "sector": "?", "cap": "?"}
+
         yield emit(f"\n\n**[3b/6]** Scan {len(candidates)} actions PEA...")
 
         def _fetch_stock(tk: str):
@@ -590,13 +630,19 @@ def deep_finance_research(question: str) -> Generator[str, None, None]:
     try:
         from duckduckgo_search import DDGS
         queries = []
-        if acct == "PEA":
-            queries.append(f"meilleur ETF PEA {'actions' if want_stocks else 'investissement'} {datetime.now().year} analyse")
-        if "nasdaq" in prefs or "tech" in prefs:
-            queries.append("Nasdaq ETF perspective achat technique analyse")
-        if want_stocks:
-            queries.append(f"actions françaises PEA opportunité {datetime.now().strftime('%B %Y')}")
-        queries.append(f"marché boursier perspective {datetime.now().strftime('%B %Y')} analyse")
+        # Queries spécifiques aux tickers demandés (priorité maximale)
+        for tk in specific_tickers[:3]:
+            name = PEA_STOCKS.get(tk, {}).get("name", tk.replace(".PA", ""))
+            queries.append(f"{name} {tk} analyse investissement achat 2026")
+            queries.append(f"{name} actualité cours bourse {datetime.now().strftime('%B %Y')}")
+        if not specific_tickers:
+            if acct == "PEA":
+                queries.append(f"meilleur ETF PEA investissement {datetime.now().year} analyse")
+            if "nasdaq" in prefs or "tech" in prefs:
+                queries.append("Nasdaq ETF perspective achat technique analyse")
+            if want_stocks:
+                queries.append(f"actions françaises PEA opportunité {datetime.now().strftime('%B %Y')}")
+            queries.append(f"marché boursier perspective {datetime.now().strftime('%B %Y')} analyse")
 
         snips: list[str] = []
         with DDGS() as ddgs:
@@ -612,8 +658,8 @@ def deep_finance_research(question: str) -> Generator[str, None, None]:
                     pass
         web_snippets = "\n\n".join(snips[:9])
         web_count    = len(snips)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"[DeepFinance] Web search error: {e}")
 
     yield emit(f"\n  {'✅' if web_count > 0 else '⚠️'} {web_count} extraits web")
 
