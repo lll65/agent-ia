@@ -1359,7 +1359,7 @@ def build_ui() -> gr.Blocks:
             with gr.TabItem("💹 Finance"):
                 gr.Markdown(
                     "### Analyse boursière & crypto en temps réel\n"
-                    "Données réelles · RSI · MACD · Bollinger · Graphiques · Portefeuille · Dashboard"
+                    "Données réelles · RSI · MACD · Bollinger · Graphiques · Portefeuille · Conseiller Pro"
                 )
                 with gr.Tabs():
 
@@ -1386,23 +1386,6 @@ def build_ui() -> gr.Blocks:
                                 f_out = gr.Markdown()
                         f_chart = gr.Image(label="📈 Graphique technique", show_label=True)
                         f_btn.click(analyze_finance, [f_ticker, f_period], [f_out, f_chart])
-
-                    # ── Comparer ──────────────────────────────────────────────
-                    with gr.TabItem("⚖️ Comparer"):
-                        with gr.Row():
-                            with gr.Column(scale=1):
-                                fc_tickers = gr.Textbox(
-                                    label="Tickers (séparés par virgule)",
-                                    placeholder="AAPL,MSFT,GOOGL,NVDA",
-                                )
-                                fc_period = gr.Dropdown(
-                                    ["1mo", "3mo", "6mo", "1y"], value="3mo", label="Période"
-                                )
-                                fc_btn = gr.Button("⚖️ Comparer", variant="primary", size="lg")
-                            with gr.Column(scale=2):
-                                fc_out = gr.Markdown()
-                        fc_chart = gr.Image(label="📊 Performance comparée (base 0%)")
-                        fc_btn.click(compare_finance, [fc_tickers, fc_period], [fc_out, fc_chart])
 
                     # ── Portefeuille ──────────────────────────────────────────
                     with gr.TabItem("💼 Portefeuille"):
