@@ -60,10 +60,18 @@ def build_system(agent_config: dict, plugins: dict) -> str:
     )
 
 
-async def llm_call(messages: list, model: str = None) -> str:
+async def llm_call(messages: list, model: str = None, temperature: float = 0.7) -> str:
     from llm.client import chat
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, lambda: chat(messages, temperature=0.7))
+    return await loop.run_in_executor(None, lambda: chat(messages, temperature=temperature))
+
+
+def _temperature_for_role(agent_config: dict) -> float:
+    """Température adaptée au rôle. Finance = déterministe (0.2) pour des chiffres fiables."""
+    role = (agent_config.get("role") or "").lower()
+    if role in ("finance_analyst", "crypto_analyst") or "finance" in role:
+        return 0.2
+    return 0.7
 
 
 def parse_response(text: str) -> tuple:
@@ -129,6 +137,7 @@ async def run_agent(
     loader = plugin_loader or get_loader()
     mem = memory_manager or get_memory()
     system = build_system(agent_config, loader.list_all())
+    temperature = _temperature_for_role(agent_config)
 
     # Auto-résumé si historique long
     if mem.should_summarize(agent_id):
@@ -174,7 +183,7 @@ async def run_agent(
     iteration = 0
     while iteration < config.MAX_ITERATIONS:
         try:
-            llm_out = await llm_call(messages)
+            llm_out = await llm_call(messages, temperature=temperature)
         except Exception as e:
             err = f"LLM indisponible: {e}"
             logger.error(err)
@@ -264,6 +273,7 @@ async def run_agent_stream(
     loader = plugin_loader or get_loader()
     mem    = memory_manager or get_memory()
     system = build_system(agent_config, loader.list_all())
+    temperature = _temperature_for_role(agent_config)
 
     if mem.should_summarize(agent_id):
         recent = mem.recall_recent(agent_id, limit=config.SUMMARY_THRESHOLD)
@@ -302,7 +312,7 @@ async def run_agent_stream(
 
     for iteration in range(config.MAX_ITERATIONS):
         try:
-            llm_out = await llm_call(messages)
+            llm_out = await llm_call(messages, temperature=temperature)
         except Exception as e:
             yield {"type": "final", "answer": f"❌ LLM indisponible: {e}", "iterations": iteration}
             return

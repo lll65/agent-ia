@@ -79,6 +79,76 @@ MARKET_INDICES: dict[str, str] = {
 }
 
 
+# ─── Lookup dynamique d'un ticker quelconque ──────────────────────────────────
+
+# Suffixes de places éligibles PEA / européennes courantes
+_PEA_SUFFIXES = (".PA", ".AS", ".BR", ".LS", ".MI", ".DE", ".MC", ".HE", ".VI", ".IR")
+
+# Pattern d'un ticker explicite : 1-6 lettres/chiffres + . + 2 lettres de place
+_TICKER_RE = re.compile(r"\b([A-Z0-9]{1,6}\.[A-Z]{2})\b")
+
+
+def dynamic_ticker_lookup(ticker: str) -> dict:
+    """
+    Récupère n'importe quel ticker (PEA ou international) même s'il n'est pas
+    dans les listes fixes PEA_ETF_UNIVERSE / PEA_STOCKS.
+
+    Utilise l'endpoint Yahoo Finance (via _fetch_ticker_http) qui fonctionne
+    pour tout symbole valide : VLA.PA, ASML.AS, MC.PA, AAPL, etc.
+
+    Retourne un dict enrichi {ticker, name, price, currency, closes, levels,
+    perf_1m, perf_3m, perf_1y, found} ou {found: False} si introuvable.
+    """
+    from plugins.builtin.finance import _fetch_ticker_http
+
+    tk = (ticker or "").strip().upper()
+    if not tk:
+        return {"found": False, "ticker": ticker}
+
+    # Essai 1 : tel quel. Essai 2 : en ajoutant .PA si pas de suffixe de place.
+    candidates = [tk]
+    if "." not in tk and "=" not in tk and not tk.startswith("^"):
+        candidates += [tk + sfx for sfx in _PEA_SUFFIXES]
+
+    for cand in candidates:
+        d3m = _fetch_ticker_http(cand, "3mo")
+        if not d3m or not d3m.get("price"):
+            continue
+        d1m = _fetch_ticker_http(cand, "1mo")
+        d1y = _fetch_ticker_http(cand, "1y")
+        closes = d3m.get("closes", [])
+        levels = _compute_levels(closes)
+        if levels and d3m.get("price"):
+            levels["price"] = d3m["price"]
+        return {
+            "found":    True,
+            "ticker":   cand,
+            "name":     d3m.get("name", cand),
+            "price":    d3m.get("price"),
+            "currency": d3m.get("currency", ""),
+            "chg_24h":  d3m.get("chg"),
+            "perf_1m":  d1m.get("perf") if d1m else None,
+            "perf_3m":  d3m.get("perf"),
+            "perf_1y":  d1y.get("perf") if d1y else None,
+            "closes":   closes,
+            "levels":   levels,
+        }
+
+    return {"found": False, "ticker": tk}
+
+
+def extract_explicit_tickers(text: str) -> list[str]:
+    """Détecte les tickers explicites dans un texte (ex: 'VLA.PA', 'ASML.AS')."""
+    if not text:
+        return []
+    # Met en majuscules pour le pattern, mais cherche sur le texte original aussi
+    found = _TICKER_RE.findall(text.upper())
+    # Filtre les faux positifs courants (ex: abréviations)
+    blacklist = {"P.S", "P.M", "A.M", "E.G", "I.E", "U.S", "C.A", "N.D"}
+    return [t for t in dict.fromkeys(found) if t not in blacklist]
+
+
+
 # ─── Calcul niveaux techniques (entry, TP, SL) ────────────────────────────────
 
 def _compute_levels(closes: list[float]) -> dict:
@@ -450,6 +520,11 @@ def deep_finance_research(question: str) -> Generator[str, None, None]:
         else:
             specific_tickers.append(t)
 
+    # Détecte les tickers explicites écrits dans la question (ex: VLA.PA, ASML.AS)
+    for tk in extract_explicit_tickers(question):
+        if tk not in specific_tickers:
+            specific_tickers.append(tk)
+
     # Also check question text for known stock names
     _q_low = question.lower()
     _name_to_ticker = {v["name"].lower(): k for k, v in PEA_STOCKS.items()}
@@ -583,6 +658,32 @@ def deep_finance_research(question: str) -> Generator[str, None, None]:
 
         yield emit(f"\n\n**[3b/6]** Scan {len(candidates)} actions PEA...")
 
+        # ── Priorité : tickers explicitement demandés via lookup dynamique ──
+        # (résout les places non-.PA comme ASML.AS et enrichit le nom réel)
+        if specific_tickers:
+            yield emit(f"\n  🎯 Tickers prioritaires demandés: {', '.join(specific_tickers)}")
+            for tk in specific_tickers:
+                look = dynamic_ticker_lookup(tk)
+                if look.get("found"):
+                    resolved = look["ticker"]
+                    stock_data[resolved] = {
+                        "price":    look["price"],
+                        "perf_1m":  look.get("perf_1m"),
+                        "perf_1y":  look.get("perf_1y"),
+                        "closes":   look.get("closes", []),
+                        "levels":   look.get("levels", {}),
+                        "name":     look.get("name", resolved),
+                        "currency": look.get("currency", ""),
+                        "priority": True,
+                    }
+                    # Enrichit PEA_STOCKS en mémoire pour l'affichage du nom
+                    if resolved not in PEA_STOCKS:
+                        PEA_STOCKS[resolved] = {"name": look.get("name", resolved), "sector": "?", "cap": "?"}
+                    candidates.pop(tk, None)
+                    candidates.pop(resolved, None)
+                else:
+                    yield emit(f"\n  ⚠️ Ticker `{tk}` introuvable sur Yahoo Finance")
+
         def _fetch_stock(tk: str):
             d3m = _fetch_ticker_http(tk, "3mo")
             d1y = _fetch_ticker_http(tk, "1y")
@@ -604,7 +705,7 @@ def deep_finance_research(question: str) -> Generator[str, None, None]:
                 except Exception:
                     pass
 
-        yield emit(f"\n  ✅ {len(stock_data)}/{len(candidates)} actions avec données")
+        yield emit(f"\n  ✅ {len(stock_data)} actions avec données")
     else:
         yield emit("\n\n**[3b/6]** *(actions ignorées — ETFs demandés)*")
 
