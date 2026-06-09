@@ -11,60 +11,12 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from pathlib import Path
 from typing import Generator
 
 logger = logging.getLogger(__name__)
 
-# ─── Univers ETF PEA éligibles ────────────────────────────────────────────────
-
-PEA_ETF_UNIVERSE: dict[str, dict] = {
-    "WPEA.PA":  {"name": "Amundi MSCI World PEA Acc",       "index": "MSCI World",    "ter": 0.38, "geo": "monde",    "aum_b": 2.5},
-    "MWRD.PA":  {"name": "Amundi MSCI World II PEA",        "index": "MSCI World",    "ter": 0.20, "geo": "monde",    "aum_b": 0.8},
-    "CW8.PA":   {"name": "Amundi MSCI World UCITS ETF",     "index": "MSCI World",    "ter": 0.38, "geo": "monde",    "aum_b": 3.1},
-    "PSP5.PA":  {"name": "Amundi PEA S&P 500",              "index": "S&P 500",       "ter": 0.15, "geo": "usa",      "aum_b": 1.2},
-    "PANX.PA":  {"name": "Amundi Nasdaq-100 PEA Acc",       "index": "Nasdaq-100",    "ter": 0.23, "geo": "tech",     "aum_b": 2.8},
-    "PUST.PA":  {"name": "Lyxor Nasdaq-100 PEA",            "index": "Nasdaq-100",    "ter": 0.30, "geo": "tech",     "aum_b": 0.9},
-    "MEH.PA":   {"name": "Amundi MSCI Europe PEA",          "index": "MSCI Europe",   "ter": 0.15, "geo": "europe",   "aum_b": 0.5},
-    "PAEEM.PA": {"name": "Amundi MSCI Emerging Mkts PEA",   "index": "MSCI EM",       "ter": 0.20, "geo": "emerging", "aum_b": 0.7},
-    "RS2K.PA":  {"name": "Lyxor Russell 2000 PEA",          "index": "Russell 2000",  "ter": 0.30, "geo": "smallcap", "aum_b": 0.3},
-}
-
-# Actions PEA éligibles (valeurs françaises + européennes cotées sur Euronext)
-PEA_STOCKS: dict[str, dict] = {
-    # Tech / Croissance
-    "SOI.PA":    {"name": "Soitec",          "sector": "Semiconducteurs", "cap": "mid"},
-    "CAP.PA":    {"name": "Capgemini",       "sector": "Tech/IT",         "cap": "large"},
-    "DSY.PA":    {"name": "Dassault Systèmes","sector": "Logiciel",       "cap": "large"},
-    "SAF.PA":    {"name": "Safran",          "sector": "Aéronautique",    "cap": "large"},
-    "AIR.PA":    {"name": "Airbus",          "sector": "Aéronautique",    "cap": "large"},
-    "STMPA.PA":  {"name": "STMicroelectronics","sector": "Semiconducteurs","cap": "large"},
-    # Luxe / Consommation
-    "MC.PA":     {"name": "LVMH",            "sector": "Luxe",            "cap": "large"},
-    "RMS.PA":    {"name": "Hermès",          "sector": "Luxe",            "cap": "large"},
-    "KER.PA":    {"name": "Kering",          "sector": "Luxe",            "cap": "large"},
-    # Finance
-    "BNP.PA":    {"name": "BNP Paribas",     "sector": "Banque",          "cap": "large"},
-    "GLE.PA":    {"name": "Société Générale","sector": "Banque",          "cap": "large"},
-    "ACA.PA":    {"name": "Crédit Agricole", "sector": "Banque",          "cap": "large"},
-    # Énergie / Utilities
-    "TTE.PA":    {"name": "TotalEnergies",   "sector": "Énergie",         "cap": "large"},
-    "VIE.PA":    {"name": "Veolia",          "sector": "Utilities",       "cap": "large"},
-    # Santé
-    "SAN.PA":    {"name": "Sanofi",          "sector": "Pharma",          "cap": "large"},
-    # Cycliques
-    "RNO.PA":    {"name": "Renault",         "sector": "Auto",            "cap": "mid"},
-    "ML.PA":     {"name": "Michelin",        "sector": "Auto",            "cap": "large"},
-    # Biotech / Santé small-mid
-    "VLA.PA":    {"name": "Valneva",           "sector": "Biotech/Vaccins",  "cap": "small"},
-    "OSE.PA":    {"name": "OSE Immunotherapeutics","sector": "Biotech",       "cap": "micro"},
-    "DBV.PA":    {"name": "DBV Technologies",  "sector": "Biotech",          "cap": "small"},
-    "ERF.PA":    {"name": "Eurofins Scientific","sector": "Laboratoires",    "cap": "large"},
-    "OPT.PA":    {"name": "Optics Balzers",    "sector": "Optique",          "cap": "micro"},
-    # Industrie / Défense
-    "HO.PA":     {"name": "Thales",            "sector": "Défense/Électro",  "cap": "large"},
-    "AM.PA":     {"name": "Dassault Aviation", "sector": "Défense/Aéro",     "cap": "large"},
-    "LDL.PA":    {"name": "Latecoere",         "sector": "Aéronautique",     "cap": "small"},
-}
+# ─── Indices macro ────────────────────────────────────────────────────────────
 
 MARKET_INDICES: dict[str, str] = {
     "^GSPC":     "S&P 500",
@@ -78,26 +30,29 @@ MARKET_INDICES: dict[str, str] = {
     "^TNX":      "US 10Y (%)",
 }
 
-
-# ─── Lookup dynamique d'un ticker quelconque ──────────────────────────────────
-
-# Suffixes de places éligibles PEA / européennes courantes
+# ─── Suffixes de places éligibles PEA / européennes courantes ─────────────────
 _PEA_SUFFIXES = (".PA", ".AS", ".BR", ".LS", ".MI", ".DE", ".MC", ".HE", ".VI", ".IR")
 
 # Pattern d'un ticker explicite : 1-6 lettres/chiffres + . + 2 lettres de place
 _TICKER_RE = re.compile(r"\b([A-Z0-9]{1,6}\.[A-Z]{2})\b")
 
+# Chemin vers le JSON d'univers ETF PEA
+_ETF_UNIVERSE_PATH = Path("data/pea_etf_universe.json")
 
-def dynamic_ticker_lookup(ticker: str) -> dict:
+
+# ─── Fonctions dynamiques d'accès aux données ─────────────────────────────────
+
+def lookup_any_ticker(ticker: str) -> dict:
     """
-    Récupère n'importe quel ticker (PEA ou international) même s'il n'est pas
-    dans les listes fixes PEA_ETF_UNIVERSE / PEA_STOCKS.
+    Récupère n'importe quel ticker (PEA ou international) depuis Yahoo Finance.
 
-    Utilise l'endpoint Yahoo Finance (via _fetch_ticker_http) qui fonctionne
-    pour tout symbole valide : VLA.PA, ASML.AS, MC.PA, AAPL, etc.
+    Essaie le ticker tel quel, puis avec suffixes de places européennes si
+    aucun suffixe de marché n'est présent.
 
-    Retourne un dict enrichi {ticker, name, price, currency, closes, levels,
-    perf_1m, perf_3m, perf_1y, found} ou {found: False} si introuvable.
+    Retourne dict enrichi :
+      {found, ticker, name, price, currency, chg_24h,
+       perf_1m, perf_3m, perf_1y, closes, levels}
+    ou {found: False, ticker: <original>} si introuvable.
     """
     from plugins.builtin.finance import _fetch_ticker_http
 
@@ -105,7 +60,6 @@ def dynamic_ticker_lookup(ticker: str) -> dict:
     if not tk:
         return {"found": False, "ticker": ticker}
 
-    # Essai 1 : tel quel. Essai 2 : en ajoutant .PA si pas de suffixe de place.
     candidates = [tk]
     if "." not in tk and "=" not in tk and not tk.startswith("^"):
         candidates += [tk + sfx for sfx in _PEA_SUFFIXES]
@@ -137,31 +91,133 @@ def dynamic_ticker_lookup(ticker: str) -> dict:
     return {"found": False, "ticker": tk}
 
 
+def search_ticker_by_name(name: str) -> list[dict]:
+    """
+    Résout un nom d'entreprise / ETF en ticker(s) Yahoo Finance.
+    Retourne une liste de jusqu'à 5 résultats
+    [{ticker, name, exchange, type_}, ...].
+
+    Utilise yfinance.Search si disponible, sinon renvoie liste vide.
+    """
+    if not name:
+        return []
+    try:
+        import yfinance as yf
+        results = yf.Search(name, max_results=5).quotes
+        out = []
+        for r in results:
+            sym = r.get("symbol") or ""
+            if not sym:
+                continue
+            out.append({
+                "ticker":   sym,
+                "name":     r.get("longname") or r.get("shortname") or sym,
+                "exchange": r.get("exchDisp") or r.get("exchange") or "",
+                "type_":    r.get("quoteType") or "",
+            })
+        return out
+    except Exception as e:
+        logger.debug(f"search_ticker_by_name({name!r}): {e}")
+        return []
+
+
+def screen_etf_pea(budget: float = 0.0, nb_etf: int = 5,
+                   geo_filter: str = "") -> list[dict]:
+    """
+    Charge data/pea_etf_universe.json, récupère les prix réels pour chaque ETF,
+    calcule un score et retourne les nb_etf meilleurs triés par score décroissant.
+
+    geo_filter : "monde" | "usa" | "tech" | "europe" | "emerging" | ""
+    budget     : 0 = pas de filtre de prix
+    """
+    from plugins.builtin.finance import _fetch_ticker_http
+
+    # Charge l'univers
+    universe: list[dict] = []
+    if _ETF_UNIVERSE_PATH.exists():
+        try:
+            universe = json.loads(_ETF_UNIVERSE_PATH.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning(f"screen_etf_pea: cannot load universe: {e}")
+
+    if not universe:
+        logger.warning("screen_etf_pea: univers ETF vide — fichier manquant ?")
+        return []
+
+    # Filtre géographique
+    if geo_filter:
+        gf = geo_filter.lower()
+        subset = [e for e in universe if gf in (e.get("geo") or "").lower()]
+        if subset:
+            universe = subset
+
+    # Filtre sur les ETFs PEA uniquement (champ pea == true)
+    pea_only = [e for e in universe if e.get("pea", True)]
+    if pea_only:
+        universe = pea_only
+
+    # Récupère les données en parallèle (limité à 50 ETFs pour la vitesse)
+    candidates = universe[:50]
+
+    def _fetch(entry: dict):
+        tk = entry["ticker"]
+        d3m = _fetch_ticker_http(tk, "3mo")
+        d1m = _fetch_ticker_http(tk, "1mo")
+        d1y = _fetch_ticker_http(tk, "1y")
+        return entry, d3m, d1m, d1y
+
+    results = []
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futs = {ex.submit(_fetch, e): e for e in candidates}
+        for f in as_completed(futs):
+            try:
+                entry, d3m, d1m, d1y = f.result()
+                if not d3m or not d3m.get("price"):
+                    continue
+                price = d3m["price"]
+                # Filtre budget si demandé
+                if budget > 0 and price > budget * 0.8:
+                    pass  # pas de filtre strict, on garde mais on note
+                closes = d3m.get("closes", [])
+                data = {
+                    **entry,
+                    "price":    price,
+                    "chg_24h":  d3m.get("chg"),
+                    "perf_1m":  d1m.get("perf") if d1m else None,
+                    "perf_3m":  d3m.get("perf"),
+                    "perf_1y":  d1y.get("perf") if d1y else None,
+                    "closes":   closes,
+                }
+                score, reasons = _score_etf(closes, data)
+                levels = _compute_levels(closes)
+                if levels:
+                    levels["price"] = price
+                results.append((entry["ticker"], score, data, reasons, levels))
+            except Exception:
+                pass
+
+    results.sort(key=lambda x: x[1], reverse=True)
+    return results[:nb_etf]
+
+
 def extract_explicit_tickers(text: str) -> list[str]:
     """Détecte les tickers explicites dans un texte (ex: 'VLA.PA', 'ASML.AS')."""
     if not text:
         return []
-    # Met en majuscules pour le pattern, mais cherche sur le texte original aussi
     found = _TICKER_RE.findall(text.upper())
-    # Filtre les faux positifs courants (ex: abréviations)
     blacklist = {"P.S", "P.M", "A.M", "E.G", "I.E", "U.S", "C.A", "N.D"}
     return [t for t in dict.fromkeys(found) if t not in blacklist]
-
 
 
 # ─── Calcul niveaux techniques (entry, TP, SL) ────────────────────────────────
 
 def _compute_levels(closes: list[float]) -> dict:
-    """
-    Calcule les niveaux clés de trading depuis une série de prix.
-    Retourne dict avec entry_low, entry_high, tp1, tp2, sl, rsi, sma20, sma50, bb_pos.
-    """
+    """Calcule les niveaux clés de trading depuis une série de prix."""
     if len(closes) < 14:
         return {}
     try:
         price = closes[-1]
 
-        # RSI(14)
         delta  = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
         gains  = [max(d, 0.0) for d in delta]
         losses = [max(-d, 0.0) for d in delta]
@@ -169,37 +225,28 @@ def _compute_levels(closes: list[float]) -> dict:
         al     = sum(losses[-14:]) / 14
         rsi    = 100 - 100 / (1 + ag / al) if al > 0 else (100.0 if ag > 0 else 50.0)
 
-        # SMA
         sma20 = sum(closes[-20:]) / 20 if len(closes) >= 20 else price
         sma50 = sum(closes[-50:]) / 50 if len(closes) >= 50 else None
 
-        # Bollinger(20)
         std20  = (sum((c - sma20) ** 2 for c in closes[-20:]) / 20) ** 0.5 if len(closes) >= 20 else price * 0.02
         bb_up  = sma20 + 2 * std20
         bb_lo  = sma20 - 2 * std20
         bb_pct = (price - bb_lo) / (bb_up - bb_lo) * 100 if bb_up != bb_lo else 50
 
-        # ATR(14) approximé
         atr = sum(abs(closes[i] - closes[i - 1]) for i in range(-14, 0)) / 14
 
-        # Niveaux d'entrée (zone ±0.5% autour du prix ou support SMA)
-        support = max([s for s in [bb_lo, sma50, sma20 * 0.97] if s and s < price], default=price - 2 * atr)
+        support    = max([s for s in [bb_lo, sma50, sma20 * 0.97] if s and s < price], default=price - 2 * atr)
         entry_low  = round(max(support, price - 2 * atr), 4)
-        entry_high = round(price * 1.005, 4)  # légèrement au-dessus pour ordre market
+        entry_high = round(price * 1.005, 4)
 
-        # TP basés sur résistances dynamiques
         tp1 = round(price + 2 * atr, 4)
         tp2 = round(price + 4 * atr, 4)
-        # Fallback: TP1 = +8%, TP2 = +18%
         if tp1 <= price * 1.01:
             tp1 = round(price * 1.08, 4)
             tp2 = round(price * 1.18, 4)
 
-        # Stop-loss sous support le plus proche
-        sl = round(min([s for s in [bb_lo, sma20 * 0.96, price - 2.5 * atr] if s and s < price],
-                       default=price * 0.92), 4)
-
-        # Ratio risque/rendement
+        sl   = round(min([s for s in [bb_lo, sma20 * 0.96, price - 2.5 * atr] if s and s < price],
+                         default=price * 0.92), 4)
         risk   = price - sl
         reward = tp1 - price
         rr     = round(reward / risk, 2) if risk > 0 else 0
@@ -262,10 +309,10 @@ def _score_etf(closes: list[float], data: dict) -> tuple[float, list[str]]:
 
     p1m = data.get("perf_1m")
     if p1m is not None:
-        if p1m > 8:   score += 8;  reasons.append(f"Momentum 1m fort ({p1m:+.1f}%)")
-        elif p1m > 3: score += 4;  reasons.append(f"Momentum 1m positif ({p1m:+.1f}%)")
-        elif p1m < -10:score -= 12;reasons.append(f"Correction récente importante ({p1m:+.1f}%)")
-        elif p1m < -5: score -= 6; reasons.append(f"Correction récente ({p1m:+.1f}%)")
+        if p1m > 8:    score += 8;  reasons.append(f"Momentum 1m fort ({p1m:+.1f}%)")
+        elif p1m > 3:  score += 4;  reasons.append(f"Momentum 1m positif ({p1m:+.1f}%)")
+        elif p1m < -10:score -= 12; reasons.append(f"Correction récente importante ({p1m:+.1f}%)")
+        elif p1m < -5: score -= 6;  reasons.append(f"Correction récente ({p1m:+.1f}%)")
 
     ter = data.get("ter", 0.3)
     if ter <= 0.15:   score += 6;  reasons.append(f"TER excellent ({ter*100:.2f}%/an)")
@@ -273,8 +320,8 @@ def _score_etf(closes: list[float], data: dict) -> tuple[float, list[str]]:
     elif ter >= 0.40: score -= 4;  reasons.append(f"TER élevé ({ter*100:.2f}%/an)")
 
     aum = data.get("aum_b", 0)
-    if aum >= 2:   score += 4; reasons.append(f"Fonds large ({aum:.1f}B€) → liquidité forte")
-    elif aum < 0.2:score -= 3; reasons.append(f"Fonds petit ({aum:.1f}B€) → liquidité réduite")
+    if aum >= 2:    score += 4; reasons.append(f"Fonds large ({aum:.1f}B€) → liquidité forte")
+    elif aum < 0.2: score -= 3; reasons.append(f"Fonds petit ({aum:.1f}B€) → liquidité réduite")
 
     return round(max(0.0, min(100.0, score)), 1), reasons
 
@@ -294,9 +341,7 @@ def _build_synthesis_prompt(
     acct     = intent.get("account_type", "PEA")
     risk     = intent.get("risk_profile", "équilibré")
     horizon  = intent.get("time_horizon", "long")
-    is_stock = intent.get("want_stocks", False)
 
-    # Macro
     macro_lines = []
     for sym, d in market_data.items():
         label = MARKET_INDICES.get(sym, sym)
@@ -306,7 +351,7 @@ def _build_synthesis_prompt(
         macro_lines.append(f"  {label:20s} {icon} J:{d.get('chg',0):+.2f}%{p1m}{p3m}")
 
     vix_regime = (
-        "⚠️ COMPLACENCY (VIX<15) — euphorie, risque de correction élevé, entrées fractionnées recommandées"
+        "⚠️ COMPLACENCY (VIX<15) — euphorie, risque de correction élevé"
         if vix < 15 else (
         "🟢 FEAR (VIX>30) — panique = opportunité historique, DCA agressif justifié"
         if vix > 30 else (
@@ -320,7 +365,6 @@ def _build_synthesis_prompt(
            else "EUR/USD stable")
     )
 
-    # ETF data block
     etf_block = ""
     if etf_ranked:
         etf_block = "\nTOP ETFs PEA CLASSÉS (données réelles ou estimation):\n"
@@ -331,40 +375,36 @@ def _build_synthesis_prompt(
             price_str = f"{levels['price']:.2f}€" if levels.get("price") else "N/D"
             etf_block += (
                 f"  {ticker} | {data.get('name','')[:30]:30s} | TER:{data.get('ter',0)*100:.2f}% "
-                f"| AUM:{data.get('aum_b',0):.1f}B€ | Prix:{price_str} "
-                f"| 1m:{p1m} | 3m:{p3m} | 1y:{p1y} | Score:{score}/100\n"
+                f"| Prix:{price_str} | 1m:{p1m} | 3m:{p3m} | Score:{score}/100\n"
             )
             if levels.get("entry_low"):
                 etf_block += (
                     f"    → Entrée:{levels['entry_low']:.2f}-{levels['entry_high']:.2f}€ "
-                    f"| TP1:{levels['tp1']:.2f}€ | TP2:{levels['tp2']:.2f}€ "
-                    f"| SL:{levels['sl']:.2f}€ | R/R:{levels['rr']:.1f}:1 "
-                    f"| RSI:{levels['rsi']:.0f}\n"
+                    f"| TP1:{levels['tp1']:.2f}€ | SL:{levels['sl']:.2f}€ "
+                    f"| R/R:{levels['rr']:.1f}:1 | RSI:{levels['rsi']:.0f}\n"
                 )
             if reasons:
                 etf_block += f"    Signaux: {' | '.join(reasons[:3])}\n"
 
-    # Stock data block
     stock_block = ""
     if stock_data:
-        stock_block = "\nACTIONS PEA ANALYSÉES:\n"
+        stock_block = "\nACTIONS ANALYSÉES:\n"
         for ticker, d in stock_data.items():
-            meta  = PEA_STOCKS.get(ticker, {})
             p1m   = f"{d.get('perf_1m'):+.1f}%" if d.get("perf_1m") is not None else "N/D"
             lvl   = d.get("levels", {})
-            price_str = f"{lvl['price']:.2f}€" if lvl.get("price") else "N/D"
+            price_str = f"{lvl['price']:.2f}" if lvl.get("price") else "N/D"
+            currency  = d.get("currency", "€")
+            name      = d.get("name", ticker)
             stock_block += (
-                f"  {ticker} | {meta.get('name',''):20s} | {meta.get('sector',''):20s} "
-                f"| Prix:{price_str} | 1m:{p1m}\n"
+                f"  {ticker} | {name[:22]:22s} | Prix:{price_str}{currency} | 1m:{p1m}\n"
             )
             if lvl.get("entry_low"):
                 stock_block += (
-                    f"    → Entrée:{lvl['entry_low']:.2f}-{lvl['entry_high']:.2f}€ "
-                    f"| TP1:{lvl['tp1']:.2f}€ | SL:{lvl['sl']:.2f}€ "
+                    f"    → Entrée:{lvl['entry_low']:.2f}-{lvl['entry_high']:.2f} "
+                    f"| TP1:{lvl['tp1']:.2f} | SL:{lvl['sl']:.2f} "
                     f"| RSI:{lvl['rsi']:.0f} | BB:{lvl['bb_pct']:.0f}%\n"
                 )
 
-    # Allocation pré-calculée
     alloc_block = ""
     if budget and etf_ranked:
         top3 = [(t, lv) for t, _, d, _, lv in etf_ranked[:3] if lv.get("price")]
@@ -372,9 +412,14 @@ def _build_synthesis_prompt(
             if budget < 300:
                 weights = [(top3[0][0], top3[0][1], 1.0)]
             elif budget < 800:
-                weights = [(top3[0][0], top3[0][1], 0.65), (top3[1][0], top3[1][1], 0.35)] if len(top3) >= 2 else [(top3[0][0], top3[0][1], 1.0)]
+                weights = ([(top3[0][0], top3[0][1], 0.65), (top3[1][0], top3[1][1], 0.35)]
+                           if len(top3) >= 2 else [(top3[0][0], top3[0][1], 1.0)])
             else:
-                weights = [(top3[0][0], top3[0][1], 0.50), (top3[1][0], top3[1][1], 0.30), (top3[2][0], top3[2][1], 0.20)] if len(top3) >= 3 else [(top3[0][0], top3[0][1], 0.65), (top3[1][0], top3[1][1], 0.35)]
+                weights = ([(top3[0][0], top3[0][1], 0.50),
+                            (top3[1][0], top3[1][1], 0.30),
+                            (top3[2][0], top3[2][1], 0.20)]
+                           if len(top3) >= 3
+                           else [(top3[0][0], top3[0][1], 0.65), (top3[1][0], top3[1][1], 0.35)])
 
             alloc_block = f"\nALLOCATION PRÉ-CALCULÉE pour {budget}€:\n"
             for tk, lv, w in weights:
@@ -464,18 +509,15 @@ def deep_finance_research(question: str) -> Generator[str, None, None]:
     """
     from plugins.builtin.finance import _fetch_ticker_http
     from llm.client import chat as llm_chat
-    from agent.system_prompt import FINANCE_SYSTEM_PROMPT
 
     t0 = time.time()
 
-    # Buffer de sortie cumulatif
     output: list[str] = []
 
     def emit(text: str) -> str:
         output.append(text)
         return "\n".join(output)
 
-    # ── Header ─────────────────────────────────────────────────────────────────
     yield emit(
         f"## 🔬 Rapport d'Investissement Professionnel\n"
         f"*Démarré le {datetime.now().strftime('%d/%m/%Y à %H:%M')}*\n"
@@ -497,7 +539,7 @@ def deep_finance_research(question: str) -> Generator[str, None, None]:
             '"want_stocks": true|false,\n'
             '"want_etf": true|false,\n'
             '"preferences": ["nasdaq"|"monde"|"europe"|"usa"|"tech"|"dividende"|"smallcap"|"emerging"|"crypto"],\n'
-            '"specific_tickers": []}\n'
+            '"specific_tickers": [], "specific_names": []}\n'
             "Réponds UNIQUEMENT JSON valide."
         )
         raw = llm_chat([{"role": "user", "content": ip}], temperature=0.0)
@@ -507,43 +549,36 @@ def deep_finance_research(question: str) -> Generator[str, None, None]:
     except Exception:
         pass
 
-    budget      = intent.get("budget")
-    acct        = intent.get("account_type") or "PEA"
-    risk        = intent.get("risk_profile") or "équilibré"
-    horizon     = intent.get("time_horizon") or "long"
-    specific_tickers_raw = [t.upper() for t in (intent.get("specific_tickers") or [])]
-    # Normalize: add .PA suffix if missing and looks like French ticker
-    specific_tickers: list[str] = []
-    for t in specific_tickers_raw:
-        if "." not in t and len(t) <= 6:
-            specific_tickers.append(t + ".PA")
-        else:
-            specific_tickers.append(t)
+    budget  = intent.get("budget")
+    acct    = intent.get("account_type") or "PEA"
+    risk    = intent.get("risk_profile") or "équilibré"
+    horizon = intent.get("time_horizon") or "long"
+    prefs   = [p.lower() for p in (intent.get("preferences") or [])]
 
-    # Détecte les tickers explicites écrits dans la question (ex: VLA.PA, ASML.AS)
+    # Tickers explicites — depuis l'intent LLM + regex sur le texte brut
+    specific_tickers: list[str] = []
+    for t in (intent.get("specific_tickers") or []):
+        t = t.upper().strip()
+        if "." not in t and len(t) <= 6:
+            t += ".PA"
+        if t not in specific_tickers:
+            specific_tickers.append(t)
     for tk in extract_explicit_tickers(question):
         if tk not in specific_tickers:
             specific_tickers.append(tk)
 
-    # Also check question text for known stock names
-    _q_low = question.lower()
-    _name_to_ticker = {v["name"].lower(): k for k, v in PEA_STOCKS.items()}
-    for name_low, ticker in _name_to_ticker.items():
-        if name_low in _q_low and ticker not in specific_tickers:
-            specific_tickers.append(ticker)
+    # Noms propres mentionnés (ex: "Valneva") → recherche dynamique
+    specific_names: list[str] = intent.get("specific_names") or []
 
-    # If specific tickers detected, force want_stocks=True
-    if specific_tickers:
-        want_stocks = True
-        want_etf = intent.get("want_etf", False)  # only ETF if explicitly asked
-
-    want_stocks = intent.get("want_stocks", False) or bool(specific_tickers)
+    want_stocks = intent.get("want_stocks", False) or bool(specific_tickers) or bool(specific_names)
     want_etf    = (not want_stocks or intent.get("want_etf", False)) and not specific_tickers
-    prefs       = [p.lower() for p in (intent.get("preferences") or [])]
 
+    mode_label = ('Actions' if want_stocks and not want_etf
+                  else 'ETFs' if want_etf and not want_stocks
+                  else 'ETFs + Actions')
     yield emit(
         f"\n  ✅ **Budget:** {budget}€ | **Compte:** {acct} | "
-        f"**Profil:** {risk} | **Mode:** {'Actions' if want_stocks and not want_etf else 'ETFs' if want_etf and not want_stocks else 'ETFs + Actions'}"
+        f"**Profil:** {risk} | **Mode:** {mode_label}"
     )
 
     # ── Phase 2 : Macro (parallèle) ────────────────────────────────────────────
@@ -558,7 +593,8 @@ def deep_finance_research(question: str) -> Generator[str, None, None]:
         d3m = _fetch_ticker_http(sym, "3mo")
         if d1m:
             return sym, {"label": MARKET_INDICES.get(sym, sym), "price": d1m["price"],
-                         "chg": d1m["chg"], "perf1m": d1m.get("perf"), "perf3m": d3m.get("perf") if d3m else None}
+                         "chg": d1m["chg"], "perf1m": d1m.get("perf"),
+                         "perf3m": d3m.get("perf") if d3m else None}
         return sym, {}
 
     with ThreadPoolExecutor(max_workers=6) as ex:
@@ -579,145 +615,96 @@ def deep_finance_research(question: str) -> Generator[str, None, None]:
     macro_ok = len(market_data) >= 3
     yield emit(f"\n  {'✅' if macro_ok else '⚠️'} {len(market_data)}/{len(MARKET_INDICES)} marchés récupérés")
 
-    # ── Phase 3a : Scan ETFs (si demandé) ─────────────────────────────────────
+    # ── Phase 3a : Scan ETFs via screen_etf_pea ───────────────────────────────
     etf_ranked: list[tuple] = []
 
     if want_etf:
-        # Filtre par préférences
+        geo = ""
         if any(p in prefs for p in ("nasdaq", "tech")):
-            tgt = {k: v for k, v in PEA_ETF_UNIVERSE.items() if v["geo"] in ("tech", "monde", "usa")}
+            geo = "tech"
         elif "europe" in prefs:
-            tgt = {k: v for k, v in PEA_ETF_UNIVERSE.items() if v["geo"] in ("europe", "monde")}
+            geo = "europe"
         elif "emerging" in prefs:
-            tgt = {k: v for k, v in PEA_ETF_UNIVERSE.items() if v["geo"] in ("emerging", "monde")}
-        else:
-            tgt = PEA_ETF_UNIVERSE
+            geo = "emerging"
+        elif "usa" in prefs:
+            geo = "usa"
+        elif "monde" in prefs:
+            geo = "monde"
 
-        yield emit(f"\n\n**[3/6]** Scan {len(tgt)} ETFs PEA en parallèle...")
-
-        def _fetch_etf(tk: str):
-            d1m = _fetch_ticker_http(tk, "1mo")
-            d3m = _fetch_ticker_http(tk, "3mo")
-            d1y = _fetch_ticker_http(tk, "1y")
-            return tk, d1m, d3m, d1y
-
-        etf_raw: dict[str, dict] = {}
-        with ThreadPoolExecutor(max_workers=8) as ex:
-            futs = {ex.submit(_fetch_etf, tk): tk for tk in tgt}
-            for f in as_completed(futs):
-                try:
-                    tk, d1m, d3m, d1y = f.result()
-                    if d3m:
-                        meta = tgt[tk]
-                        etf_raw[tk] = {
-                            **meta,
-                            "price":    d3m["price"],
-                            "chg_24h":  d3m["chg"],
-                            "perf_1m":  d1m.get("perf") if d1m else None,
-                            "perf_3m":  d3m.get("perf"),
-                            "perf_1y":  d1y.get("perf") if d1y else None,
-                            "closes":   d3m.get("closes", []),
-                        }
-                except Exception:
-                    pass
-
-        for tk, data in etf_raw.items():
-            score, reasons = _score_etf(data.get("closes", []), data)
-            levels = _compute_levels(data.get("closes", []))
-            if levels and data.get("price"):
-                levels["price"] = data["price"]
-            etf_ranked.append((tk, score, data, reasons, levels))
-        etf_ranked.sort(key=lambda x: x[1], reverse=True)
-
+        yield emit(f"\n\n**[3/6]** Scan univers ETF PEA (data/pea_etf_universe.json)...")
+        etf_ranked = screen_etf_pea(budget=budget or 0.0, nb_etf=8, geo_filter=geo)
         top_str = ", ".join(f"{t}({s:.0f})" for t, s, _, _, _ in etf_ranked[:5])
-        yield emit(f"\n  ✅ {len(etf_raw)}/{len(tgt)} ETFs avec données | Top: {top_str}")
+        yield emit(f"\n  ✅ {len(etf_ranked)} ETFs classés | Top: {top_str or 'N/D'}")
+    else:
+        yield emit("\n\n**[3/6]** *(ETFs ignorés — actions/tickers spécifiques demandés)*")
 
-    # ── Phase 3b : Scan actions PEA (si demandé) ──────────────────────────────
+    # ── Phase 3b : Scan actions (priorité aux tickers/noms demandés) ──────────
     stock_data: dict[str, dict] = {}
 
     if want_stocks:
-        # Sélectionner les actions pertinentes selon préférences
-        candidates = {}
-        if any(p in prefs for p in ("tech", "semiconducteur")):
-            candidates = {k: v for k, v in PEA_STOCKS.items() if v["sector"] in ("Semiconducteurs", "Tech/IT", "Logiciel", "Aéronautique")}
-        elif "luxe" in prefs or "consommation" in prefs:
-            candidates = {k: v for k, v in PEA_STOCKS.items() if v["sector"] in ("Luxe", "Consommation")}
-        elif any(p in prefs for p in ("dividende", "banque")):
-            candidates = {k: v for k, v in PEA_STOCKS.items() if v["sector"] in ("Banque", "Énergie", "Utilities")}
-        else:
-            candidates = dict(list(PEA_STOCKS.items())[:10])  # top 10 par défaut
-
-        # Always include explicitly requested tickers
-        for tk in specific_tickers:
-            if tk not in candidates:
-                if tk in PEA_STOCKS:
-                    candidates[tk] = PEA_STOCKS[tk]
+        # Résolution des noms propres → tickers via search_ticker_by_name
+        resolved_from_names: list[str] = []
+        if specific_names:
+            yield emit(f"\n\n**[3b/6]** Résolution de noms → tickers: {', '.join(specific_names)}")
+            for name in specific_names[:5]:
+                hits = search_ticker_by_name(name)
+                if hits:
+                    resolved_from_names.append(hits[0]["ticker"])
+                    yield emit(f"\n  🔍 `{name}` → `{hits[0]['ticker']}` ({hits[0]['name']})")
                 else:
-                    # Dynamic lookup — try fetching even if not in our universe
-                    candidates[tk] = {"name": tk, "sector": "?", "cap": "?"}
+                    # Fallback: essai direct avec .PA
+                    fallback = name.upper().replace(" ", "") + ".PA"
+                    resolved_from_names.append(fallback)
+                    yield emit(f"\n  ⚠️ `{name}` non résolu — essai `{fallback}`")
 
-        yield emit(f"\n\n**[3b/6]** Scan {len(candidates)} actions PEA...")
+        all_tickers = list(dict.fromkeys(specific_tickers + resolved_from_names))
 
-        # ── Priorité : tickers explicitement demandés via lookup dynamique ──
-        # (résout les places non-.PA comme ASML.AS et enrichit le nom réel)
-        if specific_tickers:
-            yield emit(f"\n  🎯 Tickers prioritaires demandés: {', '.join(specific_tickers)}")
-            for tk in specific_tickers:
-                look = dynamic_ticker_lookup(tk)
-                if look.get("found"):
-                    resolved = look["ticker"]
-                    stock_data[resolved] = {
-                        "price":    look["price"],
-                        "perf_1m":  look.get("perf_1m"),
-                        "perf_1y":  look.get("perf_1y"),
-                        "closes":   look.get("closes", []),
-                        "levels":   look.get("levels", {}),
-                        "name":     look.get("name", resolved),
-                        "currency": look.get("currency", ""),
-                        "priority": True,
-                    }
-                    # Enrichit PEA_STOCKS en mémoire pour l'affichage du nom
-                    if resolved not in PEA_STOCKS:
-                        PEA_STOCKS[resolved] = {"name": look.get("name", resolved), "sector": "?", "cap": "?"}
-                    candidates.pop(tk, None)
-                    candidates.pop(resolved, None)
-                else:
-                    yield emit(f"\n  ⚠️ Ticker `{tk}` introuvable sur Yahoo Finance")
+        if not all_tickers:
+            # Pas de tickers spécifiques → quelques grandes caps françaises via lookup
+            default_tickers = ["MC.PA", "AIR.PA", "SAF.PA", "SAN.PA", "TTE.PA",
+                               "BNP.PA", "CAP.PA", "RMS.PA", "DSY.PA", "KER.PA"]
+            all_tickers = default_tickers[:8]
+
+        yield emit(f"\n\n**[3b/6]** Analyse dynamique de {len(all_tickers)} valeurs...")
+        if all_tickers:
+            yield emit(f"\n  🎯 Tickers: {', '.join(all_tickers)}")
 
         def _fetch_stock(tk: str):
-            d3m = _fetch_ticker_http(tk, "3mo")
-            d1y = _fetch_ticker_http(tk, "1y")
-            return tk, d3m, d1y
+            return tk, lookup_any_ticker(tk)
 
         with ThreadPoolExecutor(max_workers=8) as ex:
-            futs = {ex.submit(_fetch_stock, tk): tk for tk in candidates}
+            futs = {ex.submit(_fetch_stock, tk): tk for tk in all_tickers}
             for f in as_completed(futs):
                 try:
-                    tk, d3m, d1y = f.result()
-                    if d3m:
-                        stock_data[tk] = {
-                            "price":    d3m["price"],
-                            "perf_1m":  d3m.get("perf"),
-                            "perf_1y":  d1y.get("perf") if d1y else None,
-                            "closes":   d3m.get("closes", []),
-                            "levels":   _compute_levels(d3m.get("closes", [])),
+                    tk, look = f.result()
+                    if look.get("found"):
+                        resolved = look["ticker"]
+                        stock_data[resolved] = {
+                            "price":    look["price"],
+                            "perf_1m":  look.get("perf_1m"),
+                            "perf_1y":  look.get("perf_1y"),
+                            "closes":   look.get("closes", []),
+                            "levels":   look.get("levels", {}),
+                            "name":     look.get("name", resolved),
+                            "currency": look.get("currency", ""),
                         }
+                    else:
+                        yield_msg = f"\n  ⚠️ `{tk}` introuvable"
+                        output.append(yield_msg)
                 except Exception:
                     pass
 
-        yield emit(f"\n  ✅ {len(stock_data)} actions avec données")
+        yield emit(f"\n  ✅ {len(stock_data)} valeurs avec données")
     else:
         yield emit("\n\n**[3b/6]** *(actions ignorées — ETFs demandés)*")
 
     # ── Phase 4 : Qualité des données ─────────────────────────────────────────
-    total_assets = len(etf_raw) if want_etf else 0
-    total_assets += len(stock_data)
-    data_pct     = total_assets / max(len(PEA_ETF_UNIVERSE) + len(PEA_STOCKS), 1) * 100
+    total_assets = len(etf_ranked) + len(stock_data)
 
     if total_assets == 0 and not macro_ok:
         data_quality = "⚠️ AUCUNE donnée temps réel — analyse basée sur connaissances du modèle [estimation]"
     elif total_assets == 0:
-        data_quality = f"⚠️ Données macro partielles ({len(market_data)} indices) — données ETF/actions indisponibles [estimation partielle]"
+        data_quality = f"⚠️ Données macro partielles ({len(market_data)} indices) — données actifs indisponibles [estimation partielle]"
     else:
         data_quality = f"✅ Données temps réel ({len(market_data)} indices + {total_assets} actifs scannés)"
 
@@ -731,16 +718,14 @@ def deep_finance_research(question: str) -> Generator[str, None, None]:
     try:
         from duckduckgo_search import DDGS
         queries = []
-        # Queries spécifiques aux tickers demandés (priorité maximale)
-        for tk in specific_tickers[:3]:
-            name = PEA_STOCKS.get(tk, {}).get("name", tk.replace(".PA", ""))
-            queries.append(f"{name} {tk} analyse investissement achat 2026")
+        all_query_tickers = list(dict.fromkeys(specific_tickers + list(stock_data.keys())))
+        for tk in all_query_tickers[:3]:
+            name = stock_data.get(tk, {}).get("name", tk.replace(".PA", ""))
+            queries.append(f"{name} {tk} analyse investissement achat {datetime.now().year}")
             queries.append(f"{name} actualité cours bourse {datetime.now().strftime('%B %Y')}")
-        if not specific_tickers:
+        if not queries:
             if acct == "PEA":
                 queries.append(f"meilleur ETF PEA investissement {datetime.now().year} analyse")
-            if "nasdaq" in prefs or "tech" in prefs:
-                queries.append("Nasdaq ETF perspective achat technique analyse")
             if want_stocks:
                 queries.append(f"actions françaises PEA opportunité {datetime.now().strftime('%B %Y')}")
             queries.append(f"marché boursier perspective {datetime.now().strftime('%B %Y')} analyse")
@@ -792,7 +777,6 @@ def deep_finance_research(question: str) -> Generator[str, None, None]:
     mins    = elapsed // 60
     secs    = elapsed % 60
 
-    # Rapport final (remplace tout le contenu précédent)
     final = [
         f"## 🔬 Rapport d'Investissement Professionnel",
         f"*{datetime.now().strftime('%d/%m/%Y %H:%M')} — {mins}m{secs:02d}s — "
