@@ -68,8 +68,17 @@ class Config:
 
     # Bots (optionnels)
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+    TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")  # cible des alertes push (vide = tous les chats connus via /start)
     DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
     DISCORD_GUILD_ID = int(os.getenv("DISCORD_GUILD_ID") or "0")
+
+    # PEA Watcher — surveillance autonome + alertes Telegram
+    WATCHER_ENABLED   = os.getenv("WATCHER_ENABLED", "false").lower() == "true"
+    WATCHER_INTERVAL  = int(os.getenv("WATCHER_INTERVAL", "1800"))   # secondes entre deux scans (défaut 30 min)
+    WATCHER_RSI_LOW   = float(os.getenv("WATCHER_RSI_LOW", "32"))    # RSI ≤ seuil → survente / zone d'achat
+    WATCHER_RSI_HIGH  = float(os.getenv("WATCHER_RSI_HIGH", "70"))   # RSI ≥ seuil → surachat / prendre profits
+    WATCHER_MOVE_PCT  = float(os.getenv("WATCHER_MOVE_PCT", "5.0"))  # |variation journalière| ≥ seuil → alerte
+    WATCHER_QUIET_HOURS = int(os.getenv("WATCHER_QUIET_HOURS", "20"))  # ré-alerte même règle après N h max 1×/jour
 
     # UI
     GRADIO_PORT = int(os.getenv("GRADIO_PORT", "7860"))

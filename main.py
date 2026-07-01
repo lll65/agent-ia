@@ -48,6 +48,15 @@ async def lifespan(app: FastAPI):
         bot_tasks.append(asyncio.create_task(run_discord_bot()))
         logger.info("Bot Discord démarré.")
 
+    # PEA Watcher — surveillance autonome + alertes Telegram
+    if config.WATCHER_ENABLED:
+        if config.TELEGRAM_TOKEN:
+            from agent.pea_watcher import watch_loop
+            bot_tasks.append(asyncio.create_task(watch_loop()))
+            logger.info("PEA Watcher démarré (alertes Telegram).")
+        else:
+            logger.warning("WATCHER_ENABLED=true mais TELEGRAM_TOKEN absent — watcher non démarré.")
+
     logger.info(f"Agent IA démarré sur http://{config.HOST}:{config.PORT}")
     logger.info(f"Documentation: http://localhost:{config.PORT}/docs")
 

@@ -175,9 +175,6 @@ def screen_etf_pea(budget: float = 0.0, nb_etf: int = 5,
                 if not d3m or not d3m.get("price"):
                     continue
                 price = d3m["price"]
-                # Filtre budget si demandé
-                if budget > 0 and price > budget * 0.8:
-                    pass  # pas de filtre strict, on garde mais on note
                 closes = d3m.get("closes", [])
                 data = {
                     **entry,
@@ -189,9 +186,13 @@ def screen_etf_pea(budget: float = 0.0, nb_etf: int = 5,
                     "closes":   closes,
                 }
                 score, reasons = _score_etf(closes, data)
-                levels = _compute_levels(closes)
-                if levels:
-                    levels["price"] = price
+                # levels peut être {} si l'historique est trop court : on garantit
+                # au moins le prix pour l'affichage et l'allocation.
+                levels = _compute_levels(closes) or {}
+                levels["price"] = price
+                # Filtre budget : on écarte les ETFs dont une part dépasse le budget.
+                if budget and budget > 0 and price > budget:
+                    continue
                 results.append((entry["ticker"], score, data, reasons, levels))
             except Exception:
                 pass
@@ -672,6 +673,7 @@ def deep_finance_research(question: str) -> Generator[str, None, None]:
         def _fetch_stock(tk: str):
             return tk, lookup_any_ticker(tk)
 
+        not_found: list[str] = []
         with ThreadPoolExecutor(max_workers=8) as ex:
             futs = {ex.submit(_fetch_stock, tk): tk for tk in all_tickers}
             for f in as_completed(futs):
@@ -689,11 +691,12 @@ def deep_finance_research(question: str) -> Generator[str, None, None]:
                             "currency": look.get("currency", ""),
                         }
                     else:
-                        yield_msg = f"\n  ⚠️ `{tk}` introuvable"
-                        output.append(yield_msg)
+                        not_found.append(look.get("ticker", "?"))
                 except Exception:
                     pass
 
+        if not_found:
+            yield emit(f"\n  ⚠️ Introuvables: {', '.join(f'`{t}`' for t in not_found)}")
         yield emit(f"\n  ✅ {len(stock_data)} valeurs avec données")
     else:
         yield emit("\n\n**[3b/6]** *(actions ignorées — ETFs demandés)*")
