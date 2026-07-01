@@ -1,0 +1,32 @@
+# Secrets — JAMAIS dans l'image (injectés au runtime via env_file)
+.env
+*.env
+!.env.example
+
+# Git / CI
+.git
+.gitignore
+.github
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# Données locales & sorties volumineuses (montées en volumes au runtime)
+data/memory.db
+data/chroma/
+data/sessions/
+data/agents/
+output/
+*.mp4
+*.mp3
+*.png
+
+# Divers
+.DS_Store
+*.log
+agent-ia.zip

@@ -254,6 +254,88 @@ Désormais tout ce que tu lui dis est stocké dans Supabase et **survit à tout 
 
 ---
 
+## 🌐 Déploiement 24/7 sur Oracle Cloud (gratuit à vie, PC éteint)
+
+Pour que l'agent tourne **en permanence** — surveiller ton PEA et te push des alertes
+même quand ton PC est éteint — il faut un serveur toujours allumé. **Oracle Cloud
+Always Free** offre une VM ARM (jusqu'à 4 cœurs / 24 Go RAM) **gratuite à vie**.
+
+> 🔑 **Décision d'archi importante :** ton interface est **Telegram** et ton LLM est
+> dans le cloud (Groq/Cerebras). Donc la VM **n'a besoin d'AUCUN port ouvert** vers
+> Internet : tout se fait en connexion sortante. Résultat : **zéro exposition, zéro
+> risque sécu** (contrairement au port forwarding sur ta box). Pas de GPU nécessaire.
+
+### Étape 1 — Créer un compte Oracle Cloud
+1. [oracle.com/cloud/free](https://www.oracle.com/cloud/free/) → **Start for free**.
+2. Vérification par carte bancaire (**non débitée** — juste une vérif anti-fraude).
+3. Choisis une région proche (ex: Paris, Frankfurt).
+
+### Étape 2 — Créer la VM (Always Free)
+1. Menu → **Compute → Instances → Create Instance**.
+2. **Image & shape** → *Change shape* → **Ampere (ARM)** → `VM.Standard.A1.Flex`
+   → mets **2 OCPU / 12 Go RAM** (dans l'enveloppe gratuite).
+3. **Image** : Canonical **Ubuntu 22.04**.
+4. **SSH keys** : télécharge la clé privée (ou colle ta clé publique). Garde-la.
+5. **Create**. Note l'**IP publique** une fois la VM lancée.
+
+### Étape 3 — Se connecter en SSH
+```bash
+# Depuis ton PC (adapte le chemin de la clé et l'IP) :
+chmod 600 ma-cle.key
+ssh -i ma-cle.key ubuntu@<IP-PUBLIQUE>
+```
+
+### Étape 4 — Récupérer le code + configurer
+```bash
+sudo apt update && sudo apt install -y git
+git clone <URL-de-ton-repo> agent-ia
+cd agent-ia
+cp .env.example .env
+nano .env      # remplis GROQ_API_KEY, CEREBRAS_API_KEY, TELEGRAM_TOKEN,
+               # SUPABASE_DB_URL (mémoire persistante), WATCHER_ENABLED=true
+```
+> 💡 Sur un serveur distant, **active Supabase** (`SUPABASE_DB_URL`) : si la VM est
+> un jour recréée, la mémoire de l'agent est intacte (elle vit hors de la VM).
+
+### Étape 5 — Lancer en 24/7 (Docker — recommandé)
+```bash
+bash deploy/setup_oracle.sh
+```
+Le script installe Docker, build l'image et démarre l'agent avec redémarrage
+automatique (`restart: unless-stopped` → **survit aux reboots de la VM**).
+
+**Vérifier :**
+```bash
+sudo docker compose logs -f        # tu dois voir "Bot Telegram démarré" + "PEA Watcher démarré"
+```
+Puis envoie **`/start`** à ton bot Telegram → tu recevras les alertes automatiquement.
+
+### Alternative sans Docker (systemd)
+```bash
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+sudo cp deploy/masteragent.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now masteragent
+journalctl -u masteragent -f       # logs en direct
+```
+
+### Accéder à l'interface web (optionnel, sans exposer de port)
+L'UI Gradio reste privée sur la VM. Pour la voir depuis ton PC, **tunnel SSH** :
+```bash
+ssh -i ma-cle.key -L 7860:localhost:7860 ubuntu@<IP-PUBLIQUE>
+# puis ouvre http://localhost:7860 dans ton navigateur
+```
+
+### Mettre à jour l'agent plus tard
+```bash
+cd agent-ia && git pull
+sudo docker compose up -d --build      # (Docker)
+# ou : sudo systemctl restart masteragent   (systemd)
+```
+
+---
+
 ## 🔧 Dépannage (problèmes fréquents)
 
 | Symptôme | Cause / Solution |
@@ -270,6 +352,9 @@ Désormais tout ce que tu lui dis est stocké dans Supabase et **survit à tout 
 | Watcher : « Aucune cible » dans les logs | Définis `TELEGRAM_CHAT_ID` dans `.env`, ou envoie `/start` au bot au moins une fois. |
 | Supabase : « fallback local » dans les logs | `psycopg2` non installé (`pip install psycopg2-binary`) ou `SUPABASE_DB_URL` incorrecte. L'agent tourne quand même en mémoire locale. |
 | Supabase : timeout de connexion | Vérifie le mot de passe dans l'URL et que ton IP n'est pas bloquée (Supabase autorise tout par défaut). Port 5432 (ou 6543 en mode pooler). |
+| Docker : `permission denied` | Après l'install Docker, déconnecte/reconnecte ta session SSH (ou `newgrp docker`), ou préfixe les commandes par `sudo`. |
+| Oracle : build ARM lent/échoue | Normal que le 1er build prenne quelques minutes. Si une lib échoue, vérifie que la VM a ≥ 8 Go RAM (shape Ampere Flex). |
+| VM redémarre → agent coupé | Vérifie `restart: unless-stopped` (Docker) ou `systemctl enable masteragent` (systemd) — les deux relancent au boot. |
 
 ---
 

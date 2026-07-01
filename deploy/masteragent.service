@@ -1,0 +1,25 @@
+[Unit]
+# Alternative à Docker : lance l'agent directement via systemd.
+# Installe :  sudo cp deploy/masteragent.service /etc/systemd/system/
+#             sudo systemctl daemon-reload && sudo systemctl enable --now masteragent
+# Logs    :  journalctl -u masteragent -f
+Description=MasterAgent-Gros (agent IA autonome + Telegram + PEA Watcher)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adapte User et les chemins à ton install (ex: ubuntu / opc sur Oracle)
+User=ubuntu
+WorkingDirectory=/home/ubuntu/agent-ia
+# Utilise le venv créé à l'install. --no-ui = headless (Telegram + watcher, sans web).
+ExecStart=/home/ubuntu/agent-ia/venv/bin/python main.py --no-ui
+EnvironmentFile=/home/ubuntu/agent-ia/.env
+Restart=always
+RestartSec=10
+# Redémarre proprement, garde les logs dans journald
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
