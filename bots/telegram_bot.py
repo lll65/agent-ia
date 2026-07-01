@@ -153,13 +153,46 @@ async def run_telegram_bot():
     # ── Commandes ─────────────────────────────────────────────────────────────
 
     async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        # Enregistre ce chat pour recevoir les alertes proactives (PEA Watcher)
+        try:
+            from bots.telegram_push import register_chat
+            register_chat(update.effective_chat.id)
+        except Exception:
+            pass
         await update.message.reply_text(
             "🤖 MasterAgent-Gros connecté!\n\n"
             "Envoie n'importe quelle question.\n"
             "Préfixe 'agent:' pour le mode complet avec outils.\n\n"
-            "📊 Questions financières → analyse automatique\n\n"
-            "Commandes: /help /clear /status"
+            "📊 Questions financières → analyse automatique\n"
+            "🔔 Ce chat recevra les alertes PEA automatiques.\n\n"
+            "Commandes: /help /clear /status /watch"
         )
+
+    async def watch_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Déclenche un scan PEA immédiat et répond avec les alertes en cours."""
+        try:
+            from bots.telegram_push import register_chat
+            register_chat(update.effective_chat.id)
+        except Exception:
+            pass
+        await update.message.reply_text("🔔 Scan des positions en cours…")
+        try:
+            from agent.pea_watcher import run_once
+            loop = asyncio.get_event_loop()
+            # dry_run=True : on répond ici sans re-pousser (évite le doublon)
+            res = await loop.run_in_executor(None, run_once, True)
+            if res["tickers"] == 0:
+                msg = (
+                    "Watchlist vide. Ajoute des valeurs dans data/watchlist.txt "
+                    "(une par ligne) ou sauvegarde un portefeuille dans l'interface web."
+                )
+            elif not res["alerts"]:
+                msg = f"✅ {res['tickers']} valeurs surveillées — aucun seuil franchi actuellement."
+            else:
+                msg = f"🔔 {len(res['alerts'])} alerte(s) sur {res['tickers']} valeurs :\n\n" + "\n\n".join(res["alerts"])
+            await update.message.reply_text(msg[:4000])
+        except Exception as e:
+            await update.message.reply_text(f"❌ Erreur scan: {str(e)[:300]}")
 
     async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         from plugins import get_loader
@@ -199,6 +232,13 @@ async def run_telegram_bot():
         text     = (update.message.text or "").strip()
         if not text:
             return
+
+        # Enregistre le chat pour les alertes proactives (idempotent)
+        try:
+            from bots.telegram_push import register_chat
+            register_chat(update.effective_chat.id)
+        except Exception:
+            pass
 
         # Détection du mode
         use_agent = any(text.lower().startswith(p) for p in AGENT_PREFIXES)
@@ -250,6 +290,7 @@ async def run_telegram_bot():
     bot_app.add_handler(CommandHandler("help", help_cmd))
     bot_app.add_handler(CommandHandler("clear", clear_cmd))
     bot_app.add_handler(CommandHandler("status", status_cmd))
+    bot_app.add_handler(CommandHandler("watch", watch_cmd))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # ── Démarrage intégré à la boucle uvicorn/FastAPI ─────────────────────────

@@ -156,6 +156,61 @@ Pour 8 Go, je recommande le mode Ken Burns (option 1) : aucun réglage, résulta
 
 ---
 
+## 🔔 PEA Watcher — alertes automatiques sur ton téléphone
+
+L'agent peut **surveiller tes positions en continu** et t'envoyer une alerte
+Telegram quand un seuil est franchi (RSI survendu/suracheté, gros mouvement).
+Aucune action de ta part : il tourne en tâche de fond.
+
+### Étape 1 — Créer un bot Telegram (2 min, gratuit)
+1. Sur Telegram, ouvre **@BotFather** → `/newbot` → choisis un nom.
+2. Il te donne un **token** (ex: `123456:ABC-...`). Copie-le dans `.env` :
+   ```
+   TELEGRAM_TOKEN=123456:ABC-ton-token
+   ```
+
+### Étape 2 — Définir ta watchlist
+Édite **`data/watchlist.txt`** (une valeur par ligne, nom ou ticker) :
+```
+Valneva
+Thales
+Amundi Nasdaq PEA
+```
+> Si tu laisses ce fichier vide, le watcher surveille automatiquement les valeurs
+> de tes portefeuilles sauvegardés dans l'interface web.
+
+### Étape 3 — Activer le watcher
+Dans `.env` :
+```
+WATCHER_ENABLED=true
+WATCHER_INTERVAL=1800     # scan toutes les 30 min
+WATCHER_RSI_LOW=32        # alerte si RSI ≤ 32 (survendu)
+WATCHER_RSI_HIGH=70       # alerte si RSI ≥ 70 (suracheté)
+WATCHER_MOVE_PCT=5.0      # alerte si mouvement journalier ≥ 5 %
+```
+
+### Étape 4 — Tester AVANT de déployer
+```bash
+# Scan unique sans rien envoyer (voir ce qui se déclencherait) :
+python -m agent.pea_watcher
+
+# Scan unique + envoi Telegram réel (envoie /start au bot d'abord) :
+python -m agent.pea_watcher --send
+```
+
+### Étape 5 — Lancer
+1. Sur Telegram, envoie **`/start`** à ton bot (il mémorise où pousser).
+2. Lance l'agent : `python main.py`.
+3. Tu recevras désormais des alertes du type :
+   ```
+   🔔 Alerte PEA — 01/07 14:30
+   🟢 Valneva (VLA.PA) — 3.85€
+      RSI 28 ≤ 32 → SURVENDU, zone d'achat potentielle | j: -6.2%
+   ```
+> 💬 Commande **`/watch`** dans Telegram = scan immédiat à la demande.
+
+---
+
 ## 🔧 Dépannage (problèmes fréquents)
 
 | Symptôme | Cause / Solution |
@@ -168,6 +223,8 @@ Pour 8 Go, je recommande le mode Ken Burns (option 1) : aucun réglage, résulta
 | Ollama : `connection refused` | Ollama pas démarré → lance `ollama serve` ou ouvre l'app Ollama. |
 | Données bourse « N/D » | Yahoo Finance limite parfois les requêtes → réessaie dans quelques secondes. |
 | Gradio ne s'ouvre pas | Attends le message `http://localhost:7860`, puis ouvre-le manuellement dans le navigateur. |
+| Watcher : aucune alerte reçue | Envoie `/start` au bot (il doit connaître ton chat), vérifie `WATCHER_ENABLED=true` et que `data/watchlist.txt` n'est pas vide. Teste avec `python -m agent.pea_watcher --send`. |
+| Watcher : « Aucune cible » dans les logs | Définis `TELEGRAM_CHAT_ID` dans `.env`, ou envoie `/start` au bot au moins une fois. |
 
 ---
 
