@@ -58,6 +58,10 @@ class Config:
     DB_PATH = os.getenv("DB_PATH", "data/memory.db")
     OUTPUT_DIR = os.getenv("OUTPUT_DIR", "output")
     CHROMA_DIR = os.getenv("CHROMA_DIR", "data/chroma")
+    # Mémoire persistante Supabase (Postgres + pgvector). Si défini, remplace
+    # SQLite + ChromaDB → la mémoire survit aux redémarrages / mises en veille.
+    # Récupère l'URL dans Supabase → Project Settings → Database → Connection string (URI).
+    SUPABASE_DB_URL = os.getenv("SUPABASE_DB_URL", "")
     AGENTS_DIR = os.getenv("AGENTS_DIR", "data/agents")
     PLUGINS_DIR = os.getenv("PLUGINS_DIR", "data/plugins")
 

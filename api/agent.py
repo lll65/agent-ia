@@ -3,7 +3,6 @@ from pydantic import BaseModel
 from typing import Optional
 
 from agent.core import run_agent
-from agent.memory import get_history, clear_history
 from memory import get_memory
 from plugins import get_loader
 from config import config
@@ -48,24 +47,34 @@ async def chat(req: ChatRequest):
     result = await run_agent(req.message, agent_config, agent_id)
     mem = get_memory()
 
+    # Compte les souvenirs quel que soit le backend (Supabase ou ChromaDB local)
+    mem_count = None
+    try:
+        if mem.backend:
+            mem_count = mem.backend.count(agent_id)
+        elif mem.chroma and mem.chroma.available:
+            mem_count = mem.chroma.count(agent_id)
+    except Exception:
+        mem_count = None
+
     return ChatResponse(
         answer=result["answer"],
         agent_id=agent_id,
         iterations=result["iterations"],
         steps=result["steps"] if req.show_steps else None,
-        memory_count=mem.chroma.count(agent_id) if mem.chroma.available else None,
+        memory_count=mem_count,
     )
 
 
 @router.get("/{agent_id}/history")
 async def agent_history(agent_id: str, limit: int = 20):
-    return {"agent_id": agent_id, "history": get_history(agent_id, limit)}
+    return {"agent_id": agent_id, "history": get_memory().recall_recent(agent_id, limit)}
 
 
 @router.delete("/{agent_id}/memory")
 async def clear_memory(agent_id: str):
     get_memory().clear(agent_id)
-    return {"message": f"Mémoire de '{agent_id}' effacée (SQLite + ChromaDB)."}
+    return {"message": f"Mémoire de '{agent_id}' effacée."}
 
 
 @router.get("/{agent_id}/summary")

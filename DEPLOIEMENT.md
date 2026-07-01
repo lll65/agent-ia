@@ -211,6 +211,49 @@ python -m agent.pea_watcher --send
 
 ---
 
+## 🧠 Mémoire persistante (Supabase) — l'agent ne t'oublie plus
+
+Par défaut, la mémoire est locale (SQLite + ChromaDB). C'est parfait **sur ton PC**.
+Mais sur un hébergeur gratuit éphémère (Render free), le disque est effacé à chaque
+mise en veille → l'agent oublie tout. Solution : externaliser la mémoire vers
+**Supabase** (Postgres + pgvector), gratuit et persistant.
+
+> 💡 Sur ton PC, tu n'as **rien à faire** : sans `SUPABASE_DB_URL`, l'agent utilise
+> la mémoire locale qui persiste déjà très bien. Cette étape n'est utile que pour un
+> déploiement 24/7 sur un hôte éphémère (voir Oracle Free plus bas).
+
+### Étape 1 — Créer un projet Supabase (gratuit, 2 min)
+1. Va sur [supabase.com](https://supabase.com) → **New project**.
+2. Choisis un mot de passe de base de données (note-le).
+3. Attends ~1 min que la base soit prête.
+
+### Étape 2 — Récupérer l'URL de connexion
+Dans le projet : **Project Settings → Database → Connection string → URI**.
+Copie l'URL (remplace `[YOUR-PASSWORD]` par ton mot de passe) dans `.env` :
+```
+SUPABASE_DB_URL=postgresql://postgres:MON_MOT_DE_PASSE@db.xxxx.supabase.co:5432/postgres
+```
+
+### Étape 3 — Installer le driver Postgres
+```bash
+pip install psycopg2-binary
+```
+(déjà inclus si tu réinstalles `requirements.txt`)
+
+### Étape 4 — C'est tout
+Lance `python main.py`. Au démarrage tu verras dans les logs :
+```
+Mémoire: backend Supabase (persistant, pgvector).
+```
+L'agent crée automatiquement la table `agent_memory` et l'extension `vector`.
+Désormais tout ce que tu lui dis est stocké dans Supabase et **survit à tout redémarrage**.
+
+> - L'extension pgvector et la table sont créées toutes seules au premier lancement.
+> - Les embeddings sont générés en local (MiniLM, via chromadb déjà installé) → aucune API payante.
+> - Si Supabase est injoignable, l'agent retombe **automatiquement** sur la mémoire locale (aucun crash).
+
+---
+
 ## 🔧 Dépannage (problèmes fréquents)
 
 | Symptôme | Cause / Solution |
@@ -225,6 +268,8 @@ python -m agent.pea_watcher --send
 | Gradio ne s'ouvre pas | Attends le message `http://localhost:7860`, puis ouvre-le manuellement dans le navigateur. |
 | Watcher : aucune alerte reçue | Envoie `/start` au bot (il doit connaître ton chat), vérifie `WATCHER_ENABLED=true` et que `data/watchlist.txt` n'est pas vide. Teste avec `python -m agent.pea_watcher --send`. |
 | Watcher : « Aucune cible » dans les logs | Définis `TELEGRAM_CHAT_ID` dans `.env`, ou envoie `/start` au bot au moins une fois. |
+| Supabase : « fallback local » dans les logs | `psycopg2` non installé (`pip install psycopg2-binary`) ou `SUPABASE_DB_URL` incorrecte. L'agent tourne quand même en mémoire locale. |
+| Supabase : timeout de connexion | Vérifie le mot de passe dans l'URL et que ton IP n'est pas bloquée (Supabase autorise tout par défaut). Port 5432 (ou 6543 en mode pooler). |
 
 ---
 
