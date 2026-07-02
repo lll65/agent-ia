@@ -237,6 +237,7 @@ def full_agent(message: str, history: list, sid: str) -> str:
         "model": config.LLM_MODEL,
     }
     trace_lines: list[str] = []
+    used_tools: list[str] = []
     final_answer = ""
     iters = 0
     try:
@@ -244,12 +245,19 @@ def full_agent(message: str, history: list, sid: str) -> str:
             nonlocal final_answer, iters
             async for step in run_agent_stream(message, cfg, sid):
                 if step["type"] == "thought":
-                    trace_lines.append(f"**💭** {step['text']}")
+                    trace_lines.append(f"💭 **Réflexion :** {step['text']}")
                 elif step["type"] == "action":
-                    p = json.dumps(step.get("params", {}), ensure_ascii=False)
-                    trace_lines.append(f"**⚡ `{step['tool']}`** `{p[:120]}`")
+                    tool   = step.get("tool", "")
+                    params = step.get("params", {}) or {}
+                    used_tools.append(tool)
+                    if "search" in tool.lower() or "web" in tool.lower():
+                        q = params.get("query") or params.get("q") or json.dumps(params, ensure_ascii=False)
+                        trace_lines.append(f"🔍 **Recherche :** `{str(q)[:120]}`")
+                    else:
+                        p = json.dumps(params, ensure_ascii=False)
+                        trace_lines.append(f"🔧 **Outil `{tool}`** — `{p[:120]}`")
                 elif step["type"] == "observation":
-                    trace_lines.append(f"> 👁️ {step['result'][:200]}")
+                    trace_lines.append(f"👁️ *Résultat :* {step['result'][:220]}")
                     trace_lines.append("")
                 elif step["type"] == "final":
                     final_answer = step["answer"]
@@ -259,16 +267,19 @@ def full_agent(message: str, history: list, sid: str) -> str:
         import traceback
         return f"❌ Erreur agent: {e}\n\n```\n{traceback.format_exc()[:600]}\n```"
 
-    used_tools = [l.split("`")[1] for l in trace_lines if l.startswith("**⚡")]
-    if used_tools:
-        final_answer += f"\n\n*🔧 Outils: {', '.join(dict.fromkeys(used_tools))} — {iters} étapes*"
-
+    # Bloc de raisonnement affiché EN HAUT et OUVERT (comme Claude) : on voit ce que
+    # l'agent pense et où il cherche, avant sa réponse finale.
     if trace_lines:
-        trace_md = "\n".join(trace_lines)
-        final_answer += (
-            f"\n\n<details><summary>💭 Voir le raisonnement ({iters} étapes)</summary>\n\n"
-            f"{trace_md}\n\n</details>"
+        trace_md = "\n\n".join(trace_lines)
+        reasoning = (
+            f"<details open><summary>🧠 <b>Ce que l'agent a fait</b> "
+            f"({iters} étapes) — clique pour replier</summary>\n\n"
+            f"{trace_md}\n\n</details>\n\n---\n\n"
         )
+        final_answer = reasoning + final_answer
+
+    if used_tools:
+        final_answer += f"\n\n*🔧 Outils utilisés : {', '.join(dict.fromkeys(used_tools))}*"
 
     def _bg(t, a):
         try:
