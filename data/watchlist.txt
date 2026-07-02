@@ -1,15 +1,12 @@
-# Watchlist du PEA Watcher — une valeur par ligne (nom OU ticker Yahoo Finance)
-# Tout ce qui suit un # est ignoré. Édite librement.
-#
-# Exemples de formats acceptés :
-#   Valneva              → résolu en VLA.PA
-#   Thales               → résolu en HO.PA
-#   VLA.PA               → ticker direct
-#   Amundi Nasdaq PEA    → résolu en PANX.PA (ETF multi-mots)
-#
-# Si ce fichier est vide/absent, le watcher agrège automatiquement les tickers
-# de tes portefeuilles sauvegardés (data/portfolios.json).
+# Watchlist PEA — valeurs surveillées automatiquement par le PEA Watcher.
+# (tout ce qui suit un # est ignoré · une valeur par ligne · nom ou ticker Yahoo)
 
-Valneva
-Thales
-Amundi Nasdaq PEA
+# --- ETF Amundi PEA ---
+WPEA.PA       # Amundi PEA MSCI World
+PANX.PA       # Amundi PEA Nasdaq-100
+PE500.PA      # Amundi PEA S&P 500
+PAEEM.PA      # Amundi PEA Émergents (MSCI EM ESG)
+
+# --- Actions ---
+VLA.PA        # Valneva
+HO.PA         # Thales
