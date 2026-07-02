@@ -652,6 +652,21 @@ def debug_project_fn(path: str, do_fix: bool, progress=gr.Progress()):
         return f"❌ Erreur: {e}"
 
 
+def analyze_document_fn(path: str, question: str, progress=gr.Progress()):
+    """Lit un PDF/document/dossier et répond à une question ou en fait un résumé."""
+    if not path or not path.strip():
+        return "⚠️ Indique le chemin d'un fichier (PDF, Word, texte) ou d'un dossier."
+    progress(0.2, desc="📄 Lecture du document...")
+    try:
+        from plugins.builtin.document_analyzer import DocumentAnalyzerPlugin
+        progress(0.5, desc="🧠 Analyse par l'IA...")
+        result = DocumentAnalyzerPlugin().run(path=path.strip(), question=(question or "").strip())
+        progress(1.0, desc="✅ Terminé")
+        return result
+    except Exception as e:
+        return f"❌ Erreur: {e}"
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # FINANCE
 # ═════════════════════════════════════════════════════════════════════════════
@@ -699,6 +714,25 @@ def market_dashboard_fn() -> str:
         return MarketDashboardPlugin().run()
     except Exception as e:
         return f"❌ Erreur dashboard: {e}"
+
+
+def crypto_market_fn(coins: str) -> str:
+    """Marché crypto (CoinGecko) + indice Fear & Greed."""
+    try:
+        from plugins.builtin.finance_extra import CryptoMarketPlugin, FearGreedPlugin
+        market = CryptoMarketPlugin().run(coins=coins or "")
+        senti  = FearGreedPlugin().run()
+        return market + "\n\n---\n\n" + senti
+    except Exception as e:
+        return f"❌ Erreur: {e}"
+
+
+def currency_rates_fn(to: str) -> str:
+    try:
+        from plugins.builtin.finance_extra import CurrencyRatesPlugin
+        return CurrencyRatesPlugin().run(base="EUR", to=to or "USD,GBP,JPY,CHF")
+    except Exception as e:
+        return f"❌ Erreur: {e}"
 
 # ═════════════════════════════════════════════════════════════════════════════
 # AUTO-MODIFICATION DE CODE
@@ -1436,7 +1470,30 @@ def build_ui() -> gr.Blocks:
                                 dbg_btn = gr.Button("🐞 Analyser le projet", variant="primary", size="lg")
                             with gr.Column(scale=2):
                                 dbg_out = gr.Markdown("*Le rapport de bugs apparaîtra ici.*")
-                        dbg_btn.click(debug_project_fn, [dbg_path, dbg_fix], [dbg_out])
+                        # queue=False → revient malgré l'antivirus qui bloque le streaming
+                        dbg_btn.click(debug_project_fn, [dbg_path, dbg_fix], [dbg_out], queue=False)
+
+                    with gr.TabItem("📄 Analyser un document"):
+                        gr.Markdown(
+                            "### Lis et analyse un PDF, un document Word/texte, ou un dossier entier\n"
+                            "Donne le **chemin d'un fichier ou dossier** + une **question** "
+                            "(ou laisse vide pour un résumé). Marche avec les PDF, .docx, .txt, .md, code…"
+                        )
+                        with gr.Row():
+                            with gr.Column(scale=1):
+                                doc_path = gr.Textbox(
+                                    label="Chemin du fichier ou dossier",
+                                    placeholder="C:\\Users\\lohan\\Documents\\rapport.pdf",
+                                )
+                                doc_q = gr.Textbox(
+                                    label="Ta question (optionnel)",
+                                    placeholder="Ex: résume les points clés · quels sont les risques ? · explique la partie 3",
+                                    lines=2,
+                                )
+                                doc_btn = gr.Button("📄 Analyser le document", variant="primary", size="lg")
+                            with gr.Column(scale=2):
+                                doc_out = gr.Markdown("*L'analyse apparaîtra ici.*")
+                        doc_btn.click(analyze_document_fn, [doc_path, doc_q], [doc_out], queue=False)
 
             # ══ FINANCE ═══════════════════════════════════════════════════════
             with gr.TabItem("💹 Finance"):
@@ -1469,6 +1526,27 @@ def build_ui() -> gr.Blocks:
                                 f_out = gr.Markdown()
                         f_chart = gr.Image(label="📈 Graphique technique", show_label=True)
                         f_btn.click(analyze_finance, [f_ticker, f_period], [f_out, f_chart])
+
+                    # ── Crypto & Sentiment (sources gratuites CoinGecko + Fear&Greed) ──
+                    with gr.TabItem("🪙 Crypto & Sentiment"):
+                        gr.Markdown(
+                            "Marché crypto en direct (CoinGecko) + **indice Fear & Greed** "
+                            "+ taux de change (BCE). 100% gratuit, sans clé."
+                        )
+                        with gr.Row():
+                            with gr.Column(scale=1):
+                                cr_coins = gr.Textbox(
+                                    label="Cryptos (optionnel, vide = top 8)",
+                                    placeholder="BTC,ETH,SOL",
+                                )
+                                cr_btn = gr.Button("🪙 Marché crypto + sentiment", variant="primary")
+                                gr.Markdown("—")
+                                cur_to = gr.Textbox(label="Devises (depuis EUR)", value="USD,GBP,JPY,CHF")
+                                cur_btn = gr.Button("💱 Taux de change", size="sm")
+                            with gr.Column(scale=2):
+                                cr_out = gr.Markdown("*Clique pour charger le marché crypto.*")
+                        cr_btn.click(crypto_market_fn, [cr_coins], [cr_out])
+                        cur_btn.click(currency_rates_fn, [cur_to], [cr_out])
 
                     # ── Portefeuille ──────────────────────────────────────────
                     with gr.TabItem("💼 Portefeuille"):
