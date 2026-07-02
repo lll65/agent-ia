@@ -1240,7 +1240,9 @@ def build_ui() -> gr.Blocks:
 
                 chat_st = gr.State([])
 
-                mode_btn.click(toggle_mode, [mode_state], [mode_state, mode_btn, mode_ind])
+                # queue=False → le changement de mode est instantané, il ne fait plus
+                # la file d'attente derrière une réponse Agent en cours (qui peut durer plusieurs minutes).
+                mode_btn.click(toggle_mode, [mode_state], [mode_state, mode_btn, mode_ind], queue=False)
                 send_btn.click(send, [msg_in, chat_st, mode_state, sid_state], [chatbot, chat_st, msg_in])
                 msg_in.submit(send, [msg_in, chat_st, mode_state, sid_state], [chatbot, chat_st, msg_in])
                 new_btn.click(new_conv, [], [chatbot, chat_st, sid_state]).then(refresh_sess, [], [sess_dd])
