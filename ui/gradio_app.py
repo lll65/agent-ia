@@ -28,6 +28,35 @@ if not hasattr(_hfh, "HfFolder"):
             pass
     _hfh.HfFolder = _HfFolderCompat
 
+# Patch de compatibilité : bug gradio_client "TypeError: argument of type 'bool'
+# is not iterable" quand un schéma JSON contient un booléen (additionalProperties:
+# true/false). Rend la conversion de schéma tolérante → la page ne plante plus.
+try:
+    import gradio_client.utils as _gcu
+
+    _orig_json_to_pytype = _gcu._json_schema_to_python_type
+
+    def _safe_json_to_pytype(schema, defs=None):
+        if isinstance(schema, bool):
+            return "Any"
+        try:
+            return _orig_json_to_pytype(schema, defs)
+        except Exception:
+            return "Any"
+
+    _gcu._json_schema_to_python_type = _safe_json_to_pytype
+
+    _orig_get_type = _gcu.get_type
+
+    def _safe_get_type(schema):
+        if not isinstance(schema, dict):
+            return "Any"
+        return _orig_get_type(schema)
+
+    _gcu.get_type = _safe_get_type
+except Exception:
+    pass
+
 import gradio as gr
 from config import config
 
