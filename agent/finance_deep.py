@@ -236,6 +236,25 @@ def _compute_levels(closes: list[float]) -> dict:
 
         atr = sum(abs(closes[i] - closes[i - 1]) for i in range(-14, 0)) / 14
 
+        # MACD (EMA12 - EMA26, signal = EMA9 du MACD)
+        macd = macd_signal = macd_hist = None
+        if len(closes) >= 26:
+            def _ema(series, span):
+                k = 2 / (span + 1)
+                e = series[0]
+                out = [e]
+                for v in series[1:]:
+                    e = v * k + e * (1 - k)
+                    out.append(e)
+                return out
+            ema12 = _ema(closes, 12)
+            ema26 = _ema(closes, 26)
+            macd_line = [a - b for a, b in zip(ema12, ema26)]
+            sig_line = _ema(macd_line[-35:], 9) if len(macd_line) >= 9 else macd_line
+            macd = round(macd_line[-1], 4)
+            macd_signal = round(sig_line[-1], 4)
+            macd_hist = round(macd - macd_signal, 4)
+
         support    = max([s for s in [bb_lo, sma50, sma20 * 0.97] if s and s < price], default=price - 2 * atr)
         entry_low  = round(max(support, price - 2 * atr), 4)
         entry_high = round(price * 1.005, 4)
@@ -261,6 +280,9 @@ def _compute_levels(closes: list[float]) -> dict:
             "bb_up":     round(bb_up, 4),
             "bb_lo":     round(bb_lo, 4),
             "atr":       round(atr, 4),
+            "macd":      macd,
+            "macd_signal": macd_signal,
+            "macd_hist": macd_hist,
             "entry_low": entry_low,
             "entry_high":entry_high,
             "tp1":       tp1,
