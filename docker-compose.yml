@@ -1,51 +1,33 @@
-version: "3.9"
-
 services:
 
-  # Modèle LLM local (cerveau IA)
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-    # GPU NVIDIA: décommente ces lignes si tu as une carte graphique
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
-
-  # Agent IA — API + UI
+  # Agent IA — API + UI + bot Telegram + PEA Watcher
   agent-ia:
     build: .
     container_name: agent-ia
+    # Ports mappés sur 127.0.0.1 UNIQUEMENT → jamais exposés à Internet.
+    # L'agent n'a besoin d'aucun port entrant (Telegram + LLM cloud = sortie).
+    # Pour voir l'UI web à distance : tunnel SSH  ssh -L 7860:localhost:7860 user@ip
     ports:
-      - "8000:8000"   # API REST
-      - "7860:7860"   # Interface Gradio
-    environment:
-      - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3}
-      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN:-}
-      - DISCORD_TOKEN=${DISCORD_TOKEN:-}
-      - DISCORD_GUILD_ID=${DISCORD_GUILD_ID:-0}
-      - GRADIO_PORT=7860
+      - "127.0.0.1:8000:8000"   # API REST
+      - "127.0.0.1:7860:7860"   # Interface Gradio
     volumes:
-      - ./data:/app/data        # mémoire + agents + plugins
-      - ./output:/app/output    # vidéos + projets générés
-      - ./.env:/app/.env:ro
-    depends_on:
-      ollama:
-        condition: service_healthy
+      - ./.env:/app/.env:ro      # toutes tes clés (lu par load_dotenv → gère les commentaires)
+      - ./data:/app/data         # watchlist, sessions, état watcher (mémoire = Supabase si configuré)
+      - ./output:/app/output     # vidéos + projets générés
+    restart: unless-stopped
+    # Serveur headless (Telegram + watcher only, sans UI web) : décommente ↓
+    # command: python main.py --no-ui
+
+  # LLM local optionnel (GPU). Ne démarre QU'AVEC :  docker compose --profile local up -d
+  # Sur Oracle Free (pas de GPU) → NE PAS activer, utilise Groq/Cerebras dans .env.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    profiles: ["local"]
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
     restart: unless-stopped
 
 volumes:
