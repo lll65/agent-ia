@@ -1243,8 +1243,11 @@ def build_ui() -> gr.Blocks:
                 # queue=False → le changement de mode est instantané, il ne fait plus
                 # la file d'attente derrière une réponse Agent en cours (qui peut durer plusieurs minutes).
                 mode_btn.click(toggle_mode, [mode_state], [mode_state, mode_btn, mode_ind], queue=False)
-                send_btn.click(send, [msg_in, chat_st, mode_state, sid_state], [chatbot, chat_st, msg_in])
-                msg_in.submit(send, [msg_in, chat_st, mode_state, sid_state], [chatbot, chat_st, msg_in])
+                # queue=False → le chat utilise une simple requête POST directe au lieu de la
+                # file d'attente SSE de Gradio (souvent bloquée par les antivirus / proxys / VPN
+                # qui inspectent les connexions streaming locales). Rend le chat fiable partout.
+                send_btn.click(send, [msg_in, chat_st, mode_state, sid_state], [chatbot, chat_st, msg_in], queue=False)
+                msg_in.submit(send, [msg_in, chat_st, mode_state, sid_state], [chatbot, chat_st, msg_in], queue=False)
                 new_btn.click(new_conv, [], [chatbot, chat_st, sid_state]).then(refresh_sess, [], [sess_dd])
                 ref_btn.click(refresh_sess, [], [sess_dd])
                 sess_dd.change(load_sess, [sess_dd], [chatbot, chat_st, sid_state])
