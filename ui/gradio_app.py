@@ -637,6 +637,21 @@ def gen_project(desc, proj_type, progress=gr.Progress()):
     return zip_path, preview_html, f"✅ {summary}"
 
 
+def debug_project_fn(path: str, do_fix: bool, progress=gr.Progress()):
+    """Analyse un projet entier, liste les bugs et (option) les corrige."""
+    if not path or not path.strip():
+        return "⚠️ Indique le chemin d'un dossier de projet (ex: C:\\Users\\lohan\\mon-projet)."
+    progress(0.1, desc="🔍 Lecture des fichiers...")
+    try:
+        from plugins.builtin.project_debugger import ProjectDebuggerPlugin
+        progress(0.3, desc="🧠 Analyse des bugs par l'IA (peut prendre 1-3 min)...")
+        result = ProjectDebuggerPlugin().run(path=path.strip(), fix=bool(do_fix))
+        progress(1.0, desc="✅ Terminé")
+        return result
+    except Exception as e:
+        return f"❌ Erreur: {e}"
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # FINANCE
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1399,6 +1414,29 @@ def build_ui() -> gr.Blocks:
                                 gr.Markdown("#### 👁️ Preview")
                                 p_prev = gr.HTML(label="", value="<div style='padding:2rem;color:#666;text-align:center'>La preview apparaîtra ici après génération</div>")
                         p_btn.click(gen_project, [p_desc, p_type], [p_zip, p_prev, p_stat])
+
+                    with gr.TabItem("🐞 Débugger un projet"):
+                        gr.Markdown(
+                            "### Analyse un projet entier → trouve les bugs → les corrige\n"
+                            "Donne le **chemin d'un dossier** de code. L'IA lit les fichiers, "
+                            "liste les vrais bugs, et (si coché) les corrige en gardant une "
+                            "sauvegarde `.bak` de chaque original.\n\n"
+                            "⏱️ Peut prendre 1-3 min selon la taille (max 30 fichiers)."
+                        )
+                        with gr.Row():
+                            with gr.Column(scale=1):
+                                dbg_path = gr.Textbox(
+                                    label="Chemin du dossier du projet",
+                                    placeholder="C:\\Users\\lohan\\Documents\\mon-projet",
+                                )
+                                dbg_fix = gr.Checkbox(
+                                    value=False,
+                                    label="🔧 Corriger automatiquement (crée des .bak)",
+                                )
+                                dbg_btn = gr.Button("🐞 Analyser le projet", variant="primary", size="lg")
+                            with gr.Column(scale=2):
+                                dbg_out = gr.Markdown("*Le rapport de bugs apparaîtra ici.*")
+                        dbg_btn.click(debug_project_fn, [dbg_path, dbg_fix], [dbg_out])
 
             # ══ FINANCE ═══════════════════════════════════════════════════════
             with gr.TabItem("💹 Finance"):
