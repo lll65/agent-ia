@@ -73,6 +73,12 @@ def _groq_chat(messages: list, model: str, temperature: float) -> str:
         temperature=temperature,
         max_tokens=4096,
     )
+    # Suivi de consommation (limite journalière gratuite)
+    try:
+        from llm.usage import record
+        record(getattr(getattr(resp, "usage", None), "total_tokens", 0))
+    except Exception:
+        pass
     return resp.choices[0].message.content
 
 

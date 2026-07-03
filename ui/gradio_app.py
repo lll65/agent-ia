@@ -311,8 +311,50 @@ def _route(message: str, mode: str):
             return True, False, message[len(t):].strip() or message
     return False, False, message
 
-def send(message: str, history: list, mode: str, sid: str, image=None):
-    # ── Analyse d'image (si une image est jointe) ──────────────────────────
+def _extract_artifact(text: str):
+    """Extrait le plus gros bloc de code d'une réponse → volet latéral (artefact)."""
+    import re
+    blocks = re.findall(r"```[a-zA-Z0-9]*\n(.*?)```", text or "", re.DOTALL)
+    return max(blocks, key=len).strip() if blocks else gr.update()
+
+
+def _usage_md() -> str:
+    """Barre de consommation Groq du jour."""
+    try:
+        from llm.usage import get_usage
+        used, limit = get_usage()
+        pct = min(100, int(used / limit * 100)) if limit else 0
+        bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
+        color = "🟢" if pct < 70 else "🟠" if pct < 90 else "🔴"
+        return f"{color} **Groq aujourd'hui** `{bar}` {used:,}/{limit:,} tokens ({pct}%)".replace(",", " ")
+    except Exception:
+        return ""
+
+
+_CODE_EXTS = {".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp", ".h",
+              ".go", ".rs", ".rb", ".php", ".html", ".css", ".sql", ".sh", ".vue"}
+
+
+def send(message: str, history: list, mode: str, sid: str, image=None, file=None):
+    # ── Fichier déposé (code ou document) → analyse dans le chat ───────────
+    if file:
+        from pathlib import Path as _P
+        fp = _P(str(file))
+        q = (message or "").strip()
+        try:
+            from plugins.builtin.document_analyzer import DocumentAnalyzerPlugin
+            if not q:
+                q = ("Explique ce code et repère les éventuels bugs."
+                     if fp.suffix.lower() in _CODE_EXTS
+                     else "Résume et analyse ce document.")
+            answer = DocumentAnalyzerPlugin().run(path=str(fp), question=q)
+        except Exception as e:
+            answer = f"❌ Analyse du fichier impossible : {str(e)[:200]}"
+        new_h = _add(history, f"📎 *({fp.name})* {message}".strip(), answer)
+        _save(sid, (_load(sid).get("name") or fp.name), new_h)
+        return new_h, new_h, "", None, None, _extract_artifact(answer), _usage_md()
+
+    # ── Image jointe → analyse visuelle ────────────────────────────────────
     if image:
         prompt = (message or "").strip() or "Décris et analyse cette image en détail."
         try:
@@ -323,10 +365,10 @@ def send(message: str, history: list, mode: str, sid: str, image=None):
         shown = f"🖼️ *(image)* {message}".strip() if message.strip() else "🖼️ *(image jointe)*"
         new_h = _add(history, shown, answer)
         _save(sid, (_load(sid).get("name") or "Image"), new_h)
-        return new_h, new_h, "", None
+        return new_h, new_h, "", None, None, _extract_artifact(answer), _usage_md()
 
     if not message.strip():
-        return history, history, "", None
+        return history, history, "", None, None, gr.update(), _usage_md()
     use_agent, _use_finance, clean = _route(message, mode)
     if use_agent:
         answer = full_agent(clean, history, sid)
@@ -335,17 +377,11 @@ def send(message: str, history: list, mode: str, sid: str, image=None):
             answer = finance_agent_analysis(clean)
         else:
             answer = fast_chat(clean, history)
-            # Smart intent hints — guide l'utilisateur vers le bon onglet
-            low = clean.lower()
-            if any(k in low for k in _VIDEO_HINTS):
-                answer += "\n\n💡 *Pour générer une vraie vidéo avec photos et voix → onglet **🎬 Vidéo***"
-            elif any(k in low for k in _CODE_HINTS):
-                answer += "\n\n💡 *Pour un projet complet téléchargeable en ZIP → onglet **💻 Code & Projets → Projet Complet***"
     new_h = _add(history, message, answer)
     existing = _load(sid)
     name = existing.get("name", "Nouvelle") if existing.get("history") else message[:50]
     _save(sid, name, new_h)
-    return new_h, new_h, "", None
+    return new_h, new_h, "", None, None, _extract_artifact(answer), _usage_md()
 
 def toggle_mode(mode: str):
     new = "agent" if mode == "fast" else "fast"
@@ -1379,233 +1415,58 @@ def build_ui() -> gr.Blocks:
 
         with gr.Tabs():
 
-            # ══ CHAT ══════════════════════════════════════════════════════════
+            # ══ CHAT (le hub — fichiers, images, code, artefacts) ═════════════
             with gr.TabItem("💬 Chat"):
                 with gr.Row():
-                    with gr.Column(scale=1, min_width=200):
+                    # ── Colonne gauche : historique ──────────────────────────
+                    with gr.Column(scale=1, min_width=180):
                         gr.Markdown("### 📋 Historique")
                         new_btn   = gr.Button("✨ Nouvelle conv.", variant="primary", size="sm")
                         sess_dd   = gr.Dropdown(choices=_list_sessions(), label="Sessions", value=None)
                         ref_btn   = gr.Button("🔄 Rafraîchir", size="sm")
+                        usage_md  = gr.Markdown(_usage_md())
 
-                    with gr.Column(scale=4):
+                    # ── Colonne centrale : conversation ──────────────────────
+                    with gr.Column(scale=3):
                         if _CHATBOT_SUPPORTS_TYPE:
-                            chatbot = gr.Chatbot(height=480, label="", type="messages", show_copy_button=True)
+                            chatbot = gr.Chatbot(height=460, label="", type="messages", show_copy_button=True)
                         else:
-                            chatbot = gr.Chatbot(height=480, label="", show_copy_button=True)
+                            chatbot = gr.Chatbot(height=460, label="", show_copy_button=True)
                         with gr.Row():
-                            msg_in  = gr.Textbox(placeholder='Message… ou "Agent: fais-moi un script Python"',
-                                                 scale=5, label="", lines=1)
+                            msg_in  = gr.Textbox(
+                                placeholder='Écris… ou dépose un fichier/image ci-dessous · "Agent: …" pour les outils',
+                                scale=5, label="", lines=1)
                             send_btn = gr.Button("Envoyer ▶", variant="primary", scale=1)
-                        chat_img = gr.Image(
-                            label="🖼️ Joindre une image à analyser (optionnel)",
-                            type="filepath", sources=["upload", "clipboard"], height=140,
-                        )
+                        # Raccourcis rapides (agissent sur le fichier/image déposé)
+                        with gr.Row():
+                            sc_explain = gr.Button("🔍 Expliquer le code", size="sm")
+                            sc_bugs    = gr.Button("🐛 Trouver les bugs", size="sm")
+                            sc_summary = gr.Button("📊 Résumer le document", size="sm")
+                        with gr.Row():
+                            chat_file = gr.File(label="📎 Déposer un fichier (code, PDF, texte…)", file_count="single", type="filepath")
+                            chat_img  = gr.Image(label="🖼️ Image", type="filepath", sources=["upload", "clipboard"], height=120)
+
+                    # ── Colonne droite : artefact (comme Claude) ─────────────
+                    with gr.Column(scale=2):
+                        gr.Markdown("### 🧩 Artefact")
+                        artifact_code = gr.Code(label="Dernier code/bloc généré", language="python")
 
                 chat_st = gr.State([])
 
-                # queue=False → le changement de mode est instantané, il ne fait plus
-                # la file d'attente derrière une réponse Agent en cours (qui peut durer plusieurs minutes).
+                _CHAT_IN  = [msg_in, chat_st, mode_state, sid_state, chat_img, chat_file]
+                _CHAT_OUT = [chatbot, chat_st, msg_in, chat_img, chat_file, artifact_code, usage_md]
+
                 mode_btn.click(toggle_mode, [mode_state], [mode_state, mode_btn, mode_ind], queue=False)
-                # queue=False → le chat utilise une simple requête POST directe au lieu de la
-                # file d'attente SSE de Gradio (souvent bloquée par les antivirus / proxys / VPN
-                # qui inspectent les connexions streaming locales). Rend le chat fiable partout.
-                send_btn.click(send, [msg_in, chat_st, mode_state, sid_state, chat_img], [chatbot, chat_st, msg_in, chat_img], queue=False)
-                msg_in.submit(send, [msg_in, chat_st, mode_state, sid_state, chat_img], [chatbot, chat_st, msg_in, chat_img], queue=False)
+                # queue=False → POST direct, fiable même derrière un antivirus qui bloque le streaming SSE
+                send_btn.click(send, _CHAT_IN, _CHAT_OUT, queue=False)
+                msg_in.submit(send, _CHAT_IN, _CHAT_OUT, queue=False)
+                # Raccourcis : pré-remplissent la consigne, puis l'utilisateur envoie
+                sc_explain.click(lambda: "Explique ce code ligne par ligne.", None, msg_in, queue=False)
+                sc_bugs.click(lambda: "Trouve les bugs et propose les corrections.", None, msg_in, queue=False)
+                sc_summary.click(lambda: "Résume ce document et donne les points clés.", None, msg_in, queue=False)
                 new_btn.click(new_conv, [], [chatbot, chat_st, sid_state]).then(refresh_sess, [], [sess_dd])
                 ref_btn.click(refresh_sess, [], [sess_dd])
                 sess_dd.change(load_sess, [sess_dd], [chatbot, chat_st, sid_state])
-
-            # ══ ORCHESTRATEUR ═════════════════════════════════════════════════
-            with gr.TabItem("🧠 Orchestrateur"):
-                gr.Markdown("Donne un objectif complexe — le Master Agent le décompose en sous-agents spécialisés.")
-                goal_in  = gr.Textbox(label="Objectif", lines=3,
-                                      placeholder="Ex: Crée une vidéo virale sur le Bitcoin ET génère le code pour tracker son prix")
-                orch_btn = gr.Button("🚀 Lancer", variant="primary")
-                orch_out = gr.Markdown()
-                orch_btn.click(run_master, [goal_in], [orch_out])
-
-            # ══ VIDÉO ═════════════════════════════════════════════════════════
-            with gr.TabItem("🎬 Vidéo"):
-                gr.Markdown(
-                    "**⚡ Rapide** — slides PIL immédiates  |  "
-                    "**🏆 Pro** — photos réelles + voix + montage FFmpeg (5-10 min)"
-                )
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        v_topic   = gr.Textbox(label="💡 Sujet ou lien produit", lines=2,
-                                               placeholder="Ex: https://monsite.com/produit-x  ou  5 erreurs qui font rater tes ventes Vinted")
-                        v_quality = gr.Radio(["rapide", "pro"], value="rapide",
-                                             label="🎚️ Qualité",
-                                             info="Pro = agents spécialisés + vraies photos")
-                        v_style   = gr.Dropdown(["éducatif","motivation","humour","tutoriel","choc","viral"],
-                                                value="éducatif", label="🎭 Style")
-                        with gr.Row():
-                            v_lang  = gr.Dropdown(["fr","en","es"], value="fr", label="🌍 Langue")
-                            v_theme = gr.Dropdown(["dark","fire","ocean","gold"], value="dark", label="🎨 Thème")
-                        v_slides = gr.Slider(3, 10, value=6, step=1, label="📊 Slides")
-                        v_audio  = gr.Checkbox(value=False, label="🔊 Voix TTS")
-                        v_btn    = gr.Button("🎬 Générer", variant="primary", size="lg")
-                        v_status = gr.Markdown("")
-
-                    with gr.Column(scale=2):
-                        with gr.Tabs():
-                            with gr.TabItem("🖼️ Slides"):
-                                v_gallery = gr.Gallery(label="", columns=3, height=420)
-                            with gr.TabItem("🎞️ GIF (aperçu)"):
-                                v_gif = gr.Image(label="Aperçu animé", height=420)
-                            with gr.TabItem("🎥 Télécharger MP4"):
-                                v_video = gr.File(label="Vidéo finale (MP4 ou GIF)")
-                            with gr.TabItem("📝 Script"):
-                                v_script = gr.Markdown("")
-
-                v_btn.click(make_video,
-                            [v_topic, v_style, v_lang, v_slides, v_theme, v_audio, v_quality],
-                            [v_gallery, v_gif, v_video, v_status])
-
-            # ══ IMAGE → VIDÉO RÉALISTE ════════════════════════════════════════
-            with gr.TabItem("🖼️→🎬 Réaliste"):
-                gr.Markdown(
-                    "### Image → Vidéo réaliste · 5s minimum · 100% gratuit\n"
-                    "**Méthode 1** (si `HF_API_TOKEN` configuré): Stable Video Diffusion via HuggingFace API\n\n"
-                    "**Méthode 2** (fallback automatique): Ken Burns cinématique — zoom + pan diagonal + vignette\n\n"
-                    "L'agent optimise automatiquement le mouvement et se ré-essaie si nécessaire."
-                )
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        iv_image = gr.Image(
-                            label="🖼️ Image source", type="filepath",
-                            sources=["upload", "clipboard"],
-                            height=260,
-                        )
-                        iv_format = gr.Radio(
-                            choices=list(_FORMATS.keys()),
-                            value="Portrait 9:16 (TikTok/Reels)",
-                            label="📐 Format",
-                        )
-                        iv_desc = gr.Textbox(
-                            label="📝 Description de l'image (optionnel)",
-                            placeholder="Ex: château dans la forêt brumeuse...",
-                            lines=2,
-                        )
-                        iv_prompt = gr.Textbox(
-                            label="🎥 Indication de mouvement (optionnel)",
-                            placeholder="Ex: slow camera push forward, gentle fog motion",
-                            lines=1,
-                        )
-                        iv_duration = gr.Slider(
-                            minimum=5, maximum=15, value=5, step=1,
-                            label="⏱️ Durée (secondes)",
-                        )
-                        iv_btn    = gr.Button("🎬 Générer la vidéo", variant="primary", size="lg")
-                        iv_status = gr.Markdown("")
-                        iv_file   = gr.File(label="⬇️ Télécharger le MP4")
-
-                    with gr.Column(scale=2):
-                        iv_video = gr.HTML(
-                            value="<div style='height:400px;display:flex;align-items:center;"
-                                  "justify-content:center;color:#8b949e;font-size:1.1rem;"
-                                  "border:1px dashed #30363d;border-radius:10px'>"
-                                  "🎬 La vidéo apparaîtra ici</div>"
-                        )
-
-                iv_btn.click(
-                    make_img2video,
-                    [iv_image, iv_desc, iv_prompt, iv_duration, iv_format],
-                    [iv_video, iv_file, iv_status],
-                )
-
-            # ══ CODE & PROJETS ════════════════════════════════════════════════
-            with gr.TabItem("💻 Code & Projets"):
-                with gr.Tabs():
-
-                    with gr.TabItem("⚙️ Générer du code"):
-                        with gr.Row():
-                            with gr.Column():
-                                c_desc = gr.Textbox(label="Description", lines=3,
-                                                    placeholder="Ex: Script Python pour télécharger des vidéos YouTube")
-                                c_lang = gr.Dropdown(["python","javascript","bash","sql"], value="python", label="Langage")
-                                c_run  = gr.Checkbox(value=False, label="Exécuter (Python uniquement)")
-                                c_btn  = gr.Button("⚙️ Générer", variant="primary")
-                            with gr.Column():
-                                c_out  = gr.Code(label="Code généré", language="python")
-                                c_exec = gr.Textbox(label="Sortie", lines=5)
-                        c_btn.click(gen_code, [c_desc, c_lang, c_run], [c_out, c_exec])
-
-                    with gr.TabItem("🗂️ Projet Complet"):
-                        gr.Markdown(
-                            "### Génère une application entière — vrai code fonctionnel + preview + ZIP\n"
-                            "L'IA génère **tous** les fichiers (HTML, CSS, JS, Python, Docker, README…)"
-                        )
-                        with gr.Row():
-                            with gr.Column(scale=1):
-                                p_desc = gr.Textbox(
-                                    label="Description du projet", lines=4,
-                                    placeholder="Ex: Application web de gestion de tâches avec drag & drop, localStorage, design moderne dark")
-                                p_type = gr.Dropdown(
-                                    ["web", "python-api", "game", "dashboard", "cli", "react"],
-                                    value="web", label="Type de projet")
-                                p_btn  = gr.Button("🗂️ Générer le projet", variant="primary", size="lg")
-                                p_zip  = gr.File(label="📦 Télécharger ZIP")
-                                p_stat = gr.Markdown()
-                            with gr.Column(scale=2):
-                                gr.Markdown("#### 👁️ Preview")
-                                p_prev = gr.HTML(label="", value="<div style='padding:2rem;color:#666;text-align:center'>La preview apparaîtra ici après génération</div>")
-                        p_btn.click(gen_project, [p_desc, p_type], [p_zip, p_prev, p_stat])
-
-                    with gr.TabItem("🐞 Débugger un projet"):
-                        gr.Markdown(
-                            "### Analyse un projet entier → trouve les bugs → les corrige\n"
-                            "Donne le **chemin d'un dossier** de code. L'IA lit les fichiers, "
-                            "liste les vrais bugs, et (si coché) les corrige en gardant une "
-                            "sauvegarde `.bak` de chaque original.\n\n"
-                            "⏱️ Peut prendre 1-3 min selon la taille (max 30 fichiers)."
-                        )
-                        with gr.Row():
-                            with gr.Column(scale=1):
-                                dbg_files = gr.File(
-                                    label="📎 Charger des fichiers de code (ou remplis le chemin ↓)",
-                                    file_count="multiple",
-                                )
-                                dbg_path = gr.Textbox(
-                                    label="… OU chemin d'un dossier de projet",
-                                    placeholder="C:\\Users\\lohan\\Documents\\mon-projet",
-                                )
-                                dbg_fix = gr.Checkbox(
-                                    value=False,
-                                    label="🔧 Corriger automatiquement (crée des .bak)",
-                                )
-                                dbg_btn = gr.Button("🐞 Analyser le projet", variant="primary", size="lg")
-                            with gr.Column(scale=2):
-                                dbg_out = gr.Markdown("*Le rapport de bugs apparaîtra ici.*")
-                        # queue=False → revient malgré l'antivirus qui bloque le streaming
-                        dbg_btn.click(debug_project_fn, [dbg_path, dbg_fix, dbg_files], [dbg_out], queue=False)
-
-                    with gr.TabItem("📄 Analyser un document"):
-                        gr.Markdown(
-                            "### Lis et analyse un PDF, un document Word/texte, ou un dossier entier\n"
-                            "Donne le **chemin d'un fichier ou dossier** + une **question** "
-                            "(ou laisse vide pour un résumé). Marche avec les PDF, .docx, .txt, .md, code…"
-                        )
-                        with gr.Row():
-                            with gr.Column(scale=1):
-                                doc_file = gr.File(
-                                    label="📎 Charger un fichier (PDF, Word, texte…)",
-                                    file_count="single", type="filepath",
-                                )
-                                doc_path = gr.Textbox(
-                                    label="… OU chemin d'un fichier/dossier",
-                                    placeholder="C:\\Users\\lohan\\Documents\\rapport.pdf",
-                                )
-                                doc_q = gr.Textbox(
-                                    label="Ta question (optionnel)",
-                                    placeholder="Ex: résume les points clés · quels sont les risques ? · explique la partie 3",
-                                    lines=2,
-                                )
-                                doc_btn = gr.Button("📄 Analyser le document", variant="primary", size="lg")
-                            with gr.Column(scale=2):
-                                doc_out = gr.Markdown("*L'analyse apparaîtra ici.*")
-                        doc_btn.click(analyze_document_fn, [doc_path, doc_q, doc_file], [doc_out], queue=False)
 
             # ══ FINANCE ═══════════════════════════════════════════════════════
             with gr.TabItem("💹 Finance"):
