@@ -1390,9 +1390,9 @@ def build_ui() -> gr.Blocks:
 
                     with gr.Column(scale=4):
                         if _CHATBOT_SUPPORTS_TYPE:
-                            chatbot = gr.Chatbot(height=480, label="", type="messages")
+                            chatbot = gr.Chatbot(height=480, label="", type="messages", show_copy_button=True)
                         else:
-                            chatbot = gr.Chatbot(height=480, label="")
+                            chatbot = gr.Chatbot(height=480, label="", show_copy_button=True)
                         with gr.Row():
                             msg_in  = gr.Textbox(placeholder='Message… ou "Agent: fais-moi un script Python"',
                                                  scale=5, label="", lines=1)
