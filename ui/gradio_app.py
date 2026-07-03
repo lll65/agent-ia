@@ -689,11 +689,18 @@ def analyze_finance(ticker: str, period: str):
     try:
         from plugins.builtin.finance import StockAnalysisPlugin, generate_stock_chart
         analysis = StockAnalysisPlugin().run(ticker=ticker.strip(), period=period)
-        # Si yfinance manque, le plugin renvoie une erreur ❌ → on tente la cascade
-        if analysis.startswith("❌") and "yfinance" in analysis:
+        # Si yfinance manque OU RSI non calculé → on recalcule via HTTP (RSI/MACD/SMA)
+        if analysis.startswith("❌") or "RSI non calculé" in analysis or "yfinance" in analysis:
             direct = _fetch_yahoo_direct(ticker.strip(), period)
             if direct:
-                analysis = f"*⚠️ yfinance absent — données Yahoo Finance HTTP*\n\n{direct}"
+                analysis = f"*⚠️ Données via Yahoo Finance HTTP (yfinance absent)*\n\n{direct}"
+        # Ajoute un résumé d'actualité (l'onglet Actualités est fusionné ici)
+        try:
+            news_block = finance_news(ticker.strip())
+            if news_block and not news_block.startswith("⚠️") and not news_block.startswith("❌"):
+                analysis += "\n\n---\n\n" + news_block
+        except Exception:
+            pass
         chart = generate_stock_chart(ticker.strip(), period)
         return analysis, chart
     except Exception as e:
@@ -716,9 +723,23 @@ def finance_news(ticker: str) -> str:
         return "⚠️ Saisis un ticker"
     try:
         from plugins.builtin.finance import MarketNewsPlugin
-        return MarketNewsPlugin().run(ticker=ticker.strip())
+        news = MarketNewsPlugin().run(ticker=ticker.strip())
     except Exception as e:
         return f"❌ Erreur: {e}"
+    if not news or news.startswith("❌") or "Aucune" in news[:30]:
+        return news
+    # Résumé IA de l'actualité (le vrai plus)
+    try:
+        from llm.client import chat
+        summary = chat([
+            {"role": "system", "content": (
+                "Tu es analyste financier. Résume l'actualité d'une valeur en 4-5 puces "
+                "claires, puis donne le ton général (🟢 positif / 🔴 négatif / 🟠 mitigé). Français, concis.")},
+            {"role": "user", "content": f"Actualités de {ticker.upper()} :\n{news[:3000]}\n\nRésume et donne le sentiment."},
+        ], temperature=0.3)
+        return f"## 📰 Résumé — {ticker.upper()}\n\n{summary}\n\n---\n\n### 🔗 Sources\n{news}"
+    except Exception:
+        return news
 
 def market_dashboard_fn() -> str:
     try:
@@ -960,6 +981,27 @@ def _fetch_yahoo_direct(ticker: str, period: str = "3mo") -> str:
             f"Performance période: {perf_display}",
             f"Nb séances: {len(closes)}",
         ]
+        # Indicateurs techniques calculés localement (RSI, MACD, SMA, Bollinger)
+        try:
+            from agent.finance_deep import _compute_levels
+            lvl = _compute_levels(closes)
+            if lvl:
+                tendance = "haussière 🟢" if price > lvl.get("sma20", price) else "baissière 🔴"
+                lines.append("")
+                lines.append("— Indicateurs techniques —")
+                lines.append(f"RSI(14): {lvl.get('rsi','N/D')}  ("
+                             + ("survendu, achat" if lvl.get('rsi',50) <= 32 else
+                                "suracheté, prudence" if lvl.get('rsi',50) >= 70 else "neutre") + ")")
+                if lvl.get("macd") is not None:
+                    macd_sig = "haussier" if lvl["macd"] > (lvl.get("macd_signal") or 0) else "baissier"
+                    lines.append(f"MACD: {lvl['macd']} / signal {lvl.get('macd_signal')} → {macd_sig}")
+                lines.append(f"SMA20: {lvl.get('sma20','N/D')} · SMA50: {lvl.get('sma50','N/D')} → tendance {tendance}")
+                lines.append(f"Bollinger: position {lvl.get('bb_pct','N/D')}% de la bande")
+                if lvl.get("entry_low"):
+                    lines.append(f"Zone d'entrée: {lvl['entry_low']}-{lvl['entry_high']} · "
+                                 f"TP1 {lvl['tp1']} · SL {lvl['sl']} · R/R {lvl['rr']}:1")
+        except Exception:
+            pass
         return "\n".join(lines)
     except Exception:
         return ""
@@ -1515,12 +1557,21 @@ def build_ui() -> gr.Blocks:
                 )
                 with gr.Tabs():
 
-                    # ── Dashboard ─────────────────────────────────────────────
-                    with gr.TabItem("🌐 Dashboard"):
-                        gr.Markdown("Vue d'ensemble instantanée — indices, crypto, forex, matières premières")
-                        db_btn = gr.Button("🔄 Actualiser le dashboard", variant="primary", size="lg")
-                        db_out = gr.Markdown()
+                    # ── Marchés (indices + crypto + sentiment + devises) ──────
+                    with gr.TabItem("🌐 Marchés"):
+                        gr.Markdown("Vue d'ensemble : indices/matières, crypto, sentiment (Fear & Greed), devises")
+                        with gr.Row():
+                            with gr.Column(scale=1):
+                                db_btn = gr.Button("🔄 Indices & marchés", variant="primary", size="lg")
+                                mk_coins = gr.Textbox(label="Cryptos (vide = top 8)", placeholder="BTC,ETH,SOL")
+                                mk_crypto_btn = gr.Button("🪙 Crypto + Fear & Greed", variant="primary")
+                                mk_cur = gr.Textbox(label="Devises depuis EUR", value="USD,GBP,JPY,CHF")
+                                mk_cur_btn = gr.Button("💱 Taux de change", size="sm")
+                            with gr.Column(scale=2):
+                                db_out = gr.Markdown("*Choisis une vue à afficher.*")
                         db_btn.click(market_dashboard_fn, [], [db_out], queue=False)
+                        mk_crypto_btn.click(crypto_market_fn, [mk_coins], [db_out], queue=False)
+                        mk_cur_btn.click(currency_rates_fn, [mk_cur], [db_out], queue=False)
 
                     # ── Analyser ──────────────────────────────────────────────
                     with gr.TabItem("📊 Analyser"):
@@ -1538,27 +1589,6 @@ def build_ui() -> gr.Blocks:
                                 f_out = gr.Markdown()
                         f_chart = gr.Image(label="📈 Graphique technique", show_label=True)
                         f_btn.click(analyze_finance, [f_ticker, f_period], [f_out, f_chart], queue=False)
-
-                    # ── Crypto & Sentiment (sources gratuites CoinGecko + Fear&Greed) ──
-                    with gr.TabItem("🪙 Crypto & Sentiment"):
-                        gr.Markdown(
-                            "Marché crypto en direct (CoinGecko) + **indice Fear & Greed** "
-                            "+ taux de change (BCE). 100% gratuit, sans clé."
-                        )
-                        with gr.Row():
-                            with gr.Column(scale=1):
-                                cr_coins = gr.Textbox(
-                                    label="Cryptos (optionnel, vide = top 8)",
-                                    placeholder="BTC,ETH,SOL",
-                                )
-                                cr_btn = gr.Button("🪙 Marché crypto + sentiment", variant="primary")
-                                gr.Markdown("—")
-                                cur_to = gr.Textbox(label="Devises (depuis EUR)", value="USD,GBP,JPY,CHF")
-                                cur_btn = gr.Button("💱 Taux de change", size="sm")
-                            with gr.Column(scale=2):
-                                cr_out = gr.Markdown("*Clique pour charger le marché crypto.*")
-                        cr_btn.click(crypto_market_fn, [cr_coins], [cr_out], queue=False)
-                        cur_btn.click(currency_rates_fn, [cur_to], [cr_out], queue=False)
 
                     # ── Portefeuille ──────────────────────────────────────────
                     with gr.TabItem("💼 Portefeuille"):
@@ -1623,16 +1653,6 @@ def build_ui() -> gr.Blocks:
                             portfolio_delete_fn, [pf_dd],
                             [pf_dd, pf_in, pf_status], queue=False,
                         )
-
-                    # ── Actualités ────────────────────────────────────────────
-                    with gr.TabItem("📰 Actualités"):
-                        with gr.Row():
-                            with gr.Column(scale=1):
-                                fn_ticker = gr.Textbox(label="Ticker", placeholder="AAPL · TSLA · BTC-USD")
-                                fn_btn    = gr.Button("📰 Voir les news", variant="primary")
-                            with gr.Column(scale=2):
-                                fn_out = gr.Markdown()
-                        fn_btn.click(finance_news, [fn_ticker], [fn_out], queue=False)
 
                     # ── Agent Financier ───────────────────────────────────────
                     with gr.TabItem("🤖 Agent Financier"):
