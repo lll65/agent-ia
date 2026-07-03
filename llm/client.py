@@ -88,6 +88,38 @@ def _xai_chat(messages: list, model: str, temperature: float) -> str:
     return resp.choices[0].message.content
 
 
+def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> str:
+    """
+    Analyse une image via un modèle multimodal Groq (Llama 4 Scout par défaut).
+    Encode l'image en base64 et l'envoie au format OpenAI vision.
+    """
+    import base64
+    import mimetypes
+
+    if not config.GROQ_API_KEY:
+        raise RuntimeError("Analyse d'image : une clé Groq est requise (modèle vision).")
+
+    with open(image_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode()
+    mime = mimetypes.guess_type(image_path)[0] or "image/jpeg"
+
+    from groq import Groq
+    client = Groq(api_key=config.GROQ_API_KEY)
+    resp = client.chat.completions.create(
+        model=config.GROQ_VISION_MODEL,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt or "Décris cette image en détail, en français."},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+            ],
+        }],
+        temperature=temperature,
+        max_tokens=2048,
+    )
+    return resp.choices[0].message.content
+
+
 def _cerebras_chat(messages: list, model: str, temperature: float) -> str:
     """
     Cerebras Inference — API compatible OpenAI (même format que Groq).
