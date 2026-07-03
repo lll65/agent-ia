@@ -1520,7 +1520,7 @@ def build_ui() -> gr.Blocks:
                         gr.Markdown("Vue d'ensemble instantanée — indices, crypto, forex, matières premières")
                         db_btn = gr.Button("🔄 Actualiser le dashboard", variant="primary", size="lg")
                         db_out = gr.Markdown()
-                        db_btn.click(market_dashboard_fn, [], [db_out])
+                        db_btn.click(market_dashboard_fn, [], [db_out], queue=False)
 
                     # ── Analyser ──────────────────────────────────────────────
                     with gr.TabItem("📊 Analyser"):
@@ -1537,7 +1537,7 @@ def build_ui() -> gr.Blocks:
                             with gr.Column(scale=2):
                                 f_out = gr.Markdown()
                         f_chart = gr.Image(label="📈 Graphique technique", show_label=True)
-                        f_btn.click(analyze_finance, [f_ticker, f_period], [f_out, f_chart])
+                        f_btn.click(analyze_finance, [f_ticker, f_period], [f_out, f_chart], queue=False)
 
                     # ── Crypto & Sentiment (sources gratuites CoinGecko + Fear&Greed) ──
                     with gr.TabItem("🪙 Crypto & Sentiment"):
@@ -1557,8 +1557,8 @@ def build_ui() -> gr.Blocks:
                                 cur_btn = gr.Button("💱 Taux de change", size="sm")
                             with gr.Column(scale=2):
                                 cr_out = gr.Markdown("*Clique pour charger le marché crypto.*")
-                        cr_btn.click(crypto_market_fn, [cr_coins], [cr_out])
-                        cur_btn.click(currency_rates_fn, [cur_to], [cr_out])
+                        cr_btn.click(crypto_market_fn, [cr_coins], [cr_out], queue=False)
+                        cur_btn.click(currency_rates_fn, [cur_to], [cr_out], queue=False)
 
                     # ── Portefeuille ──────────────────────────────────────────
                     with gr.TabItem("💼 Portefeuille"):
@@ -1610,18 +1610,18 @@ def build_ui() -> gr.Blocks:
 
                         pf_chart = gr.Image(label="📊 Allocation & Performance")
 
-                        pf_btn.click(portfolio_analyze_fn, [pf_in], [pf_out, pf_chart])
+                        pf_btn.click(portfolio_analyze_fn, [pf_in], [pf_out, pf_chart], queue=False)
                         pf_save_btn.click(
                             portfolio_save_fn, [pf_name, pf_in],
-                            [pf_dd, pf_dd, pf_status],
+                            [pf_dd, pf_dd, pf_status], queue=False,
                         )
                         pf_load_btn.click(
                             portfolio_load_fn, [pf_dd],
-                            [pf_in, pf_status],
+                            [pf_in, pf_status], queue=False,
                         )
                         pf_delete_btn.click(
                             portfolio_delete_fn, [pf_dd],
-                            [pf_dd, pf_in, pf_status],
+                            [pf_dd, pf_in, pf_status], queue=False,
                         )
 
                     # ── Actualités ────────────────────────────────────────────
@@ -1632,7 +1632,7 @@ def build_ui() -> gr.Blocks:
                                 fn_btn    = gr.Button("📰 Voir les news", variant="primary")
                             with gr.Column(scale=2):
                                 fn_out = gr.Markdown()
-                        fn_btn.click(finance_news, [fn_ticker], [fn_out])
+                        fn_btn.click(finance_news, [fn_ticker], [fn_out], queue=False)
 
                     # ── Agent Financier ───────────────────────────────────────
                     with gr.TabItem("🤖 Agent Financier"):
@@ -1648,7 +1648,7 @@ def build_ui() -> gr.Blocks:
                         )
                         fa_btn = gr.Button("🤖 Analyser avec l'agent", variant="primary", size="lg")
                         fa_out = gr.Markdown()
-                        fa_btn.click(finance_agent_analysis, [fa_in], [fa_out])
+                        fa_btn.click(finance_agent_analysis, [fa_in], [fa_out], queue=False)
 
                     # ── Conseiller Pro (deep research streaming) ──────────────
                     with gr.TabItem("🎯 Conseiller Pro"):
