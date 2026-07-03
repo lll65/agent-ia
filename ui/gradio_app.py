@@ -311,9 +311,22 @@ def _route(message: str, mode: str):
             return True, False, message[len(t):].strip() or message
     return False, False, message
 
-def send(message: str, history: list, mode: str, sid: str):
+def send(message: str, history: list, mode: str, sid: str, image=None):
+    # ── Analyse d'image (si une image est jointe) ──────────────────────────
+    if image:
+        prompt = (message or "").strip() or "Décris et analyse cette image en détail."
+        try:
+            from llm.client import chat_vision
+            answer = chat_vision(image, prompt)
+        except Exception as e:
+            answer = f"❌ Analyse d'image impossible : {str(e)[:200]}"
+        shown = f"🖼️ *(image)* {message}".strip() if message.strip() else "🖼️ *(image jointe)*"
+        new_h = _add(history, shown, answer)
+        _save(sid, (_load(sid).get("name") or "Image"), new_h)
+        return new_h, new_h, "", None
+
     if not message.strip():
-        return history, history, ""
+        return history, history, "", None
     use_agent, _use_finance, clean = _route(message, mode)
     if use_agent:
         answer = full_agent(clean, history, sid)
@@ -332,7 +345,7 @@ def send(message: str, history: list, mode: str, sid: str):
     existing = _load(sid)
     name = existing.get("name", "Nouvelle") if existing.get("history") else message[:50]
     _save(sid, name, new_h)
-    return new_h, new_h, ""
+    return new_h, new_h, "", None
 
 def toggle_mode(mode: str):
     new = "agent" if mode == "fast" else "fast"
@@ -656,44 +669,58 @@ def gen_project(desc, proj_type, progress=gr.Progress()):
     return zip_path, preview_html, f"✅ {summary}"
 
 
-def debug_project_fn(path: str, do_fix: bool, progress=gr.Progress()):
-    """Analyse un projet entier, liste les bugs et (option) les corrige."""
-    if not path or not path.strip():
-        return "⚠️ Indique le chemin d'un dossier de projet (ex: C:\\Users\\lohan\\mon-projet)."
-    progress(0.1, desc="🔍 Lecture des fichiers...")
+def debug_project_fn(path: str, do_fix: bool, uploads=None, progress=gr.Progress()):
+    """Analyse un projet : dossier (chemin) OU fichiers uploadés."""
+    target = (path or "").strip()
+    # Si des fichiers sont uploadés → on les copie dans un dossier temporaire
+    if uploads:
+        import shutil, tempfile
+        from pathlib import Path as _P
+        files = uploads if isinstance(uploads, list) else [uploads]
+        tmp = _P(tempfile.mkdtemp(prefix="debug_"))
+        for f in files:
+            try:
+                shutil.copy(str(f), tmp / _P(str(f)).name)
+            except Exception:
+                pass
+        target = str(tmp)
+    if not target:
+        return "⚠️ Charge des fichiers (bouton) ou indique le chemin d'un dossier de projet."
+    progress(0.3, desc="🧠 Analyse des bugs par l'IA (peut prendre ~1 min)...")
     try:
         from plugins.builtin.project_debugger import ProjectDebuggerPlugin
-        progress(0.3, desc="🧠 Analyse des bugs par l'IA (peut prendre 1-3 min)...")
-        result = ProjectDebuggerPlugin().run(path=path.strip(), fix=bool(do_fix))
+        result = ProjectDebuggerPlugin().run(path=target, fix=bool(do_fix))
         progress(1.0, desc="✅ Terminé")
         return result
     except Exception as e:
         return f"❌ Erreur: {e}"
 
 
-def analyze_document_fn(path: str, question: str, progress=gr.Progress()):
+def analyze_document_fn(path: str, question: str, upload=None, progress=gr.Progress()):
     """Lit un PDF/document/dossier et répond à une question ou en fait un résumé."""
-    if not path or not path.strip():
-        return "⚠️ Indique le chemin d'un fichier (PDF, Word, texte) ou d'un dossier."
+    target = upload or (path or "").strip()   # le fichier uploadé a priorité
+    if not target:
+        return "⚠️ Charge un fichier (bouton) ou indique un chemin/dossier."
     progress(0.2, desc="📄 Lecture du document...")
     try:
         from plugins.builtin.document_analyzer import DocumentAnalyzerPlugin
         progress(0.5, desc="🧠 Analyse par l'IA...")
-        result = DocumentAnalyzerPlugin().run(path=path.strip(), question=(question or "").strip())
+        result = DocumentAnalyzerPlugin().run(path=str(target), question=(question or "").strip())
         progress(1.0, desc="✅ Terminé")
         return result
     except Exception as e:
         return f"❌ Erreur: {e}"
 
 
-def analyze_health_fn(path: str, question: str, progress=gr.Progress()):
-    """Analyse un export de données santé/sport (JSON/CSV, ex: app Vita)."""
-    if not path or not path.strip():
-        return "⚠️ Indique le chemin de ton fichier exporté depuis Vita (JSON ou CSV)."
+def analyze_health_fn(path: str, question: str, upload=None, progress=gr.Progress()):
+    """Analyse des données santé/sport : fichier uploadé, chemin, OU URL Vita."""
+    target = upload or (path or "").strip()   # fichier uploadé prioritaire, sinon chemin/URL
+    if not target:
+        return "⚠️ Charge un fichier, colle un chemin, ou mets l'URL de ton endpoint Vita."
     progress(0.4, desc="🩺 Analyse de tes données santé...")
     try:
         from plugins.builtin.health_analyzer import HealthAnalyzerPlugin
-        return HealthAnalyzerPlugin().run(path=path.strip(), question=(question or "").strip())
+        return HealthAnalyzerPlugin().run(path=str(target), question=(question or "").strip())
     except Exception as e:
         return f"❌ Erreur: {e}"
 
@@ -1370,6 +1397,10 @@ def build_ui() -> gr.Blocks:
                             msg_in  = gr.Textbox(placeholder='Message… ou "Agent: fais-moi un script Python"',
                                                  scale=5, label="", lines=1)
                             send_btn = gr.Button("Envoyer ▶", variant="primary", scale=1)
+                        chat_img = gr.Image(
+                            label="🖼️ Joindre une image à analyser (optionnel)",
+                            type="filepath", sources=["upload", "clipboard"], height=140,
+                        )
 
                 chat_st = gr.State([])
 
@@ -1379,8 +1410,8 @@ def build_ui() -> gr.Blocks:
                 # queue=False → le chat utilise une simple requête POST directe au lieu de la
                 # file d'attente SSE de Gradio (souvent bloquée par les antivirus / proxys / VPN
                 # qui inspectent les connexions streaming locales). Rend le chat fiable partout.
-                send_btn.click(send, [msg_in, chat_st, mode_state, sid_state], [chatbot, chat_st, msg_in], queue=False)
-                msg_in.submit(send, [msg_in, chat_st, mode_state, sid_state], [chatbot, chat_st, msg_in], queue=False)
+                send_btn.click(send, [msg_in, chat_st, mode_state, sid_state, chat_img], [chatbot, chat_st, msg_in, chat_img], queue=False)
+                msg_in.submit(send, [msg_in, chat_st, mode_state, sid_state, chat_img], [chatbot, chat_st, msg_in, chat_img], queue=False)
                 new_btn.click(new_conv, [], [chatbot, chat_st, sid_state]).then(refresh_sess, [], [sess_dd])
                 ref_btn.click(refresh_sess, [], [sess_dd])
                 sess_dd.change(load_sess, [sess_dd], [chatbot, chat_st, sid_state])
@@ -1532,8 +1563,12 @@ def build_ui() -> gr.Blocks:
                         )
                         with gr.Row():
                             with gr.Column(scale=1):
+                                dbg_files = gr.File(
+                                    label="📎 Charger des fichiers de code (ou remplis le chemin ↓)",
+                                    file_count="multiple",
+                                )
                                 dbg_path = gr.Textbox(
-                                    label="Chemin du dossier du projet",
+                                    label="… OU chemin d'un dossier de projet",
                                     placeholder="C:\\Users\\lohan\\Documents\\mon-projet",
                                 )
                                 dbg_fix = gr.Checkbox(
@@ -1544,7 +1579,7 @@ def build_ui() -> gr.Blocks:
                             with gr.Column(scale=2):
                                 dbg_out = gr.Markdown("*Le rapport de bugs apparaîtra ici.*")
                         # queue=False → revient malgré l'antivirus qui bloque le streaming
-                        dbg_btn.click(debug_project_fn, [dbg_path, dbg_fix], [dbg_out], queue=False)
+                        dbg_btn.click(debug_project_fn, [dbg_path, dbg_fix, dbg_files], [dbg_out], queue=False)
 
                     with gr.TabItem("📄 Analyser un document"):
                         gr.Markdown(
@@ -1554,8 +1589,12 @@ def build_ui() -> gr.Blocks:
                         )
                         with gr.Row():
                             with gr.Column(scale=1):
+                                doc_file = gr.File(
+                                    label="📎 Charger un fichier (PDF, Word, texte…)",
+                                    file_count="single", type="filepath",
+                                )
                                 doc_path = gr.Textbox(
-                                    label="Chemin du fichier ou dossier",
+                                    label="… OU chemin d'un fichier/dossier",
                                     placeholder="C:\\Users\\lohan\\Documents\\rapport.pdf",
                                 )
                                 doc_q = gr.Textbox(
@@ -1566,7 +1605,7 @@ def build_ui() -> gr.Blocks:
                                 doc_btn = gr.Button("📄 Analyser le document", variant="primary", size="lg")
                             with gr.Column(scale=2):
                                 doc_out = gr.Markdown("*L'analyse apparaîtra ici.*")
-                        doc_btn.click(analyze_document_fn, [doc_path, doc_q], [doc_out], queue=False)
+                        doc_btn.click(analyze_document_fn, [doc_path, doc_q, doc_file], [doc_out], queue=False)
 
             # ══ FINANCE ═══════════════════════════════════════════════════════
             with gr.TabItem("💹 Finance"):
@@ -1726,17 +1765,20 @@ def build_ui() -> gr.Blocks:
             with gr.TabItem("🩺 Santé"):
                 gr.Markdown(
                     "### Analyse tes données santé / sport / habitudes\n"
-                    "Exporte tes données depuis **Vita** (ou toute app) en **JSON ou CSV**, "
-                    "puis donne le chemin du fichier. L'agent joue le rôle d'un **coach** : "
-                    "tendances, corrélations (sport ↔ sommeil…), points forts/faibles, recommandations.\n\n"
-                    "🔒 *Tes données restent sur ton PC ; l'analyse est envoyée au modèle cloud "
-                    "(Groq). Pour du très sensible, retire ton nom du fichier avant.*"
+                    "3 façons : **charge un fichier**, colle un **chemin**, ou mets l'**URL de ton "
+                    "endpoint Vita** (`https://…/api/export?key=SECRET&account=ID`) → l'agent récupère "
+                    "tes données en direct. Il joue le rôle d'un **coach** (tendances, corrélations, recommandations).\n\n"
+                    "🔒 *L'analyse est envoyée au modèle cloud (Groq). Pour du très sensible, anonymise avant.*"
                 )
                 with gr.Row():
                     with gr.Column(scale=1):
+                        h_file = gr.File(
+                            label="📎 Charger un export (JSON/CSV)",
+                            file_count="single", type="filepath",
+                        )
                         h_path = gr.Textbox(
-                            label="Chemin du fichier exporté (JSON ou CSV)",
-                            placeholder="C:\\Users\\lohan\\Documents\\vita_export.json",
+                            label="… OU chemin de fichier, OU URL Vita",
+                            placeholder="https://mon-app.vercel.app/api/export?key=SECRET&account=ID",
                         )
                         h_q = gr.Textbox(
                             label="Sur quoi te concentrer ? (optionnel)",
@@ -1746,7 +1788,7 @@ def build_ui() -> gr.Blocks:
                         h_btn = gr.Button("🩺 Analyser mes données", variant="primary", size="lg")
                     with gr.Column(scale=2):
                         h_out = gr.Markdown("*Ton bilan santé apparaîtra ici.*")
-                h_btn.click(analyze_health_fn, [h_path, h_q], [h_out], queue=False)
+                h_btn.click(analyze_health_fn, [h_path, h_q, h_file], [h_out], queue=False)
 
             # ══ AUTO-AMÉLIORATION ═════════════════════════════════════════════
             with gr.TabItem("🧬 Auto-Amélioration"):
