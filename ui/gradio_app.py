@@ -382,19 +382,38 @@ def _make_video_fast(topic, style, lang, n_slides, theme, add_audio, progress):
     from video.image_gen import save_slide
     from pathlib import Path
 
+    # Nettoie le sujet : retire les URLs collées et coupe à une phrase courte
+    clean_topic = re.sub(r"https?://\S+", "", topic).strip()
+    clean_topic = re.sub(r"\s+", " ", clean_topic)[:120] or "Ma vidéo"
+
     progress(0.05, desc="✍️ Génération du script...")
+    slides = None
     try:
         raw = chat([
-            {"role": "system", "content": "Tu crées des scripts vidéo. Réponds UNIQUEMENT en JSON."},
+            {"role": "system", "content": (
+                "Tu es scénariste vidéo. Tu génères le CONTENU des slides (pas la consigne). "
+                "Chaque slide = une phrase courte, percutante, max 12 mots. Réponds UNIQUEMENT en JSON.")},
             {"role": "user", "content": (
-                f'Crée {n_slides} slides pour une vidéo "{style}" sur "{topic}" en {lang}. '
-                f'JSON: {{"slides": ["texte slide 1", "texte slide 2", ...]}}'
+                f'Sujet : "{clean_topic}". Style : {style}. Langue : {lang}.\n'
+                f'Génère {n_slides} slides (accroche → développement → conclusion/CTA). '
+                f'NE recopie PAS le sujet tel quel — crée du vrai contenu.\n'
+                f'JSON strict : {{"slides": ["accroche", "point 1", "point 2", "...", "conclusion"]}}'
             )},
         ], temperature=0.8)
         m = re.search(r'\{[\s\S]+\}', raw)
-        slides = json.loads(m.group()).get("slides", [topic]) if m else [topic]
+        if m:
+            parsed = json.loads(m.group()).get("slides")
+            if isinstance(parsed, list) and parsed:
+                slides = [str(s)[:140] for s in parsed if str(s).strip()]
     except Exception:
-        slides = [topic] + [f"Point {i+1}" for i in range(n_slides - 1)]
+        slides = None
+
+    # Repli propre (jamais l'URL / le texte brut) si l'IA n'a pas répondu
+    if not slides:
+        title = clean_topic[:60]
+        slides = [title] + [f"Point clé {i+1}" for i in range(max(1, n_slides - 2))] + ["Merci d'avoir regardé !"]
+
+    topic = clean_topic  # pour le nom de fichier et le statut
 
     safe = re.sub(r"[^\w-]", "_", topic.strip()[:35])
     tmp = Path("output/tmp_preview") / safe

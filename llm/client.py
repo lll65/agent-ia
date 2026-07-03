@@ -91,7 +91,8 @@ def _xai_chat(messages: list, model: str, temperature: float) -> str:
 def _cerebras_chat(messages: list, model: str, temperature: float) -> str:
     """
     Cerebras Inference — API compatible OpenAI (même format que Groq).
-    base_url: https://api.cerebras.ai/v1 — modèle par défaut llama-3.3-70b.
+    Auto-guérison : si le modèle demandé n'existe pas (404), on réessaie avec
+    des modèles Cerebras connus (le 8B est toujours dispo en gratuit).
     """
     from openai import OpenAI
 
@@ -102,13 +103,31 @@ def _cerebras_chat(messages: list, model: str, temperature: float) -> str:
         api_key=config.CEREBRAS_API_KEY,
         base_url="https://api.cerebras.ai/v1",
     )
-    resp = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=temperature,
-        max_tokens=4096,
-    )
-    return resp.choices[0].message.content
+    # Ordre d'essai : modèle configuré, puis noms Cerebras valides connus
+    candidates = []
+    for m in (model, "llama-3.3-70b", "llama3.1-70b", "llama3.1-8b"):
+        if m and m not in candidates:
+            candidates.append(m)
+
+    last_err = None
+    for m in candidates:
+        try:
+            resp = client.chat.completions.create(
+                model=m,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=4096,
+            )
+            return resp.choices[0].message.content
+        except Exception as e:
+            last_err = e
+            txt = str(e).lower()
+            # Modèle inexistant / non accessible → on tente le suivant
+            if "not_found" in txt or "does not exist" in txt or "404" in txt:
+                logger.warning(f"[LLM] Cerebras: modèle '{m}' indisponible, essai suivant…")
+                continue
+            raise
+    raise RuntimeError(f"Cerebras: aucun modèle accessible ({last_err})")
 
 
 def _gemini_chat(messages: list, model: str, temperature: float) -> str:
