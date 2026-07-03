@@ -667,6 +667,18 @@ def analyze_document_fn(path: str, question: str, progress=gr.Progress()):
         return f"❌ Erreur: {e}"
 
 
+def analyze_health_fn(path: str, question: str, progress=gr.Progress()):
+    """Analyse un export de données santé/sport (JSON/CSV, ex: app Vita)."""
+    if not path or not path.strip():
+        return "⚠️ Indique le chemin de ton fichier exporté depuis Vita (JSON ou CSV)."
+    progress(0.4, desc="🩺 Analyse de tes données santé...")
+    try:
+        from plugins.builtin.health_analyzer import HealthAnalyzerPlugin
+        return HealthAnalyzerPlugin().run(path=path.strip(), question=(question or "").strip())
+    except Exception as e:
+        return f"❌ Erreur: {e}"
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # FINANCE
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1670,6 +1682,32 @@ def build_ui() -> gr.Blocks:
                             inputs=[pro_in],
                             outputs=[pro_out],
                         )
+
+            # ══ SANTÉ (Vita) ══════════════════════════════════════════════════
+            with gr.TabItem("🩺 Santé"):
+                gr.Markdown(
+                    "### Analyse tes données santé / sport / habitudes\n"
+                    "Exporte tes données depuis **Vita** (ou toute app) en **JSON ou CSV**, "
+                    "puis donne le chemin du fichier. L'agent joue le rôle d'un **coach** : "
+                    "tendances, corrélations (sport ↔ sommeil…), points forts/faibles, recommandations.\n\n"
+                    "🔒 *Tes données restent sur ton PC ; l'analyse est envoyée au modèle cloud "
+                    "(Groq). Pour du très sensible, retire ton nom du fichier avant.*"
+                )
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        h_path = gr.Textbox(
+                            label="Chemin du fichier exporté (JSON ou CSV)",
+                            placeholder="C:\\Users\\lohan\\Documents\\vita_export.json",
+                        )
+                        h_q = gr.Textbox(
+                            label="Sur quoi te concentrer ? (optionnel)",
+                            placeholder="Ex: mon sommeil · ma progression au sport · ma régularité",
+                            lines=2,
+                        )
+                        h_btn = gr.Button("🩺 Analyser mes données", variant="primary", size="lg")
+                    with gr.Column(scale=2):
+                        h_out = gr.Markdown("*Ton bilan santé apparaîtra ici.*")
+                h_btn.click(analyze_health_fn, [h_path, h_q], [h_out], queue=False)
 
             # ══ AUTO-AMÉLIORATION ═════════════════════════════════════════════
             with gr.TabItem("🧬 Auto-Amélioration"):
