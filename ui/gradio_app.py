@@ -667,6 +667,18 @@ def analyze_document_fn(path: str, question: str, progress=gr.Progress()):
         return f"❌ Erreur: {e}"
 
 
+def analyze_health_fn(path: str, question: str, progress=gr.Progress()):
+    """Analyse un export de données santé/sport (JSON/CSV, ex: app Vita)."""
+    if not path or not path.strip():
+        return "⚠️ Indique le chemin de ton fichier exporté depuis Vita (JSON ou CSV)."
+    progress(0.4, desc="🩺 Analyse de tes données santé...")
+    try:
+        from plugins.builtin.health_analyzer import HealthAnalyzerPlugin
+        return HealthAnalyzerPlugin().run(path=path.strip(), question=(question or "").strip())
+    except Exception as e:
+        return f"❌ Erreur: {e}"
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # FINANCE
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1508,7 +1520,7 @@ def build_ui() -> gr.Blocks:
                         gr.Markdown("Vue d'ensemble instantanée — indices, crypto, forex, matières premières")
                         db_btn = gr.Button("🔄 Actualiser le dashboard", variant="primary", size="lg")
                         db_out = gr.Markdown()
-                        db_btn.click(market_dashboard_fn, [], [db_out])
+                        db_btn.click(market_dashboard_fn, [], [db_out], queue=False)
 
                     # ── Analyser ──────────────────────────────────────────────
                     with gr.TabItem("📊 Analyser"):
@@ -1525,7 +1537,7 @@ def build_ui() -> gr.Blocks:
                             with gr.Column(scale=2):
                                 f_out = gr.Markdown()
                         f_chart = gr.Image(label="📈 Graphique technique", show_label=True)
-                        f_btn.click(analyze_finance, [f_ticker, f_period], [f_out, f_chart])
+                        f_btn.click(analyze_finance, [f_ticker, f_period], [f_out, f_chart], queue=False)
 
                     # ── Crypto & Sentiment (sources gratuites CoinGecko + Fear&Greed) ──
                     with gr.TabItem("🪙 Crypto & Sentiment"):
@@ -1545,8 +1557,8 @@ def build_ui() -> gr.Blocks:
                                 cur_btn = gr.Button("💱 Taux de change", size="sm")
                             with gr.Column(scale=2):
                                 cr_out = gr.Markdown("*Clique pour charger le marché crypto.*")
-                        cr_btn.click(crypto_market_fn, [cr_coins], [cr_out])
-                        cur_btn.click(currency_rates_fn, [cur_to], [cr_out])
+                        cr_btn.click(crypto_market_fn, [cr_coins], [cr_out], queue=False)
+                        cur_btn.click(currency_rates_fn, [cur_to], [cr_out], queue=False)
 
                     # ── Portefeuille ──────────────────────────────────────────
                     with gr.TabItem("💼 Portefeuille"):
@@ -1598,18 +1610,18 @@ def build_ui() -> gr.Blocks:
 
                         pf_chart = gr.Image(label="📊 Allocation & Performance")
 
-                        pf_btn.click(portfolio_analyze_fn, [pf_in], [pf_out, pf_chart])
+                        pf_btn.click(portfolio_analyze_fn, [pf_in], [pf_out, pf_chart], queue=False)
                         pf_save_btn.click(
                             portfolio_save_fn, [pf_name, pf_in],
-                            [pf_dd, pf_dd, pf_status],
+                            [pf_dd, pf_dd, pf_status], queue=False,
                         )
                         pf_load_btn.click(
                             portfolio_load_fn, [pf_dd],
-                            [pf_in, pf_status],
+                            [pf_in, pf_status], queue=False,
                         )
                         pf_delete_btn.click(
                             portfolio_delete_fn, [pf_dd],
-                            [pf_dd, pf_in, pf_status],
+                            [pf_dd, pf_in, pf_status], queue=False,
                         )
 
                     # ── Actualités ────────────────────────────────────────────
@@ -1620,7 +1632,7 @@ def build_ui() -> gr.Blocks:
                                 fn_btn    = gr.Button("📰 Voir les news", variant="primary")
                             with gr.Column(scale=2):
                                 fn_out = gr.Markdown()
-                        fn_btn.click(finance_news, [fn_ticker], [fn_out])
+                        fn_btn.click(finance_news, [fn_ticker], [fn_out], queue=False)
 
                     # ── Agent Financier ───────────────────────────────────────
                     with gr.TabItem("🤖 Agent Financier"):
@@ -1636,7 +1648,7 @@ def build_ui() -> gr.Blocks:
                         )
                         fa_btn = gr.Button("🤖 Analyser avec l'agent", variant="primary", size="lg")
                         fa_out = gr.Markdown()
-                        fa_btn.click(finance_agent_analysis, [fa_in], [fa_out])
+                        fa_btn.click(finance_agent_analysis, [fa_in], [fa_out], queue=False)
 
                     # ── Conseiller Pro (deep research streaming) ──────────────
                     with gr.TabItem("🎯 Conseiller Pro"):
@@ -1670,6 +1682,32 @@ def build_ui() -> gr.Blocks:
                             inputs=[pro_in],
                             outputs=[pro_out],
                         )
+
+            # ══ SANTÉ (Vita) ══════════════════════════════════════════════════
+            with gr.TabItem("🩺 Santé"):
+                gr.Markdown(
+                    "### Analyse tes données santé / sport / habitudes\n"
+                    "Exporte tes données depuis **Vita** (ou toute app) en **JSON ou CSV**, "
+                    "puis donne le chemin du fichier. L'agent joue le rôle d'un **coach** : "
+                    "tendances, corrélations (sport ↔ sommeil…), points forts/faibles, recommandations.\n\n"
+                    "🔒 *Tes données restent sur ton PC ; l'analyse est envoyée au modèle cloud "
+                    "(Groq). Pour du très sensible, retire ton nom du fichier avant.*"
+                )
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        h_path = gr.Textbox(
+                            label="Chemin du fichier exporté (JSON ou CSV)",
+                            placeholder="C:\\Users\\lohan\\Documents\\vita_export.json",
+                        )
+                        h_q = gr.Textbox(
+                            label="Sur quoi te concentrer ? (optionnel)",
+                            placeholder="Ex: mon sommeil · ma progression au sport · ma régularité",
+                            lines=2,
+                        )
+                        h_btn = gr.Button("🩺 Analyser mes données", variant="primary", size="lg")
+                    with gr.Column(scale=2):
+                        h_out = gr.Markdown("*Ton bilan santé apparaîtra ici.*")
+                h_btn.click(analyze_health_fn, [h_path, h_q], [h_out], queue=False)
 
             # ══ AUTO-AMÉLIORATION ═════════════════════════════════════════════
             with gr.TabItem("🧬 Auto-Amélioration"):
