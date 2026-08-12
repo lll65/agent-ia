@@ -314,6 +314,25 @@ async def run_agent_stream(
     tool_calls_made = 0
     stub_retries    = 0
 
+    # ── FORÇAGE DÉTERMINISTE DE search_web pour les questions factuelles ──────
+    # On exécute une VRAIE recherche DuckDuckGo AVANT le 1er appel LLM et on injecte
+    # l'observation → le modèle répond sur des données réelles (avec vraies sources),
+    # il ne peut plus halluciner ni exécuter un script Python à la place.
+    if agent_config.get("force_search") and "search_web" in required_tools:
+        try:
+            obs = safe_tool_call(loader, "search_web", {"query": task[:200], "mode": "web"})
+            yield {"type": "action", "tool": "search_web", "params": {"query": task[:120]}, "iteration": 0}
+            yield {"type": "observation", "tool": "search_web", "result": obs[:400], "iteration": 0}
+            messages.append({"role": "assistant",
+                             "content": f'THOUGHT: recherche web pour données réelles\nACTION: search_web\nPARAMS: {{"query": "{task[:120]}"}}'})
+            messages.append({"role": "user", "content": (
+                f"OBSERVATION [search_web]: {obs}\n\n"
+                "Utilise UNIQUEMENT ces résultats réels pour répondre, en citant leurs sources. "
+                "N'invente aucune autre source. Si l'info manque, dis-le.")})
+            tool_calls_made += 1
+        except Exception as e:
+            logger.warning(f"[force_search] échec: {e}")
+
     for iteration in range(config.MAX_ITERATIONS):
         try:
             llm_out = await llm_call(messages, temperature=temperature)

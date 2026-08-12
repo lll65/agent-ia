@@ -257,13 +257,15 @@ def full_agent(message: str, history: list, sid: str) -> str:
     from agent.core import run_agent_stream
     from plugins import get_loader
     tools = list(get_loader().list_all().keys())
-    # Question factuelle → force search_web en PREMIER outil (la détection de "stub"
-    # de run_agent_stream ré-injecte required_tools[0] si l'agent répond sans outil).
-    if _is_factual_question(message) and "search_web" in tools:
+    factual = _is_factual_question(message)
+    # Question factuelle → search_web en 1er outil + forçage déterministe (core.py
+    # exécute une vraie recherche web AVANT le 1er appel LLM si force_search=True).
+    if factual and "search_web" in tools:
         tools.remove("search_web")
         tools.insert(0, "search_web")
     cfg = {
         "id": sid, "name": "MasterAgent-Gros v4",
+        "force_search": factual,
         "system_prompt": (
             "Tu es MasterAgent-Gros v4, un agent IA surpuissant et auto-évolutif. "
             "Tu maîtrises tous les domaines : code full-stack, finance quantitative, "

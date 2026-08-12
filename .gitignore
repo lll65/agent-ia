@@ -3,10 +3,24 @@ __pycache__/
 *.pyo
 venv/
 .venv/
+
+# Secrets — bloque .env et toutes ses variantes, sauf le template
 .env
+.env.*
+!.env.example
+
+# État runtime pouvant contenir des identifiants/tokens ou de la mémoire volumineuse
 data/memory.db
 data/agents/
+data/chroma/
+data/telegram_chats.json
+data/groq_usage.json
+data/watcher_state.json
+data/sessions/
+
+# Sorties générées
 output/
 *.mp4
 *.mp3
 *.png
+agent-ia.zip
