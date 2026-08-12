@@ -8,7 +8,9 @@ Point d'entrée principal — démarre:
 import asyncio
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
@@ -71,7 +73,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Agent IA Personnel",
-    description="Ton propre serveur IA — 100% local, 0€/mois.\n\nDocs: /docs | UI: http://localhost:7860",
+    description="Ton propre serveur IA — 100% local, 0€/mois.\n\nDocs: /docs | UI: /ui",
     version="2.0.0",
     lifespan=lifespan,
 )
@@ -115,7 +117,7 @@ def root():
             "code": "POST /code/generate",
             "project": "POST /project/create",
             "docs": "/docs",
-            "ui": f"http://localhost:{config.GRADIO_PORT}",
+            "ui": "/ui",
         },
     }
 
@@ -131,37 +133,35 @@ async def full_status():
     }
 
 
+# ── Montage de l'UI Gradio SUR l'app FastAPI ────────────────────────────────────
+# UN SEUL process, UN SEUL port (config.PORT). Indispensable pour Render/Railway/etc.
+# qui n'exposent qu'un seul port : l'ancien montage sur un port séparé (GRADIO_PORT,
+# via un thread) rendait l'UI injoignable publiquement. Ici Gradio partage l'event
+# loop d'uvicorn → plus besoin du hack de thread + event loop maison, et les bots
+# Telegram/Discord + le PEA Watcher continuent de tourner dans le lifespan de l'app.
+_HEADLESS = "--no-ui" in sys.argv or os.getenv("DISABLE_UI", "").lower() == "true"
+if not _HEADLESS:
+    try:
+        # Ordre important : build_ui applique le patch de compat huggingface_hub
+        # (HfFolder) AVANT que gradio ne soit importé.
+        from ui.gradio_app import build_ui
+        import gradio as gr
+
+        _demo = build_ui()
+        _demo.queue()  # nécessaire pour les événements streaming (générateurs)
+        _allowed = [str(Path(d).resolve()) for d in ("output", "data")]
+        for _d in _allowed:
+            Path(_d).mkdir(parents=True, exist_ok=True)
+        app = gr.mount_gradio_app(app, _demo, path="/ui", allowed_paths=_allowed)
+        logger.info("Interface Gradio montée sur /ui (même port que l'API).")
+    except Exception as e:
+        logger.error(f"Échec du montage de l'UI Gradio: {e}", exc_info=True)
+
+
 # ── Lancement ─────────────────────────────────────────────────────────────────
 
-def start_gradio():
-    """Lance Gradio dans un thread daemon avec son propre event loop asyncio."""
-    import threading
-    import asyncio
-
-    def _run():
-        # Python 3.10+ exige un event loop actif pour asyncio.Lock() (utilisé par la queue Gradio)
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            from ui.gradio_app import launch
-            launch()
-        except Exception as e:
-            logger.error(f"Erreur Gradio: {e}", exc_info=True)
-        finally:
-            loop.close()
-
-    t = threading.Thread(target=_run, daemon=True, name="gradio")
-    t.start()
-    return t
-
-
 if __name__ == "__main__":
-    import sys
-
-    if "--no-ui" not in sys.argv:
-        logger.info(f"Interface Gradio: http://localhost:{config.GRADIO_PORT}")
-        start_gradio()
-
+    logger.info(f"UI : http://localhost:{config.PORT}/ui   ·   Docs : http://localhost:{config.PORT}/docs")
     uvicorn.run(
         "main:app",
         host=config.HOST,

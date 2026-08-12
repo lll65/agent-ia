@@ -46,6 +46,8 @@ fal-client>=0.10
 # UI — gradio 4.44.1 va de pair avec gradio_client 1.3.0 (gère les onglets imbriqués)
 gradio==4.44.1
 gradio_client==1.3.0
+# huggingface_hub 1.x supprime HfFolder → casse gradio 4.44 à l'import. On reste en 0.x.
+huggingface_hub>=0.23,<1.0
 
 # Bots
 python-telegram-bot>=21.3
