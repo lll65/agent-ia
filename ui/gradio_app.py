@@ -84,6 +84,21 @@ _FINANCE_HINTS = (
     "forex", "euro dollar", "dollar", "taux d'intérêt", "banque centrale",
     "sanofi", "lvmh", "airbus", "bnp", "total bourse", "kering", "hermes bourse",
 )
+_FACTUAL_HINTS = (
+    "actualité", "actualités", "news", "2024", "2025", "2026", "tendance", "tendances",
+    "aujourd'hui", "en ce moment", "récent", "récente", "dernier", "dernière", "derniers",
+    "meilleur", "meilleure", "top ", "idées de", "idée de", "combien", "qui est", "quand",
+    "cette année", "en france", "dans le monde", "statistiques", "chiffres", "marché de",
+    "business", "startup", "prix de", "cours de", "événement", "sortie de",
+)
+
+
+def _is_factual_question(msg: str) -> bool:
+    """Question qui nécessite des données actuelles/web (→ forcer search_web)."""
+    low = (msg or "").lower()
+    return any(h in low for h in _FACTUAL_HINTS)
+
+
 _VIDEO_HINTS   = ("fais une vidéo", "crée une vidéo", "génère une vidéo", "créer une vidéo", "slides sur",
                   "diaporama", "présentation vidéo")
 _CODE_HINTS    = ("crée un projet", "génère un projet", "génère une application", "crée une application",
@@ -190,20 +205,38 @@ try:
     from agent.system_prompt import SHORT_SYSTEM_PROMPT as _FAST_SYS
 except ImportError:
     _FAST_SYS = (
-        "Tu es MasterAgent-Gros, expert IA d'élite. "
-        "Réponses directes, chiffrées, actionnables. Français. "
-        "Finance: toujours zone d'entrée + TP + SL. Zéro généralité vide."
+        "Tu es MasterAgent-Gros, assistant IA polyvalent. Réponses directes en français, "
+        "format ADAPTÉ à la question. En Mode Rapide tu n'as aucun outil : n'invente jamais "
+        "de prix/source/date ; si une donnée réelle manque, dis « ⚠️ estimation non vérifiée » "
+        "et propose le Mode Agent."
     )
 
-def fast_chat(message: str, history: list) -> str:
+def fast_chat(message: str, history: list, sid: str = "default") -> str:
     from llm.client import chat
     msgs = [{"role": "system", "content": _FAST_SYS}]
+    # Injection mémoire (ChromaDB/Supabase) → personnalisation selon le profil utilisateur
+    try:
+        from memory import get_memory
+        mem = get_memory()
+        ctx = mem.build_context(sid, message, recent_limit=6)
+        if ctx:
+            msgs.append({"role": "system",
+                         "content": f"[MÉMOIRE — profil & échanges passés pertinents]\n{ctx}"})
+    except Exception:
+        mem = None
     msgs.extend(_to_ollama(history))
     msgs.append({"role": "user", "content": message})
     try:
         answer = chat(msgs, temperature=0.7)
     except Exception as e:
         return f"❌ LLM indisponible: {e}"
+    # Mémorise l'échange pour les prochaines conversations
+    try:
+        if mem:
+            mem.remember(sid, "user", message)
+            mem.remember(sid, "assistant", answer)
+    except Exception:
+        pass
     # Auto-amélioration pour les questions substantielles (> 5 mots)
     if answer and len(message.split()) > 5:
         def _bg(t, a):
@@ -223,17 +256,24 @@ def fast_chat(message: str, history: list) -> str:
 def full_agent(message: str, history: list, sid: str) -> str:
     from agent.core import run_agent_stream
     from plugins import get_loader
+    tools = list(get_loader().list_all().keys())
+    # Question factuelle → force search_web en PREMIER outil (la détection de "stub"
+    # de run_agent_stream ré-injecte required_tools[0] si l'agent répond sans outil).
+    if _is_factual_question(message) and "search_web" in tools:
+        tools.remove("search_web")
+        tools.insert(0, "search_web")
     cfg = {
         "id": sid, "name": "MasterAgent-Gros v4",
         "system_prompt": (
             "Tu es MasterAgent-Gros v4, un agent IA surpuissant et auto-évolutif. "
             "Tu maîtrises tous les domaines : code full-stack, finance quantitative, "
             "création de contenu, data science, stratégie business. "
-            "Tu utilises TOUS tes outils sans hésitation pour des réponses chiffrées et actionnables. "
-            "Tu t'améliores à chaque interaction. Tu réponds en français. "
+            "Pour toute question factuelle/actuelle, ta PREMIÈRE action est search_web — "
+            "jamais de données inventées, jamais de source citée sans appel d'outil réel. "
+            "Tu réponds en français, format adapté à la question (pas de format trading hors bourse). "
             "Tu ne dis jamais 'je ne peux pas' — tu trouves toujours une solution."
         ),
-        "tools": list(get_loader().list_all().keys()),
+        "tools": tools,
         "model": config.LLM_MODEL,
     }
     trace_lines: list[str] = []
@@ -376,7 +416,7 @@ def send(message: str, history: list, mode: str, sid: str, image=None, file=None
         if not use_agent and _is_finance_question(clean):
             answer = finance_agent_analysis(clean)
         else:
-            answer = fast_chat(clean, history)
+            answer = fast_chat(clean, history, sid)
     new_h = _add(history, message, answer)
     existing = _load(sid)
     name = existing.get("name", "Nouvelle") if existing.get("history") else message[:50]
