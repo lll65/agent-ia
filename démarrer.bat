@@ -17,7 +17,7 @@ if not exist "venv\Scripts\activate.bat" (
 
 call venv\Scripts\activate.bat
 echo.
-echo === MasterAgent-Gros demarre... ouvre http://localhost:7860 dans ton navigateur ===
+echo === MasterAgent-Gros demarre... ouvre http://localhost:8000/ui dans ton navigateur ===
 echo === Pour arreter : ferme cette fenetre ou appuie sur Ctrl+C ===
 echo.
 python main.py
