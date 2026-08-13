@@ -1,5 +1,5 @@
 """
-Suivi de la consommation de tokens Groq (limite gratuite ~100 000 tokens/jour).
+Suivi de la consommation de tokens par fournisseur (Groq, Cerebras…).
 Persisté dans data/groq_usage.json, remis à zéro chaque jour.
 """
 import json
@@ -7,7 +7,9 @@ from datetime import date
 from pathlib import Path
 
 _FILE = Path("data/groq_usage.json")
-DAILY_LIMIT = 100_000
+
+# Limites journalières indicatives du palier gratuit (tokens/jour)
+LIMITS = {"groq": 100_000, "cerebras": 1_000_000}
 
 
 def _load() -> dict:
@@ -19,7 +21,7 @@ def _load() -> dict:
                 return d
         except Exception:
             pass
-    return {"date": today, "used": 0}
+    return {"date": today}
 
 
 def _save(d: dict) -> None:
@@ -30,14 +32,18 @@ def _save(d: dict) -> None:
         pass
 
 
-def record(tokens) -> None:
+def record(tokens, provider: str = "groq") -> None:
     if not tokens:
         return
     d = _load()
-    d["used"] = int(d.get("used", 0)) + int(tokens)
+    d[provider] = int(d.get(provider, 0)) + int(tokens)
     _save(d)
 
 
-def get_usage() -> tuple[int, int]:
-    """Retourne (tokens_utilisés_aujourdhui, limite)."""
-    return int(_load().get("used", 0)), DAILY_LIMIT
+def get_usage(provider: str = "groq") -> tuple[int, int]:
+    """Retourne (tokens_utilisés_aujourdhui, limite) pour un fournisseur."""
+    return int(_load().get(provider, 0)), LIMITS.get(provider, 0)
+
+
+# Rétro-compat
+DAILY_LIMIT = LIMITS["groq"]
