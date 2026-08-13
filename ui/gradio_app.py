@@ -333,6 +333,104 @@ def full_agent(message: str, history: list, sid: str) -> str:
     return final_answer
 
 
+def _step_line(step: dict) -> str:
+    """Ligne d'activité lisible (façon Claude) pour l'affichage en direct."""
+    t = step.get("type")
+    if t == "thought":
+        return f"💭 *{str(step.get('text', ''))[:200]}*"
+    if t == "action":
+        tool = (step.get("tool") or "").lower()
+        params = step.get("params", {}) or {}
+        if "search" in tool or "web" in tool:
+            q = params.get("query") or params.get("q") or ""
+            return f"🔍 **Recherche web :** {str(q)[:120]}"
+        if "document" in tool or "project" in tool or "analyze_doc" in tool:
+            return "📄 **Analyse du document / projet…**"
+        if "health" in tool:
+            return "🩺 **Lecture de tes données santé…**"
+        if any(k in tool for k in ("stock", "crypto", "market", "finance", "currency", "fear")):
+            return f"📈 **Récupération de données financières** (`{step.get('tool','')}`)…"
+        return f"🔧 **Outil `{step.get('tool','')}`**"
+    if t == "observation":
+        return f"👁️ _{str(step.get('result', ''))[:170]}_"
+    return ""
+
+
+def _pack(new_h, answer):
+    """Tuple des 8 sorties du chat pour une réponse finale (non-streaming)."""
+    code, vis = _artifact_out(answer)
+    return new_h, new_h, "", None, None, code, vis, _usage_md()
+
+
+async def _stream_agent(message: str, history: list, sid: str, shown_user: str, prefix: str = ""):
+    """Mode Agent EN DIRECT : yield l'activité (recherches, outils, mémoire) au fil de l'eau."""
+    from agent.core import run_agent_stream
+    from plugins import get_loader
+
+    tools = list(get_loader().list_all().keys())
+    factual = _is_factual_question(message)
+    if factual and "search_web" in tools:
+        tools.remove("search_web"); tools.insert(0, "search_web")
+    cfg = {
+        "id": sid, "name": "MasterAgent-Gros v4", "force_search": factual,
+        "system_prompt": (
+            "Tu es MasterAgent-Gros v4, agent IA polyvalent. Pour toute question factuelle/actuelle, "
+            "ta 1re action est search_web ; jamais de source citée sans appel d'outil réel. Français, "
+            "format adapté à la question (pas de format trading hors bourse)."
+        ),
+        "tools": tools, "model": config.LLM_MODEL,
+    }
+
+    convo = list(history) + [
+        {"role": "user", "content": shown_user},
+        {"role": "assistant", "content": "⏳ *L'agent démarre…*"},
+    ]
+    activity: list[str] = []
+    used: list[str] = []
+    final_answer = ""
+    yield convo, convo, "", None, None, gr.update(), gr.update(visible=False), _usage_md()
+
+    try:
+        async for step in run_agent_stream(message, cfg, sid):
+            if step.get("type") == "final":
+                final_answer = step.get("answer", "")
+            else:
+                if step.get("type") == "action":
+                    used.append(step.get("tool", ""))
+                line = _step_line(step)
+                if line:
+                    activity.append(line)
+            live = "\n\n".join(activity)
+            if final_answer:
+                head = (f"<details><summary>🧠 Ce que l'agent a fait</summary>\n\n{live}\n\n</details>\n\n---\n\n"
+                        if live else "")
+                content = prefix + head + final_answer
+                if used:
+                    content += f"\n\n*🔧 Outils : {', '.join(dict.fromkeys(u for u in used if u))}*"
+            else:
+                content = prefix + f"<details open><summary>🧠 <b>Réflexion en direct…</b></summary>\n\n{live}\n\n</details>"
+            convo[-1] = {"role": "assistant", "content": content or "⏳"}
+            code, vis = _artifact_out(final_answer)
+            yield convo, convo, "", None, None, code, vis, _usage_md()
+    except Exception as e:
+        convo[-1] = {"role": "assistant", "content": f"❌ Erreur agent : {str(e)[:300]}"}
+        yield convo, convo, "", None, None, gr.update(), gr.update(visible=False), _usage_md()
+        return
+
+    # Persistance + trace mémoire visible + auto-apprentissage
+    convo[-1]["content"] += "\n\n<sub>💾 Mémorisé dans ton profil</sub>"
+    _save(sid, (_load(sid).get("name") or shown_user[:50]), convo)
+    yield convo, convo, "", None, None, *_artifact_out(final_answer), _usage_md()
+
+    def _bg(t, a):
+        try:
+            from agent.self_improve import evaluate_and_learn
+            asyncio.run(evaluate_and_learn(t, a, domain="chat"))
+        except Exception:
+            pass
+    threading.Thread(target=_bg, args=(message, final_answer), daemon=True).start()
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # ROUTING
 # ═════════════════════════════════════════════════════════════════════════════
@@ -353,11 +451,14 @@ def _route(message: str, mode: str):
             return True, False, message[len(t):].strip() or message
     return False, False, message
 
-def _extract_artifact(text: str):
-    """Extrait le plus gros bloc de code d'une réponse → volet latéral (artefact)."""
+def _artifact_out(text: str):
+    """Retourne (contenu_code, visibilité_du_volet). Le volet Artefact ne s'affiche
+    QUE si la réponse contient un bloc de code (sinon masqué → chat plein cadre)."""
     import re
     blocks = re.findall(r"```[a-zA-Z0-9]*\n(.*?)```", text or "", re.DOTALL)
-    return max(blocks, key=len).strip() if blocks else gr.update()
+    if blocks:
+        return max(blocks, key=len).strip(), gr.update(visible=True)
+    return gr.update(), gr.update(visible=False)
 
 
 def _usage_md() -> str:
@@ -377,8 +478,9 @@ _CODE_EXTS = {".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp", ".h",
               ".go", ".rs", ".rb", ".php", ".html", ".css", ".sql", ".sh", ".vue"}
 
 
-def send(message: str, history: list, mode: str, sid: str, image=None, file=None):
-    # ── Fichier déposé (code ou document) → analyse dans le chat ───────────
+async def send(message: str, history: list, mode: str, sid: str, image=None, file=None):
+    """Générateur asynchrone : streame le Mode Agent en direct (façon Claude)."""
+    # ── Fichier déposé (code ou document) ──────────────────────────────────
     if file:
         from pathlib import Path as _P
         fp = _P(str(file))
@@ -387,16 +489,15 @@ def send(message: str, history: list, mode: str, sid: str, image=None, file=None
             from plugins.builtin.document_analyzer import DocumentAnalyzerPlugin
             if not q:
                 q = ("Explique ce code et repère les éventuels bugs."
-                     if fp.suffix.lower() in _CODE_EXTS
-                     else "Résume et analyse ce document.")
+                     if fp.suffix.lower() in _CODE_EXTS else "Résume et analyse ce document.")
             answer = DocumentAnalyzerPlugin().run(path=str(fp), question=q)
         except Exception as e:
             answer = f"❌ Analyse du fichier impossible : {str(e)[:200]}"
         new_h = _add(history, f"📎 *({fp.name})* {message}".strip(), answer)
         _save(sid, (_load(sid).get("name") or fp.name), new_h)
-        return new_h, new_h, "", None, None, _extract_artifact(answer), _usage_md()
+        yield _pack(new_h, answer); return
 
-    # ── Image jointe → analyse visuelle ────────────────────────────────────
+    # ── Image jointe ───────────────────────────────────────────────────────
     if image:
         prompt = (message or "").strip() or "Décris et analyse cette image en détail."
         try:
@@ -407,29 +508,34 @@ def send(message: str, history: list, mode: str, sid: str, image=None, file=None
         shown = f"🖼️ *(image)* {message}".strip() if message.strip() else "🖼️ *(image jointe)*"
         new_h = _add(history, shown, answer)
         _save(sid, (_load(sid).get("name") or "Image"), new_h)
-        return new_h, new_h, "", None, None, _extract_artifact(answer), _usage_md()
+        yield _pack(new_h, answer); return
 
     if not message.strip():
-        return history, history, "", None, None, gr.update(), _usage_md()
+        yield (history, history, "", None, None, *_artifact_out(""), _usage_md()); return
+
     use_agent, _use_finance, clean = _route(message, mode)
-    if use_agent:
-        answer = full_agent(clean, history, sid)
-    elif _is_finance_question(clean):
+    factual = _is_factual_question(clean)
+
+    # ── Mode Agent / question factuelle → STREAMING en direct ──────────────
+    if use_agent or (factual and not _is_finance_question(clean)):
+        prefix = ("> 🔎 *Basculé en Mode Agent (recherche web) — question factuelle.*\n\n"
+                  if (factual and not use_agent) else "")
+        async for out in _stream_agent(clean, history, sid, message, prefix):
+            yield out
+        return
+
+    # ── Finance (analyse dédiée) ───────────────────────────────────────────
+    if _is_finance_question(clean):
         answer = finance_agent_analysis(clean)
-    elif _is_factual_question(clean):
-        # BASCULE AUTOMATIQUE en Mode Agent : la question implique des faits/chiffres/
-        # tendances/marché → l'utilisateur ne doit pas deviner qu'il faut changer de mode.
-        # full_agent force une vraie recherche web (search_web) avant de répondre.
-        answer = full_agent(clean, history, sid)
-        answer = ("> 🔎 *Basculé en Mode Agent (recherche web) — question factuelle.*\n\n" + answer)
-    else:
-        # Mode Rapide réservé au non-factuel (conversationnel, créatif, reformulation…)
-        answer = fast_chat(clean, history, sid)
+        new_h = _add(history, message, answer)
+        _save(sid, (_load(sid).get("name") or message[:50]), new_h)
+        yield _pack(new_h, answer); return
+
+    # ── Mode Rapide (non-factuel : conversationnel, créatif…) ─────────────
+    answer = fast_chat(clean, history, sid)
     new_h = _add(history, message, answer)
-    existing = _load(sid)
-    name = existing.get("name", "Nouvelle") if existing.get("history") else message[:50]
-    _save(sid, name, new_h)
-    return new_h, new_h, "", None, None, _extract_artifact(answer), _usage_md()
+    _save(sid, (_load(sid).get("name") or message[:50]), new_h)
+    yield _pack(new_h, answer)
 
 def toggle_mode(mode: str):
     new = "agent" if mode == "fast" else "fast"
@@ -1448,6 +1554,39 @@ def run_master(goal):
 # UI
 # ═════════════════════════════════════════════════════════════════════════════
 
+def show_memory(sid: str) -> str:
+    """Affiche ce que l'agent a retenu de l'utilisateur (mémoire ChromaDB/Supabase)."""
+    try:
+        from memory import get_memory
+        mem = get_memory()
+        recent = mem.recall_recent(sid, 80)
+    except Exception as e:
+        return f"❌ Impossible de lire la mémoire : {e}"
+    if not recent:
+        return ("_Aucun souvenir pour l'instant._\n\nDiscute avec l'agent : il retient tes échanges "
+                "et personnalise ses réponses. (Sur Render, `SUPABASE_DB_URL` garde la mémoire entre redéploiements.)")
+    lines = [f"### 🧠 Ce que l'agent a retenu ({len(recent)} souvenirs)\n"]
+    try:
+        summary = mem.get_summary(sid)
+        if summary:
+            lines.append(f"**Résumé du profil :** {summary}\n")
+    except Exception:
+        pass
+    for m in recent:
+        who = "🧑 **Toi**" if m.get("role") == "user" else "🤖 Agent"
+        lines.append(f"- {who} : {str(m.get('content',''))[:220]}")
+    return "\n".join(lines)
+
+
+def clear_memory_fn(sid: str) -> str:
+    try:
+        from memory import get_memory
+        get_memory().clear(sid)
+        return "✅ Mémoire de cette conversation effacée."
+    except Exception as e:
+        return f"❌ Erreur : {e}"
+
+
 # ─── Identité visuelle : thème + CSS injecté (une seule source de vérité) ───────
 
 _THEME = gr.themes.Soft(
@@ -1516,6 +1655,15 @@ button.secondary, .gr-button-secondary {
 /* Bouton d'envoi bien visible */
 button.primary, .gr-button-primary { font-weight:700; }
 
+/* Suggestions & sidebar */
+#suggestions { gap:8px; margin-bottom:2px; }
+#suggestions button { border-radius:999px !important; font-size:12.5px !important; opacity:.92;
+  background:rgba(79,70,229,.08) !important; border:1px solid rgba(79,70,229,.25) !important; }
+#suggestions button:hover { opacity:1; background:rgba(79,70,229,.15) !important; }
+#chat-sidebar { background:rgba(148,163,184,.06); border-radius:14px; padding:8px; }
+/* Zone "Joindre" repliée = plus discrète */
+.accordion { border-radius:12px !important; }
+
 /* Responsive mobile : colonnes empilées, chat plein largeur */
 @media (max-width:820px) {
   .gradio-container { padding:6px !important; }
@@ -1557,52 +1705,61 @@ def build_ui() -> gr.Blocks:
 
             # ══ CHAT (le hub — fichiers, images, code, artefacts) ═════════════
             with gr.TabItem("💬 Chat"):
-                with gr.Row():
-                    # ── Colonne gauche : historique ──────────────────────────
-                    with gr.Column(scale=1, min_width=180):
-                        gr.Markdown("### 📋 Historique")
-                        new_btn   = gr.Button("✨ Nouvelle conv.", variant="primary", size="sm")
-                        sess_dd   = gr.Dropdown(choices=_list_sessions(), label="Sessions", value=None)
-                        ref_btn   = gr.Button("🔄 Rafraîchir", size="sm")
-                        usage_md  = gr.Markdown(_usage_md())
+                with gr.Row(elem_id="chat-row"):
+                    # ── Gauche : actions + historique repliable (C) + tokens ──
+                    with gr.Column(scale=1, min_width=168, elem_id="chat-sidebar"):
+                        new_btn = gr.Button("✨ Nouvelle conversation", variant="primary", size="sm")
+                        with gr.Accordion("📋 Historique", open=False):
+                            sess_dd = gr.Dropdown(choices=_list_sessions(), label="Sessions", value=None)
+                            ref_btn = gr.Button("🔄 Rafraîchir", size="sm")
+                        usage_md = gr.Markdown(_usage_md())
 
-                    # ── Colonne centrale : conversation ──────────────────────
+                    # ── Centre : conversation ────────────────────────────────
                     with gr.Column(scale=4):
                         if _CHATBOT_SUPPORTS_TYPE:
-                            chatbot = gr.Chatbot(height=540, label="", show_label=False, type="messages",
-                                                 show_copy_button=True, elem_id="main-chat", placeholder="👋 Pose ta question, dépose un fichier ou une image…")
+                            chatbot = gr.Chatbot(height=520, show_label=False, type="messages",
+                                                 show_copy_button=True, elem_id="main-chat",
+                                                 placeholder="👋 **Bienvenue !** Pose ta question, ou choisis une suggestion ci-dessous.")
                         else:
-                            chatbot = gr.Chatbot(height=540, label="", show_label=False,
-                                                 show_copy_button=True, elem_id="main-chat")
+                            chatbot = gr.Chatbot(height=520, show_label=False, show_copy_button=True, elem_id="main-chat")
+                        # (B) Suggestions cliquables — remplissent la saisie
+                        with gr.Row(elem_id="suggestions"):
+                            sug1 = gr.Button("💡 3 idées de business 2026", size="sm")
+                            sug2 = gr.Button("📈 Analyse l'action Nvidia", size="sm")
+                            sug3 = gr.Button("🧑‍💻 Explique les closures JS", size="sm")
                         with gr.Row():
-                            msg_in  = gr.Textbox(
-                                placeholder='Écris… ou dépose un fichier/image ci-dessous · "Agent: …" pour les outils',
-                                scale=5, label="", lines=1)
+                            msg_in  = gr.Textbox(placeholder='Écris ton message…  ("Agent: …" pour forcer les outils)',
+                                                 scale=6, label="", lines=1, autofocus=True)
                             send_btn = gr.Button("Envoyer ▶", variant="primary", scale=1)
-                        # Raccourcis rapides (agissent sur le fichier/image déposé)
+                        # Raccourcis (agissent sur le fichier/image joint)
                         with gr.Row():
                             sc_explain = gr.Button("🔍 Expliquer le code", size="sm")
                             sc_bugs    = gr.Button("🐛 Trouver les bugs", size="sm")
                             sc_summary = gr.Button("📊 Résumer le document", size="sm")
-                        with gr.Row():
-                            chat_file = gr.File(label="📎 Déposer un fichier (code, PDF, texte…)", file_count="single", type="filepath")
-                            chat_img  = gr.Image(label="🖼️ Image", type="filepath", sources=["upload", "clipboard"], height=120)
+                        # Joindre — replié par défaut (déclutter l'interface)
+                        with gr.Accordion("📎 Joindre un fichier ou une image", open=False):
+                            with gr.Row():
+                                chat_file = gr.File(label="Fichier (code, PDF, texte…)", file_count="single", type="filepath")
+                                chat_img  = gr.Image(label="Image (upload ou Ctrl+V)", type="filepath",
+                                                     sources=["upload", "clipboard"], height=150)
 
-                    # ── Colonne droite : artefact (comme Claude) ─────────────
-                    with gr.Column(scale=2):
+                    # ── Droite : Artefact — MASQUÉ tant qu'il n'y a pas de code (A) ──
+                    with gr.Column(scale=2, visible=False) as artifact_col:
                         gr.Markdown("### 🧩 Artefact")
-                        artifact_code = gr.Code(label="Dernier code/bloc généré", language="python")
+                        artifact_code = gr.Code(label="Dernier code généré", language="python")
 
                 chat_st = gr.State([])
 
                 _CHAT_IN  = [msg_in, chat_st, mode_state, sid_state, chat_img, chat_file]
-                _CHAT_OUT = [chatbot, chat_st, msg_in, chat_img, chat_file, artifact_code, usage_md]
+                _CHAT_OUT = [chatbot, chat_st, msg_in, chat_img, chat_file, artifact_code, artifact_col, usage_md]
 
                 mode_btn.click(toggle_mode, [mode_state], [mode_state, mode_btn, mode_ind], queue=False)
-                # queue=False → POST direct, fiable même derrière un antivirus qui bloque le streaming SSE
-                send_btn.click(send, _CHAT_IN, _CHAT_OUT, queue=False)
-                msg_in.submit(send, _CHAT_IN, _CHAT_OUT, queue=False)
-                # Raccourcis : pré-remplissent la consigne, puis l'utilisateur envoie
+                # send est un générateur asynchrone (streaming en direct) → nécessite la queue
+                send_btn.click(send, _CHAT_IN, _CHAT_OUT)
+                msg_in.submit(send, _CHAT_IN, _CHAT_OUT)
+                sug1.click(lambda: "Donne-moi 3 idées de business en 2026 et pourquoi", None, msg_in, queue=False)
+                sug2.click(lambda: "Analyse l'action Nvidia (NVDA)", None, msg_in, queue=False)
+                sug3.click(lambda: "Explique-moi les closures en JavaScript avec un exemple", None, msg_in, queue=False)
                 sc_explain.click(lambda: "Explique ce code ligne par ligne.", None, msg_in, queue=False)
                 sc_bugs.click(lambda: "Trouve les bugs et propose les corrections.", None, msg_in, queue=False)
                 sc_summary.click(lambda: "Résume ce document et donne les points clés.", None, msg_in, queue=False)
@@ -1794,132 +1951,143 @@ def build_ui() -> gr.Blocks:
                 h_btn.click(analyze_health_fn, [h_path, h_q, h_file], [h_out], queue=False)
 
             # ══ AUTO-AMÉLIORATION ═════════════════════════════════════════════
-            with gr.TabItem("🧬 Auto-Amélioration"):
-                gr.Markdown(
-                    "### L'agent apprend de chaque exécution\n"
-                    "Après chaque réponse de l'Orchestrateur, il évalue sa propre qualité "
-                    "et mémorise des leçons pour s'améliorer automatiquement."
-                )
-                with gr.Row():
-                    si_btn = gr.Button("🔄 Voir les statistiques", variant="primary")
-                    si_rst = gr.Button("🗑️ Réinitialiser", variant="secondary")
-                with gr.Row():
-                    with gr.Column():
-                        si_stats = gr.Markdown("*Clique sur Voir les statistiques*")
-                    with gr.Column():
-                        si_lessons = gr.Dataframe(
-                            headers=["Date", "Domaine", "Score", "Leçon apprise"],
-                            label="Leçons récentes")
+            with gr.TabItem("⚙️ Avancé"):
+                with gr.Tabs():
+                    with gr.TabItem("🧠 Ma mémoire"):
+                        gr.Markdown("Ce que l'agent a retenu de toi (mémoire sémantique) — il l'utilise pour personnaliser ses réponses.")
+                        mem_out = gr.Markdown("_Clique sur « Afficher » pour voir ta mémoire._")
+                        with gr.Row():
+                            mem_btn   = gr.Button("🔄 Afficher ma mémoire", variant="primary")
+                            mem_clear = gr.Button("🗑️ Effacer cette conversation", variant="secondary")
+                        mem_btn.click(show_memory, [sid_state], [mem_out], queue=False)
+                        mem_clear.click(clear_memory_fn, [sid_state], [mem_out], queue=False)
 
-                def show_si():
-                    try:
-                        import importlib, sys
-                        # Force reload si le module a été auto-modifié
-                        mod_name = "agent.self_improve"
-                        if mod_name in sys.modules:
-                            importlib.reload(sys.modules[mod_name])
-                        from agent.self_improve import get_stats, get_recent_lessons
-                        stats = get_stats()
-                        lessons = get_recent_lessons(15)
-                        runs = stats.get("runs", 0)
-                        avg = stats.get("avg_score", 0.0)
-                        try:
-                            avg_str = f"{float(avg):.1f}"
-                        except (TypeError, ValueError):
-                            avg_str = str(avg)
-                        stats_md = (
-                            f"**Runs évalués :** {runs}\n\n"
-                            f"**Score moyen :** {avg_str} / 10"
-                        )
-                        rows = []
-                        for l in reversed(list(lessons)):
-                            ts = str(l.get("timestamp", ""))[:16].replace("T", " ")
-                            score_val = l.get("score", "?")
-                            rows.append([
-                                ts,
-                                str(l.get("domain", "?")),
-                                f"{score_val}/10",
-                                str(l.get("lesson", ""))[:80],
-                            ])
-                        return stats_md, rows
-                    except Exception as e:
-                        return f"❌ Erreur chargement statistiques: {e}", []
-
-                def reset_si():
-                    from pathlib import Path
-                    Path("data/self_improve.json").unlink(missing_ok=True)
-                    return "✅ Réinitialisé.", []
-
-                si_btn.click(show_si, [], [si_stats, si_lessons])
-                si_rst.click(reset_si, [], [si_stats, si_lessons])
-
-                # ── Auto-modification de code ────────────────────────────────
-                gr.Markdown("---\n### 🔧 Auto-modification de code")
-                gr.Markdown(
-                    "L'agent peut réécrire son propre code (system_prompt, finance_deep, "
-                    "self_improve, finance plugin). Chaque modification est **sécurisée** : "
-                    "backup automatique, validation syntaxe + import, rollback si échec.\n\n"
-                    "Décris l'amélioration souhaitée — l'agent lit le code concerné, "
-                    "génère le patch, le valide et l'applique."
-                )
-                with gr.Row():
-                    with gr.Column(scale=2):
-                        sm_request = gr.Textbox(
-                            label="Amélioration à apporter",
-                            lines=3,
-                            placeholder=(
-                                "Ex: Ajoute le calcul du MACD dans finance_deep.py\n"
-                                "Ex: Ajoute l'ETF Amundi MSCI India à l'univers PEA\n"
-                                "Ex: Renforce la règle anti-hallucination dans le system prompt"
-                            ),
+                    with gr.TabItem("🧬 Auto-Amélioration"):
+                        gr.Markdown(
+                            "### L'agent apprend de chaque exécution\n"
+                            "Après chaque réponse de l'Orchestrateur, il évalue sa propre qualité "
+                            "et mémorise des leçons pour s'améliorer automatiquement."
                         )
                         with gr.Row():
-                            sm_btn      = gr.Button("🔧 Générer & appliquer", variant="primary")
-                            sm_rollback = gr.Button("↩️ Annuler dernière modif", variant="secondary")
-                            sm_status_btn = gr.Button("📋 État / journal", variant="secondary")
-                    with gr.Column(scale=3):
-                        sm_out = gr.Markdown("*Décris une amélioration et clique sur Générer.*")
+                            si_btn = gr.Button("🔄 Voir les statistiques", variant="primary")
+                            si_rst = gr.Button("🗑️ Réinitialiser", variant="secondary")
+                        with gr.Row():
+                            with gr.Column():
+                                si_stats = gr.Markdown("*Clique sur Voir les statistiques*")
+                            with gr.Column():
+                                si_lessons = gr.Dataframe(
+                                    headers=["Date", "Domaine", "Score", "Leçon apprise"],
+                                    label="Leçons récentes")
 
-                sm_btn.click(self_modify_fn, [sm_request], [sm_out])
-                sm_rollback.click(self_modify_rollback_fn, [], [sm_out])
-                sm_status_btn.click(self_modify_status_fn, [], [sm_out])
+                        def show_si():
+                            try:
+                                import importlib, sys
+                                # Force reload si le module a été auto-modifié
+                                mod_name = "agent.self_improve"
+                                if mod_name in sys.modules:
+                                    importlib.reload(sys.modules[mod_name])
+                                from agent.self_improve import get_stats, get_recent_lessons
+                                stats = get_stats()
+                                lessons = get_recent_lessons(15)
+                                runs = stats.get("runs", 0)
+                                avg = stats.get("avg_score", 0.0)
+                                try:
+                                    avg_str = f"{float(avg):.1f}"
+                                except (TypeError, ValueError):
+                                    avg_str = str(avg)
+                                stats_md = (
+                                    f"**Runs évalués :** {runs}\n\n"
+                                    f"**Score moyen :** {avg_str} / 10"
+                                )
+                                rows = []
+                                for l in reversed(list(lessons)):
+                                    ts = str(l.get("timestamp", ""))[:16].replace("T", " ")
+                                    score_val = l.get("score", "?")
+                                    rows.append([
+                                        ts,
+                                        str(l.get("domain", "?")),
+                                        f"{score_val}/10",
+                                        str(l.get("lesson", ""))[:80],
+                                    ])
+                                return stats_md, rows
+                            except Exception as e:
+                                return f"❌ Erreur chargement statistiques: {e}", []
 
-            # ══ AGENTS ════════════════════════════════════════════════════════
-            with gr.TabItem("🤖 Agents"):
-                with gr.Row():
-                    with gr.Column():
-                        gr.Markdown("### Créer un sous-agent")
-                        a_role  = gr.Dropdown(
-                            ["researcher","coder","fullstack_dev","finance_analyst","crypto_analyst",
-                             "marketing_expert","copywriter","seo_expert","video_creator","youtube_creator",
-                             "writer","data_scientist","analyst","ecommerce_expert","game_developer","generic"],
-                            value="coder", label="Rôle")
-                        a_obj   = gr.Textbox(label="Objectif")
-                        a_model = gr.Textbox(label="Modèle (vide = défaut)")
-                        a_btn   = gr.Button("➕ Créer", variant="primary")
-                        a_cfg   = gr.Code(label="Config JSON", language="json")
-                        a_btn.click(mk_agent, [a_role, a_obj, a_model], [a_cfg])
-                    with gr.Column():
-                        gr.Markdown("### Agents existants")
-                        a_rbtn  = gr.Button("🔄 Rafraîchir")
-                        a_tbl   = gr.Dataframe(headers=["ID","Nom","Rôle","Statut","Dernière activité"])
-                        a_rbtn.click(ls_agents, [], [a_tbl])
+                        def reset_si():
+                            from pathlib import Path
+                            Path("data/self_improve.json").unlink(missing_ok=True)
+                            return "✅ Réinitialisé.", []
 
-            # ══ PLUGINS ═══════════════════════════════════════════════════════
-            with gr.TabItem("🔌 Plugins"):
-                with gr.Row():
-                    with gr.Column():
-                        gr.Markdown("### Plugins installés")
-                        p_tbl  = gr.Dataframe(headers=["Nom","Description"])
-                        p_rbtn = gr.Button("🔄 Rafraîchir")
-                        p_rbtn.click(ls_plugins, [], [p_tbl])
-                    with gr.Column():
-                        gr.Markdown("### Ajouter un plugin")
-                        p_code = gr.Code(language="python", label="Code",
-                                         value='from plugins.base import Plugin\n\nclass MonPlugin(Plugin):\n    name = "mon_outil"\n    description = "Description"\n    parameters = {"input": {"type": "string", "required": True}}\n\n    def run(self, input: str) -> str:\n        return f"Résultat: {input}"\n')
-                        p_abtn = gr.Button("⬆️ Charger", variant="primary")
-                        p_stat = gr.Textbox(label="Statut")
-                        p_abtn.click(add_plugin, [p_code], [p_stat])
+                        si_btn.click(show_si, [], [si_stats, si_lessons])
+                        si_rst.click(reset_si, [], [si_stats, si_lessons])
+
+                        # ── Auto-modification de code ────────────────────────────────
+                        gr.Markdown("---\n### 🔧 Auto-modification de code")
+                        gr.Markdown(
+                            "L'agent peut réécrire son propre code (system_prompt, finance_deep, "
+                            "self_improve, finance plugin). Chaque modification est **sécurisée** : "
+                            "backup automatique, validation syntaxe + import, rollback si échec.\n\n"
+                            "Décris l'amélioration souhaitée — l'agent lit le code concerné, "
+                            "génère le patch, le valide et l'applique."
+                        )
+                        with gr.Row():
+                            with gr.Column(scale=2):
+                                sm_request = gr.Textbox(
+                                    label="Amélioration à apporter",
+                                    lines=3,
+                                    placeholder=(
+                                        "Ex: Ajoute le calcul du MACD dans finance_deep.py\n"
+                                        "Ex: Ajoute l'ETF Amundi MSCI India à l'univers PEA\n"
+                                        "Ex: Renforce la règle anti-hallucination dans le system prompt"
+                                    ),
+                                )
+                                with gr.Row():
+                                    sm_btn      = gr.Button("🔧 Générer & appliquer", variant="primary")
+                                    sm_rollback = gr.Button("↩️ Annuler dernière modif", variant="secondary")
+                                    sm_status_btn = gr.Button("📋 État / journal", variant="secondary")
+                            with gr.Column(scale=3):
+                                sm_out = gr.Markdown("*Décris une amélioration et clique sur Générer.*")
+
+                        sm_btn.click(self_modify_fn, [sm_request], [sm_out])
+                        sm_rollback.click(self_modify_rollback_fn, [], [sm_out])
+                        sm_status_btn.click(self_modify_status_fn, [], [sm_out])
+
+                    # ══ AGENTS ════════════════════════════════════════════════════════
+                    with gr.TabItem("🤖 Agents"):
+                        with gr.Row():
+                            with gr.Column():
+                                gr.Markdown("### Créer un sous-agent")
+                                a_role  = gr.Dropdown(
+                                    ["researcher","coder","fullstack_dev","finance_analyst","crypto_analyst",
+                                     "marketing_expert","copywriter","seo_expert","video_creator","youtube_creator",
+                                     "writer","data_scientist","analyst","ecommerce_expert","game_developer","generic"],
+                                    value="coder", label="Rôle")
+                                a_obj   = gr.Textbox(label="Objectif")
+                                a_model = gr.Textbox(label="Modèle (vide = défaut)")
+                                a_btn   = gr.Button("➕ Créer", variant="primary")
+                                a_cfg   = gr.Code(label="Config JSON", language="json")
+                                a_btn.click(mk_agent, [a_role, a_obj, a_model], [a_cfg])
+                            with gr.Column():
+                                gr.Markdown("### Agents existants")
+                                a_rbtn  = gr.Button("🔄 Rafraîchir")
+                                a_tbl   = gr.Dataframe(headers=["ID","Nom","Rôle","Statut","Dernière activité"])
+                                a_rbtn.click(ls_agents, [], [a_tbl])
+
+                    # ══ PLUGINS ═══════════════════════════════════════════════════════
+                    with gr.TabItem("🔌 Plugins"):
+                        with gr.Row():
+                            with gr.Column():
+                                gr.Markdown("### Plugins installés")
+                                p_tbl  = gr.Dataframe(headers=["Nom","Description"])
+                                p_rbtn = gr.Button("🔄 Rafraîchir")
+                                p_rbtn.click(ls_plugins, [], [p_tbl])
+                            with gr.Column():
+                                gr.Markdown("### Ajouter un plugin")
+                                p_code = gr.Code(language="python", label="Code",
+                                                 value='from plugins.base import Plugin\n\nclass MonPlugin(Plugin):\n    name = "mon_outil"\n    description = "Description"\n    parameters = {"input": {"type": "string", "required": True}}\n\n    def run(self, input: str) -> str:\n        return f"Résultat: {input}"\n')
+                                p_abtn = gr.Button("⬆️ Charger", variant="primary")
+                                p_stat = gr.Textbox(label="Statut")
+                                p_abtn.click(add_plugin, [p_code], [p_stat])
 
         # Rafraîchit le compteur de tokens à CHAQUE chargement de page
         # (sinon la valeur reste figée à celle du démarrage du serveur → « repart à 0 »).
