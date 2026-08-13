@@ -353,11 +353,14 @@ def _route(message: str, mode: str):
             return True, False, message[len(t):].strip() or message
     return False, False, message
 
-def _extract_artifact(text: str):
-    """Extrait le plus gros bloc de code d'une réponse → volet latéral (artefact)."""
+def _artifact_out(text: str):
+    """Retourne (contenu_code, visibilité_du_volet). Le volet Artefact ne s'affiche
+    QUE si la réponse contient un bloc de code (sinon masqué → chat plein cadre)."""
     import re
     blocks = re.findall(r"```[a-zA-Z0-9]*\n(.*?)```", text or "", re.DOTALL)
-    return max(blocks, key=len).strip() if blocks else gr.update()
+    if blocks:
+        return max(blocks, key=len).strip(), gr.update(visible=True)
+    return gr.update(), gr.update(visible=False)
 
 
 def _usage_md() -> str:
@@ -394,7 +397,7 @@ def send(message: str, history: list, mode: str, sid: str, image=None, file=None
             answer = f"❌ Analyse du fichier impossible : {str(e)[:200]}"
         new_h = _add(history, f"📎 *({fp.name})* {message}".strip(), answer)
         _save(sid, (_load(sid).get("name") or fp.name), new_h)
-        return new_h, new_h, "", None, None, _extract_artifact(answer), _usage_md()
+        return new_h, new_h, "", None, None, *_artifact_out(answer), _usage_md()
 
     # ── Image jointe → analyse visuelle ────────────────────────────────────
     if image:
@@ -407,10 +410,10 @@ def send(message: str, history: list, mode: str, sid: str, image=None, file=None
         shown = f"🖼️ *(image)* {message}".strip() if message.strip() else "🖼️ *(image jointe)*"
         new_h = _add(history, shown, answer)
         _save(sid, (_load(sid).get("name") or "Image"), new_h)
-        return new_h, new_h, "", None, None, _extract_artifact(answer), _usage_md()
+        return new_h, new_h, "", None, None, *_artifact_out(answer), _usage_md()
 
     if not message.strip():
-        return history, history, "", None, None, gr.update(), _usage_md()
+        return history, history, "", None, None, *_artifact_out(""), _usage_md()
     use_agent, _use_finance, clean = _route(message, mode)
     if use_agent:
         answer = full_agent(clean, history, sid)
@@ -429,7 +432,7 @@ def send(message: str, history: list, mode: str, sid: str, image=None, file=None
     existing = _load(sid)
     name = existing.get("name", "Nouvelle") if existing.get("history") else message[:50]
     _save(sid, name, new_h)
-    return new_h, new_h, "", None, None, _extract_artifact(answer), _usage_md()
+    return new_h, new_h, "", None, None, *_artifact_out(answer), _usage_md()
 
 def toggle_mode(mode: str):
     new = "agent" if mode == "fast" else "fast"
@@ -1516,6 +1519,15 @@ button.secondary, .gr-button-secondary {
 /* Bouton d'envoi bien visible */
 button.primary, .gr-button-primary { font-weight:700; }
 
+/* Suggestions & sidebar */
+#suggestions { gap:8px; margin-bottom:2px; }
+#suggestions button { border-radius:999px !important; font-size:12.5px !important; opacity:.92;
+  background:rgba(79,70,229,.08) !important; border:1px solid rgba(79,70,229,.25) !important; }
+#suggestions button:hover { opacity:1; background:rgba(79,70,229,.15) !important; }
+#chat-sidebar { background:rgba(148,163,184,.06); border-radius:14px; padding:8px; }
+/* Zone "Joindre" repliée = plus discrète */
+.accordion { border-radius:12px !important; }
+
 /* Responsive mobile : colonnes empilées, chat plein largeur */
 @media (max-width:820px) {
   .gradio-container { padding:6px !important; }
@@ -1557,52 +1569,61 @@ def build_ui() -> gr.Blocks:
 
             # ══ CHAT (le hub — fichiers, images, code, artefacts) ═════════════
             with gr.TabItem("💬 Chat"):
-                with gr.Row():
-                    # ── Colonne gauche : historique ──────────────────────────
-                    with gr.Column(scale=1, min_width=180):
-                        gr.Markdown("### 📋 Historique")
-                        new_btn   = gr.Button("✨ Nouvelle conv.", variant="primary", size="sm")
-                        sess_dd   = gr.Dropdown(choices=_list_sessions(), label="Sessions", value=None)
-                        ref_btn   = gr.Button("🔄 Rafraîchir", size="sm")
-                        usage_md  = gr.Markdown(_usage_md())
+                with gr.Row(elem_id="chat-row"):
+                    # ── Gauche : actions + historique repliable (C) + tokens ──
+                    with gr.Column(scale=1, min_width=168, elem_id="chat-sidebar"):
+                        new_btn = gr.Button("✨ Nouvelle conversation", variant="primary", size="sm")
+                        with gr.Accordion("📋 Historique", open=False):
+                            sess_dd = gr.Dropdown(choices=_list_sessions(), label="Sessions", value=None)
+                            ref_btn = gr.Button("🔄 Rafraîchir", size="sm")
+                        usage_md = gr.Markdown(_usage_md())
 
-                    # ── Colonne centrale : conversation ──────────────────────
+                    # ── Centre : conversation ────────────────────────────────
                     with gr.Column(scale=4):
                         if _CHATBOT_SUPPORTS_TYPE:
-                            chatbot = gr.Chatbot(height=540, label="", show_label=False, type="messages",
-                                                 show_copy_button=True, elem_id="main-chat", placeholder="👋 Pose ta question, dépose un fichier ou une image…")
+                            chatbot = gr.Chatbot(height=520, show_label=False, type="messages",
+                                                 show_copy_button=True, elem_id="main-chat",
+                                                 placeholder="👋 **Bienvenue !** Pose ta question, ou choisis une suggestion ci-dessous.")
                         else:
-                            chatbot = gr.Chatbot(height=540, label="", show_label=False,
-                                                 show_copy_button=True, elem_id="main-chat")
+                            chatbot = gr.Chatbot(height=520, show_label=False, show_copy_button=True, elem_id="main-chat")
+                        # (B) Suggestions cliquables — remplissent la saisie
+                        with gr.Row(elem_id="suggestions"):
+                            sug1 = gr.Button("💡 3 idées de business 2026", size="sm")
+                            sug2 = gr.Button("📈 Analyse l'action Nvidia", size="sm")
+                            sug3 = gr.Button("🧑‍💻 Explique les closures JS", size="sm")
                         with gr.Row():
-                            msg_in  = gr.Textbox(
-                                placeholder='Écris… ou dépose un fichier/image ci-dessous · "Agent: …" pour les outils',
-                                scale=5, label="", lines=1)
+                            msg_in  = gr.Textbox(placeholder='Écris ton message…  ("Agent: …" pour forcer les outils)',
+                                                 scale=6, label="", lines=1, autofocus=True)
                             send_btn = gr.Button("Envoyer ▶", variant="primary", scale=1)
-                        # Raccourcis rapides (agissent sur le fichier/image déposé)
+                        # Raccourcis (agissent sur le fichier/image joint)
                         with gr.Row():
                             sc_explain = gr.Button("🔍 Expliquer le code", size="sm")
                             sc_bugs    = gr.Button("🐛 Trouver les bugs", size="sm")
                             sc_summary = gr.Button("📊 Résumer le document", size="sm")
-                        with gr.Row():
-                            chat_file = gr.File(label="📎 Déposer un fichier (code, PDF, texte…)", file_count="single", type="filepath")
-                            chat_img  = gr.Image(label="🖼️ Image", type="filepath", sources=["upload", "clipboard"], height=120)
+                        # Joindre — replié par défaut (déclutter l'interface)
+                        with gr.Accordion("📎 Joindre un fichier ou une image", open=False):
+                            with gr.Row():
+                                chat_file = gr.File(label="Fichier (code, PDF, texte…)", file_count="single", type="filepath")
+                                chat_img  = gr.Image(label="Image (upload ou Ctrl+V)", type="filepath",
+                                                     sources=["upload", "clipboard"], height=150)
 
-                    # ── Colonne droite : artefact (comme Claude) ─────────────
-                    with gr.Column(scale=2):
+                    # ── Droite : Artefact — MASQUÉ tant qu'il n'y a pas de code (A) ──
+                    with gr.Column(scale=2, visible=False) as artifact_col:
                         gr.Markdown("### 🧩 Artefact")
-                        artifact_code = gr.Code(label="Dernier code/bloc généré", language="python")
+                        artifact_code = gr.Code(label="Dernier code généré", language="python")
 
                 chat_st = gr.State([])
 
                 _CHAT_IN  = [msg_in, chat_st, mode_state, sid_state, chat_img, chat_file]
-                _CHAT_OUT = [chatbot, chat_st, msg_in, chat_img, chat_file, artifact_code, usage_md]
+                _CHAT_OUT = [chatbot, chat_st, msg_in, chat_img, chat_file, artifact_code, artifact_col, usage_md]
 
                 mode_btn.click(toggle_mode, [mode_state], [mode_state, mode_btn, mode_ind], queue=False)
-                # queue=False → POST direct, fiable même derrière un antivirus qui bloque le streaming SSE
+                # queue=False → POST direct, fiable même derrière un antivirus qui bloque le SSE
                 send_btn.click(send, _CHAT_IN, _CHAT_OUT, queue=False)
                 msg_in.submit(send, _CHAT_IN, _CHAT_OUT, queue=False)
-                # Raccourcis : pré-remplissent la consigne, puis l'utilisateur envoie
+                sug1.click(lambda: "Donne-moi 3 idées de business en 2026 et pourquoi", None, msg_in, queue=False)
+                sug2.click(lambda: "Analyse l'action Nvidia (NVDA)", None, msg_in, queue=False)
+                sug3.click(lambda: "Explique-moi les closures en JavaScript avec un exemple", None, msg_in, queue=False)
                 sc_explain.click(lambda: "Explique ce code ligne par ligne.", None, msg_in, queue=False)
                 sc_bugs.click(lambda: "Trouve les bugs et propose les corrections.", None, msg_in, queue=False)
                 sc_summary.click(lambda: "Résume ce document et donne les points clés.", None, msg_in, queue=False)
