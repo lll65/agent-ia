@@ -59,6 +59,30 @@ def _ddg_html(query: str, max_results: int, region: str = "fr-fr") -> list[dict]
     return out
 
 
+def _tavily(query: str, max_results: int) -> list[dict]:
+    """Recherche via Tavily (fiable depuis un serveur, ~1000/mois gratuit). Clé requise."""
+    try:
+        from config import config
+        key = getattr(config, "TAVILY_API_KEY", "")
+    except Exception:
+        key = ""
+    if not key:
+        return []
+    try:
+        import requests
+        r = requests.post("https://api.tavily.com/search",
+                          json={"api_key": key, "query": query, "max_results": max_results,
+                                "search_depth": "basic"},
+                          timeout=20)
+        if r.status_code != 200:
+            return []
+        data = r.json().get("results", [])
+        return [{"title": x.get("title", ""), "href": x.get("url", ""),
+                 "body": x.get("content", "")} for x in data]
+    except Exception:
+        return []
+
+
 def _ddg_lib(query: str, max_results: int, mode: str) -> list[dict]:
     """Repli via la librairie (nouveau paquet `ddgs`, sinon `duckduckgo_search`)."""
     try:
@@ -87,9 +111,9 @@ class WebSearchPlugin(Plugin):
         if not query:
             return "Aucune requête fournie."
 
-        # 1) Endpoint HTML direct (fiable). 2) repli librairie.
-        results = []
-        if mode != "news":
+        # 1) Tavily si clé (fiable depuis un serveur). 2) HTML DuckDuckGo. 3) librairie.
+        results = _tavily(query, max_results)
+        if not results and mode != "news":
             results = _ddg_html(query, max_results)
         if not results:
             results = _ddg_lib(query, max_results, mode)
