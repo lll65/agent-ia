@@ -26,6 +26,9 @@ class Config:
     # Recherche web fiable depuis un serveur (Render) — Tavily, ~1000/mois gratuit (tavily.com).
     # Optionnel : sans clé, on retombe sur DuckDuckGo (moins fiable en datacenter).
     TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+    # Passerelle universelle /ask : mot de passe pour parler à l'agent depuis n'importe quel
+    # appareil (Siri, n8n, webhook…). VIDE = endpoint désactivé (501, aucune fuite).
+    AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
     XAI_MODEL = os.getenv("XAI_MODEL", "grok-beta")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     CEREBRAS_MODEL = os.getenv("CEREBRAS_MODEL", "llama-3.3-70b")
