@@ -1554,6 +1554,39 @@ def run_master(goal):
 # UI
 # ═════════════════════════════════════════════════════════════════════════════
 
+def show_memory(sid: str) -> str:
+    """Affiche ce que l'agent a retenu de l'utilisateur (mémoire ChromaDB/Supabase)."""
+    try:
+        from memory import get_memory
+        mem = get_memory()
+        recent = mem.recall_recent(sid, 80)
+    except Exception as e:
+        return f"❌ Impossible de lire la mémoire : {e}"
+    if not recent:
+        return ("_Aucun souvenir pour l'instant._\n\nDiscute avec l'agent : il retient tes échanges "
+                "et personnalise ses réponses. (Sur Render, `SUPABASE_DB_URL` garde la mémoire entre redéploiements.)")
+    lines = [f"### 🧠 Ce que l'agent a retenu ({len(recent)} souvenirs)\n"]
+    try:
+        summary = mem.get_summary(sid)
+        if summary:
+            lines.append(f"**Résumé du profil :** {summary}\n")
+    except Exception:
+        pass
+    for m in recent:
+        who = "🧑 **Toi**" if m.get("role") == "user" else "🤖 Agent"
+        lines.append(f"- {who} : {str(m.get('content',''))[:220]}")
+    return "\n".join(lines)
+
+
+def clear_memory_fn(sid: str) -> str:
+    try:
+        from memory import get_memory
+        get_memory().clear(sid)
+        return "✅ Mémoire de cette conversation effacée."
+    except Exception as e:
+        return f"❌ Erreur : {e}"
+
+
 # ─── Identité visuelle : thème + CSS injecté (une seule source de vérité) ───────
 
 _THEME = gr.themes.Soft(
@@ -1918,132 +1951,143 @@ def build_ui() -> gr.Blocks:
                 h_btn.click(analyze_health_fn, [h_path, h_q, h_file], [h_out], queue=False)
 
             # ══ AUTO-AMÉLIORATION ═════════════════════════════════════════════
-            with gr.TabItem("🧬 Auto-Amélioration"):
-                gr.Markdown(
-                    "### L'agent apprend de chaque exécution\n"
-                    "Après chaque réponse de l'Orchestrateur, il évalue sa propre qualité "
-                    "et mémorise des leçons pour s'améliorer automatiquement."
-                )
-                with gr.Row():
-                    si_btn = gr.Button("🔄 Voir les statistiques", variant="primary")
-                    si_rst = gr.Button("🗑️ Réinitialiser", variant="secondary")
-                with gr.Row():
-                    with gr.Column():
-                        si_stats = gr.Markdown("*Clique sur Voir les statistiques*")
-                    with gr.Column():
-                        si_lessons = gr.Dataframe(
-                            headers=["Date", "Domaine", "Score", "Leçon apprise"],
-                            label="Leçons récentes")
+            with gr.TabItem("⚙️ Avancé"):
+                with gr.Tabs():
+                    with gr.TabItem("🧠 Ma mémoire"):
+                        gr.Markdown("Ce que l'agent a retenu de toi (mémoire sémantique) — il l'utilise pour personnaliser ses réponses.")
+                        mem_out = gr.Markdown("_Clique sur « Afficher » pour voir ta mémoire._")
+                        with gr.Row():
+                            mem_btn   = gr.Button("🔄 Afficher ma mémoire", variant="primary")
+                            mem_clear = gr.Button("🗑️ Effacer cette conversation", variant="secondary")
+                        mem_btn.click(show_memory, [sid_state], [mem_out], queue=False)
+                        mem_clear.click(clear_memory_fn, [sid_state], [mem_out], queue=False)
 
-                def show_si():
-                    try:
-                        import importlib, sys
-                        # Force reload si le module a été auto-modifié
-                        mod_name = "agent.self_improve"
-                        if mod_name in sys.modules:
-                            importlib.reload(sys.modules[mod_name])
-                        from agent.self_improve import get_stats, get_recent_lessons
-                        stats = get_stats()
-                        lessons = get_recent_lessons(15)
-                        runs = stats.get("runs", 0)
-                        avg = stats.get("avg_score", 0.0)
-                        try:
-                            avg_str = f"{float(avg):.1f}"
-                        except (TypeError, ValueError):
-                            avg_str = str(avg)
-                        stats_md = (
-                            f"**Runs évalués :** {runs}\n\n"
-                            f"**Score moyen :** {avg_str} / 10"
-                        )
-                        rows = []
-                        for l in reversed(list(lessons)):
-                            ts = str(l.get("timestamp", ""))[:16].replace("T", " ")
-                            score_val = l.get("score", "?")
-                            rows.append([
-                                ts,
-                                str(l.get("domain", "?")),
-                                f"{score_val}/10",
-                                str(l.get("lesson", ""))[:80],
-                            ])
-                        return stats_md, rows
-                    except Exception as e:
-                        return f"❌ Erreur chargement statistiques: {e}", []
-
-                def reset_si():
-                    from pathlib import Path
-                    Path("data/self_improve.json").unlink(missing_ok=True)
-                    return "✅ Réinitialisé.", []
-
-                si_btn.click(show_si, [], [si_stats, si_lessons])
-                si_rst.click(reset_si, [], [si_stats, si_lessons])
-
-                # ── Auto-modification de code ────────────────────────────────
-                gr.Markdown("---\n### 🔧 Auto-modification de code")
-                gr.Markdown(
-                    "L'agent peut réécrire son propre code (system_prompt, finance_deep, "
-                    "self_improve, finance plugin). Chaque modification est **sécurisée** : "
-                    "backup automatique, validation syntaxe + import, rollback si échec.\n\n"
-                    "Décris l'amélioration souhaitée — l'agent lit le code concerné, "
-                    "génère le patch, le valide et l'applique."
-                )
-                with gr.Row():
-                    with gr.Column(scale=2):
-                        sm_request = gr.Textbox(
-                            label="Amélioration à apporter",
-                            lines=3,
-                            placeholder=(
-                                "Ex: Ajoute le calcul du MACD dans finance_deep.py\n"
-                                "Ex: Ajoute l'ETF Amundi MSCI India à l'univers PEA\n"
-                                "Ex: Renforce la règle anti-hallucination dans le system prompt"
-                            ),
+                    with gr.TabItem("🧬 Auto-Amélioration"):
+                        gr.Markdown(
+                            "### L'agent apprend de chaque exécution\n"
+                            "Après chaque réponse de l'Orchestrateur, il évalue sa propre qualité "
+                            "et mémorise des leçons pour s'améliorer automatiquement."
                         )
                         with gr.Row():
-                            sm_btn      = gr.Button("🔧 Générer & appliquer", variant="primary")
-                            sm_rollback = gr.Button("↩️ Annuler dernière modif", variant="secondary")
-                            sm_status_btn = gr.Button("📋 État / journal", variant="secondary")
-                    with gr.Column(scale=3):
-                        sm_out = gr.Markdown("*Décris une amélioration et clique sur Générer.*")
+                            si_btn = gr.Button("🔄 Voir les statistiques", variant="primary")
+                            si_rst = gr.Button("🗑️ Réinitialiser", variant="secondary")
+                        with gr.Row():
+                            with gr.Column():
+                                si_stats = gr.Markdown("*Clique sur Voir les statistiques*")
+                            with gr.Column():
+                                si_lessons = gr.Dataframe(
+                                    headers=["Date", "Domaine", "Score", "Leçon apprise"],
+                                    label="Leçons récentes")
 
-                sm_btn.click(self_modify_fn, [sm_request], [sm_out])
-                sm_rollback.click(self_modify_rollback_fn, [], [sm_out])
-                sm_status_btn.click(self_modify_status_fn, [], [sm_out])
+                        def show_si():
+                            try:
+                                import importlib, sys
+                                # Force reload si le module a été auto-modifié
+                                mod_name = "agent.self_improve"
+                                if mod_name in sys.modules:
+                                    importlib.reload(sys.modules[mod_name])
+                                from agent.self_improve import get_stats, get_recent_lessons
+                                stats = get_stats()
+                                lessons = get_recent_lessons(15)
+                                runs = stats.get("runs", 0)
+                                avg = stats.get("avg_score", 0.0)
+                                try:
+                                    avg_str = f"{float(avg):.1f}"
+                                except (TypeError, ValueError):
+                                    avg_str = str(avg)
+                                stats_md = (
+                                    f"**Runs évalués :** {runs}\n\n"
+                                    f"**Score moyen :** {avg_str} / 10"
+                                )
+                                rows = []
+                                for l in reversed(list(lessons)):
+                                    ts = str(l.get("timestamp", ""))[:16].replace("T", " ")
+                                    score_val = l.get("score", "?")
+                                    rows.append([
+                                        ts,
+                                        str(l.get("domain", "?")),
+                                        f"{score_val}/10",
+                                        str(l.get("lesson", ""))[:80],
+                                    ])
+                                return stats_md, rows
+                            except Exception as e:
+                                return f"❌ Erreur chargement statistiques: {e}", []
 
-            # ══ AGENTS ════════════════════════════════════════════════════════
-            with gr.TabItem("🤖 Agents"):
-                with gr.Row():
-                    with gr.Column():
-                        gr.Markdown("### Créer un sous-agent")
-                        a_role  = gr.Dropdown(
-                            ["researcher","coder","fullstack_dev","finance_analyst","crypto_analyst",
-                             "marketing_expert","copywriter","seo_expert","video_creator","youtube_creator",
-                             "writer","data_scientist","analyst","ecommerce_expert","game_developer","generic"],
-                            value="coder", label="Rôle")
-                        a_obj   = gr.Textbox(label="Objectif")
-                        a_model = gr.Textbox(label="Modèle (vide = défaut)")
-                        a_btn   = gr.Button("➕ Créer", variant="primary")
-                        a_cfg   = gr.Code(label="Config JSON", language="json")
-                        a_btn.click(mk_agent, [a_role, a_obj, a_model], [a_cfg])
-                    with gr.Column():
-                        gr.Markdown("### Agents existants")
-                        a_rbtn  = gr.Button("🔄 Rafraîchir")
-                        a_tbl   = gr.Dataframe(headers=["ID","Nom","Rôle","Statut","Dernière activité"])
-                        a_rbtn.click(ls_agents, [], [a_tbl])
+                        def reset_si():
+                            from pathlib import Path
+                            Path("data/self_improve.json").unlink(missing_ok=True)
+                            return "✅ Réinitialisé.", []
 
-            # ══ PLUGINS ═══════════════════════════════════════════════════════
-            with gr.TabItem("🔌 Plugins"):
-                with gr.Row():
-                    with gr.Column():
-                        gr.Markdown("### Plugins installés")
-                        p_tbl  = gr.Dataframe(headers=["Nom","Description"])
-                        p_rbtn = gr.Button("🔄 Rafraîchir")
-                        p_rbtn.click(ls_plugins, [], [p_tbl])
-                    with gr.Column():
-                        gr.Markdown("### Ajouter un plugin")
-                        p_code = gr.Code(language="python", label="Code",
-                                         value='from plugins.base import Plugin\n\nclass MonPlugin(Plugin):\n    name = "mon_outil"\n    description = "Description"\n    parameters = {"input": {"type": "string", "required": True}}\n\n    def run(self, input: str) -> str:\n        return f"Résultat: {input}"\n')
-                        p_abtn = gr.Button("⬆️ Charger", variant="primary")
-                        p_stat = gr.Textbox(label="Statut")
-                        p_abtn.click(add_plugin, [p_code], [p_stat])
+                        si_btn.click(show_si, [], [si_stats, si_lessons])
+                        si_rst.click(reset_si, [], [si_stats, si_lessons])
+
+                        # ── Auto-modification de code ────────────────────────────────
+                        gr.Markdown("---\n### 🔧 Auto-modification de code")
+                        gr.Markdown(
+                            "L'agent peut réécrire son propre code (system_prompt, finance_deep, "
+                            "self_improve, finance plugin). Chaque modification est **sécurisée** : "
+                            "backup automatique, validation syntaxe + import, rollback si échec.\n\n"
+                            "Décris l'amélioration souhaitée — l'agent lit le code concerné, "
+                            "génère le patch, le valide et l'applique."
+                        )
+                        with gr.Row():
+                            with gr.Column(scale=2):
+                                sm_request = gr.Textbox(
+                                    label="Amélioration à apporter",
+                                    lines=3,
+                                    placeholder=(
+                                        "Ex: Ajoute le calcul du MACD dans finance_deep.py\n"
+                                        "Ex: Ajoute l'ETF Amundi MSCI India à l'univers PEA\n"
+                                        "Ex: Renforce la règle anti-hallucination dans le system prompt"
+                                    ),
+                                )
+                                with gr.Row():
+                                    sm_btn      = gr.Button("🔧 Générer & appliquer", variant="primary")
+                                    sm_rollback = gr.Button("↩️ Annuler dernière modif", variant="secondary")
+                                    sm_status_btn = gr.Button("📋 État / journal", variant="secondary")
+                            with gr.Column(scale=3):
+                                sm_out = gr.Markdown("*Décris une amélioration et clique sur Générer.*")
+
+                        sm_btn.click(self_modify_fn, [sm_request], [sm_out])
+                        sm_rollback.click(self_modify_rollback_fn, [], [sm_out])
+                        sm_status_btn.click(self_modify_status_fn, [], [sm_out])
+
+                    # ══ AGENTS ════════════════════════════════════════════════════════
+                    with gr.TabItem("🤖 Agents"):
+                        with gr.Row():
+                            with gr.Column():
+                                gr.Markdown("### Créer un sous-agent")
+                                a_role  = gr.Dropdown(
+                                    ["researcher","coder","fullstack_dev","finance_analyst","crypto_analyst",
+                                     "marketing_expert","copywriter","seo_expert","video_creator","youtube_creator",
+                                     "writer","data_scientist","analyst","ecommerce_expert","game_developer","generic"],
+                                    value="coder", label="Rôle")
+                                a_obj   = gr.Textbox(label="Objectif")
+                                a_model = gr.Textbox(label="Modèle (vide = défaut)")
+                                a_btn   = gr.Button("➕ Créer", variant="primary")
+                                a_cfg   = gr.Code(label="Config JSON", language="json")
+                                a_btn.click(mk_agent, [a_role, a_obj, a_model], [a_cfg])
+                            with gr.Column():
+                                gr.Markdown("### Agents existants")
+                                a_rbtn  = gr.Button("🔄 Rafraîchir")
+                                a_tbl   = gr.Dataframe(headers=["ID","Nom","Rôle","Statut","Dernière activité"])
+                                a_rbtn.click(ls_agents, [], [a_tbl])
+
+                    # ══ PLUGINS ═══════════════════════════════════════════════════════
+                    with gr.TabItem("🔌 Plugins"):
+                        with gr.Row():
+                            with gr.Column():
+                                gr.Markdown("### Plugins installés")
+                                p_tbl  = gr.Dataframe(headers=["Nom","Description"])
+                                p_rbtn = gr.Button("🔄 Rafraîchir")
+                                p_rbtn.click(ls_plugins, [], [p_tbl])
+                            with gr.Column():
+                                gr.Markdown("### Ajouter un plugin")
+                                p_code = gr.Code(language="python", label="Code",
+                                                 value='from plugins.base import Plugin\n\nclass MonPlugin(Plugin):\n    name = "mon_outil"\n    description = "Description"\n    parameters = {"input": {"type": "string", "required": True}}\n\n    def run(self, input: str) -> str:\n        return f"Résultat: {input}"\n')
+                                p_abtn = gr.Button("⬆️ Charger", variant="primary")
+                                p_stat = gr.Textbox(label="Statut")
+                                p_abtn.click(add_plugin, [p_code], [p_stat])
 
         # Rafraîchit le compteur de tokens à CHAQUE chargement de page
         # (sinon la valeur reste figée à celle du démarrage du serveur → « repart à 0 »).
