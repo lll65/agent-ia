@@ -414,11 +414,17 @@ def send(message: str, history: list, mode: str, sid: str, image=None, file=None
     use_agent, _use_finance, clean = _route(message, mode)
     if use_agent:
         answer = full_agent(clean, history, sid)
+    elif _is_finance_question(clean):
+        answer = finance_agent_analysis(clean)
+    elif _is_factual_question(clean):
+        # BASCULE AUTOMATIQUE en Mode Agent : la question implique des faits/chiffres/
+        # tendances/marché → l'utilisateur ne doit pas deviner qu'il faut changer de mode.
+        # full_agent force une vraie recherche web (search_web) avant de répondre.
+        answer = full_agent(clean, history, sid)
+        answer = ("> 🔎 *Basculé en Mode Agent (recherche web) — question factuelle.*\n\n" + answer)
     else:
-        if not use_agent and _is_finance_question(clean):
-            answer = finance_agent_analysis(clean)
-        else:
-            answer = fast_chat(clean, history, sid)
+        # Mode Rapide réservé au non-factuel (conversationnel, créatif, reformulation…)
+        answer = fast_chat(clean, history, sid)
     new_h = _add(history, message, answer)
     existing = _load(sid)
     name = existing.get("name", "Nouvelle") if existing.get("history") else message[:50]
@@ -1442,18 +1448,97 @@ def run_master(goal):
 # UI
 # ═════════════════════════════════════════════════════════════════════════════
 
+# ─── Identité visuelle : thème + CSS injecté (une seule source de vérité) ───────
+
+_THEME = gr.themes.Soft(
+    primary_hue=gr.themes.colors.indigo,
+    secondary_hue=gr.themes.colors.violet,
+    neutral_hue=gr.themes.colors.slate,
+    font=[gr.themes.GoogleFont("Inter"), "system-ui", "-apple-system", "sans-serif"],
+    font_mono=[gr.themes.GoogleFont("JetBrains Mono"), "ui-monospace", "monospace"],
+).set(
+    block_radius="14px",
+    block_border_width="1px",
+    block_shadow="0 1px 2px rgba(15,23,42,0.06)",
+    button_large_radius="10px",
+    button_small_radius="8px",
+    input_radius="10px",
+)
+
+_CSS = """
+:root { --brand:#4f46e5; --brand2:#7c3aed; }
+.gradio-container { max-width: 1360px !important; margin: 0 auto !important; }
+footer { display:none !important; }
+
+/* En-tête / identité */
+#app-header {
+  display:flex; align-items:center; justify-content:space-between; gap:12px;
+  padding:14px 22px; margin:2px 0 10px; border-radius:16px; color:#fff;
+  background:linear-gradient(135deg,var(--brand),var(--brand2));
+  box-shadow:0 6px 20px rgba(79,70,229,.25);
+}
+#app-header .brand { display:flex; align-items:center; gap:13px; }
+#app-header .logo { font-size:30px; line-height:1; }
+#app-header .brand-name { font-weight:800; font-size:20px; letter-spacing:-.02em; }
+#app-header .brand-tag { font-size:12.5px; opacity:.9; margin-top:1px; }
+#app-header .pill { font-size:12px; background:rgba(255,255,255,.18); padding:5px 11px;
+  border-radius:999px; white-space:nowrap; }
+
+/* Onglets : lisibles et scrollables horizontalement sur mobile */
+.tab-nav { overflow-x:auto !important; flex-wrap:nowrap !important; scrollbar-width:thin; }
+.tab-nav button { white-space:nowrap; font-weight:600; }
+
+/* Chat : distinction nette utilisateur / agent */
+.message-row.user-row .message, .message.user, .bubble.user {
+  background:var(--brand) !important; color:#fff !important; border:none !important;
+  border-radius:14px 14px 4px 14px !important;
+}
+.message-row.bot-row .message, .message.bot, .bubble.bot {
+  background:rgba(148,163,184,.14) !important; border:1px solid rgba(148,163,184,.22) !important;
+  border-radius:14px 14px 14px 4px !important;
+}
+/* Blocs de code / résultats d'outils : lisibles + scroll horizontal (mobile) */
+.message pre, .prose pre, .md pre, .gr-prose pre {
+  background:#0f172a !important; color:#e2e8f0 !important; border-radius:10px;
+  padding:12px 14px !important; overflow-x:auto; font-size:12.5px; line-height:1.5;
+}
+.message code, .prose code { font-family:'JetBrains Mono',ui-monospace,monospace; font-size:12.5px; }
+
+/* Responsive mobile */
+@media (max-width:768px) {
+  .gradio-container { padding:6px !important; }
+  #app-header { padding:11px 15px; }
+  #app-header .brand-tag, #app-header .pill { display:none; }
+  #app-header .brand-name { font-size:18px; }
+  .gap { gap:8px !important; }
+}
+"""
+
+_HEADER_HTML = (
+    "<div id='app-header'>"
+    "  <div class='brand'>"
+    "    <span class='logo'>🧠</span>"
+    "    <div><div class='brand-name'>MasterAgent</div>"
+    "    <div class='brand-tag'>Ton agent IA — finance · code · documents · santé</div></div>"
+    "  </div>"
+    "  <span class='pill'>100% gratuit · Groq/Cerebras</span>"
+    "</div>"
+)
+
+
 def build_ui() -> gr.Blocks:
-    with gr.Blocks(title="MasterAgent-Gros") as demo:
+    with gr.Blocks(title="MasterAgent", theme=_THEME, css=_CSS,
+                   analytics_enabled=False) as demo:
 
         mode_state = gr.State("fast")
         sid_state  = gr.State(_sid())
 
-        # ── En-tête ──────────────────────────────────────────────────────────
+        # ── En-tête (identité visuelle) ───────────────────────────────────────
+        gr.HTML(_HEADER_HTML)
         with gr.Row():
-            gr.Markdown("# 🤖 MasterAgent-Gros")
-            with gr.Column(scale=0, min_width=260):
+            mode_ind = gr.Markdown("🟢 **Mode Rapide ⚡** — direct, sans outils")
+            with gr.Column(scale=0, min_width=240):
                 mode_btn = gr.Button("⚡ Mode Rapide — ACTIF", variant="secondary", size="sm")
-        mode_ind = gr.Markdown("🟢 **Mode Rapide ⚡** — Réponses directes, sans outils")
 
         with gr.Tabs():
 
