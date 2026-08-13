@@ -203,6 +203,17 @@ MASTER_SYSTEM_PROMPT = """
 </system_directive>
 """
 
+# Directive COMPACTE pour la boucle ReAct (le MASTER complet ~2500 tokens explosait
+# la limite Groq de 12000 tokens/minute). Les règles détaillées (ReAct, anti-hallucination,
+# tool-first, format adaptatif) sont déjà dans SYSTEM_TEMPLATE de agent/core.py.
+AGENT_COMPACT_DIRECTIVE = (
+    "Tu es MasterAgent-Gros, agent IA expert et polyvalent (finance, code, données, création, "
+    "stratégie). Tu réponds en français, avec un format ADAPTÉ à la question (pas de format "
+    "trading hors bourse). Précis, chiffré quand c'est pertinent, actionnable, sans remplissage. "
+    "Anti-hallucination : jamais de source/date/chiffre sans qu'un outil te l'ait fourni. "
+    "Tu ne dis jamais « je ne peux pas » sans proposer une alternative."
+)
+
 # Version courte — MODE RAPIDE (chat direct, SANS outils ni accès Internet).
 # Adaptatif selon la nature de la question + garde-fou anti-hallucination strict.
 SHORT_SYSTEM_PROMPT = (

@@ -9,9 +9,9 @@ from config import config
 
 logger = logging.getLogger(__name__)
 
-# Import du système prompt maître
+# Directive compacte (le MASTER complet ~2500 tokens dépassait la limite Groq 12k tok/min)
 try:
-    from agent.system_prompt import MASTER_SYSTEM_PROMPT as _MASTER_SYS
+    from agent.system_prompt import AGENT_COMPACT_DIRECTIVE as _MASTER_SYS
 except ImportError:
     _MASTER_SYS = ""
 
@@ -230,7 +230,7 @@ async def run_agent(
             steps.append(step)
             messages.append({"role": "assistant", "content": llm_out})
             messages.append({"role": "user", "content": (
-                f"OBSERVATION [{action}]: {observation}\n\n"
+                f"OBSERVATION [{action}]: {observation[:1200]}\n\n"
                 f"Continue ton analyse. Si tu as toutes les données nécessaires, "
                 f"donne ta réponse FINAL complète et chiffrée:"
             )})
@@ -326,7 +326,7 @@ async def run_agent_stream(
             messages.append({"role": "assistant",
                              "content": f'THOUGHT: recherche web pour données réelles\nACTION: search_web\nPARAMS: {{"query": "{task[:120]}"}}'})
             messages.append({"role": "user", "content": (
-                f"OBSERVATION [search_web]: {obs}\n\n"
+                f"OBSERVATION [search_web]: {obs[:1400]}\n\n"
                 "Utilise UNIQUEMENT ces résultats réels pour répondre, en citant leurs sources. "
                 "N'invente aucune autre source. Si l'info manque, dis-le.")})
             tool_calls_made += 1
@@ -372,7 +372,7 @@ async def run_agent_stream(
             yield {"type": "observation", "tool": action, "result": observation[:400], "iteration": iteration + 1}
             messages.append({"role": "assistant", "content": llm_out})
             messages.append({"role": "user", "content": (
-                f"OBSERVATION [{action}]: {observation}\n\n"
+                f"OBSERVATION [{action}]: {observation[:1200]}\n\n"
                 "Continue. Si tu as toutes les données, donne ta réponse FINAL:"
             )})
         else:
