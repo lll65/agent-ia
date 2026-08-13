@@ -1504,13 +1504,26 @@ footer { display:none !important; }
 }
 .message code, .prose code { font-family:'JetBrains Mono',ui-monospace,monospace; font-size:12.5px; }
 
-/* Responsive mobile */
-@media (max-width:768px) {
+/* Conteneur de chat + zone de saisie */
+#main-chat { border:1px solid rgba(148,163,184,.18) !important; border-radius:16px !important; }
+.gradio-container textarea, .gradio-container input[type=text] { border-radius:10px !important; }
+.gradio-container .block { border-radius:14px; }
+
+/* Boutons secondaires en "puces" douces (raccourcis, historique) */
+button.secondary, .gr-button-secondary {
+  border-radius:999px !important; font-weight:600; border:1px solid rgba(148,163,184,.28) !important;
+}
+/* Bouton d'envoi bien visible */
+button.primary, .gr-button-primary { font-weight:700; }
+
+/* Responsive mobile : colonnes empilées, chat plein largeur */
+@media (max-width:820px) {
   .gradio-container { padding:6px !important; }
   #app-header { padding:11px 15px; }
   #app-header .brand-tag, #app-header .pill { display:none; }
   #app-header .brand-name { font-size:18px; }
-  .gap { gap:8px !important; }
+  .gap, .gradio-container .gap { gap:8px !important; }
+  #main-chat { height:60vh !important; }
 }
 """
 
@@ -1554,11 +1567,13 @@ def build_ui() -> gr.Blocks:
                         usage_md  = gr.Markdown(_usage_md())
 
                     # ── Colonne centrale : conversation ──────────────────────
-                    with gr.Column(scale=3):
+                    with gr.Column(scale=4):
                         if _CHATBOT_SUPPORTS_TYPE:
-                            chatbot = gr.Chatbot(height=460, label="", type="messages", show_copy_button=True)
+                            chatbot = gr.Chatbot(height=540, label="", show_label=False, type="messages",
+                                                 show_copy_button=True, elem_id="main-chat", placeholder="👋 Pose ta question, dépose un fichier ou une image…")
                         else:
-                            chatbot = gr.Chatbot(height=460, label="", show_copy_button=True)
+                            chatbot = gr.Chatbot(height=540, label="", show_label=False,
+                                                 show_copy_button=True, elem_id="main-chat")
                         with gr.Row():
                             msg_in  = gr.Textbox(
                                 placeholder='Écris… ou dépose un fichier/image ci-dessous · "Agent: …" pour les outils',
@@ -1905,6 +1920,10 @@ def build_ui() -> gr.Blocks:
                         p_abtn = gr.Button("⬆️ Charger", variant="primary")
                         p_stat = gr.Textbox(label="Statut")
                         p_abtn.click(add_plugin, [p_code], [p_stat])
+
+        # Rafraîchit le compteur de tokens à CHAQUE chargement de page
+        # (sinon la valeur reste figée à celle du démarrage du serveur → « repart à 0 »).
+        demo.load(_usage_md, None, usage_md)
 
     return demo
 
