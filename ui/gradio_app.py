@@ -211,6 +211,12 @@ except ImportError:
         "et propose le Mode Agent."
     )
 
+# Identifiant de MÉMOIRE stable (profil persistant) — partagé par TOUTES les conversations,
+# contrairement au sid de session qui change à chaque nouvelle conv. → l'agent te connaît
+# de mieux en mieux au fil du temps.
+_MEMORY_ID = "profil"
+
+
 def fast_chat(message: str, history: list, sid: str = "default") -> str:
     from llm.client import chat
     msgs = [{"role": "system", "content": _FAST_SYS}]
@@ -218,7 +224,7 @@ def fast_chat(message: str, history: list, sid: str = "default") -> str:
     try:
         from memory import get_memory
         mem = get_memory()
-        ctx = mem.build_context(sid, message, recent_limit=6)
+        ctx = mem.build_context(_MEMORY_ID, message, recent_limit=6)
         if ctx:
             msgs.append({"role": "system",
                          "content": f"[MÉMOIRE — profil & échanges passés pertinents]\n{ctx}"})
@@ -233,8 +239,8 @@ def fast_chat(message: str, history: list, sid: str = "default") -> str:
     # Mémorise l'échange pour les prochaines conversations
     try:
         if mem:
-            mem.remember(sid, "user", message)
-            mem.remember(sid, "assistant", answer)
+            mem.remember(_MEMORY_ID, "user", message)
+            mem.remember(_MEMORY_ID, "assistant", answer)
     except Exception:
         pass
     # Auto-amélioration pour les questions substantielles (> 5 mots)
@@ -285,7 +291,7 @@ def full_agent(message: str, history: list, sid: str) -> str:
     try:
         async def _collect():
             nonlocal final_answer, iters
-            async for step in run_agent_stream(message, cfg, sid):
+            async for step in run_agent_stream(message, cfg, _MEMORY_ID):
                 if step["type"] == "thought":
                     trace_lines.append(f"💭 **Réflexion :** {step['text']}")
                 elif step["type"] == "action":
@@ -402,7 +408,7 @@ async def _stream_agent(message: str, history: list, sid: str, shown_user: str, 
                     activity.append(line)
             live = "\n\n".join(activity)
             if final_answer:
-                head = (f"<details><summary>🧠 Ce que l'agent a fait</summary>\n\n{live}\n\n</details>\n\n---\n\n"
+                head = (f"<details open><summary>🧠 <b>Ce que l'agent a fait</b> (clique pour replier)</summary>\n\n{live}\n\n</details>\n\n---\n\n"
                         if live else "")
                 content = prefix + head + final_answer
                 if used:
@@ -461,15 +467,23 @@ def _artifact_out(text: str):
     return gr.update(), gr.update(visible=False)
 
 
+def _usage_line(provider: str, label: str) -> str:
+    from llm.usage import get_usage
+    used, limit = get_usage(provider)
+    pct = min(100, int(used / limit * 100)) if limit else 0
+    bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
+    color = "🟢" if pct < 70 else "🟠" if pct < 90 else "🔴"
+    used_k = f"{used/1000:.1f}k" if used >= 1000 else str(used)
+    lim_k = f"{limit//1000}k" if limit else "?"
+    # Format compact et aligné (chaque provider sur sa ligne)
+    return f"{color} **{label}** `{bar}` {pct}%<br><sub>{used_k} / {lim_k} tokens</sub>"
+
+
 def _usage_md() -> str:
-    """Barre de consommation Groq du jour."""
+    """Consommation du jour — Groq + Cerebras (fallback)."""
     try:
-        from llm.usage import get_usage
-        used, limit = get_usage()
-        pct = min(100, int(used / limit * 100)) if limit else 0
-        bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
-        color = "🟢" if pct < 70 else "🟠" if pct < 90 else "🔴"
-        return f"{color} **Groq aujourd'hui** `{bar}` {used:,}/{limit:,} tokens ({pct}%)".replace(",", " ")
+        return "**📊 Consommation du jour**<br>" + _usage_line("groq", "Groq") \
+               + "<br>" + _usage_line("cerebras", "Cerebras")
     except Exception:
         return ""
 
@@ -1554,12 +1568,12 @@ def run_master(goal):
 # UI
 # ═════════════════════════════════════════════════════════════════════════════
 
-def show_memory(sid: str) -> str:
-    """Affiche ce que l'agent a retenu de l'utilisateur (mémoire ChromaDB/Supabase)."""
+def show_memory(sid: str = "") -> str:
+    """Affiche le PROFIL persistant que l'agent a retenu (partagé entre toutes les conversations)."""
     try:
         from memory import get_memory
         mem = get_memory()
-        recent = mem.recall_recent(sid, 80)
+        recent = mem.recall_recent(_MEMORY_ID, 80)
     except Exception as e:
         return f"❌ Impossible de lire la mémoire : {e}"
     if not recent:
@@ -1578,11 +1592,11 @@ def show_memory(sid: str) -> str:
     return "\n".join(lines)
 
 
-def clear_memory_fn(sid: str) -> str:
+def clear_memory_fn(sid: str = "") -> str:
     try:
         from memory import get_memory
-        get_memory().clear(sid)
-        return "✅ Mémoire de cette conversation effacée."
+        get_memory().clear(_MEMORY_ID)
+        return "✅ Profil mémoire effacé (l'agent repart d'une page blanche)."
     except Exception as e:
         return f"❌ Erreur : {e}"
 

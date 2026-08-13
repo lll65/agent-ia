@@ -156,6 +156,11 @@ def _cerebras_chat(messages: list, model: str, temperature: float) -> str:
                 temperature=temperature,
                 max_tokens=4096,
             )
+            try:
+                from llm.usage import record
+                record(getattr(getattr(resp, "usage", None), "total_tokens", 0), provider="cerebras")
+            except Exception:
+                pass
             return resp.choices[0].message.content
         except Exception as e:
             last_err = e
