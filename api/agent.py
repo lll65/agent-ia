@@ -1,4 +1,6 @@
-from fastapi import APIRouter, HTTPException
+import hmac
+
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 
@@ -8,6 +10,63 @@ from plugins import get_loader
 from config import config
 
 router = APIRouter()
+
+# Identifiant de mémoire stable (même profil que l'UI web/Telegram)
+_PROFILE_ID = "profil"
+
+_FACTUAL_HINTS = ("actualité", "news", "2024", "2025", "2026", "tendance", "aujourd'hui",
+                  "récent", "dernier", "meilleur", "prix de", "cours de", "combien",
+                  "qui est", "quand", "où", "statistiques", "chiffres", "météo", "cette semaine")
+
+
+def _check_key(provided: str):
+    """Vérifie la clé de la passerelle /ask (comparaison à temps constant)."""
+    if not config.AGENT_API_KEY:
+        raise HTTPException(status_code=501, detail="Passerelle désactivée : définis AGENT_API_KEY.")
+    if not provided or not hmac.compare_digest(str(provided), config.AGENT_API_KEY):
+        raise HTTPException(status_code=401, detail="Clé invalide.")
+
+
+async def _ask_agent(message: str) -> str:
+    """Fait tourner l'agent complet (outils + mémoire persistante + recherche web forcée)."""
+    tools = list(get_loader().list_all().keys())
+    factual = any(h in message.lower() for h in _FACTUAL_HINTS)
+    if factual and "search_web" in tools:
+        tools.remove("search_web"); tools.insert(0, "search_web")
+    cfg = {
+        "id": _PROFILE_ID, "name": "MasterAgent",
+        "system_prompt": ("Tu es l'assistant personnel de l'utilisateur. Français, concis et actionnable. "
+                          "Pour toute question factuelle, cherche sur le web ; jamais de source inventée."),
+        "tools": tools, "force_search": factual, "model": config.LLM_MODEL,
+    }
+    result = await run_agent(message, cfg, _PROFILE_ID)
+    return result.get("answer", "")
+
+
+class AskRequest(BaseModel):
+    message: str
+    key: Optional[str] = None
+
+
+@router.post("/ask")
+async def ask_post(req: AskRequest, request: Request):
+    """Passerelle universelle : parle à l'agent depuis n'importe quel appareil (Siri, n8n, webhook)."""
+    key = req.key or request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+    _check_key(key)
+    if not req.message.strip():
+        raise HTTPException(status_code=400, detail="Message vide.")
+    answer = await _ask_agent(req.message.strip())
+    return {"answer": answer}
+
+
+@router.get("/ask")
+async def ask_get(q: str = "", key: str = ""):
+    """Version GET (pratique pour Siri Raccourcis / navigateur) : /agent/ask?q=...&key=..."""
+    _check_key(key)
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="Paramètre q vide.")
+    answer = await _ask_agent(q.strip())
+    return {"answer": answer}
 
 DEFAULT_AGENT = {
     "id": "default",

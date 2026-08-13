@@ -182,6 +182,21 @@ async def run_agent(
     steps = []
     tool_calls_made = 0
     stub_retries = 0
+
+    # Forçage déterministe de search_web sur les questions factuelles (idem run_agent_stream)
+    if agent_config.get("force_search") and "search_web" in required_tools:
+        try:
+            obs = safe_tool_call(loader, "search_web", {"query": task[:200], "mode": "web"})
+            steps.append({"type": "action", "tool": "search_web", "params": {"query": task[:120]}})
+            steps.append({"type": "observation", "tool": "search_web", "result": obs[:400]})
+            messages.append({"role": "assistant",
+                             "content": f'ACTION: search_web\nPARAMS: {{"query": "{task[:120]}"}}'})
+            messages.append({"role": "user", "content": (
+                f"OBSERVATION [search_web]: {obs[:1400]}\n\n"
+                "Utilise UNIQUEMENT ces résultats réels pour répondre, en citant leurs sources.")})
+            tool_calls_made += 1
+        except Exception as e:
+            logger.warning(f"[force_search] échec: {e}")
     MAX_STUB_RETRIES = 2
 
     iteration = 0
