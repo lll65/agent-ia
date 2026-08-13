@@ -1,4 +1,18 @@
+"""
+Recherche web — robuste et sans clé.
+
+La librairie `duckduckgo_search` renvoie souvent des résultats hors-sujet
+(backend cassé / rate-limit). On interroge donc en PREMIER l'endpoint HTML
+DuckDuckGo directement (fiable, région FR), avec la librairie en repli.
+"""
+import html as _html
+import re
+from urllib.parse import unquote
+
 from plugins.base import Plugin
+
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
 
 def _domain(url: str) -> str:
@@ -9,49 +23,115 @@ def _domain(url: str) -> str:
         return ""
 
 
-def _esc(s) -> str:
-    return str(s).replace("<", "&lt;").replace(">", "&gt;")
+def _strip(s: str) -> str:
+    return _html.unescape(re.sub(r"<[^>]+>", "", s or "")).strip()
+
+
+def _ddg_html(query: str, max_results: int, region: str = "fr-fr") -> list[dict]:
+    """Interroge l'endpoint HTML DuckDuckGo (pas d'API key, résultats fiables)."""
+    import requests
+    out: list[dict] = []
+    for host in ("https://html.duckduckgo.com/html/", "https://lite.duckduckgo.com/lite/"):
+        try:
+            r = requests.post(host, data={"q": query, "kl": region},
+                              headers={"User-Agent": _UA, "Referer": "https://duckduckgo.com/"},
+                              timeout=15)
+            if r.status_code != 200:
+                continue
+            txt = r.text
+            # Titres + liens (html/ endpoint)
+            for m in re.finditer(r'result__a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', txt, re.DOTALL):
+                href, title = m.group(1), _strip(m.group(2))
+                ud = re.search(r'uddg=([^&"]+)', href)
+                url = unquote(ud.group(1)) if ud else href
+                if title and url.startswith("http"):
+                    out.append({"title": title, "href": url, "body": ""})
+                if len(out) >= max_results:
+                    break
+            # Snippets
+            snips = re.findall(r'result__snippet[^>]*>(.*?)</a>', txt, re.DOTALL)
+            for i, s in enumerate(snips[:len(out)]):
+                out[i]["body"] = _strip(s)[:300]
+            if out:
+                return out
+        except Exception:
+            continue
+    return out
+
+
+def _tavily(query: str, max_results: int) -> list[dict]:
+    """Recherche via Tavily (fiable depuis un serveur, ~1000/mois gratuit). Clé requise."""
+    try:
+        from config import config
+        key = getattr(config, "TAVILY_API_KEY", "")
+    except Exception:
+        key = ""
+    if not key:
+        return []
+    try:
+        import requests
+        r = requests.post("https://api.tavily.com/search",
+                          json={"api_key": key, "query": query, "max_results": max_results,
+                                "search_depth": "basic"},
+                          timeout=20)
+        if r.status_code != 200:
+            return []
+        data = r.json().get("results", [])
+        return [{"title": x.get("title", ""), "href": x.get("url", ""),
+                 "body": x.get("content", "")} for x in data]
+    except Exception:
+        return []
+
+
+def _ddg_lib(query: str, max_results: int, mode: str) -> list[dict]:
+    """Repli via la librairie (nouveau paquet `ddgs`, sinon `duckduckgo_search`)."""
+    try:
+        try:
+            from ddgs import DDGS            # paquet successeur (recommandé)
+        except ImportError:
+            from duckduckgo_search import DDGS
+        with DDGS() as d:
+            if mode == "news":
+                return list(d.news(query, max_results=max_results, region="fr-fr"))
+            return list(d.text(query, max_results=max_results, region="fr-fr"))
+    except Exception:
+        return []
 
 
 class WebSearchPlugin(Plugin):
     name = "search_web"
-    description = "Recherche web via DuckDuckGo (texte ou actualités). Résultats numérotés avec source et résumé."
+    description = "Recherche web (DuckDuckGo, région FR, sans clé). Résultats numérotés avec source, résumé et lien."
     parameters = {
         "query": {"type": "string", "description": "Requête de recherche", "required": True},
-        "mode": {"type": "string", "description": "Mode: web (défaut) | news (actualités récentes)", "required": False},
+        "mode": {"type": "string", "description": "web (défaut) | news (actualités)", "required": False},
     }
 
     def run(self, query: str, max_results: int = 6, mode: str = "web") -> str:
-        from duckduckgo_search import DDGS
+        query = (query or "").strip()
+        if not query:
+            return "Aucune requête fournie."
 
-        # Retry léger : DDGS est parfois capricieux (rate-limit / backend)
-        results, last_err = [], None
-        for attempt in range(3):
-            try:
-                with DDGS() as ddgs:
-                    if mode == "news":
-                        results = list(ddgs.news(query, max_results=max_results, region="fr-fr"))
-                    else:
-                        results = list(ddgs.text(query, max_results=max_results, region="fr-fr"))
-                if results:
-                    break
-            except Exception as e:
-                last_err = e
-                import time
-                time.sleep(1.5 * (attempt + 1))
+        # 1) Tavily si clé (fiable depuis un serveur). 2) HTML DuckDuckGo. 3) librairie.
+        results = _tavily(query, max_results)
+        if not results and mode != "news":
+            results = _ddg_html(query, max_results)
+        if not results:
+            results = _ddg_lib(query, max_results, mode)
 
         if not results:
-            return f"Recherche indisponible: {last_err}" if last_err else "Aucun résultat trouvé."
+            return (f"⚠️ Aucun résultat exploitable pour « {query} » "
+                    "(moteur de recherche momentanément indisponible). "
+                    "Réponds honnêtement que la donnée n'a pas pu être vérifiée.")
 
-        header = f"🔎 **{'Actualités' if mode == 'news' else 'Recherche'} : {_esc(query)}** — {len(results)} résultats\n"
-        lines = [header]
+        head = f"🔎 **Résultats web : {query}** ({len(results)})\n"
+        lines = [head]
         for i, r in enumerate(results, 1):
-            title = _esc(r.get("title", ""))
-            body = _esc(r.get("body") or r.get("excerpt") or "")
+            title = _strip(r.get("title", ""))
+            body = _strip(r.get("body") or r.get("excerpt") or "")
             url = r.get("href") or r.get("url") or ""
-            src = _domain(url) or _esc(r.get("source", ""))
-            date = r.get("date", "")
-            meta = f" · {src}" if src else ""
-            meta += f" · {date[:10]}" if date else ""
-            lines.append(f"**{i}. {title}**{meta}\n{body}\n🔗 {url}")
+            src = _domain(url) or r.get("source", "")
+            date = (r.get("date", "") or "")[:10]
+            meta = " · ".join(x for x in (src, date) if x)
+            lines.append(f"**{i}. {title}**" + (f"\n_{meta}_" if meta else "")
+                         + (f"\n{body}" if body else "") + (f"\n🔗 {url}" if url else ""))
         return "\n\n".join(lines)

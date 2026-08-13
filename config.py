@@ -23,6 +23,9 @@ class Config:
     # Modèles cloud (surchargeable via .env)
     GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
     GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")  # analyse d'image
+    # Recherche web fiable depuis un serveur (Render) — Tavily, ~1000/mois gratuit (tavily.com).
+    # Optionnel : sans clé, on retombe sur DuckDuckGo (moins fiable en datacenter).
+    TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
     XAI_MODEL = os.getenv("XAI_MODEL", "grok-beta")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     CEREBRAS_MODEL = os.getenv("CEREBRAS_MODEL", "llama-3.3-70b")
