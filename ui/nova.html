@@ -30,11 +30,11 @@
   .bubble a{ color:var(--neon2); }
   .avatar{ width:30px; height:30px; border-radius:9px; margin:2px 9px 0 0; flex:0 0 auto; background:linear-gradient(135deg,var(--neon),var(--neon2)); display:grid; place-items:center; font-size:15px; box-shadow:0 0 16px rgba(34,211,238,.4); }
 
-  /* Graphe de raisonnement */
-  #graphWrap{ display:none; height:210px; border:1px solid var(--stroke); border-radius:16px; background:rgba(10,10,22,.5); backdrop-filter:blur(8px); margin:4px 0 10px; overflow:hidden; position:relative; }
-  #graphWrap.show{ display:block; animation:pop .4s; }
+  /* Graphe de raisonnement — plein écran, en arrière-plan */
+  #graphWrap{ display:none; position:fixed; inset:0; z-index:1; pointer-events:none; opacity:0; transition:opacity .7s ease; }
+  #graphWrap.show{ display:block; opacity:1; }
   #graph{ width:100%; height:100%; }
-  #graphWrap .cap{ position:absolute; top:8px; left:12px; font-size:11px; letter-spacing:.14em; color:var(--dim); }
+  #graphWrap .cap{ position:fixed; top:64px; left:50%; transform:translateX(-50%); font-size:11px; letter-spacing:.34em; color:var(--dim); opacity:.55; }
 
   .composer{ display:flex; gap:10px; padding-top:8px; }
   .composer textarea{ flex:1; resize:none; background:var(--glass); border:1px solid var(--stroke); color:var(--txt); border-radius:16px; padding:14px 16px; font-size:15px; font-family:inherit; max-height:120px; outline:none; transition:.2s; }
@@ -57,6 +57,7 @@
 </head>
 <body>
   <canvas id="particles"></canvas>
+  <div id="graphWrap"><span class="cap">RAISONNEMENT EN DIRECT</span><canvas id="graph"></canvas></div>
   <div class="app">
     <header>
       <div class="logo">NOVA<small>ASSISTANT · DU FUTUR</small></div>
@@ -65,8 +66,6 @@
         <button class="ic" onclick="openCfg()" title="Réglages">⚙️</button>
       </div>
     </header>
-
-    <div id="graphWrap"><span class="cap">RAISONNEMENT</span><canvas id="graph"></canvas></div>
 
     <div class="chips">
       <span class="chip" onclick="quick(this)">Mon agenda cette semaine ?</span>
@@ -117,19 +116,20 @@ function loopP(){ px.clearRect(0,0,PW,PH); const sp=thinking?2.6:1, gl=thinking?
 /* ═══ GRAPHE de raisonnement ═══ */
 const gw=document.getElementById("graphWrap"), gc=document.getElementById("graph"), gx=gc.getContext("2d");
 let nodes=[], gAnim=null;
-function gResize(){ gc.width=gw.clientWidth; gc.height=gw.clientHeight; }
-function graphStart(){ gw.classList.add("show"); gResize(); nodes=[{x:gc.width/2,y:gc.height/2,r:22,label:"NOVA",icon:"🧠",core:1,t:0}]; if(!gAnim) drawGraph(); }
-function graphAdd(icon,label){ const n=nodes.length-1, ang=n*2.399, rad=Math.min(gc.width,gc.height)*.34;
-  nodes.push({x:gc.width/2+Math.cos(ang)*rad,y:gc.height/2+Math.sin(ang)*rad,r:0,tr:16,label,icon,t:0}); }
+function gResize(){ gc.width=innerWidth; gc.height=innerHeight; }
+function graphStart(){ gw.classList.add("show"); gResize(); nodes=[{x:gc.width/2,y:gc.height*.44,r:44,label:"NOVA",icon:"🧠",core:1,t:0}]; if(!gAnim) drawGraph(); }
+function graphAdd(icon,label){ const n=nodes.length-1, ang=n*2.399 - 1.2, rad=Math.min(gc.width,gc.height)*.32;
+  nodes.push({x:gc.width/2+Math.cos(ang)*rad,y:gc.height*.44+Math.sin(ang)*rad,r:0,tr:38,label,icon,t:0}); }
 function drawGraph(){ gx.clearRect(0,0,gc.width,gc.height); const core=nodes[0]; if(!core){gAnim=null;return;}
-  core.t++; const pulse=22+Math.sin(core.t*.08)*3;
-  for(let i=1;i<nodes.length;i++){ const nd=nodes[i]; nd.r+=(nd.tr-nd.r)*.15; nd.t++;
-    gx.beginPath(); gx.moveTo(core.x,core.y); gx.lineTo(nd.x,nd.y); gx.strokeStyle="rgba(124,92,255,.4)"; gx.lineWidth=1.5; gx.stroke();
-    gx.beginPath(); gx.arc(nd.x,nd.y,nd.r,0,7); gx.fillStyle="rgba(34,211,238,.18)"; gx.strokeStyle="#22d3ee"; gx.fill(); gx.stroke();
-    gx.font="13px sans-serif"; gx.textAlign="center"; gx.fillStyle="#fff"; gx.fillText(nd.icon,nd.x,nd.y+5);
-    gx.fillStyle="#9aa0b5"; gx.font="10px sans-serif"; gx.fillText(nd.label.slice(0,16),nd.x,nd.y+nd.r+12); }
-  gx.beginPath(); gx.arc(core.x,core.y,pulse,0,7); gx.fillStyle="rgba(124,92,255,.9)"; gx.shadowBlur=24; gx.shadowColor="#7c5cff"; gx.fill(); gx.shadowBlur=0;
-  gx.font="16px sans-serif"; gx.textAlign="center"; gx.fillStyle="#fff"; gx.fillText("🧠",core.x,core.y+5);
+  core.t++; const pulse=44+Math.sin(core.t*.08)*6;
+  for(let i=1;i<nodes.length;i++){ const nd=nodes[i]; nd.r+=(nd.tr-nd.r)*.13; nd.t++;
+    gx.beginPath(); gx.moveTo(core.x,core.y); gx.lineTo(nd.x,nd.y); gx.strokeStyle="rgba(124,92,255,.28)"; gx.lineWidth=2; gx.stroke();
+    gx.beginPath(); gx.arc(nd.x,nd.y,nd.r,0,7); gx.fillStyle="rgba(34,211,238,.10)"; gx.strokeStyle="rgba(34,211,238,.7)"; gx.lineWidth=2; gx.shadowBlur=18; gx.shadowColor="#22d3ee"; gx.fill(); gx.stroke(); gx.shadowBlur=0;
+    gx.font="26px sans-serif"; gx.textAlign="center"; gx.fillStyle="#fff"; gx.fillText(nd.icon,nd.x,nd.y+9);
+    gx.fillStyle="rgba(200,205,225,.75)"; gx.font="13px sans-serif"; gx.fillText(nd.label.slice(0,18),nd.x,nd.y+nd.r+18); }
+  gx.beginPath(); gx.arc(core.x,core.y,pulse,0,7); gx.fillStyle="rgba(124,92,255,.85)"; gx.shadowBlur=42; gx.shadowColor="#7c5cff"; gx.fill(); gx.shadowBlur=0;
+  gx.font="34px sans-serif"; gx.textAlign="center"; gx.fillStyle="#fff"; gx.fillText("🧠",core.x,core.y+11);
+  gx.fillStyle="rgba(233,233,245,.9)"; gx.font="12px sans-serif"; gx.letterSpacing="2px"; gx.fillText("NOVA",core.x,core.y+pulse+20);
   gAnim=requestAnimationFrame(drawGraph); }
 function graphEnd(){ setTimeout(()=>{ gw.classList.remove("show"); cancelAnimationFrame(gAnim); gAnim=null; },2600); }
 const ICON={search:"🔍",web:"🔍",mail:"📧",gmail:"📧",calendar:"📅",agenda:"📅",connected_app:"🔌",thought:"💭",obs:"👁️",code:"💻"};
