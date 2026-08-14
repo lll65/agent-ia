@@ -69,6 +69,51 @@ async def ask_post(req: AskRequest, request: Request):
     return {"answer": answer}
 
 
+@router.get("/ask/stream")
+async def ask_stream(q: str = "", key: str = ""):
+    """Streaming SSE : émet en direct les étapes du raisonnement + la réponse (pour /nova)."""
+    import json as _json
+    from fastapi.responses import StreamingResponse
+
+    _check_key(key)
+    message = (q or "").strip()
+
+    async def gen():
+        def sse(obj):
+            return f"data: {_json.dumps(obj, ensure_ascii=False)}\n\n"
+        if not message:
+            yield sse({"type": "answer", "text": "Message vide."}); yield sse({"type": "done"}); return
+        try:
+            from agent.core import run_agent_stream
+            tools = list(get_loader().list_all().keys())
+            factual = any(h in message.lower() for h in _FACTUAL_HINTS)
+            if factual and "search_web" in tools:
+                tools.remove("search_web"); tools.insert(0, "search_web")
+            cfg = {"id": _PROFILE_ID, "name": "Nova", "force_search": factual, "model": config.LLM_MODEL,
+                   "system_prompt": "Tu es Nova, l'assistant personnel de l'utilisateur. Français, concis, actionnable.",
+                   "tools": tools}
+            async for step in run_agent_stream(message, cfg, _PROFILE_ID):
+                t = step.get("type")
+                if t == "final":
+                    yield sse({"type": "answer", "text": step.get("answer", "")})
+                elif t == "action":
+                    p = step.get("params", {}) or {}
+                    q2 = p.get("query") or p.get("command") or ""
+                    yield sse({"type": "step", "kind": "action", "tool": step.get("tool", ""), "q": str(q2)[:80]})
+                elif t == "observation":
+                    yield sse({"type": "step", "kind": "obs", "tool": step.get("tool", ""),
+                               "text": str(step.get("result", ""))[:140]})
+                elif t == "thought":
+                    yield sse({"type": "step", "kind": "thought", "text": str(step.get("text", ""))[:140]})
+            yield sse({"type": "done"})
+        except Exception as e:
+            yield sse({"type": "answer", "text": f"❌ Erreur : {type(e).__name__}: {str(e)[:300]}"})
+            yield sse({"type": "done"})
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @router.get("/ask")
 async def ask_get(q: str = "", key: str = ""):
     """Version GET (pratique pour Siri Raccourcis / navigateur) : /agent/ask?q=...&key=..."""
