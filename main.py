@@ -122,6 +122,13 @@ def root():
     }
 
 
+@app.get("/nova", include_in_schema=False)
+def nova_ui():
+    """Interface futuriste custom (parle à /agent/ask). Alternative animée à Gradio."""
+    from fastapi.responses import FileResponse
+    return FileResponse(str(Path(__file__).parent / "ui" / "nova.html"))
+
+
 @app.get("/status", tags=["Info"])
 async def full_status():
     from api.llm import status as llm_status
