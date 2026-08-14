@@ -33,8 +33,14 @@ class Config:
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     CEREBRAS_MODEL = os.getenv("CEREBRAS_MODEL", "llama-3.3-70b")
 
+    # Fournisseur préféré : "cerebras" (1M tokens/jour gratuit = 10x Groq) ou "groq".
+    LLM_PREFER = os.getenv("LLM_PREFER", "cerebras")
+
     @property
     def LLM_PROVIDER(self) -> str:
+        # Cerebras d'abord si préféré et dispo (bien plus de tokens/jour gratuits)
+        if self.LLM_PREFER == "cerebras" and self.CEREBRAS_API_KEY:
+            return "cerebras"
         if self.GROQ_API_KEY:
             return "groq"
         if self.XAI_API_KEY:
@@ -47,6 +53,8 @@ class Config:
 
     @property
     def LLM_MODEL(self) -> str:
+        if self.LLM_PREFER == "cerebras" and self.CEREBRAS_API_KEY:
+            return self.CEREBRAS_MODEL
         if self.GROQ_API_KEY:
             return self.GROQ_MODEL
         if self.XAI_API_KEY:
