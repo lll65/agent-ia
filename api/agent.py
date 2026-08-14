@@ -28,19 +28,26 @@ def _check_key(provided: str):
 
 
 async def _ask_agent(message: str) -> str:
-    """Fait tourner l'agent complet (outils + mémoire persistante + recherche web forcée)."""
-    tools = list(get_loader().list_all().keys())
-    factual = any(h in message.lower() for h in _FACTUAL_HINTS)
-    if factual and "search_web" in tools:
-        tools.remove("search_web"); tools.insert(0, "search_web")
-    cfg = {
-        "id": _PROFILE_ID, "name": "MasterAgent",
-        "system_prompt": ("Tu es l'assistant personnel de l'utilisateur. Français, concis et actionnable. "
-                          "Pour toute question factuelle, cherche sur le web ; jamais de source inventée."),
-        "tools": tools, "force_search": factual, "model": config.LLM_MODEL,
-    }
-    result = await run_agent(message, cfg, _PROFILE_ID)
-    return result.get("answer", "")
+    """Fait tourner l'agent complet (outils + mémoire persistante + recherche web forcée).
+    Robuste : toute erreur est renvoyée comme message lisible (jamais de 500)."""
+    import logging
+    try:
+        tools = list(get_loader().list_all().keys())
+        factual = any(h in message.lower() for h in _FACTUAL_HINTS)
+        if factual and "search_web" in tools:
+            tools.remove("search_web"); tools.insert(0, "search_web")
+        cfg = {
+            "id": _PROFILE_ID, "name": "MasterAgent",
+            "system_prompt": ("Tu es l'assistant personnel de l'utilisateur. Français, concis et actionnable. "
+                              "Pour toute question factuelle, cherche sur le web ; jamais de source inventée."),
+            "tools": tools, "force_search": factual, "model": config.LLM_MODEL,
+        }
+        result = await run_agent(message, cfg, _PROFILE_ID)
+        answer = (result or {}).get("answer", "") if isinstance(result, dict) else str(result)
+        return answer or "(réponse vide)"
+    except Exception as e:
+        logging.getLogger(__name__).error("Erreur /ask", exc_info=True)
+        return f"❌ Erreur agent : {type(e).__name__}: {str(e)[:400]}"
 
 
 class AskRequest(BaseModel):
