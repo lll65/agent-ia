@@ -18,6 +18,45 @@ _FACTUAL_HINTS = ("actualité", "news", "2024", "2025", "2026", "tendance", "auj
                   "récent", "dernier", "meilleur", "prix de", "cours de", "combien",
                   "qui est", "quand", "où", "statistiques", "chiffres", "météo", "cette semaine")
 
+# Petits messages sociaux / chitchat → réponse directe SANS outils (évite que
+# "salut" déclenche une recherche web ou un réflexe finance).
+_SMALLTALK = {
+    "salut", "bonjour", "bonsoir", "coucou", "hello", "hi", "hey", "yo", "wsh",
+    "ça va", "ca va", "cava", "comment ça va", "comment ca va", "quoi de neuf",
+    "merci", "merci beaucoup", "ok", "d'accord", "daccord", "cool", "super",
+    "bye", "au revoir", "à plus", "a plus", "bonne nuit", "bonne journée",
+    "test", "tu es là", "tu es la", "t'es là", "tes la",
+}
+
+
+def _is_smalltalk(message: str) -> bool:
+    """True si le message est un simple bonjour / remerciement / test court."""
+    m = message.strip().lower().rstrip("!?. ")
+    if not m:
+        return False
+    if m in _SMALLTALK:
+        return True
+    # Court (≤ 4 mots) et commence par une salutation → chitchat
+    words = m.split()
+    if len(words) <= 4 and words[0] in {"salut", "bonjour", "bonsoir", "coucou",
+                                        "hello", "hi", "hey", "yo", "merci", "ok"}:
+        return True
+    return False
+
+
+def _smalltalk_reply(message: str) -> str:
+    """Réponse conversationnelle directe via le LLM, sans aucun outil."""
+    from llm.client import chat
+    msgs = [
+        {"role": "system", "content": (
+            "Tu es Nova, l'assistant personnel de l'utilisateur. Réponds en français, "
+            "de façon chaleureuse, brève et naturelle. Ne parle JAMAIS de bourse, "
+            "d'actions, de crypto ou de finance sauf si on te le demande explicitement. "
+            "Propose simplement ton aide.")},
+        {"role": "user", "content": message},
+    ]
+    return chat(msgs, temperature=0.6)
+
 
 def _check_key(provided: str):
     """Vérifie la clé de la passerelle /ask (comparaison à temps constant, bytes).
@@ -35,6 +74,8 @@ async def _ask_agent(message: str) -> str:
     Robuste : toute erreur est renvoyée comme message lisible (jamais de 500)."""
     import logging
     try:
+        if _is_smalltalk(message):
+            return _smalltalk_reply(message)
         tools = list(get_loader().list_all().keys())
         factual = any(h in message.lower() for h in _FACTUAL_HINTS)
         if factual and "search_web" in tools:
@@ -84,6 +125,9 @@ async def ask_stream(q: str = "", key: str = ""):
         if not message:
             yield sse({"type": "answer", "text": "Message vide."}); yield sse({"type": "done"}); return
         try:
+            if _is_smalltalk(message):
+                yield sse({"type": "answer", "text": _smalltalk_reply(message)})
+                yield sse({"type": "done"}); return
             from agent.core import run_agent_stream
             tools = list(get_loader().list_all().keys())
             factual = any(h in message.lower() for h in _FACTUAL_HINTS)

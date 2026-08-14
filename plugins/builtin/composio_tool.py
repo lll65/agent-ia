@@ -41,14 +41,17 @@ class ComposioPlugin(Plugin):
         "arguments = objet JSON des paramètres de l'action."
     )
     parameters = {
-        "command": {"type": "string", "description": "Nom de l'action Composio en MAJUSCULES (ex: GOOGLECALENDAR_EVENTS_LIST)", "required": True},
+        "command": {"type": "string", "description": "Nom de l'action Composio en MAJUSCULES (ex: GOOGLECALENDAR_EVENTS_LIST)", "required": False},
         "arguments": {"type": "string", "description": "Paramètres de l'action en JSON (optionnel)", "required": False},
     }
 
-    def run(self, command: str = "", arguments="", action: str = "", **_) -> str:
+    def run(self, command: str = "", arguments="", action: str = "",
+            name: str = "", tool: str = "", app: str = "", **kw) -> str:
         from config import config
-        # Tolérance : accepte aussi 'action' au cas où le modèle utilise l'ancien nom
-        command = (command or action or "").strip()
+        # Ultra-tolérant : récupère le nom d'action dans n'importe quelle clé raisonnable
+        command = (command or action or name or tool or app or kw.get("query") or "").strip()
+        if not arguments and isinstance(kw, dict):
+            arguments = kw.get("arguments") or kw.get("input") or kw.get("params") or ""
         key = getattr(config, "COMPOSIO_API_KEY", "")
         if not key:
             return ("⚠️ Composio non configuré. Crée un compte gratuit sur composio.dev, "
