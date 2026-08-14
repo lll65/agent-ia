@@ -151,11 +151,20 @@ def _cerebras_chat(messages: list, model: str, temperature: float) -> str:
         api_key=config.CEREBRAS_API_KEY,
         base_url="https://api.cerebras.ai/v1",
     )
-    # Ordre d'essai : modèle configuré, puis noms Cerebras valides connus
+    # Ordre d'essai : modèle configuré, noms connus, PUIS les modèles réellement
+    # accessibles au compte (via /models) → évite les 404 'model_not_found'.
     candidates = []
-    for m in (model, "llama-3.3-70b", "llama3.1-70b", "llama3.1-8b"):
+    for m in (model, "llama-3.3-70b", "llama3.1-8b", "llama-3.1-8b",
+              "llama3.1-70b", "llama-4-scout-17b-16e-instruct", "qwen-3-32b"):
         if m and m not in candidates:
             candidates.append(m)
+    try:
+        for mo in client.models.list().data:
+            mid = getattr(mo, "id", None)
+            if mid and mid not in candidates:
+                candidates.append(mid)
+    except Exception:
+        pass
 
     last_err = None
     for m in candidates:
