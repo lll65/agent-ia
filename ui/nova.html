@@ -5,86 +5,68 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>NOVA</title>
 <style>
-  :root{ --bg:#070710; --glass:rgba(255,255,255,.06); --stroke:rgba(255,255,255,.12);
-         --neon:#7c5cff; --neon2:#22d3ee; --txt:#e9e9f5; --dim:#9aa0b5; }
-  *{ box-sizing:border-box; margin:0; padding:0; }
-  html,body{ height:100%; }
-  body{ font-family:'Inter',system-ui,-apple-system,sans-serif; color:var(--txt);
-        background:var(--bg); overflow:hidden; }
-  /* Aurora animée en fond */
-  .aurora{ position:fixed; inset:-30%; z-index:0; filter:blur(90px); opacity:.55; }
-  .aurora span{ position:absolute; width:46vw; height:46vw; border-radius:50%; mix-blend-mode:screen;
-     animation:float 18s ease-in-out infinite; }
-  .a1{ background:#7c5cff; top:5%; left:8%; }
-  .a2{ background:#22d3ee; bottom:0%; right:6%; animation-delay:-6s; }
-  .a3{ background:#ec4899; top:35%; left:45%; animation-delay:-11s; }
-  @keyframes float{ 0%,100%{transform:translate(0,0) scale(1)} 33%{transform:translate(6%,-8%) scale(1.15)} 66%{transform:translate(-7%,6%) scale(.9)} }
-
-  .app{ position:relative; z-index:1; height:100dvh; display:flex; flex-direction:column;
-        max-width:820px; margin:0 auto; padding:14px; }
-  header{ display:flex; align-items:center; justify-content:space-between; padding:6px 4px 12px; }
+  :root{ --bg:#060610; --glass:rgba(255,255,255,.06); --stroke:rgba(255,255,255,.12);
+         --neon:#7c5cff; --neon2:#22d3ee; --pink:#ec4899; --txt:#e9e9f5; --dim:#9aa0b5; }
+  *{ box-sizing:border-box; margin:0; padding:0; } html,body{ height:100%; }
+  body{ font-family:'Inter',system-ui,sans-serif; color:var(--txt); background:var(--bg); overflow:hidden; }
+  #particles{ position:fixed; inset:0; z-index:0; }
+  .app{ position:relative; z-index:2; height:100dvh; display:flex; flex-direction:column; max-width:860px; margin:0 auto; padding:14px; }
+  header{ display:flex; align-items:center; justify-content:space-between; padding:4px 4px 10px; }
   .logo{ font-weight:800; font-size:26px; letter-spacing:.32em; background:linear-gradient(90deg,var(--neon),var(--neon2));
-         -webkit-background-clip:text; background-clip:text; color:transparent;
-         text-shadow:0 0 26px rgba(124,92,255,.45); }
+         -webkit-background-clip:text; background-clip:text; color:transparent; text-shadow:0 0 26px rgba(124,92,255,.45); }
   .logo small{ display:block; letter-spacing:.18em; font-size:10px; color:var(--dim); text-shadow:none; font-weight:600; }
-  .gear{ background:var(--glass); border:1px solid var(--stroke); color:var(--txt); width:40px; height:40px;
-         border-radius:12px; cursor:pointer; font-size:17px; transition:.2s; }
-  .gear:hover{ border-color:var(--neon); box-shadow:0 0 18px rgba(124,92,255,.4); }
+  .tools{ display:flex; gap:8px; }
+  .ic{ background:var(--glass); border:1px solid var(--stroke); color:var(--txt); width:40px; height:40px; border-radius:12px; cursor:pointer; font-size:16px; transition:.2s; }
+  .ic:hover{ border-color:var(--neon); box-shadow:0 0 18px rgba(124,92,255,.4); }
+  .ic.on{ border-color:var(--neon2); box-shadow:0 0 16px rgba(34,211,238,.5); }
 
-  .chat{ flex:1; overflow-y:auto; padding:8px 4px 4px; display:flex; flex-direction:column; gap:14px;
-         scrollbar-width:thin; scrollbar-color:var(--neon) transparent; }
-  .row{ display:flex; animation:pop .35s cubic-bezier(.2,.9,.3,1.2); }
-  .row.me{ justify-content:flex-end; }
-  @keyframes pop{ from{opacity:0; transform:translateY(12px) scale(.98)} to{opacity:1; transform:none} }
-  .bubble{ max-width:82%; padding:13px 16px; border-radius:18px; line-height:1.5; font-size:15px;
-           border:1px solid var(--stroke); backdrop-filter:blur(12px); white-space:pre-wrap; word-wrap:break-word; }
-  .me .bubble{ background:linear-gradient(135deg,var(--neon),#5b46d6); border:none; border-radius:18px 18px 5px 18px;
-               box-shadow:0 8px 26px rgba(124,92,255,.35); }
+  .chat{ flex:1; overflow-y:auto; padding:8px 4px; display:flex; flex-direction:column; gap:14px; scrollbar-width:thin; scrollbar-color:var(--neon) transparent; }
+  .row{ display:flex; animation:pop .35s cubic-bezier(.2,.9,.3,1.2); } .row.me{ justify-content:flex-end; }
+  @keyframes pop{ from{opacity:0; transform:translateY(12px)} to{opacity:1; transform:none} }
+  .bubble{ max-width:82%; padding:13px 16px; border-radius:18px; line-height:1.5; font-size:15px; border:1px solid var(--stroke); backdrop-filter:blur(12px); white-space:pre-wrap; word-wrap:break-word; }
+  .me .bubble{ background:linear-gradient(135deg,var(--neon),#5b46d6); border:none; border-radius:18px 18px 5px 18px; box-shadow:0 8px 26px rgba(124,92,255,.35); }
   .ai .bubble{ background:var(--glass); border-radius:18px 18px 18px 5px; }
-  .bubble pre{ background:#05050c; border:1px solid var(--stroke); border-radius:10px; padding:11px;
-               overflow-x:auto; margin:8px 0; font-size:13px; font-family:ui-monospace,monospace; }
+  .bubble pre{ background:#05050c; border:1px solid var(--stroke); border-radius:10px; padding:11px; overflow-x:auto; margin:8px 0; font-size:13px; font-family:ui-monospace,monospace; }
   .bubble a{ color:var(--neon2); }
-  .avatar{ width:30px; height:30px; border-radius:9px; margin:2px 9px 0 0; flex:0 0 auto;
-           background:linear-gradient(135deg,var(--neon),var(--neon2)); display:grid; place-items:center; font-size:15px;
-           box-shadow:0 0 16px rgba(34,211,238,.4); }
+  .avatar{ width:30px; height:30px; border-radius:9px; margin:2px 9px 0 0; flex:0 0 auto; background:linear-gradient(135deg,var(--neon),var(--neon2)); display:grid; place-items:center; font-size:15px; box-shadow:0 0 16px rgba(34,211,238,.4); }
 
-  .typing{ display:flex; gap:5px; padding:14px 16px; }
-  .typing i{ width:8px; height:8px; border-radius:50%; background:var(--neon2); animation:blink 1.2s infinite; }
-  .typing i:nth-child(2){ animation-delay:.2s } .typing i:nth-child(3){ animation-delay:.4s }
-  @keyframes blink{ 0%,60%,100%{opacity:.25; transform:translateY(0)} 30%{opacity:1; transform:translateY(-4px)} }
+  /* Graphe de raisonnement */
+  #graphWrap{ display:none; height:210px; border:1px solid var(--stroke); border-radius:16px; background:rgba(10,10,22,.5); backdrop-filter:blur(8px); margin:4px 0 10px; overflow:hidden; position:relative; }
+  #graphWrap.show{ display:block; animation:pop .4s; }
+  #graph{ width:100%; height:100%; }
+  #graphWrap .cap{ position:absolute; top:8px; left:12px; font-size:11px; letter-spacing:.14em; color:var(--dim); }
 
-  .composer{ display:flex; gap:10px; padding-top:10px; }
-  .composer textarea{ flex:1; resize:none; background:var(--glass); border:1px solid var(--stroke); color:var(--txt);
-        border-radius:16px; padding:14px 16px; font-size:15px; font-family:inherit; max-height:120px; outline:none; transition:.2s; }
+  .composer{ display:flex; gap:10px; padding-top:8px; }
+  .composer textarea{ flex:1; resize:none; background:var(--glass); border:1px solid var(--stroke); color:var(--txt); border-radius:16px; padding:14px 16px; font-size:15px; font-family:inherit; max-height:120px; outline:none; transition:.2s; }
   .composer textarea:focus{ border-color:var(--neon); box-shadow:0 0 22px rgba(124,92,255,.35); }
-  .send{ width:56px; border:none; border-radius:16px; cursor:pointer; font-size:20px; color:#fff;
-         background:linear-gradient(135deg,var(--neon),var(--neon2)); box-shadow:0 6px 22px rgba(124,92,255,.45); transition:.15s; }
-  .send:active{ transform:scale(.92); } .send:disabled{ opacity:.5; cursor:default; }
-
-  .chips{ display:flex; gap:8px; flex-wrap:wrap; padding:2px 0 8px; }
-  .chip{ font-size:12.5px; color:var(--dim); background:var(--glass); border:1px solid var(--stroke);
-         border-radius:999px; padding:7px 13px; cursor:pointer; transition:.2s; }
+  .send,.micbtn{ width:54px; border:none; border-radius:16px; cursor:pointer; font-size:19px; color:#fff; transition:.15s; }
+  .send{ background:linear-gradient(135deg,var(--neon),var(--neon2)); box-shadow:0 6px 22px rgba(124,92,255,.45); }
+  .micbtn{ background:var(--glass); border:1px solid var(--stroke); } .micbtn.rec{ background:var(--pink); animation:pulse .8s infinite; }
+  @keyframes pulse{ 50%{ box-shadow:0 0 0 8px rgba(236,72,153,.25) } }
+  .send:active{ transform:scale(.92); } .send:disabled{ opacity:.5; }
+  .chips{ display:flex; gap:8px; flex-wrap:wrap; padding:2px 0 6px; }
+  .chip{ font-size:12.5px; color:var(--dim); background:var(--glass); border:1px solid var(--stroke); border-radius:999px; padding:7px 13px; cursor:pointer; transition:.2s; }
   .chip:hover{ color:#fff; border-color:var(--neon); }
-
-  .modal{ position:fixed; inset:0; z-index:5; background:rgba(0,0,0,.6); display:none; place-items:center; padding:20px; }
-  .modal.show{ display:grid; }
+  .hint{ text-align:center; color:var(--dim); font-size:13px; margin:auto 0; opacity:.8; }
+  .modal{ position:fixed; inset:0; z-index:9; background:rgba(0,0,0,.6); display:none; place-items:center; padding:20px; } .modal.show{ display:grid; }
   .card{ background:#0d0d1a; border:1px solid var(--stroke); border-radius:18px; padding:22px; max-width:420px; width:100%; }
   .card h3{ margin-bottom:6px; } .card p{ color:var(--dim); font-size:13px; margin-bottom:14px; }
-  .card input{ width:100%; background:#05050c; border:1px solid var(--stroke); color:var(--txt); border-radius:11px;
-               padding:12px; font-size:14px; outline:none; }
-  .card button{ width:100%; margin-top:12px; padding:12px; border:none; border-radius:11px; color:#fff; cursor:pointer;
-               background:linear-gradient(135deg,var(--neon),var(--neon2)); font-weight:700; }
-  .hint{ text-align:center; color:var(--dim); font-size:13px; margin:auto 0; opacity:.8; }
+  .card input{ width:100%; background:#05050c; border:1px solid var(--stroke); color:var(--txt); border-radius:11px; padding:12px; font-size:14px; outline:none; }
+  .card button{ width:100%; margin-top:12px; padding:12px; border:none; border-radius:11px; color:#fff; cursor:pointer; background:linear-gradient(135deg,var(--neon),var(--neon2)); font-weight:700; }
 </style>
 </head>
 <body>
-  <div class="aurora"><span class="a1"></span><span class="a2"></span><span class="a3"></span></div>
-
+  <canvas id="particles"></canvas>
   <div class="app">
     <header>
       <div class="logo">NOVA<small>ASSISTANT · DU FUTUR</small></div>
-      <button class="gear" onclick="openCfg()" title="Réglages">⚙️</button>
+      <div class="tools">
+        <button class="ic on" id="ttsBtn" onclick="toggleTTS()" title="Voix de Nova">🔊</button>
+        <button class="ic" onclick="openCfg()" title="Réglages">⚙️</button>
+      </div>
     </header>
+
+    <div id="graphWrap"><span class="cap">RAISONNEMENT</span><canvas id="graph"></canvas></div>
 
     <div class="chips">
       <span class="chip" onclick="quick(this)">Mon agenda cette semaine ?</span>
@@ -92,83 +74,97 @@
       <span class="chip" onclick="quick(this)">Planifie ma journée</span>
     </div>
 
-    <div class="chat" id="chat">
-      <div class="hint" id="hint">✨ Bonjour, je suis Nova. Pose-moi une question.</div>
-    </div>
+    <div class="chat" id="chat"><div class="hint" id="hint">✨ Bonjour, je suis Nova. Parle-moi ou écris.</div></div>
 
     <div class="composer">
+      <button class="micbtn" id="mic" onclick="toggleMic()" title="Parler">🎤</button>
       <textarea id="in" rows="1" placeholder="Parle à Nova…" onkeydown="keydown(event)" oninput="grow(this)"></textarea>
       <button class="send" id="send" onclick="ask()">➤</button>
     </div>
   </div>
 
-  <div class="modal" id="cfg">
-    <div class="card">
-      <h3>🔑 Connexion à Nova</h3>
-      <p>Colle ta clé (la valeur de <b>AGENT_API_KEY</b> définie sur Render). Elle reste sur ton appareil.</p>
-      <input id="key" type="password" placeholder="Ta clé API…">
-      <button onclick="saveCfg()">Enregistrer</button>
-    </div>
-  </div>
+  <div class="modal" id="cfg"><div class="card">
+    <h3>🔑 Connexion à Nova</h3><p>Colle ta clé (valeur de <b>AGENT_API_KEY</b> sur Render). Elle reste sur ton appareil.</p>
+    <input id="key" type="password" placeholder="Ta clé API…"><button onclick="saveCfg()">Enregistrer</button>
+  </div></div>
 
 <script>
-const API = location.origin + "/agent/ask";
-let KEY = localStorage.getItem("nova_key") || "";
-const chat = document.getElementById("chat"), hint = document.getElementById("hint");
-
+const ORIGIN = location.origin;
+let KEY = localStorage.getItem("nova_key")||"", TTS = localStorage.getItem("nova_tts")!=="0";
+const chat=document.getElementById("chat"), hint=document.getElementById("hint");
+document.getElementById("ttsBtn").classList.toggle("on", TTS);
 if(!KEY) openCfg();
-function openCfg(){ document.getElementById("key").value = KEY; document.getElementById("cfg").classList.add("show"); }
-function saveCfg(){ KEY = document.getElementById("key").value.trim(); localStorage.setItem("nova_key", KEY);
-  document.getElementById("cfg").classList.remove("show"); }
-
+function openCfg(){ document.getElementById("key").value=KEY; document.getElementById("cfg").classList.add("show"); }
+function saveCfg(){ KEY=document.getElementById("key").value.trim(); localStorage.setItem("nova_key",KEY); document.getElementById("cfg").classList.remove("show"); }
+function toggleTTS(){ TTS=!TTS; localStorage.setItem("nova_tts",TTS?"1":"0"); document.getElementById("ttsBtn").classList.toggle("on",TTS); if(!TTS) speechSynthesis.cancel(); }
 function grow(t){ t.style.height="auto"; t.style.height=Math.min(t.scrollHeight,120)+"px"; }
-function keydown(e){ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); ask(); } }
-function quick(el){ document.getElementById("in").value = el.textContent; ask(); }
-
+function keydown(e){ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); ask(); } }
+function quick(el){ document.getElementById("in").value=el.textContent; ask(); }
 function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
-function fmt(s){ // markdown minimal
-  s = esc(s).replace(/```([\s\S]*?)```/g,(m,c)=>"<pre>"+c.trim()+"</pre>")
-            .replace(/\*\*(.+?)\*\*/g,"<b>$1</b>")
-            .replace(/(https?:\/\/[^\s]+)/g,'<a href="$1" target="_blank">$1</a>')
-            .replace(/\n/g,"<br>");
-  return s;
-}
-function addRow(who, html){
-  if(hint) hint.remove();
-  const row = document.createElement("div"); row.className = "row " + (who==="me"?"me":"ai");
-  row.innerHTML = (who==="ai"?'<div class="avatar">🧠</div>':'') + '<div class="bubble">'+html+'</div>';
-  chat.appendChild(row); chat.scrollTop = chat.scrollHeight; return row.querySelector(".bubble");
-}
-function typing(){ return addRow("ai",'<div class="typing"><i></i><i></i><i></i></div>'); }
+function fmt(s){ return esc(s).replace(/```([\s\S]*?)```/g,(m,c)=>"<pre>"+c.trim()+"</pre>").replace(/\*\*(.+?)\*\*/g,"<b>$1</b>").replace(/(https?:\/\/[^\s]+)/g,'<a href="$1" target="_blank">$1</a>').replace(/\n/g,"<br>"); }
+function addRow(who,html){ if(hint)hint.remove(); const r=document.createElement("div"); r.className="row "+(who==="me"?"me":"ai"); r.innerHTML=(who==="ai"?'<div class="avatar">🧠</div>':'')+'<div class="bubble">'+html+'</div>'; chat.appendChild(r); chat.scrollTop=chat.scrollHeight; return r.querySelector(".bubble"); }
 
-async function ask(){
-  const inp = document.getElementById("in"); const msg = inp.value.trim();
-  if(!msg) return;
-  if(!KEY){ openCfg(); return; }
-  inp.value=""; grow(inp);
-  addRow("me", fmt(msg));
-  const bubble = typing();
-  document.getElementById("send").disabled = true;
-  try{
-    const r = await fetch(API, { method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({ message: msg, key: KEY }) });
-    if(r.status===401){ bubble.innerHTML="🔒 Clé invalide. Clique ⚙️ pour la corriger."; return; }
-    if(r.status===501){ bubble.innerHTML="⚙️ Passerelle désactivée (AGENT_API_KEY manquante sur Render)."; return; }
-    const data = await r.json();
-    typewrite(bubble, data.answer || "(réponse vide)");
-  }catch(e){ bubble.innerHTML = "⚠️ Erreur réseau : "+esc(String(e)); }
-  finally{ document.getElementById("send").disabled = false; }
-}
+/* ═══ PARTICULES réactives ═══ */
+const pc=document.getElementById("particles"), px=pc.getContext("2d"); let PW,PH,parts=[],thinking=false;
+function resize(){ PW=pc.width=innerWidth; PH=pc.height=innerHeight; }
+addEventListener("resize",resize); resize();
+for(let i=0;i<70;i++) parts.push({x:Math.random()*PW,y:Math.random()*PH,vx:(Math.random()-.5)*.3,vy:(Math.random()-.5)*.3,r:Math.random()*2+.5});
+function loopP(){ px.clearRect(0,0,PW,PH); const sp=thinking?2.6:1, gl=thinking?.9:.4;
+  for(const p of parts){ p.x+=p.vx*sp; p.y+=p.vy*sp; if(p.x<0||p.x>PW)p.vx*=-1; if(p.y<0||p.y>PH)p.vy*=-1;
+    px.beginPath(); px.arc(p.x,p.y,p.r*(thinking?1.6:1),0,7); px.fillStyle=`rgba(124,92,255,${gl})`; px.shadowBlur=thinking?14:6; px.shadowColor="#7c5cff"; px.fill(); }
+  px.shadowBlur=0; requestAnimationFrame(loopP); } loopP();
 
-// Effet "machine à écrire" (streaming feel)
-function typewrite(el, text){
-  const html = fmt(text); el.innerHTML = "";
-  // si code présent, on affiche direct (le typewriter casserait le HTML)
-  if(html.includes("<pre>")){ el.innerHTML = html; chat.scrollTop = chat.scrollHeight; return; }
-  let i=0; const plain = text;
-  const t = setInterval(()=>{ el.innerHTML = fmt(plain.slice(0,i)) + '<span style="opacity:.5">▍</span>';
-    chat.scrollTop = chat.scrollHeight; i += 2;
-    if(i >= plain.length){ clearInterval(t); el.innerHTML = html; } }, 12);
+/* ═══ GRAPHE de raisonnement ═══ */
+const gw=document.getElementById("graphWrap"), gc=document.getElementById("graph"), gx=gc.getContext("2d");
+let nodes=[], gAnim=null;
+function gResize(){ gc.width=gw.clientWidth; gc.height=gw.clientHeight; }
+function graphStart(){ gw.classList.add("show"); gResize(); nodes=[{x:gc.width/2,y:gc.height/2,r:22,label:"NOVA",icon:"🧠",core:1,t:0}]; if(!gAnim) drawGraph(); }
+function graphAdd(icon,label){ const n=nodes.length-1, ang=n*2.399, rad=Math.min(gc.width,gc.height)*.34;
+  nodes.push({x:gc.width/2+Math.cos(ang)*rad,y:gc.height/2+Math.sin(ang)*rad,r:0,tr:16,label,icon,t:0}); }
+function drawGraph(){ gx.clearRect(0,0,gc.width,gc.height); const core=nodes[0]; if(!core){gAnim=null;return;}
+  core.t++; const pulse=22+Math.sin(core.t*.08)*3;
+  for(let i=1;i<nodes.length;i++){ const nd=nodes[i]; nd.r+=(nd.tr-nd.r)*.15; nd.t++;
+    gx.beginPath(); gx.moveTo(core.x,core.y); gx.lineTo(nd.x,nd.y); gx.strokeStyle="rgba(124,92,255,.4)"; gx.lineWidth=1.5; gx.stroke();
+    gx.beginPath(); gx.arc(nd.x,nd.y,nd.r,0,7); gx.fillStyle="rgba(34,211,238,.18)"; gx.strokeStyle="#22d3ee"; gx.fill(); gx.stroke();
+    gx.font="13px sans-serif"; gx.textAlign="center"; gx.fillStyle="#fff"; gx.fillText(nd.icon,nd.x,nd.y+5);
+    gx.fillStyle="#9aa0b5"; gx.font="10px sans-serif"; gx.fillText(nd.label.slice(0,16),nd.x,nd.y+nd.r+12); }
+  gx.beginPath(); gx.arc(core.x,core.y,pulse,0,7); gx.fillStyle="rgba(124,92,255,.9)"; gx.shadowBlur=24; gx.shadowColor="#7c5cff"; gx.fill(); gx.shadowBlur=0;
+  gx.font="16px sans-serif"; gx.textAlign="center"; gx.fillStyle="#fff"; gx.fillText("🧠",core.x,core.y+5);
+  gAnim=requestAnimationFrame(drawGraph); }
+function graphEnd(){ setTimeout(()=>{ gw.classList.remove("show"); cancelAnimationFrame(gAnim); gAnim=null; },2600); }
+const ICON={search:"🔍",web:"🔍",mail:"📧",gmail:"📧",calendar:"📅",agenda:"📅",connected_app:"🔌",thought:"💭",obs:"👁️",code:"💻"};
+function iconFor(kind,tool){ const k=(tool||"").toLowerCase(); for(const key in ICON) if(k.includes(key)) return ICON[key]; return ICON[kind]||"⚙️"; }
+
+/* ═══ STREAMING (SSE) ═══ */
+function ask(){
+  const inp=document.getElementById("in"), msg=inp.value.trim(); if(!msg) return; if(!KEY){ openCfg(); return; }
+  inp.value=""; grow(inp); addRow("me",fmt(msg)); const bubble=addRow("ai",'<span style="opacity:.6">…</span>');
+  document.getElementById("send").disabled=true; thinking=true; graphStart();
+  let answer="";
+  const url=ORIGIN+"/agent/ask/stream?key="+encodeURIComponent(KEY)+"&q="+encodeURIComponent(msg);
+  const es=new EventSource(url);
+  es.onmessage=(e)=>{ let d; try{ d=JSON.parse(e.data);}catch{ return; }
+    if(d.type==="step"){ graphAdd(iconFor(d.kind,d.tool), d.tool||d.kind); }
+    else if(d.type==="answer"){ answer=d.text||""; typewrite(bubble,answer); if(TTS) speak(answer); }
+    else if(d.type==="done"){ es.close(); thinking=false; graphEnd(); document.getElementById("send").disabled=false; }
+  };
+  es.onerror=()=>{ es.close(); thinking=false; graphEnd(); document.getElementById("send").disabled=false;
+    if(!answer) bubble.innerHTML="⚠️ Connexion interrompue. Vérifie ta clé (⚙️) et réessaie."; };
+}
+function typewrite(el,text){ const html=fmt(text); if(html.includes("<pre>")){ el.innerHTML=html; return; }
+  let i=0; clearInterval(el._t); el._t=setInterval(()=>{ el.innerHTML=fmt(text.slice(0,i))+'<span style="opacity:.5">▍</span>'; chat.scrollTop=chat.scrollHeight; i+=2; if(i>=text.length){ clearInterval(el._t); el.innerHTML=html; } },12); }
+
+/* ═══ VOIX ═══ */
+function speak(text){ try{ speechSynthesis.cancel(); const u=new SpeechSynthesisUtterance(text.replace(/[*#`>]/g,"").slice(0,600)); u.lang="fr-FR"; u.rate=1.05; speechSynthesis.speak(u); }catch(e){} }
+let rec=null;
+function toggleMic(){ const SR=window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR){ alert("Micro non supporté par ce navigateur (essaie Chrome/Safari)."); return; }
+  const btn=document.getElementById("mic");
+  if(rec){ rec.stop(); return; }
+  rec=new SR(); rec.lang="fr-FR"; rec.interimResults=false; btn.classList.add("rec");
+  rec.onresult=(e)=>{ document.getElementById("in").value=e.results[0][0].transcript; };
+  rec.onend=()=>{ btn.classList.remove("rec"); rec=null; if(document.getElementById("in").value.trim()) ask(); };
+  rec.onerror=()=>{ btn.classList.remove("rec"); rec=null; };
+  rec.start();
 }
 </script>
 </body>
