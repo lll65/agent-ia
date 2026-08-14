@@ -58,7 +58,17 @@ def chat(messages: list, temperature: float = 0.7, num_ctx: int = 4096) -> str:
     if provider == "xai":
         return _xai_chat(messages, model, temperature)
     if provider == "cerebras":
-        return _cerebras_chat(messages, model, temperature)
+        try:
+            return _cerebras_chat(messages, model, temperature)
+        except Exception as e:
+            # Cerebras saturé/indispo → bascule sur Groq si dispo
+            if config.GROQ_API_KEY:
+                logger.warning(f"[LLM] Cerebras KO ({str(e)[:80]}) — bascule sur Groq.")
+                try:
+                    return _groq_chat(messages, config.GROQ_MODEL, temperature)
+                except Exception as e2:
+                    raise RuntimeError(f"Cerebras ET Groq ont échoué. Cerebras={e} ; Groq={e2}") from e2
+            raise
     if provider == "gemini":
         return _gemini_chat(messages, model, temperature)
     return _ollama_chat(messages, model, temperature, num_ctx)
