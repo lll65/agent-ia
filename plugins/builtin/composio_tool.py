@@ -32,26 +32,30 @@ def _to_dict(arguments):
 
 
 class ComposioPlugin(Plugin):
-    name = "app_action"
+    name = "connected_app"
     description = (
         "Agit sur les apps connectées de l'utilisateur via Composio (Gmail, Google Agenda, "
-        "Slack, Notion…). Paramètres: action (nom Composio, ex: " + _COMMON + "), "
-        "arguments (objet JSON des paramètres de l'action, ex: {\"max_results\": 5})."
+        "Slack, Notion…). PARAMS obligatoires — exemple EXACT :\n"
+        'PARAMS: {"command": "GOOGLECALENDAR_EVENTS_LIST", "arguments": {"maxResults": 10}}\n'
+        "command = nom d'action Composio en MAJUSCULES (ex: " + _COMMON + "). "
+        "arguments = objet JSON des paramètres de l'action."
     )
     parameters = {
-        "action": {"type": "string", "description": "Nom de l'action Composio (MAJUSCULES)", "required": True},
+        "command": {"type": "string", "description": "Nom de l'action Composio en MAJUSCULES (ex: GOOGLECALENDAR_EVENTS_LIST)", "required": True},
         "arguments": {"type": "string", "description": "Paramètres de l'action en JSON (optionnel)", "required": False},
     }
 
-    def run(self, action: str = "", arguments="", **_) -> str:
+    def run(self, command: str = "", arguments="", action: str = "", **_) -> str:
         from config import config
+        # Tolérance : accepte aussi 'action' au cas où le modèle utilise l'ancien nom
+        command = (command or action or "").strip()
         key = getattr(config, "COMPOSIO_API_KEY", "")
         if not key:
             return ("⚠️ Composio non configuré. Crée un compte gratuit sur composio.dev, "
                     "connecte tes apps (Gmail, Agenda…), et mets COMPOSIO_API_KEY dans les variables Render.")
-        action = (action or "").strip()
-        if not action:
-            return f"⚠️ Précise une action. Ex : {_COMMON}"
+        if not command:
+            return f"⚠️ Précise 'command'. Ex : {_COMMON}"
+        action = command
 
         import requests
         args = _to_dict(arguments)
