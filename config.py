@@ -29,6 +29,10 @@ class Config:
     # Passerelle universelle /ask : mot de passe pour parler à l'agent depuis n'importe quel
     # appareil (Siri, n8n, webhook…). VIDE = endpoint désactivé (501, aucune fuite).
     AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
+    # Composio : connecteur universel (Gmail, Google Agenda, Slack, Notion… 1000+ apps).
+    # Clé sur composio.dev (gratuit 20k actions/mois). COMPOSIO_USER_ID = ton "entity" (défaut 'default').
+    COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY", "")
+    COMPOSIO_USER_ID = os.getenv("COMPOSIO_USER_ID", "default")
     XAI_MODEL = os.getenv("XAI_MODEL", "grok-beta")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     CEREBRAS_MODEL = os.getenv("CEREBRAS_MODEL", "llama-3.3-70b")
