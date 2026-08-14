@@ -143,14 +143,14 @@ async def run_agent(
     system = build_system(agent_config, loader.list_all())
     temperature = _temperature_for_role(agent_config)
 
-    # Auto-résumé si historique long
-    if mem.should_summarize(agent_id):
-        recent = mem.recall_recent(agent_id, limit=config.SUMMARY_THRESHOLD)
-        try:
+    # Auto-résumé si historique long (mémoire non fatale)
+    try:
+        if mem.should_summarize(agent_id):
+            recent = mem.recall_recent(agent_id, limit=config.SUMMARY_THRESHOLD)
             summary = await summarize_messages(recent)
             mem.cache_summary(agent_id, summary)
-        except Exception as e:
-            logger.warning(f"Auto-résumé échoué: {e}")
+    except Exception as e:
+        logger.warning(f"Auto-résumé/mémoire ignoré: {e}")
 
     # Injecte les leçons apprises si disponibles
     try:
@@ -162,7 +162,11 @@ async def run_agent(
     except Exception:
         pass
 
-    context = mem.build_context(agent_id, task, recent_limit=6)
+    try:
+        context = mem.build_context(agent_id, task, recent_limit=6)
+    except Exception as e:
+        logger.warning(f"build_context ignoré: {e}")
+        context = ""
     messages = [{"role": "system", "content": system}]
     if context:
         messages.append({"role": "assistant", "content": f"[Contexte mémoriel]\n{context}"})
@@ -177,7 +181,10 @@ async def run_agent(
             f"avant de répondre. Premier outil disponible: {required_tools[0]}]"
         )
     messages.append({"role": "user", "content": task_msg})
-    mem.remember(agent_id, "user", task)
+    try:
+        mem.remember(agent_id, "user", task)
+    except Exception as e:
+        logger.warning(f"mem.remember ignoré: {e}")
 
     steps = []
     tool_calls_made = 0
