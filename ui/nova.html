@@ -9,6 +9,16 @@
          --neon:#7c5cff; --neon2:#22d3ee; --pink:#ec4899; --txt:#e9e9f5; --dim:#9aa0b5; }
   *{ box-sizing:border-box; margin:0; padding:0; } html,body{ height:100%; }
   body{ font-family:'Inter',system-ui,sans-serif; color:var(--txt); background:var(--bg); overflow:hidden; }
+  /* Aurora d'ouverture — magnifique au démarrage, se tamise une fois la conversation lancée */
+  #aurora{ position:fixed; inset:0; z-index:0; overflow:hidden; filter:blur(70px); transition:opacity 1.3s ease, filter 1.3s ease; }
+  #aurora .blob{ position:absolute; border-radius:50%; opacity:.6; mix-blend-mode:screen; will-change:transform; }
+  #aurora .b1{ width:60vw; height:60vw; left:-12vw; top:-16vh; background:radial-gradient(circle,#7c5cff,transparent 68%); animation:float1 22s ease-in-out infinite; }
+  #aurora .b2{ width:52vw; height:52vw; right:-10vw; top:2vh; background:radial-gradient(circle,#22d3ee,transparent 68%); animation:float2 26s ease-in-out infinite; }
+  #aurora .b3{ width:46vw; height:46vw; left:22vw; bottom:-18vh; background:radial-gradient(circle,#ec4899,transparent 70%); animation:float3 30s ease-in-out infinite; }
+  @keyframes float1{ 0%,100%{ transform:translate(0,0) scale(1) } 50%{ transform:translate(7vw,6vh) scale(1.15) } }
+  @keyframes float2{ 0%,100%{ transform:translate(0,0) scale(1) } 50%{ transform:translate(-6vw,5vh) scale(.9) } }
+  @keyframes float3{ 0%,100%{ transform:translate(0,0) scale(1) } 50%{ transform:translate(5vw,-6vh) scale(1.1) } }
+  body.chatting #aurora{ opacity:.22; filter:blur(90px); }
   #particles{ position:fixed; inset:0; z-index:0; }
   .app{ position:relative; z-index:2; height:100dvh; display:flex; flex-direction:column; max-width:860px; margin:0 auto; padding:14px; }
   header{ display:flex; align-items:center; justify-content:space-between; padding:4px 4px 10px; }
@@ -28,6 +38,10 @@
   .ai .bubble{ background:var(--glass); border-radius:18px 18px 18px 5px; }
   .bubble pre{ background:#05050c; border:1px solid var(--stroke); border-radius:10px; padding:11px; overflow-x:auto; margin:8px 0; font-size:13px; font-family:ui-monospace,monospace; }
   .bubble a{ color:var(--neon2); }
+  .think{ display:inline-flex; align-items:center; gap:8px; color:var(--dim); font-size:14px; }
+  .think .dot{ width:7px; height:7px; border-radius:50%; background:var(--neon2); box-shadow:0 0 10px var(--neon2); animation:blink 1s infinite; }
+  .cur{ animation:blink 1s step-end infinite; color:var(--neon2); }
+  @keyframes blink{ 50%{ opacity:.2 } }
   .avatar{ width:30px; height:30px; border-radius:9px; margin:2px 9px 0 0; flex:0 0 auto; background:linear-gradient(135deg,var(--neon),var(--neon2)); display:grid; place-items:center; font-size:15px; box-shadow:0 0 16px rgba(34,211,238,.4); }
 
   /* Graphe de raisonnement — plein écran, en arrière-plan */
@@ -56,6 +70,7 @@
 </style>
 </head>
 <body>
+  <div id="aurora"><span class="blob b1"></span><span class="blob b2"></span><span class="blob b3"></span></div>
   <canvas id="particles"></canvas>
   <div id="graphWrap"><span class="cap">RAISONNEMENT EN DIRECT</span><canvas id="graph"></canvas></div>
   <div class="app">
@@ -115,36 +130,48 @@ function loopP(){ px.clearRect(0,0,PW,PH); const sp=thinking?2.6:1, gl=thinking?
 
 /* ═══ GRAPHE de raisonnement ═══ */
 const gw=document.getElementById("graphWrap"), gc=document.getElementById("graph"), gx=gc.getContext("2d");
-let nodes=[], gAnim=null;
-function gResize(){ gc.width=innerWidth; gc.height=innerHeight; }
-function graphStart(){ gw.classList.add("show"); gResize(); nodes=[{x:gc.width/2,y:gc.height*.44,r:44,label:"NOVA",icon:"🧠",core:1,t:0}]; if(!gAnim) drawGraph(); }
-function graphAdd(icon,label){ const n=nodes.length-1, ang=n*2.399 - 1.2, rad=Math.min(gc.width,gc.height)*.32;
-  nodes.push({x:gc.width/2+Math.cos(ang)*rad,y:gc.height*.44+Math.sin(ang)*rad,r:0,tr:38,label,icon,t:0}); }
-function drawGraph(){ gx.clearRect(0,0,gc.width,gc.height); const core=nodes[0]; if(!core){gAnim=null;return;}
-  core.t++; const pulse=44+Math.sin(core.t*.08)*6;
+let nodes=[], gAnim=null, GW=innerWidth, GH=innerHeight, GCX=GW/2, GCY=GH*.44;
+function gResize(){ const dpr=Math.min(devicePixelRatio||1,2); GW=innerWidth; GH=innerHeight;
+  gc.width=GW*dpr; gc.height=GH*dpr; gc.style.width=GW+"px"; gc.style.height=GH+"px";
+  gx.setTransform(dpr,0,0,dpr,0,0); GCX=GW/2; GCY=GH*.44; }
+function graphStart(){ gw.classList.add("show"); gResize(); nodes=[{x:GCX,y:GCY,label:"NOVA",icon:"🧠",core:1,t:0}]; if(!gAnim) drawGraph(); }
+function graphAdd(icon,label){ const n=nodes.length-1, ang=n*2.399 - 1.2, rad=Math.min(GW,GH)*.28;
+  nodes.push({x:GCX+Math.cos(ang)*rad,y:GCY+Math.sin(ang)*rad,r:0,tr:24,label,icon,t:0}); }
+function drawGraph(){ gx.clearRect(0,0,GW,GH); const core=nodes[0]; if(!core){gAnim=null;return;}
+  core.t++; const pulse=28+Math.sin(core.t*.08)*3;
   for(let i=1;i<nodes.length;i++){ const nd=nodes[i]; nd.r+=(nd.tr-nd.r)*.13; nd.t++;
-    gx.beginPath(); gx.moveTo(core.x,core.y); gx.lineTo(nd.x,nd.y); gx.strokeStyle="rgba(124,92,255,.28)"; gx.lineWidth=2; gx.stroke();
-    gx.beginPath(); gx.arc(nd.x,nd.y,nd.r,0,7); gx.fillStyle="rgba(34,211,238,.10)"; gx.strokeStyle="rgba(34,211,238,.7)"; gx.lineWidth=2; gx.shadowBlur=18; gx.shadowColor="#22d3ee"; gx.fill(); gx.stroke(); gx.shadowBlur=0;
-    gx.font="26px sans-serif"; gx.textAlign="center"; gx.fillStyle="#fff"; gx.fillText(nd.icon,nd.x,nd.y+9);
-    gx.fillStyle="rgba(200,205,225,.75)"; gx.font="13px sans-serif"; gx.fillText(nd.label.slice(0,18),nd.x,nd.y+nd.r+18); }
-  gx.beginPath(); gx.arc(core.x,core.y,pulse,0,7); gx.fillStyle="rgba(124,92,255,.85)"; gx.shadowBlur=42; gx.shadowColor="#7c5cff"; gx.fill(); gx.shadowBlur=0;
-  gx.font="34px sans-serif"; gx.textAlign="center"; gx.fillStyle="#fff"; gx.fillText("🧠",core.x,core.y+11);
-  gx.fillStyle="rgba(233,233,245,.9)"; gx.font="12px sans-serif"; gx.letterSpacing="2px"; gx.fillText("NOVA",core.x,core.y+pulse+20);
+    gx.beginPath(); gx.moveTo(core.x,core.y); gx.lineTo(nd.x,nd.y); gx.strokeStyle="rgba(124,92,255,.25)"; gx.lineWidth=1.5; gx.stroke();
+    gx.beginPath(); gx.arc(nd.x,nd.y,nd.r,0,7); gx.fillStyle="rgba(34,211,238,.09)"; gx.strokeStyle="rgba(34,211,238,.6)"; gx.lineWidth=1.5; gx.shadowBlur=12; gx.shadowColor="#22d3ee"; gx.fill(); gx.stroke(); gx.shadowBlur=0;
+    gx.font="17px sans-serif"; gx.textAlign="center"; gx.textBaseline="middle"; gx.fillStyle="#fff"; gx.fillText(nd.icon,nd.x,nd.y);
+    gx.textBaseline="alphabetic"; gx.fillStyle="rgba(200,205,225,.7)"; gx.font="11px sans-serif"; gx.fillText(nd.label.slice(0,18),nd.x,nd.y+nd.r+14); }
+  gx.beginPath(); gx.arc(core.x,core.y,pulse,0,7); gx.fillStyle="rgba(124,92,255,.8)"; gx.shadowBlur=30; gx.shadowColor="#7c5cff"; gx.fill(); gx.shadowBlur=0;
+  gx.font="22px sans-serif"; gx.textAlign="center"; gx.textBaseline="middle"; gx.fillStyle="#fff"; gx.fillText("🧠",core.x,core.y);
+  gx.textBaseline="alphabetic"; gx.fillStyle="rgba(233,233,245,.85)"; gx.font="11px sans-serif"; gx.fillText("NOVA",core.x,core.y+pulse+16);
   gAnim=requestAnimationFrame(drawGraph); }
 function graphEnd(){ setTimeout(()=>{ gw.classList.remove("show"); cancelAnimationFrame(gAnim); gAnim=null; },2600); }
 const ICON={search:"🔍",web:"🔍",mail:"📧",gmail:"📧",calendar:"📅",agenda:"📅",connected_app:"🔌",thought:"💭",obs:"👁️",code:"💻"};
 function iconFor(kind,tool){ const k=(tool||"").toLowerCase(); for(const key in ICON) if(k.includes(key)) return ICON[key]; return ICON[kind]||"⚙️"; }
 
 /* ═══ STREAMING (SSE) ═══ */
+function stepLabel(d){ const t=(d.tool||"").toLowerCase();
+  if(d.kind==="thought") return "Nova réfléchit…";
+  if(t.includes("search")||t.includes("web")) return "Recherche sur le web…";
+  if(t.includes("calendar")||t.includes("agenda")||t.includes("connected")) return "Consultation de ton agenda / tes apps…";
+  if(t.includes("mail")||t.includes("gmail")) return "Lecture de tes mails…";
+  if(d.kind==="obs") return "Analyse des résultats…";
+  return (d.tool? d.tool : "Traitement")+"…"; }
+function thinkHTML(txt,icon){ return '<span class="think"><span class="dot"></span>'+(icon?icon+" ":"")+esc(txt)+'<span class="cur">▍</span></span>'; }
 function ask(){
   const inp=document.getElementById("in"), msg=inp.value.trim(); if(!msg) return; if(!KEY){ openCfg(); return; }
-  inp.value=""; grow(inp); addRow("me",fmt(msg)); const bubble=addRow("ai",'<span style="opacity:.6">…</span>');
+  document.body.classList.add("chatting");
+  inp.value=""; grow(inp); addRow("me",fmt(msg)); const bubble=addRow("ai",thinkHTML("Nova réfléchit…"));
   document.getElementById("send").disabled=true; thinking=true; graphStart();
   let answer="";
   const url=ORIGIN+"/agent/ask/stream?key="+encodeURIComponent(KEY)+"&q="+encodeURIComponent(msg);
   const es=new EventSource(url);
   es.onmessage=(e)=>{ let d; try{ d=JSON.parse(e.data);}catch{ return; }
-    if(d.type==="step"){ graphAdd(iconFor(d.kind,d.tool), d.tool||d.kind); }
+    if(d.type==="step"){ const ic=iconFor(d.kind,d.tool); graphAdd(ic, d.tool||d.kind);
+      if(!answer){ bubble.innerHTML=thinkHTML(stepLabel(d), ic); chat.scrollTop=chat.scrollHeight; } }
     else if(d.type==="answer"){ answer=d.text||""; typewrite(bubble,answer); if(TTS) speak(answer); }
     else if(d.type==="done"){ es.close(); thinking=false; graphEnd(); document.getElementById("send").disabled=false; }
   };

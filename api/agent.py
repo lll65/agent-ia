@@ -58,6 +58,40 @@ def _smalltalk_reply(message: str) -> str:
     return chat(msgs, temperature=0.6)
 
 
+# Intention "app connectée" → agenda/mails/calendar/slack/notion : on route vers
+# l'outil Composio (connected_app), JAMAIS vers la recherche web.
+_APP_HINTS = ("agenda", "calendrier", "calendar", "rendez-vous", "rendez vous", "rdv",
+              "planning", "planifie", "événement", "evenement", "réunion", "reunion",
+              "mail", "mails", "email", "e-mail", "gmail", "boîte mail", "boite mail",
+              "slack", "notion", "mon calendrier", "mes messages")
+
+
+def _app_intent(message: str) -> bool:
+    m = message.lower()
+    return any(h in m for h in _APP_HINTS)
+
+
+def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
+    """Prépare la config de l'agent en priorisant le bon outil selon l'intention :
+    - Intention app (agenda/mail/calendar/slack/notion) → connected_app en 1er, PAS de web.
+    - Sinon question factuelle → recherche web forcée en 1er."""
+    tools = list(get_loader().list_all().keys())
+    app = _app_intent(message)
+    factual = (not app) and any(h in message.lower() for h in _FACTUAL_HINTS)
+    system = (f"Tu es {name}, l'assistant personnel de l'utilisateur. Français, concis et actionnable. "
+              "Jamais de source inventée : ne cite une source que si un outil te l'a réellement fournie.")
+    if app and "connected_app" in tools:
+        tools.remove("connected_app"); tools.insert(0, "connected_app")
+        system += (" Pour l'agenda, le calendrier, les mails, Slack ou Notion, utilise TOUJOURS l'outil "
+                   "connected_app (Composio) — ne cherche JAMAIS ces infos sur le web. "
+                   'Exemple agenda : connected_app command="GOOGLECALENDAR_EVENTS_LIST". '
+                   'Exemple mails : connected_app command="GMAIL_FETCH_EMAILS".')
+    elif factual and "search_web" in tools:
+        tools.remove("search_web"); tools.insert(0, "search_web")
+    return {"id": _PROFILE_ID, "name": name, "system_prompt": system,
+            "tools": tools, "force_search": factual, "model": config.LLM_MODEL}
+
+
 def _check_key(provided: str):
     """Vérifie la clé de la passerelle /ask (comparaison à temps constant, bytes).
     En bytes → supporte les caractères accentués/non-ASCII dans la clé."""
@@ -76,16 +110,7 @@ async def _ask_agent(message: str) -> str:
     try:
         if _is_smalltalk(message):
             return _smalltalk_reply(message)
-        tools = list(get_loader().list_all().keys())
-        factual = any(h in message.lower() for h in _FACTUAL_HINTS)
-        if factual and "search_web" in tools:
-            tools.remove("search_web"); tools.insert(0, "search_web")
-        cfg = {
-            "id": _PROFILE_ID, "name": "MasterAgent",
-            "system_prompt": ("Tu es l'assistant personnel de l'utilisateur. Français, concis et actionnable. "
-                              "Pour toute question factuelle, cherche sur le web ; jamais de source inventée."),
-            "tools": tools, "force_search": factual, "model": config.LLM_MODEL,
-        }
+        cfg = _build_agent_cfg(message, "Nova")
         result = await run_agent(message, cfg, _PROFILE_ID)
         answer = (result or {}).get("answer", "") if isinstance(result, dict) else str(result)
         return answer or "(réponse vide)"
@@ -129,13 +154,7 @@ async def ask_stream(q: str = "", key: str = ""):
                 yield sse({"type": "answer", "text": _smalltalk_reply(message)})
                 yield sse({"type": "done"}); return
             from agent.core import run_agent_stream
-            tools = list(get_loader().list_all().keys())
-            factual = any(h in message.lower() for h in _FACTUAL_HINTS)
-            if factual and "search_web" in tools:
-                tools.remove("search_web"); tools.insert(0, "search_web")
-            cfg = {"id": _PROFILE_ID, "name": "Nova", "force_search": factual, "model": config.LLM_MODEL,
-                   "system_prompt": "Tu es Nova, l'assistant personnel de l'utilisateur. Français, concis, actionnable.",
-                   "tools": tools}
+            cfg = _build_agent_cfg(message, "Nova")
             async for step in run_agent_stream(message, cfg, _PROFILE_ID):
                 t = step.get("type")
                 if t == "final":
