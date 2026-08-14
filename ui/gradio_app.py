@@ -205,7 +205,7 @@ try:
     from agent.system_prompt import SHORT_SYSTEM_PROMPT as _FAST_SYS
 except ImportError:
     _FAST_SYS = (
-        "Tu es MasterAgent-Gros, assistant IA polyvalent. Réponses directes en français, "
+        "Tu es Nova, l'assistant IA personnel de l'utilisateur. Réponses directes en français, "
         "format ADAPTÉ à la question. En Mode Rapide tu n'as aucun outil : n'invente jamais "
         "de prix/source/date ; si une donnée réelle manque, dis « ⚠️ estimation non vérifiée » "
         "et propose le Mode Agent."
@@ -270,10 +270,10 @@ def full_agent(message: str, history: list, sid: str) -> str:
         tools.remove("search_web")
         tools.insert(0, "search_web")
     cfg = {
-        "id": sid, "name": "MasterAgent-Gros v4",
+        "id": sid, "name": "Nova",
         "force_search": factual,
         "system_prompt": (
-            "Tu es MasterAgent-Gros v4, un agent IA surpuissant et auto-évolutif. "
+            "Tu es Nova, l'assistant IA personnel de l'utilisateur, surpuissant et autonome. "
             "Tu maîtrises tous les domaines : code full-stack, finance quantitative, "
             "création de contenu, data science, stratégie business. "
             "Pour toute question factuelle/actuelle, ta PREMIÈRE action est search_web — "
@@ -378,9 +378,9 @@ async def _stream_agent(message: str, history: list, sid: str, shown_user: str, 
     if factual and "search_web" in tools:
         tools.remove("search_web"); tools.insert(0, "search_web")
     cfg = {
-        "id": sid, "name": "MasterAgent-Gros v4", "force_search": factual,
+        "id": sid, "name": "Nova", "force_search": factual,
         "system_prompt": (
-            "Tu es MasterAgent-Gros v4, agent IA polyvalent. Pour toute question factuelle/actuelle, "
+            "Tu es Nova, l'assistant IA personnel de l'utilisateur. Pour toute question factuelle/actuelle, "
             "ta 1re action est search_web ; jamais de source citée sans appel d'outil réel. Français, "
             "format adapté à la question (pas de format trading hors bourse)."
         ),
@@ -1693,8 +1693,8 @@ _HEADER_HTML = (
     "<div id='app-header'>"
     "  <div class='brand'>"
     "    <span class='logo'>🧠</span>"
-    "    <div><div class='brand-name'>MasterAgent</div>"
-    "    <div class='brand-tag'>Ton agent IA — finance · code · documents · santé</div></div>"
+    "    <div><div class='brand-name'>Nova</div>"
+    "    <div class='brand-tag'>Ton assistant IA personnel — connecté à tout</div></div>"
     "  </div>"
     "  <span class='pill'>100% gratuit · Groq/Cerebras</span>"
     "</div>"
@@ -1702,7 +1702,7 @@ _HEADER_HTML = (
 
 
 def build_ui() -> gr.Blocks:
-    with gr.Blocks(title="MasterAgent", theme=_THEME, css=_CSS,
+    with gr.Blocks(title="Nova", theme=_THEME, css=_CSS,
                    analytics_enabled=False) as demo:
 
         mode_state = gr.State("fast")
