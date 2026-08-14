@@ -20,10 +20,13 @@ _FACTUAL_HINTS = ("actualité", "news", "2024", "2025", "2026", "tendance", "auj
 
 
 def _check_key(provided: str):
-    """Vérifie la clé de la passerelle /ask (comparaison à temps constant)."""
+    """Vérifie la clé de la passerelle /ask (comparaison à temps constant, bytes).
+    En bytes → supporte les caractères accentués/non-ASCII dans la clé."""
     if not config.AGENT_API_KEY:
         raise HTTPException(status_code=501, detail="Passerelle désactivée : définis AGENT_API_KEY.")
-    if not provided or not hmac.compare_digest(str(provided), config.AGENT_API_KEY):
+    a = str(provided or "").encode("utf-8")
+    b = str(config.AGENT_API_KEY).encode("utf-8")
+    if not hmac.compare_digest(a, b):
         raise HTTPException(status_code=401, detail="Clé invalide.")
 
 
