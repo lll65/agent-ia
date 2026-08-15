@@ -1026,6 +1026,62 @@ async def usage():
     return out
 
 
+_IMG_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+
+
+def _analyze_upload(path: str, question: str) -> str:
+    """Analyse un fichier déposé : image → vision, document → analyse texte."""
+    from pathlib import Path as _P
+    p = _P(path)
+    if p.suffix.lower() in _IMG_EXT:
+        try:
+            from llm.client import chat_vision
+            return chat_vision(str(p), question or "Décris cette image en détail, en français.")
+        except Exception as e:
+            return (f"❌ Analyse d'image indisponible : {str(e)[:200]}\n"
+                    "_(Le modèle vision nécessite une clé Groq valide.)_")
+    from plugins import get_loader
+    from agent.self_heal import safe_tool_call
+    return safe_tool_call(get_loader(), "analyze_document",
+                          {"path": str(p), "question": question or ""})
+
+
+@router.post("/upload")
+async def upload(request: Request):
+    """Réception d'un fichier/photo déposé depuis /nova → analyse et réponse.
+    Multipart : file=<binaire>, key=<clé agent>, question=<consigne optionnelle>."""
+    from fastapi import UploadFile
+    form = await request.form()
+    _check_key(str(form.get("key") or ""))
+    up = form.get("file")
+    if up is None or not hasattr(up, "filename"):
+        raise HTTPException(status_code=400, detail="Aucun fichier reçu.")
+    question = str(form.get("question") or "").strip()
+
+    from pathlib import Path as _P
+    import re as _re
+    updir = _P("data/uploads"); updir.mkdir(parents=True, exist_ok=True)
+    safe = _re.sub(r"[^A-Za-z0-9._-]", "_", (up.filename or "fichier"))[:80]
+    dest = updir / safe
+    try:
+        content = await up.read()
+        if len(content) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Fichier trop volumineux (max 20 Mo).")
+        dest.write_bytes(content)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Écriture impossible : {str(e)[:150]}")
+
+    loop = asyncio.get_running_loop()
+    answer = await loop.run_in_executor(None, _analyze_upload, str(dest), question)
+    try:
+        get_memory().remember(_PROFILE_ID, "user", f"[fichier déposé] {safe} — {question[:120]}")
+    except Exception:
+        pass
+    return {"answer": answer, "file": safe}
+
+
 @router.get("/apps")
 async def apps_list(key: str = ""):
     """Liste les apps réellement CONNECTÉES sur Composio + celles que Nova sait piloter."""
