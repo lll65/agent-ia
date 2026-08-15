@@ -4,6 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>NOVA</title>
+<link rel="manifest" href="/nova/manifest.webmanifest">
+<meta name="theme-color" content="#7c5cff">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Nova">
+<link rel="apple-touch-icon" href="/nova/icon.svg">
+<link rel="icon" href="/nova/icon.svg" type="image/svg+xml">
 <style>
   :root{ --bg:#060610; --glass:rgba(255,255,255,.06); --stroke:rgba(255,255,255,.12);
          --neon:#7c5cff; --neon2:#22d3ee; --pink:#ec4899; --txt:#e9e9f5; --dim:#9aa0b5; }
@@ -162,6 +170,7 @@
         <div class="usage" id="usage" title="Tokens utilisés aujourd'hui">
           <span>🪙</span><div class="ubar"><i id="ufill"></i></div><span id="utext">…</span>
         </div>
+        <button class="ic" id="wakeBtn" onclick="toggleWake()" title="Dire « Nova » pour ouvrir le mode vocal">👂</button>
         <button class="ic" id="voiceBtn" onclick="toggleVoiceMode()" title="Mode vocal (parler en direct)">🎙️</button>
         <button class="ic on" id="ttsBtn" onclick="toggleTTS()" title="Voix de Nova">🔊</button>
         <button class="ic" onclick="openPanel()" title="Historique &amp; mémoire">☰</button>
@@ -399,8 +408,27 @@ function toggleVoiceMode(){ if(!KEY){ openCfg(); return; }
   voiceMode=!voiceMode; document.body.classList.toggle("voice",voiceMode);
   document.getElementById("voiceBtn").classList.toggle("on",voiceMode);
   if(voiceMode){ graphStart(); vSet("Je t'écoute…",""); startListen(); }
-  else { stopListen(); speechSynthesis.cancel(); document.body.classList.remove("thinking"); graphEnd(); }
+  else { stopListen(); speechSynthesis.cancel(); document.body.classList.remove("thinking"); graphEnd(); if(wakeOn) setTimeout(startWake,700); }
 }
+
+/* ═══ MOT-CLÉ « NOVA » (mains-libres, tant que la page est ouverte) ═══ */
+let wakeOn=false, wrec=null;
+function toggleWake(){ const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){ alert("Micro non supporté ici (essaie Chrome/Edge sur ton tél)."); return; }
+  if(!KEY){ openCfg(); return; }
+  wakeOn=!wakeOn; document.getElementById("wakeBtn").classList.toggle("on",wakeOn);
+  if(wakeOn){ startWake(); vFlash("👂 Dis « Nova » pour me parler"); } else stopWake();
+}
+function vFlash(t){ if(hint){ hint.textContent=t; } }
+function startWake(){ if(!wakeOn||voiceMode||wrec) return;
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition; wrec=new SR();
+  wrec.lang="fr-FR"; wrec.continuous=true; wrec.interimResults=true;
+  wrec.onresult=(e)=>{ for(let i=e.resultIndex;i<e.results.length;i++){ const tx=(e.results[i][0].transcript||"").toLowerCase();
+    if(/\bnova\b|\bhey nova\b|\bok nova\b|\bnovas\b/.test(tx)){ stopWake(); if(!voiceMode) toggleVoiceMode(); return; } } };
+  wrec.onerror=()=>{}; wrec.onend=()=>{ wrec=null; if(wakeOn && !voiceMode) setTimeout(startWake,500); };
+  try{ wrec.start(); }catch(e){ wrec=null; } }
+function stopWake(){ if(wrec){ try{wrec.stop();}catch(e){}; wrec=null; } }
+if("serviceWorker" in navigator){ navigator.serviceWorker.register("/sw.js").catch(()=>{}); }
 function startListen(){ const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   if(!SR){ vSet("Micro non supporté — essaie Chrome/Edge",""); return; }
   if(vrec) return;
