@@ -130,17 +130,52 @@ def _smalltalk_reply(message: str) -> str:
     return out
 
 
-# Intention "app connectée" → agenda/mails/calendar/slack/notion : on route vers
-# l'outil Composio (connected_app), JAMAIS vers la recherche web.
-_APP_HINTS = ("agenda", "calendrier", "calendar", "rendez-vous", "rendez vous", "rdv",
-              "planning", "planifie", "événement", "evenement", "réunion", "reunion",
-              "mail", "mails", "email", "e-mail", "gmail", "boîte mail", "boite mail",
-              "slack", "notion", "mon calendrier", "mes messages")
+# Apps connectées (Composio). Mots-clés → toolkit slug. Ajouter une app = ajouter une ligne :
+# Nova découvre ensuite TOUTE seule les actions disponibles via l'API Composio.
+_TOOLKITS = {
+    "googlecalendar": ("agenda", "calendrier", "calendar", "rendez-vous", "rendez vous", "rdv",
+                       "planning", "événement", "evenement", "réunion", "reunion", "meeting"),
+    "gmail":          ("mail", "mails", "email", "e-mail", "gmail", "boîte mail", "boite mail",
+                       "inbox", "messagerie", "courriel"),
+    "linear":         ("linear", "ticket", "tickets", "issue", "issues", "bug tracker",
+                       "sprint", "backlog", "tâche linear", "tache linear"),
+    "canva":          ("canva", "design", "visuel", "affiche", "flyer", "présentation canva",
+                       "presentation canva", "maquette"),
+    "notion":         ("notion", "page notion", "base notion", "wiki"),
+    "slack":          ("slack", "message slack", "canal slack", "channel"),
+    "github":         ("github", "dépôt", "depot", "repo", "pull request", "commit"),
+    "googledrive":    ("drive", "google drive", "mes fichiers", "document drive"),
+    "googlesheets":   ("sheets", "google sheets", "tableur", "feuille de calcul"),
+    "googledocs":     ("docs", "google docs", "document texte"),
+    "trello":         ("trello", "board", "tableau trello"),
+    "spotify":        ("spotify", "musique", "playlist"),
+    "youtube":        ("youtube", "vidéo youtube", "video youtube"),
+    "whatsapp":       ("whatsapp", "wa message"),
+    "discord":        ("discord",),
+    "twitter":        ("twitter", "tweet", "x.com"),
+    "hubspot":        ("hubspot", "crm"),
+    "airtable":       ("airtable",),
+    "asana":          ("asana",),
+    "jira":           ("jira",),
+}
+
+# Ordre de priorité : les slugs les plus spécifiques d'abord (évite que "message" prenne le pas)
+_TOOLKIT_ORDER = ("linear", "canva", "notion", "slack", "github", "googlesheets", "googledocs",
+                  "googledrive", "trello", "spotify", "youtube", "whatsapp", "discord", "twitter",
+                  "hubspot", "airtable", "asana", "jira", "googlecalendar", "gmail")
+
+
+def _detect_toolkit(message: str):
+    """Renvoie le slug de l'app concernée par le message, ou None."""
+    m = message.lower()
+    for slug in _TOOLKIT_ORDER:
+        if any(k in m for k in _TOOLKITS.get(slug, ())):
+            return slug
+    return None
 
 
 def _app_intent(message: str) -> bool:
-    m = message.lower()
-    return any(h in m for h in _APP_HINTS)
+    return _detect_toolkit(message) is not None
 
 
 # Outils finance : RETIRÉS de la boîte à outils sauf demande explicite de finance.
@@ -420,6 +455,11 @@ def _direct_app_prepare(message: str):
         return {"steps": cx["steps"], "done_answer": cx["done_answer"]}
     action, args = _resolve_app_action(message)
     if not action:
+        # Autre app connectée (Linear, Canva, Notion, Slack…) → routeur générique
+        slug = _detect_toolkit(message)
+        if slug and slug not in ("googlecalendar", "gmail"):
+            g = _generic_app_flow(message, slug)
+            return {"steps": g["steps"], "done_answer": g["done_answer"]}
         return None
     import json as _json
     from plugins import get_loader
@@ -480,6 +520,10 @@ def _direct_app_run(message: str):
         return {"steps": cx["steps"], "answer": cx["done_answer"], "ok": True}
     action, args = _resolve_app_action(message)
     if not action:
+        slug = _detect_toolkit(message)
+        if slug and slug not in ("googlecalendar", "gmail"):
+            g = _generic_app_flow(message, slug)
+            return {"steps": g["steps"], "answer": g["done_answer"], "ok": True}
         return None
     import json as _json
     from plugins import get_loader
@@ -588,6 +632,82 @@ def _free_slot_flow(message: str):
         f"événements réels. Liste les plages horaires libres, jour par jour.",
         "GOOGLECALENDAR_EVENTS_LIST", lst, is_write=False)
     return {"steps": steps, "done_answer": ans}
+
+
+_TOOLS_CACHE = {}
+
+
+def _composio_list_actions(slug: str):
+    """Liste les actions Composio disponibles pour une app (mise en cache).
+    Renvoie [{'name':..., 'desc':...}] — permet à Nova de gérer n'importe quelle app."""
+    if slug in _TOOLS_CACHE:
+        return _TOOLS_CACHE[slug]
+    import requests
+    ck = (getattr(config, "COMPOSIO_API_KEY", "") or "").strip()
+    if not ck:
+        return []
+    h = {"x-api-key": ck, "Content-Type": "application/json"}
+    out = []
+    for url, params in (
+        ("https://backend.composio.dev/api/v3/tools", {"toolkit_slug": slug, "limit": 100}),
+        ("https://backend.composio.dev/api/v3/tools", {"toolkit_slugs": slug, "limit": 100}),
+    ):
+        try:
+            r = requests.get(url, headers=h, params=params, timeout=20)
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            items = data.get("items", data if isinstance(data, list) else []) or []
+            for it in items:
+                nm = it.get("slug") or it.get("name") or it.get("enum")
+                if not nm:
+                    continue
+                desc = (it.get("description") or "")[:110]
+                out.append({"name": str(nm).upper(), "desc": desc})
+            if out:
+                break
+        except Exception:
+            continue
+    _TOOLS_CACHE[slug] = out
+    return out
+
+
+def _generic_app_flow(message: str, slug: str):
+    """Exécute une action sur N'IMPORTE QUELLE app connectée :
+    1) découvre les actions réelles de l'app, 2) le LLM choisit l'action + arguments,
+    3) exécution, 4) mise en forme des DONNÉES RÉELLES (jamais d'invention)."""
+    import json as _json
+    actions = _composio_list_actions(slug)
+    steps = [{"kind": "action", "tool": "connected_app", "label": slug}]
+    if not actions:
+        return {"steps": steps, "done_answer": (
+            f"🔌 Je n'ai pas pu lister les actions disponibles pour **{slug}**. "
+            "Vérifie que l'app est bien connectée sur Composio (et que ta clé `ak_` a la permission "
+            "`tool_execution`), puis redemande-moi.")}
+    catalog = "\n".join(f"- {a['name']}: {a['desc']}" for a in actions[:60])
+    pick = _llm_json(
+        "Tu choisis l'action d'API à exécuter. Réponds en JSON STRICT : "
+        '{"action":"NOM_EXACT_DE_LA_LISTE","arguments":{...}}. '
+        "Utilise EXACTEMENT un nom présent dans la liste. Les arguments doivent être ceux attendus "
+        "par cette action (devine les noms standards ; mets {} si aucun n'est nécessaire). "
+        'Si aucune action ne convient, renvoie {"action":""}.',
+        f"Demande de l'utilisateur : {message}\n\nACTIONS DISPONIBLES ({slug}) :\n{catalog}")
+    action = (pick.get("action") or "").strip().upper()
+    if not action:
+        noms = ", ".join(a["name"] for a in actions[:8])
+        return {"steps": steps, "done_answer": (
+            f"Je n'ai pas trouvé l'action **{slug}** correspondante. Reformule en précisant ce que tu veux "
+            f"(ex. actions dispo : {noms}…).")}
+    args = pick.get("arguments")
+    if not isinstance(args, dict):
+        args = {}
+    steps[0]["label"] = action
+    obs = _tool(action, args)
+    steps.append({"kind": "obs", "tool": "connected_app", "text": str(obs)[:180]})
+    if _looks_like_failure(obs):
+        return {"steps": steps, "done_answer": _honest_no_access(action, obs)}
+    is_write = any(k in action for k in ("CREATE", "UPDATE", "DELETE", "SEND", "ADD", "POST", "PATCH"))
+    return {"steps": steps, "done_answer": _format_app_result(message, action, obs, is_write)}
 
 
 def _complex_app_flow(message: str):
@@ -860,6 +980,34 @@ async def usage():
         tu += int(used); tl += int(limit)
     out["total"] = {"used": tu, "limit": tl}
     return out
+
+
+@router.get("/apps")
+async def apps_list(key: str = ""):
+    """Liste les apps réellement CONNECTÉES sur Composio + celles que Nova sait piloter."""
+    _check_key(key)
+    import requests
+    ck = (getattr(config, "COMPOSIO_API_KEY", "") or "").strip()
+    connected, detail = [], ""
+    if ck:
+        h = {"x-api-key": ck, "Content-Type": "application/json"}
+        try:
+            r = requests.get("https://backend.composio.dev/api/v3/connected_accounts",
+                             headers=h, params={"limit": 100}, timeout=20)
+            if r.status_code == 200:
+                data = r.json()
+                items = data.get("items", data if isinstance(data, list) else []) or []
+                for it in items:
+                    tk = it.get("toolkit") or {}
+                    slug = (tk.get("slug") if isinstance(tk, dict) else None) or it.get("toolkit_slug") or it.get("appName") or "?"
+                    connected.append({"app": str(slug).lower(),
+                                      "status": it.get("status", "?"),
+                                      "user_id": it.get("user_id") or it.get("entity_id") or ""})
+            else:
+                detail = f"HTTP {r.status_code}: {r.text[:200]}"
+        except Exception as e:
+            detail = f"{type(e).__name__}: {str(e)[:150]}"
+    return {"connected": connected, "known_by_nova": sorted(_TOOLKITS.keys()), "detail": detail}
 
 
 @router.get("/diag/connect")

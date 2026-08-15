@@ -191,7 +191,6 @@
         <div class="usage" id="usage" title="Tokens utilisés aujourd'hui">
           <span>🪙</span><div class="ubar"><i id="ufill"></i></div><span id="utext">…</span>
         </div>
-        <button class="ic" id="wakeBtn" onclick="toggleWake()" title="Dire « Nova » pour ouvrir le mode vocal">👂</button>
         <button class="ic" id="voiceBtn" onclick="toggleVoiceMode()" title="Mode vocal (parler en direct)">🎙️</button>
         <button class="ic on" id="ttsBtn" onclick="toggleTTS()" title="Voix de Nova">🔊</button>
         <button class="ic" onclick="openCfg()" title="Réglages">⚙️</button>
@@ -231,6 +230,7 @@
     <div class="sbfoot">
       <button class="sbf" onclick="openMemory()">🧠 Mémoire</button>
       <button class="sbf" id="soundBtn" onclick="toggleSound()">🔉 Sons</button>
+      <button class="sbf" id="wakeBtn" onclick="toggleWake()" title="Dire « Nova » ouvre le mode vocal">✨ Mot-clé</button>
     </div>
   </aside>
 
@@ -315,22 +315,49 @@ function openMemory(){ closeSidebar(); document.getElementById("memModal").class
 function closeMemory(){ document.getElementById("memModal").classList.remove("show"); }
 function clearMemory(){ if(confirm("Nova oublie tout ce qu'elle sait sur toi ?")){ fetch(ORIGIN+"/agent/profil/memory",{method:"DELETE"}).then(()=>openMemory()).catch(()=>{}); } }
 
-/* ═══ SONS DU FUTUR (Web Audio, synthétisés) ═══ */
-let SOUND=localStorage.getItem("nova_sound")!=="0", actx=null;
-function ac(){ if(!actx){ try{ actx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } return actx; }
-function beep(freq,dur,type,vol,slideTo){ if(!SOUND) return; const c=ac(); if(!c) return;
-  const t0=c.currentTime, o=c.createOscillator(), g=c.createGain();
-  o.type=type||"sine"; o.frequency.setValueAtTime(freq,t0);
-  if(slideTo) o.frequency.exponentialRampToValueAtTime(slideTo,t0+dur);
-  g.gain.setValueAtTime(0.0001,t0); g.gain.exponentialRampToValueAtTime(vol||0.07,t0+0.012);
-  g.gain.exponentialRampToValueAtTime(0.0001,t0+dur);
-  o.connect(g); g.connect(c.destination); o.start(t0); o.stop(t0+dur+0.02); }
-function sndSend(){ beep(420,0.13,"triangle",0.06,900); }
-function sndReceive(){ beep(760,0.11,"sine",0.05,1140); setTimeout(()=>beep(1140,0.12,"sine",0.04,1520),70); }
-function sndOpen(){ beep(200,0.28,"sawtooth",0.04,620); }
-function sndPing(){ beep(1300,0.09,"sine",0.06,1700); }
+/* ═══ SONS MODERNES (design sonore type UI premium, synthétisé) ═══
+   Principe : pas de "bip" carré. On empile une fondamentale sinusoïdale + une quinte douce,
+   avec attaque très courte, longue décroissance exponentielle et filtre passe-bas →
+   rendu "verre / cristal" feutré. Les transitions utilisent un souffle filtré (whoosh). */
+let SOUND=localStorage.getItem("nova_sound")!=="0", actx=null, masterBus=null;
+function ac(){ if(!actx){ try{ actx=new (window.AudioContext||window.webkitAudioContext)();
+    masterBus=actx.createGain(); masterBus.gain.value=0.5; masterBus.connect(actx.destination); }catch(e){} }
+  if(actx&&actx.state==="suspended"){ try{ actx.resume(); }catch(e){} } return actx; }
+/* Note douce : sinus + harmonique, filtre passe-bas, décroissance naturelle */
+function tone(freq,{delay=0,dur=0.5,vol=0.16,detune=0,glide=0}={}){ const c=ac(); if(!c||!SOUND) return;
+  const t0=c.currentTime+delay, o=c.createOscillator(), o2=c.createOscillator(),
+        g=c.createGain(), lp=c.createBiquadFilter();
+  o.type="sine"; o2.type="sine";
+  o.frequency.setValueAtTime(freq,t0); o2.frequency.setValueAtTime(freq*1.5,t0); o2.detune.value=detune;
+  if(glide){ o.frequency.exponentialRampToValueAtTime(glide,t0+dur*0.8); o2.frequency.exponentialRampToValueAtTime(glide*1.5,t0+dur*0.8); }
+  lp.type="lowpass"; lp.frequency.setValueAtTime(2600,t0); lp.Q.value=0.6;
+  const g2=c.createGain(); g2.gain.value=0.28;           // harmonique en retrait
+  g.gain.setValueAtTime(0.0001,t0);
+  g.gain.exponentialRampToValueAtTime(vol,t0+0.02);       // attaque douce
+  g.gain.exponentialRampToValueAtTime(0.0001,t0+dur);     // longue queue
+  o.connect(g); o2.connect(g2); g2.connect(g); g.connect(lp); lp.connect(masterBus);
+  o.start(t0); o2.start(t0); o.stop(t0+dur+0.05); o2.stop(t0+dur+0.05); }
+/* Souffle filtré (transition) : bruit blanc + passe-bande qui balaie */
+function whoosh({delay=0,dur=0.45,vol=0.10,from=380,to=1500}={}){ const c=ac(); if(!c||!SOUND) return;
+  const t0=c.currentTime+delay, len=Math.floor(c.sampleRate*dur);
+  const buf=c.createBuffer(1,len,c.sampleRate), d=buf.getChannelData(0);
+  for(let i=0;i<len;i++){ d[i]=(Math.random()*2-1)*(1-i/len); }   // bruit qui s'éteint
+  const src=c.createBufferSource(); src.buffer=buf;
+  const bp=c.createBiquadFilter(); bp.type="bandpass"; bp.Q.value=1.1;
+  bp.frequency.setValueAtTime(from,t0); bp.frequency.exponentialRampToValueAtTime(to,t0+dur);
+  const g=c.createGain(); g.gain.setValueAtTime(0.0001,t0);
+  g.gain.exponentialRampToValueAtTime(vol,t0+0.05); g.gain.exponentialRampToValueAtTime(0.0001,t0+dur);
+  src.connect(bp); bp.connect(g); g.connect(masterBus); src.start(t0); src.stop(t0+dur); }
+/* Envoi : souffle court ascendant + note brève (sensation "ça part") */
+function sndSend(){ whoosh({dur:0.26,vol:0.06,from:500,to:1700}); tone(523.25,{dur:0.30,vol:0.10}); }
+/* Réception : accord cristallin en deux notes (do → sol), doux et chaleureux */
+function sndReceive(){ tone(659.25,{dur:0.55,vol:0.13}); tone(987.77,{delay:0.09,dur:0.75,vol:0.10}); }
+/* Ouverture de panneau : souffle grave descendant, très discret */
+function sndOpen(){ whoosh({dur:0.38,vol:0.05,from:1200,to:340}); tone(392,{dur:0.35,vol:0.07}); }
+/* Ping (mot-clé détecté) : note claire unique */
+function sndPing(){ tone(880,{dur:0.45,vol:0.12,glide:1174.66}); }
 function toggleSound(){ SOUND=!SOUND; localStorage.setItem("nova_sound",SOUND?"1":"0");
-  document.getElementById("soundBtn").classList.toggle("on",SOUND); if(SOUND){ ac(); sndPing(); } }
+  document.getElementById("soundBtn").classList.toggle("on",SOUND); if(SOUND){ ac(); sndReceive(); } }
 
 /* ═══ PARTICULES réactives ═══ */
 const pc=document.getElementById("particles"), px=pc.getContext("2d"); let PW,PH,parts=[],thinking=false;
@@ -500,7 +527,7 @@ function toggleWake(){ const SR=window.SpeechRecognition||window.webkitSpeechRec
   if(!SR){ alert("Micro non supporté ici (essaie Chrome/Edge sur ton tél)."); return; }
   if(!KEY){ openCfg(); return; }
   wakeOn=!wakeOn; document.getElementById("wakeBtn").classList.toggle("on",wakeOn);
-  if(wakeOn){ startWake(); vFlash("👂 Dis « Nova » pour me parler"); } else stopWake();
+  if(wakeOn){ startWake(); sndPing(); vFlash("✨ Dis « Nova » pour me parler"); } else stopWake();
 }
 function vFlash(t){ if(hint){ hint.textContent=t; } }
 function startWake(){ if(!wakeOn||voiceMode||wrec) return;
