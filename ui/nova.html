@@ -118,6 +118,22 @@
   /* Voile de scintillement très subtil en haut de l'écran */
   .app::before{ content:""; position:fixed; top:0; left:0; right:0; height:120px; pointer-events:none; z-index:3;
     background:radial-gradient(120% 100% at 50% 0%, rgba(124,92,255,.12), transparent 70%); }
+  /* Pièce jointe (trombone) */
+  #attachBar{ display:none; gap:8px; flex-wrap:wrap; padding:0 2px 8px; }
+  #attachBar.show{ display:flex; animation:pop .3s; }
+  .att{ display:flex; align-items:center; gap:9px; padding:8px 12px; border-radius:13px; font-size:13px;
+    background:linear-gradient(135deg, rgba(124,92,255,.18), rgba(34,211,238,.12));
+    border:1px solid rgba(124,92,255,.45); box-shadow:0 0 18px rgba(124,92,255,.2); backdrop-filter:blur(10px); }
+  .att .an{ max-width:190px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .att .ax{ cursor:pointer; color:var(--dim); font-size:12px; } .att .ax:hover{ color:var(--pink); }
+  .att img{ width:30px; height:30px; object-fit:cover; border-radius:8px; }
+  /* Zone de dépôt plein écran */
+  #drop{ position:fixed; inset:0; z-index:13; display:none; place-items:center; pointer-events:none;
+    background:rgba(6,6,16,.82); backdrop-filter:blur(6px); }
+  #drop.show{ display:grid; }
+  #drop .dz{ padding:44px 60px; border:2px dashed var(--neon); border-radius:24px; text-align:center;
+    box-shadow:0 0 60px rgba(124,92,255,.45); background:rgba(255,255,255,.04); }
+  #drop .dz b{ display:block; font-size:19px; margin-top:10px; }
   /* Barre de tokens */
   .usage{ display:flex; align-items:center; gap:7px; font-size:10.5px; color:var(--dim); margin-right:4px; }
   .ubar{ width:64px; height:6px; border-radius:6px; background:var(--glass); border:1px solid var(--stroke); overflow:hidden; }
@@ -206,11 +222,16 @@
 
     <div class="chat" id="chat"><div class="hint" id="hint">✨ Bonjour, je suis Nova. Parle-moi ou écris.</div></div>
 
+    <div id="attachBar"></div>
     <div class="composer">
+      <button class="micbtn" id="clip" onclick="pickFile()" title="Joindre une photo ou un document">📎</button>
       <button class="micbtn" id="mic" onclick="toggleMic()" title="Parler">🎤</button>
       <textarea id="in" rows="1" placeholder="Parle à Nova…" onkeydown="keydown(event)" oninput="grow(this)"></textarea>
       <button class="send" id="send" onclick="ask()">➤</button>
     </div>
+    <input type="file" id="fileInput" style="display:none"
+           accept="image/*,.pdf,.txt,.md,.csv,.json,.docx,.doc,.py,.js,.ts,.html,.css"
+           onchange="onFilePicked(this)">
   </div>
 
   <div id="voiceUI">
@@ -219,6 +240,9 @@
     <div class="vsub" id="vsub"></div>
     <button class="vexit" onclick="toggleVoiceMode()">✕ Quitter le mode vocal</button>
   </div>
+
+  <div id="drop"><div class="dz"><div style="font-size:44px">📎</div><b>Dépose ton fichier</b>
+    <span style="color:var(--dim);font-size:13px">photo, PDF, document, code…</span></div></div>
 
   <div class="scrim" id="scrim" onclick="toggleSidebar()"></div>
   <aside class="sidebar" id="sidebar">
@@ -442,7 +466,10 @@ function stepLabel(d){ const t=(d.tool||"").toLowerCase(), q=(d.q||"").toLowerCa
 function thinkHTML(txt,icon){ return '<span class="think"><span class="dot"></span>'+(icon?icon+" ":"")+esc(txt)+'<span class="cur">▍</span></span>'; }
 const THINK_PHRASES=["Nova réfléchit…","J'analyse ta demande…","Je choisis les bons outils…","Je rassemble les informations…","Je réfléchis à la meilleure réponse…","Je structure tout ça…"];
 function ask(){
-  const inp=document.getElementById("in"), msg=inp.value.trim(); if(!msg) return; if(!KEY){ openCfg(); return; }
+  const inp=document.getElementById("in"), msg=inp.value.trim();
+  if(!KEY){ openCfg(); return; }
+  if(ATTACH){ inp.value=""; grow(inp); sendAttachment(msg); return; }   // fichier joint → analyse
+  if(!msg) return;
   document.body.classList.add("chatting");
   inp.value=""; grow(inp); addRow("me",fmt(msg)); histPush("me",msg); sndSend(); const bubble=addRow("ai",thinkHTML(THINK_PHRASES[0],"💭"));
   document.getElementById("send").disabled=true; thinking=true; document.body.classList.add("thinking"); graphStart();
@@ -479,6 +506,52 @@ function ask(){
 }
 function typewrite(el,text){ const html=fmt(text); if(html.includes("<pre>")){ el.innerHTML=html; return; }
   let i=0; clearInterval(el._t); el._t=setInterval(()=>{ el.innerHTML=fmt(text.slice(0,i))+'<span style="opacity:.5">▍</span>'; chat.scrollTop=chat.scrollHeight; i+=2; if(i>=text.length){ clearInterval(el._t); el.innerHTML=html; } },12); }
+
+/* ═══ PIÈCE JOINTE (trombone + glisser-déposer) ═══ */
+let ATTACH=null;
+function pickFile(){ if(!KEY){ openCfg(); return; } document.getElementById("fileInput").click(); }
+function onFilePicked(el){ const f=el.files&&el.files[0]; if(f) setAttach(f); el.value=""; }
+function setAttach(file){ if(file.size>20*1024*1024){ alert("Fichier trop lourd (max 20 Mo)."); return; }
+  ATTACH=file; const bar=document.getElementById("attachBar"); bar.classList.add("show");
+  const isImg=/^image\//.test(file.type);
+  const thumb=isImg? '<img src="'+URL.createObjectURL(file)+'" alt="">' : '<span style="font-size:17px">📄</span>';
+  bar.innerHTML='<div class="att">'+thumb+'<span class="an">'+esc(file.name)+'</span>'
+    +'<span class="ax" onclick="clearAttach()">✕</span></div>';
+  const inp=document.getElementById("in");
+  if(!inp.value.trim()) inp.placeholder = isImg? "Que veux-tu savoir sur cette image ?" : "Que veux-tu que je fasse avec ce document ?";
+  inp.focus(); sndOpen(); }
+function clearAttach(){ ATTACH=null; const bar=document.getElementById("attachBar");
+  bar.classList.remove("show"); bar.innerHTML=""; document.getElementById("in").placeholder="Parle à Nova…"; }
+/* Envoi du fichier + question → /agent/upload */
+function sendAttachment(question){
+  const file=ATTACH, name=file.name, isImg=/^image\//.test(file.type);
+  clearAttach();
+  document.body.classList.add("chatting");
+  addRow("me", (question?fmt(question)+"<br>":"")+'<span style="opacity:.85">📎 '+esc(name)+'</span>');
+  histPush("me",(question||"")+" [fichier: "+name+"]"); sndSend();
+  const bubble=addRow("ai", thinkHTML(isImg?"J'analyse ton image…":"Je lis ton document…","📎"));
+  document.getElementById("send").disabled=true; thinking=true; document.body.classList.add("thinking");
+  graphStart(); graphPhase("📎", isImg?"Image":"Document"); graphPhase("⚙️","Analyse");
+  const fd=new FormData(); fd.append("file",file); fd.append("key",KEY); fd.append("question",question||"");
+  fetch(ORIGIN+"/agent/upload",{method:"POST",body:fd}).then(r=>r.json()).then(d=>{
+    const ans=(d&&d.answer)||"❌ Analyse impossible.";
+    graphAdd("✍️","Rédaction"); typewrite(bubble,ans); histPush("ai",ans);
+    if(TTS&&!voiceMode) speak(ans);
+  }).catch(e=>{ bubble.innerHTML="⚠️ Envoi impossible : "+esc(String(e).slice(0,120)); })
+   .finally(()=>{ thinking=false; document.body.classList.remove("thinking"); graphEnd();
+     document.getElementById("send").disabled=false; sndReceive(); setTimeout(refreshUsage,900); });
+}
+/* Glisser-déposer sur toute la page + coller une image */
+(function(){ const dz=document.getElementById("drop"); let dragDepth=0;
+  addEventListener("dragenter",e=>{ if(!e.dataTransfer||![...e.dataTransfer.types].includes("Files")) return;
+    e.preventDefault(); dragDepth++; dz.classList.add("show"); });
+  addEventListener("dragover",e=>{ if(e.dataTransfer&&[...e.dataTransfer.types].includes("Files")) e.preventDefault(); });
+  addEventListener("dragleave",()=>{ dragDepth=Math.max(0,dragDepth-1); if(!dragDepth) dz.classList.remove("show"); });
+  addEventListener("drop",e=>{ if(!e.dataTransfer||!e.dataTransfer.files.length) return;
+    e.preventDefault(); dragDepth=0; dz.classList.remove("show");
+    if(!KEY){ openCfg(); return; } setAttach(e.dataTransfer.files[0]); });
+  addEventListener("paste",e=>{ const it=e.clipboardData&&e.clipboardData.files; if(it&&it.length) setAttach(it[0]); });
+})();
 
 /* ═══ BARRE DE TOKENS ═══ */
 function fmtK(n){ n=+n||0; if(n>=1e6) return (n/1e6).toFixed(1).replace(/\.0$/,'')+"M";
