@@ -822,25 +822,91 @@ def _recent_user_context(n: int = 4) -> str:
     return " | ".join(u[:120] for u in users[-n:])
 
 
+_USEFUL_VERBS = ("CREATE", "LIST", "GET", "SEARCH", "SEND", "UPDATE", "ADD", "FETCH", "DELETE")
+_NOISE = ("DEPRECATED", "OAUTH", "TOKEN", "INSTALLATION", "RESTRICTION", "COLLABORATOR_PERMISSION",
+          "STARGAZER", "STARRED", "EMAIL_ADDRESS", "INVITATION", "WEBHOOK", "BLOB", "GIT_REF")
+
+
+def _useful_actions(actions: list, limit: int = 8) -> list:
+    """Garde les actions vraiment utiles (verbe d'action clair, pas d'admin/déprécié)."""
+    scored = []
+    for a in actions:
+        nm, desc = a["name"], (a.get("desc") or "")
+        if "deprecated" in desc.lower() or any(n in nm for n in _NOISE):
+            continue
+        verb = nm.split("_", 1)[-1].split("_")[0]
+        score = 3 if verb in _USEFUL_VERBS else 0
+        score += 1 if len(nm.split("_")) <= 5 else 0      # noms courts = actions principales
+        if score:
+            scored.append((score, nm, desc))
+    scored.sort(key=lambda x: (-x[0], len(x[1])))
+    return [{"name": n, "desc": d} for _s, n, d in scored[:limit]]
+
+
 def _friendly_actions(actions: list, limit: int = 8) -> str:
     """Traduit les noms d'actions techniques en capacités lisibles."""
+    best = _useful_actions(actions, limit) or actions[:limit]
     out = []
-    for a in actions:
-        nm = a["name"]
+    for a in best:
+        label = a["name"].split("_", 1)[-1].replace("_", " ").lower()
         desc = (a.get("desc") or "").strip()
-        label = nm.split("_", 1)[-1].replace("_", " ").lower()
         out.append(f"• **{label}**" + (f" — {desc[:70]}" if desc else ""))
-        if len(out) >= limit:
-            break
     return "\n".join(out)
+
+
+_EXAMPLES = {
+    "github": ("crée un projet GitHub : site portfolio en HTML", "liste mes dépôts GitHub"),
+    "canva": ("crée un design Canva pour un flyer", "liste mes designs Canva"),
+    "linear": ("crée un ticket Linear : corriger le login", "liste mes tickets Linear"),
+    "notion": ("crée une page Notion « Idées »", "cherche dans mes pages Notion"),
+    "slack": ("envoie un message Slack à l'équipe", "lis mes derniers messages Slack"),
+    "gmail": ("envoie un mail à paul@x.com", "résume mes mails non lus"),
+    "googlecalendar": ("ajoute un rdv dentiste lundi 14h", "mon agenda cette semaine"),
+}
+
+
+def _examples_for(slug: str) -> str:
+    ex = _EXAMPLES.get(slug)
+    if not ex:
+        return f"_Exemple : « liste mes {slug} » ou « crée quelque chose sur {slug} »._"
+    return f"_Exemples : « {ex[0]} » ou « {ex[1]} »._"
+
+
+# Questions de CAPACITÉ (« as-tu accès à… », « tu peux… ? ») → on répond, on n'exécute pas.
+def _is_capability_question(message: str) -> bool:
+    m = message.lower().strip()
+    pats = ("as-tu accès", "as tu acces", "as-tu acces", "tu as accès", "tu as acces",
+            "est-ce que tu peux", "est ce que tu peux", "tu peux faire quoi", "que peux-tu",
+            "que peux tu", "qu'est-ce que tu peux", "quest ce que tu peux", "tu sais faire",
+            "tu es connecté", "tu es connectee", "tu as acces à", "peux-tu accéder",
+            "tu peux accéder", "tu peux acceder")
+    return any(p in m for p in pats)
+
+
+def _capability_answer(slug: str) -> str:
+    """Réponse conversationnelle à « as-tu accès à X ? » — basée sur l'état RÉEL."""
+    nice = slug.capitalize()
+    connected = {s for s, _u, _st in _connected_accounts() if s}
+    if slug not in connected:
+        link, _ = _composio_connect_link(slug)
+        reco = (f"\n\n👉 **Connecte-le en un clic :**\n{link}" if link else
+                f"\n\nConnecte-le sur Composio → **Toolkits → {nice}**.")
+        return (f"Pas encore : **{nice}** n'est pas connecté à mon compte Composio.{reco}")
+    actions = _composio_list_actions(slug)
+    caps = _friendly_actions(actions, 6) if actions else ""
+    return (f"Oui ✅ — **{nice}** est bien connecté, j'y ai accès.\n\n"
+            f"Voici ce que je peux y faire :\n{caps}\n\n{_examples_for(slug)}")
 
 
 def _generic_app_flow(message: str, slug: str):
     """Exécute une action sur N'IMPORTE QUELLE app connectée :
     1) découvre les actions réelles de l'app, 2) le LLM choisit l'action + arguments,
     3) exécution, 4) mise en forme des DONNÉES RÉELLES (jamais d'invention)."""
-    actions = _composio_list_actions(slug)
     steps = [{"kind": "action", "tool": slug, "label": slug}]
+    # « as-tu accès à GitHub ? » → on RÉPOND, on n'essaie pas d'exécuter une action.
+    if _is_capability_question(message):
+        return {"steps": steps, "done_answer": _capability_answer(slug)}
+    actions = _composio_list_actions(slug)
     if not actions:
         return {"steps": steps, "done_answer": (
             f"🔌 Je n'ai pas pu lister les actions disponibles pour **{slug}**. "
@@ -869,8 +935,7 @@ def _generic_app_flow(message: str, slug: str):
     if not action:
         return {"steps": steps, "done_answer": (
             f"Dis-m'en un peu plus sur ce que tu veux faire avec **{slug.capitalize()}** 🙂\n\n"
-            f"Voici ce que je peux y faire :\n{_friendly_actions(actions)}\n\n"
-            f"_Exemple : « crée un design {slug} pour un flyer » ou « liste mes {slug} »._")}
+            f"Voici ce que je peux y faire :\n{_friendly_actions(actions)}\n\n{_examples_for(slug)}")}
     args = pick.get("arguments")
     if not isinstance(args, dict):
         args = {}
@@ -1317,13 +1382,22 @@ async def activity():
     """État de l'escouade + activité temps réel (alimente la constellation /nova/brain)."""
     from agent.squad import snapshot
     snap = snapshot()
-    # Marque les apps réellement connectées (pour les afficher allumées)
     try:
         connected = {s for s, _u, _st in _connected_accounts() if s}
     except Exception:
         connected = set()
+    assigned = set()
     for a in snap["squad"]:
         a["connected"] = [x for x in (a.get("apps") or []) if x in connected]
+        assigned.update(a.get("apps") or [])
+    # Toute app connectée mais non rattachée (ex. tu viens de brancher Notion/Spotify)
+    # apparaît automatiquement — d'abord auprès du spécialiste connu, sinon dans « Autres ».
+    extra = sorted(connected - assigned)
+    if extra:
+        snap["squad"].append({
+            "id": "autres", "name": "Autres apps", "icon": "🧩", "color": "#94a3b8",
+            "desc": "Apps connectées récemment", "apps": extra, "connected": extra,
+        })
     snap["connected_apps"] = sorted(connected)
     return snap
 

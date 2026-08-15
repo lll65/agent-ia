@@ -3,46 +3,54 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>NOVA · Constellation</title>
+<title>NOVA · Constellation 3D</title>
 <link rel="icon" href="/nova/icon.svg" type="image/svg+xml">
 <meta name="theme-color" content="#7c5cff">
 <style>
   :root{ --bg:#05050d; --glass:rgba(255,255,255,.06); --stroke:rgba(255,255,255,.12);
          --neon:#7c5cff; --neon2:#22d3ee; --txt:#e9e9f5; --dim:#9aa0b5; }
   *{ box-sizing:border-box; margin:0; padding:0; } html,body{ height:100%; }
-  body{ font-family:'Inter',system-ui,sans-serif; color:var(--txt); background:var(--bg); overflow:hidden; }
-  canvas{ position:fixed; inset:0; }
+  body{ font-family:'Inter',system-ui,sans-serif; color:var(--txt); background:var(--bg); overflow:hidden;
+        -webkit-user-select:none; user-select:none; }
+  canvas{ position:fixed; inset:0; cursor:grab; touch-action:none; }
+  canvas.drag{ cursor:grabbing; }
   .top{ position:fixed; top:0; left:0; right:0; z-index:3; display:flex; align-items:center; justify-content:space-between;
         padding:14px 18px; pointer-events:none; }
-  .brand{ font-weight:800; letter-spacing:.3em; font-size:19px; pointer-events:auto;
+  .brand{ font-weight:800; letter-spacing:.3em; font-size:19px;
           background:linear-gradient(90deg,var(--neon),var(--neon2)); -webkit-background-clip:text; background-clip:text; color:transparent; }
   .brand small{ display:block; letter-spacing:.16em; font-size:9.5px; color:var(--dim); -webkit-text-fill-color:var(--dim); }
-  .back{ pointer-events:auto; text-decoration:none; color:var(--txt); background:var(--glass); border:1px solid var(--stroke);
-         padding:9px 15px; border-radius:12px; font-size:13px; backdrop-filter:blur(12px); transition:.2s; }
-  .back:hover{ border-color:var(--neon); box-shadow:0 0 18px rgba(124,92,255,.4); }
-  /* Panneau de stats */
-  .hud{ position:fixed; left:18px; bottom:18px; z-index:3; display:flex; flex-direction:column; gap:9px;
-        background:rgba(12,12,26,.55); border:1px solid var(--stroke); border-radius:16px; padding:14px 16px;
-        backdrop-filter:blur(16px); min-width:210px; }
+  .tools{ display:flex; gap:8px; pointer-events:auto; }
+  .btn{ text-decoration:none; color:var(--txt); background:var(--glass); border:1px solid var(--stroke);
+        padding:9px 14px; border-radius:12px; font-size:13px; backdrop-filter:blur(12px); transition:.2s; cursor:pointer; }
+  .btn:hover{ border-color:var(--neon); box-shadow:0 0 18px rgba(124,92,255,.4); }
+  .btn.on{ border-color:var(--neon2); color:#fff; box-shadow:0 0 16px rgba(34,211,238,.45); }
+  .hud{ position:fixed; left:18px; bottom:18px; z-index:3; display:flex; flex-direction:column; gap:8px;
+        background:rgba(12,12,26,.55); border:1px solid var(--stroke); border-radius:16px; padding:13px 16px;
+        backdrop-filter:blur(16px); min-width:206px; }
   .hud h4{ font-size:10px; letter-spacing:.2em; color:var(--dim); font-weight:600; }
-  .stat{ display:flex; justify-content:space-between; gap:16px; font-size:13px; }
-  .stat b{ color:var(--neon2); }
-  .feed{ position:fixed; right:18px; bottom:18px; z-index:3; width:min(320px,80vw); max-height:44vh; overflow:hidden;
-         background:rgba(12,12,26,.55); border:1px solid var(--stroke); border-radius:16px; padding:14px 16px; backdrop-filter:blur(16px); }
-  .feed h4{ font-size:10px; letter-spacing:.2em; color:var(--dim); margin-bottom:9px; font-weight:600; }
+  .stat{ display:flex; justify-content:space-between; gap:16px; font-size:13px; } .stat b{ color:var(--neon2); }
+  .feed{ position:fixed; right:18px; bottom:18px; z-index:3; width:min(320px,80vw); max-height:42vh; overflow:hidden;
+         background:rgba(12,12,26,.55); border:1px solid var(--stroke); border-radius:16px; padding:13px 16px; backdrop-filter:blur(16px); }
+  .feed h4{ font-size:10px; letter-spacing:.2em; color:var(--dim); margin-bottom:8px; font-weight:600; }
   .ev{ display:flex; gap:9px; align-items:baseline; font-size:12.5px; padding:5px 0; border-bottom:1px solid rgba(255,255,255,.05); }
   .ev:last-child{ border:0; } .ev .t{ color:var(--dim); font-size:10.5px; margin-left:auto; white-space:nowrap; }
-  .ev .n{ color:var(--txt); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ev .n{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .empty{ color:var(--dim); font-size:12.5px; }
-  @media (max-width:640px){ .feed{ display:none } .hud{ left:12px; bottom:12px; min-width:0 } }
+  .hint{ position:fixed; left:50%; bottom:16px; transform:translateX(-50%); z-index:2; color:var(--dim);
+         font-size:11.5px; letter-spacing:.06em; pointer-events:none; opacity:.75; }
+  @media (max-width:700px){ .feed{ display:none } .hint{ display:none } }
   @media (prefers-reduced-motion:reduce){ *{ animation:none!important } }
 </style>
 </head>
 <body>
   <canvas id="c"></canvas>
   <div class="top">
-    <div class="brand">NOVA<small>CONSTELLATION · ESCOUADE</small></div>
-    <a class="back" href="/nova">← Retour au chat</a>
+    <div class="brand">NOVA<small>CONSTELLATION 3D · ESCOUADE</small></div>
+    <div class="tools">
+      <button class="btn on" id="spin" onclick="toggleSpin()">⟳ Rotation</button>
+      <button class="btn" onclick="resetView()">⌂ Recentrer</button>
+      <a class="btn" href="/nova">← Chat</a>
+    </div>
   </div>
   <div class="hud">
     <h4>ESCOUADE</h4>
@@ -51,112 +59,177 @@
     <div class="stat"><span>Actions totales</span><b id="sAct">—</b></div>
     <div class="stat"><span>Tokens du jour</span><b id="sTok">—</b></div>
   </div>
-  <div class="feed"><h4>ACTIVITÉ EN DIRECT</h4><div id="evs"><div class="empty">En veille… demande quelque chose à Nova.</div></div></div>
+  <div class="feed"><h4>ACTIVITÉ EN DIRECT</h4><div id="evs"><div class="empty">En veille… parle à Nova dans l'autre onglet.</div></div></div>
+  <div class="hint">glisse pour tourner · molette pour zoomer · pince sur mobile</div>
 
 <script>
 const ORIGIN=location.origin, cv=document.getElementById("c"), ctx=cv.getContext("2d");
-let W,H,CX,CY,T=0,SQUAD=[],ACTIVE={},COUNTS={},CONNECTED=[];
+let W,H,CX,CY,T=0;
+let SQUAD=[],ACTIVE={},COUNTS={},CONNECTED=[];
+/* ── caméra 3D ── */
+let yaw=0.6, pitch=-0.32, dist=1, autoSpin=true;
 function resize(){ const d=Math.min(devicePixelRatio||1,2); W=innerWidth; H=innerHeight;
   cv.width=W*d; cv.height=H*d; cv.style.width=W+"px"; cv.style.height=H+"px"; ctx.setTransform(d,0,0,d,0,0);
   CX=W/2; CY=H/2; }
 addEventListener("resize",resize); resize();
 
-/* Étoiles de fond */
-const stars=[]; for(let i=0;i<130;i++) stars.push({x:Math.random(),y:Math.random(),r:Math.random()*1.4+.3,p:Math.random()*6.28});
-/* Impulsions qui voyagent sur les liens quand un agent travaille */
-let pulses=[];
+/* Projection perspective : monde (x,y,z) → écran + profondeur */
+const FOV=780;
+function project(p){
+  const cy=Math.cos(yaw), sy=Math.sin(yaw), cp=Math.cos(pitch), sp=Math.sin(pitch);
+  let x=p.x*cy - p.z*sy, z=p.x*sy + p.z*cy;      // rotation Y (yaw)
+  let y=p.y*cp - z*sp;   z = p.y*sp + z*cp;      // rotation X (pitch)
+  const base=Math.min(W,H)*0.9*dist, zc=z+base;   // recul caméra
+  const k=FOV/Math.max(60,zc);
+  return {x:CX+x*k, y:CY+y*k, s:k, z:zc};
+}
+/* Sphère de Fibonacci → répartition régulière des agents en 3D */
+function spherePos(i,n,R){ const off=2/n, y=i*off-1+off/2, r=Math.sqrt(Math.max(0,1-y*y)), ph=i*2.399;
+  return {x:Math.cos(ph)*r*R, y:y*R*0.72, z:Math.sin(ph)*r*R}; }
 
-function agentPos(i,n){ const ang=(i/n)*6.283 - 1.57 + T*0.05, rad=Math.min(W,H)*0.30;
-  return {x:CX+Math.cos(ang)*rad, y:CY+Math.sin(ang)*rad*0.78, ang}; }
+/* Étoiles 3D */
+const stars=[]; for(let i=0;i<260;i++){ const t=Math.random()*6.283, u=Math.random()*2-1, r=1100+Math.random()*700;
+  const s=Math.sqrt(1-u*u); stars.push({x:Math.cos(t)*s*r, y:u*r*0.7, z:Math.sin(t)*s*r, p:Math.random()*6.28}); }
 
-function draw(){ T+=0.016; ctx.clearRect(0,0,W,H);
-  // fond étoilé
-  for(const s of stars){ const tw=0.45+0.55*Math.sin(T*1.6+s.p);
-    ctx.beginPath(); ctx.arc(s.x*W,s.y*H,s.r,0,7); ctx.fillStyle="rgba(180,190,255,"+(0.25*tw)+")"; ctx.fill(); }
-  // anneaux d'ambiance
-  for(let i=0;i<3;i++){ const rr=Math.min(W,H)*(0.16+i*0.13);
-    ctx.beginPath(); ctx.arc(CX,CY,rr,0,7); ctx.strokeStyle="rgba(124,92,255,"+(0.07-i*0.015)+")"; ctx.lineWidth=1; ctx.stroke(); }
+let particles=[];   // billes qui voyagent le long des liens
+function emit(from,to,color,n){ for(let k=0;k<(n||3);k++)
+  particles.push({a:from,b:to,c:color,t:-k*0.16,sp:0.016+Math.random()*0.008}); }
 
-  const n=SQUAD.length||1;
-  // liens agent -> coeur, + satellites (apps)
-  SQUAD.forEach((a,i)=>{ const p=agentPos(i,n), act=ACTIVE[a.id]||0;
-    const g=ctx.createLinearGradient(CX,CY,p.x,p.y);
-    g.addColorStop(0,"rgba(124,92,255,"+(0.30+0.6*act)+")");
-    g.addColorStop(1,hexA(a.color,0.15+0.6*act));
-    ctx.beginPath(); ctx.moveTo(CX,CY); ctx.lineTo(p.x,p.y); ctx.strokeStyle=g; ctx.lineWidth=1+2*act; ctx.stroke();
-    // satellites : apps de l'agent (allumées si connectées)
-    const apps=a.apps||[]; apps.forEach((app,j)=>{ const sa=p.ang+(j-(apps.length-1)/2)*0.42, sr=52+act*8;
-      const sx=p.x+Math.cos(sa)*sr, sy=p.y+Math.sin(sa)*sr*0.9;
-      const on=(a.connected||[]).includes(app);
-      ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(sx,sy);
-      ctx.strokeStyle=hexA(a.color,on?0.35:0.12); ctx.lineWidth=1; ctx.stroke();
-      ctx.beginPath(); ctx.arc(sx,sy,on?6:4,0,7);
-      ctx.fillStyle=on?hexA(a.color,0.9):"rgba(120,125,150,.35)";
-      ctx.shadowBlur=on?14:0; ctx.shadowColor=a.color; ctx.fill(); ctx.shadowBlur=0;
-      ctx.font="9px sans-serif"; ctx.textAlign="center"; ctx.fillStyle=on?"rgba(220,225,245,.75)":"rgba(150,155,180,.4)";
-      ctx.fillText(app.replace("google",""),sx,sy+15); });
-  });
-  // impulsions
-  pulses=pulses.filter(p=>p.t<1);
-  for(const p of pulses){ p.t+=0.02; const x=CX+(p.x-CX)*p.t, y=CY+(p.y-CY)*p.t;
-    ctx.beginPath(); ctx.arc(x,y,3.2,0,7); ctx.fillStyle=hexA(p.c,1-p.t*0.6);
-    ctx.shadowBlur=14; ctx.shadowColor=p.c; ctx.fill(); ctx.shadowBlur=0; }
-  // agents
-  SQUAD.forEach((a,i)=>{ const p=agentPos(i,n), act=ACTIVE[a.id]||0, cnt=COUNTS[a.id]||0;
-    const R=27+act*7+Math.sin(T*2+i)*1.5;
-    const rg=ctx.createRadialGradient(p.x,p.y,2,p.x,p.y,R);
-    rg.addColorStop(0,hexA(a.color,0.55+0.45*act)); rg.addColorStop(1,hexA(a.color,0.06));
-    ctx.beginPath(); ctx.arc(p.x,p.y,R,0,7); ctx.fillStyle=rg;
-    ctx.shadowBlur=20+34*act; ctx.shadowColor=a.color; ctx.fill(); ctx.shadowBlur=0;
-    ctx.beginPath(); ctx.arc(p.x,p.y,R,0,7); ctx.strokeStyle=hexA(a.color,0.55+0.45*act); ctx.lineWidth=1.6; ctx.stroke();
-    ctx.font="19px sans-serif"; ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillStyle="#fff";
-    ctx.fillText(a.icon,p.x,p.y);
-    ctx.textBaseline="alphabetic"; ctx.font="700 12px sans-serif"; ctx.fillStyle="rgba(235,238,255,.92)";
-    ctx.fillText(a.name,p.x,p.y+R+17);
-    if(cnt){ ctx.font="9.5px sans-serif"; ctx.fillStyle=hexA(a.color,.8); ctx.fillText(cnt+" action"+(cnt>1?"s":""),p.x,p.y+R+30); }
-  });
-  // coeur Nova
-  const busy=Object.values(ACTIVE).reduce((m,v)=>Math.max(m,v),0);
-  const CR=42+Math.sin(T*1.5)*3+busy*6;
-  for(let k=0;k<2;k++){ ctx.beginPath(); ctx.arc(CX,CY,CR+12+k*11,0,7);
-    ctx.strokeStyle="rgba(124,92,255,"+(0.30-k*0.11+busy*0.3)+")"; ctx.lineWidth=1.4; ctx.stroke(); }
-  const cg=ctx.createRadialGradient(CX,CY,3,CX,CY,CR);
-  cg.addColorStop(0,"rgba(200,180,255,.98)"); cg.addColorStop(.55,"rgba(124,92,255,.75)"); cg.addColorStop(1,"rgba(80,50,190,.25)");
-  ctx.beginPath(); ctx.arc(CX,CY,CR,0,7); ctx.fillStyle=cg; ctx.shadowBlur=52; ctx.shadowColor="#7c5cff"; ctx.fill(); ctx.shadowBlur=0;
-  ctx.font="700 15px sans-serif"; ctx.textAlign="center"; ctx.fillStyle="#fff"; ctx.fillText("NOVA",CX,CY+5);
+function nodes(){ /* construit la scène : coeur + agents + outils */
+  const out={core:{x:0,y:0,z:0}, agents:[], tools:[]};
+  const n=SQUAD.length||1, R=Math.min(W,H)*0.42;
+  SQUAD.forEach((a,i)=>{ const p=spherePos(i,n,R); out.agents.push({a,p});
+    const apps=a.apps||[];
+    apps.forEach((app,j)=>{ const ang=j*2.0+i, rr=R*0.30;
+      const tp={ x:p.x+Math.cos(ang)*rr, y:p.y+Math.sin(ang)*rr*0.6, z:p.z+Math.sin(ang*1.3)*rr*0.7 };
+      out.tools.push({app,agent:a,p:tp,parent:p,on:(a.connected||[]).includes(app)}); }); });
+  return out;
+}
+
+function draw(){ T+=0.016; if(autoSpin&&!dragging) yaw+=0.0016;
+  ctx.clearRect(0,0,W,H);
+  const sc=nodes(), items=[];
+
+  // étoiles
+  for(const s of stars){ const q=project(s); if(q.z<80) continue;
+    const tw=0.4+0.6*Math.sin(T*1.5+s.p);
+    ctx.beginPath(); ctx.arc(q.x,q.y,Math.max(0.3,q.s*0.9),0,7);
+    ctx.fillStyle="rgba(180,190,255,"+(0.22*tw*Math.min(1,q.s*1.6))+")"; ctx.fill(); }
+
+  const pc=project(sc.core);
+  // liens coeur → agents, et agents → outils (dessinés avant les noeuds)
+  sc.agents.forEach(({a,p})=>{ const q=project(p), act=ACTIVE[a.id]||0;
+    const g=ctx.createLinearGradient(pc.x,pc.y,q.x,q.y);
+    g.addColorStop(0,"rgba(124,92,255,"+(0.22+0.6*act)+")"); g.addColorStop(1,hexA(a.color,0.12+0.6*act));
+    ctx.beginPath(); ctx.moveTo(pc.x,pc.y); ctx.lineTo(q.x,q.y);
+    ctx.strokeStyle=g; ctx.lineWidth=Math.max(0.6,(0.9+2.2*act)*q.s); ctx.stroke(); });
+  sc.tools.forEach(t=>{ const q=project(t.p), pp=project(t.parent);
+    ctx.beginPath(); ctx.moveTo(pp.x,pp.y); ctx.lineTo(q.x,q.y);
+    ctx.strokeStyle=hexA(t.agent.color, t.on?0.30:0.10); ctx.lineWidth=Math.max(0.4,q.s*0.9); ctx.stroke(); });
+
+  // billes en mouvement (3D, le long des liens)
+  particles=particles.filter(p=>p.t<1);
+  for(const p of particles){ p.t+=p.sp; if(p.t<0) continue;
+    const e=p.t*p.t*(3-2*p.t);   // easing doux
+    const w={x:p.a.x+(p.b.x-p.a.x)*e, y:p.a.y+(p.b.y-p.a.y)*e, z:p.a.z+(p.b.z-p.a.z)*e};
+    const q=project(w); if(q.z<60) continue;
+    ctx.beginPath(); ctx.arc(q.x,q.y,Math.max(1.2,3.2*q.s),0,7);
+    ctx.fillStyle=hexA(p.c,0.95-p.t*0.35); ctx.shadowBlur=16*q.s; ctx.shadowColor=p.c; ctx.fill(); ctx.shadowBlur=0; }
+
+  // noeuds triés par profondeur (les plus loin d'abord = vraie 3D)
+  sc.tools.forEach(t=>items.push({kind:"tool",d:t,q:project(t.p)}));
+  sc.agents.forEach(o=>items.push({kind:"agent",d:o,q:project(o.p)}));
+  items.push({kind:"core",q:pc});
+  items.sort((a,b)=>b.q.z-a.q.z);
+
+  for(const it of items){
+    const q=it.q; if(q.z<60) continue;
+    if(it.kind==="tool"){ const t=it.d, R=Math.max(2,(t.on?6:4)*q.s);
+      ctx.beginPath(); ctx.arc(q.x,q.y,R,0,7);
+      ctx.fillStyle=t.on?hexA(t.agent.color,0.92):"rgba(120,125,150,.32)";
+      ctx.shadowBlur=t.on?14*q.s:0; ctx.shadowColor=t.agent.color; ctx.fill(); ctx.shadowBlur=0;
+      if(q.s>0.55){ ctx.font=Math.round(9*q.s*1.25)+"px sans-serif"; ctx.textAlign="center";
+        ctx.fillStyle=t.on?"rgba(220,225,245,.8)":"rgba(150,155,180,.42)";
+        ctx.fillText(t.app.replace("google",""),q.x,q.y+R+11*q.s); } }
+    else if(it.kind==="agent"){ const {a}=it.d, act=ACTIVE[a.id]||0, cnt=COUNTS[a.id]||0;
+      const R=(26+act*7+Math.sin(T*2)*1.2)*q.s;
+      const rg=ctx.createRadialGradient(q.x,q.y,1,q.x,q.y,R);
+      rg.addColorStop(0,hexA(a.color,0.6+0.4*act)); rg.addColorStop(1,hexA(a.color,0.05));
+      ctx.beginPath(); ctx.arc(q.x,q.y,R,0,7); ctx.fillStyle=rg;
+      ctx.shadowBlur=(16+32*act)*q.s; ctx.shadowColor=a.color; ctx.fill(); ctx.shadowBlur=0;
+      ctx.beginPath(); ctx.arc(q.x,q.y,R,0,7); ctx.strokeStyle=hexA(a.color,0.5+0.5*act); ctx.lineWidth=1.4*q.s; ctx.stroke();
+      ctx.font=Math.round(18*q.s)+"px sans-serif"; ctx.textAlign="center"; ctx.textBaseline="middle";
+      ctx.fillStyle="#fff"; ctx.fillText(a.icon,q.x,q.y);
+      ctx.textBaseline="alphabetic";
+      if(q.s>0.5){ ctx.font="700 "+Math.round(11.5*q.s)+"px sans-serif"; ctx.fillStyle="rgba(235,238,255,.92)";
+        ctx.fillText(a.name,q.x,q.y+R+14*q.s);
+        if(cnt){ ctx.font=Math.round(9.5*q.s)+"px sans-serif"; ctx.fillStyle=hexA(a.color,.85);
+          ctx.fillText(cnt+" action"+(cnt>1?"s":""),q.x,q.y+R+26*q.s); } } }
+    else { const busy=Object.values(ACTIVE).reduce((m,v)=>Math.max(m,v),0);
+      const R=(40+Math.sin(T*1.5)*3+busy*6)*q.s;
+      for(let k=0;k<2;k++){ ctx.beginPath(); ctx.arc(q.x,q.y,R+(11+k*10)*q.s,0,7);
+        ctx.strokeStyle="rgba(124,92,255,"+(0.28-k*0.1+busy*0.3)+")"; ctx.lineWidth=1.3*q.s; ctx.stroke(); }
+      const cg=ctx.createRadialGradient(q.x,q.y,2,q.x,q.y,R);
+      cg.addColorStop(0,"rgba(205,188,255,.98)"); cg.addColorStop(.55,"rgba(124,92,255,.75)"); cg.addColorStop(1,"rgba(80,50,190,.22)");
+      ctx.beginPath(); ctx.arc(q.x,q.y,R,0,7); ctx.fillStyle=cg; ctx.shadowBlur=50*q.s; ctx.shadowColor="#7c5cff"; ctx.fill(); ctx.shadowBlur=0;
+      ctx.font="700 "+Math.round(14*q.s)+"px sans-serif"; ctx.textAlign="center"; ctx.fillStyle="#fff";
+      ctx.fillText("NOVA",q.x,q.y+5*q.s); }
+  }
   requestAnimationFrame(draw); }
 function hexA(hex,a){ const h=(hex||"#7c5cff").replace("#",""); const b=parseInt(h.length===3?h.split("").map(c=>c+c).join(""):h,16);
   return "rgba("+((b>>16)&255)+","+((b>>8)&255)+","+(b&255)+","+a+")"; }
 draw();
 
-/* Données live */
+/* ── Navigation : glisser / molette / pincer ── */
+let dragging=false,lx=0,ly=0,pinch=0;
+function down(x,y){ dragging=true; lx=x; ly=y; cv.classList.add("drag"); }
+function move(x,y){ if(!dragging) return; yaw+=(x-lx)*0.006; pitch+=(y-ly)*0.005;
+  pitch=Math.max(-1.35,Math.min(1.35,pitch)); lx=x; ly=y; }
+function up(){ dragging=false; cv.classList.remove("drag"); }
+cv.addEventListener("mousedown",e=>down(e.clientX,e.clientY));
+addEventListener("mousemove",e=>move(e.clientX,e.clientY));
+addEventListener("mouseup",up);
+cv.addEventListener("wheel",e=>{ e.preventDefault(); dist=Math.max(0.45,Math.min(2.6,dist*(1+(e.deltaY>0?0.12:-0.12)))); },{passive:false});
+cv.addEventListener("touchstart",e=>{ if(e.touches.length===1) down(e.touches[0].clientX,e.touches[0].clientY);
+  else if(e.touches.length===2){ dragging=false; pinch=Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY); } },{passive:true});
+cv.addEventListener("touchmove",e=>{ if(e.touches.length===1) move(e.touches[0].clientX,e.touches[0].clientY);
+  else if(e.touches.length===2&&pinch){ const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+    dist=Math.max(0.45,Math.min(2.6,dist*(pinch/d))); pinch=d; } },{passive:true});
+cv.addEventListener("touchend",up);
+function toggleSpin(){ autoSpin=!autoSpin; document.getElementById("spin").classList.toggle("on",autoSpin); }
+function resetView(){ yaw=0.6; pitch=-0.32; dist=1; }
+
+/* ── Données live ── */
 let lastSig="";
 async function tick(){
-  try{ const r=await fetch(ORIGIN+"/agent/activity",{cache:"no-store"}); const d=await r.json();
+  try{ const d=await (await fetch(ORIGIN+"/agent/activity",{cache:"no-store"})).json();
     SQUAD=d.squad||[]; ACTIVE=d.active||{}; COUNTS=d.counts||{}; CONNECTED=d.connected_apps||[];
     document.getElementById("sAg").textContent=SQUAD.length;
     document.getElementById("sApps").textContent=CONNECTED.length;
     document.getElementById("sAct").textContent=d.total||0;
-    // impulsions sur nouvelle activité
-    const sig=JSON.stringify(d.events&&d.events[0]||{});
-    if(sig!==lastSig && d.events&&d.events.length){ lastSig=sig;
+    const sig=JSON.stringify((d.events||[])[0]||{});
+    if(sig!==lastSig && (d.events||[]).length){ lastSig=sig;
       const e=d.events[0], i=SQUAD.findIndex(a=>a.id===e.agent);
-      if(i>=0){ const p=agentPos(i,SQUAD.length||1); const c=(SQUAD[i]||{}).color||"#7c5cff";
-        for(let k=0;k<4;k++) setTimeout(()=>pulses.push({x:p.x,y:p.y,c,t:0}),k*110); } }
+      if(i>=0){ const sc=nodes(), ag=sc.agents[i];
+        if(ag){ const c=SQUAD[i].color;
+          emit({x:0,y:0,z:0}, ag.p, c, 3);                                  // coeur → agent
+          sc.tools.filter(t=>t.agent.id===e.agent && (!e.tool || t.app===e.tool))
+                  .forEach(t=>emit(ag.p, t.p, c, 2));                       // agent → outil
+        } } }
     const box=document.getElementById("evs"), evs=d.events||[];
     box.innerHTML = evs.length ? evs.slice(0,8).map(e=>{
-      const a=SQUAD.find(x=>x.id===e.agent)||{icon:"🧠",name:"Nova",color:"#7c5cff"};
+      const a=SQUAD.find(x=>x.id===e.agent)||{icon:"🧠",name:"Nova"};
       return '<div class="ev"><span>'+a.icon+'</span><span class="n">'+esc(e.label||a.name)+'</span>'
            + '<span class="t">il y a '+fmtAgo(e.ago)+'</span></div>'; }).join("")
-      : '<div class="empty">En veille… demande quelque chose à Nova.</div>';
+      : '<div class="empty">En veille… parle à Nova dans l\'autre onglet.</div>';
   }catch(e){}
   try{ const u=await (await fetch(ORIGIN+"/agent/usage",{cache:"no-store"})).json();
-    const t=u.total||{used:0}; document.getElementById("sTok").textContent=fmtK(t.used); }catch(e){}
+    document.getElementById("sTok").textContent=fmtK((u.total||{}).used); }catch(e){}
 }
 function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 function fmtAgo(s){ s=+s||0; return s<60? Math.round(s)+"s" : Math.round(s/60)+"min"; }
 function fmtK(n){ n=+n||0; return n>=1e6?(n/1e6).toFixed(1)+"M":n>=1000?(n/1000).toFixed(1)+"k":""+n; }
-tick(); setInterval(tick,2500);
+tick(); setInterval(tick,2000);
 </script>
 </body>
 </html>
