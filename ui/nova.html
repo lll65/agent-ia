@@ -110,8 +110,16 @@
   /* Voile de scintillement très subtil en haut de l'écran */
   .app::before{ content:""; position:fixed; top:0; left:0; right:0; height:120px; pointer-events:none; z-index:3;
     background:radial-gradient(120% 100% at 50% 0%, rgba(124,92,255,.12), transparent 70%); }
-  @media (max-width:560px){ .logo{ font-size:22px } .bubble{ font-size:14.5px } .chips{ gap:6px } }
-  @media (prefers-reduced-motion:reduce){ *{ animation:none!important; transition:none!important } }
+  /* Barre de tokens */
+  .usage{ display:flex; align-items:center; gap:7px; font-size:10.5px; color:var(--dim); margin-right:4px; }
+  .ubar{ width:64px; height:6px; border-radius:6px; background:var(--glass); border:1px solid var(--stroke); overflow:hidden; }
+  .ubar i{ display:block; height:100%; width:0%; background:linear-gradient(90deg,var(--neon),var(--neon2)); box-shadow:0 0 10px var(--neon2); transition:width .7s ease; }
+  .usage.warn .ubar i{ background:linear-gradient(90deg,#f59e0b,#ef4444); }
+  .usage b{ color:var(--txt); font-weight:600; }
+  /* Quand Nova réfléchit : bulles plus transparentes → on VOIT le schéma derrière */
+  body.thinking .ai .bubble{ background:rgba(255,255,255,.03); border-color:rgba(124,92,255,.25); }
+  @media (max-width:560px){ .logo{ font-size:22px } .bubble{ font-size:14.5px } .chips{ gap:6px } .usage{ display:none } }
+  @media (prefers-reduced-motion:reduce){ #graph{ opacity:.9 } .logo,.send,.blob{ animation:none!important } }
 </style>
 </head>
 <body>
@@ -122,6 +130,9 @@
     <header>
       <div class="logo">NOVA<small>ASSISTANT · DU FUTUR</small></div>
       <div class="tools">
+        <div class="usage" id="usage" title="Tokens utilisés aujourd'hui">
+          <span>🪙</span><div class="ubar"><i id="ufill"></i></div><span id="utext">…</span>
+        </div>
         <button class="ic on" id="ttsBtn" onclick="toggleTTS()" title="Voix de Nova">🔊</button>
         <button class="ic" onclick="openCfg()" title="Réglages">⚙️</button>
       </div>
@@ -183,27 +194,54 @@ function loopP(){ px.clearRect(0,0,PW,PH); const sp=thinking?2.6:1, gl=thinking?
     px.beginPath(); px.arc(p.x,p.y,p.r*(thinking?1.6:1),0,7); px.fillStyle=`rgba(124,92,255,${gl})`; px.shadowBlur=thinking?14:6; px.shadowColor="#7c5cff"; px.fill(); }
   px.shadowBlur=0; requestAnimationFrame(loopP); } loopP();
 
-/* ═══ GRAPHE de raisonnement ═══ */
+/* ═══ GRAPHE de raisonnement — HUD 3D façon "automation" ═══ */
 const gw=document.getElementById("graphWrap"), gc=document.getElementById("graph"), gx=gc.getContext("2d");
-let nodes=[], gAnim=null, GW=innerWidth, GH=innerHeight, GCX=GW/2, GCY=GH*.44;
+let nodes=[], gAnim=null, GW=innerWidth, GH=innerHeight, GCX=GW/2, GCY=GH*.42, GT=0, RAD=220;
 function gResize(){ const dpr=Math.min(devicePixelRatio||1,2); GW=innerWidth; GH=innerHeight;
   gc.width=GW*dpr; gc.height=GH*dpr; gc.style.width=GW+"px"; gc.style.height=GH+"px";
-  gx.setTransform(dpr,0,0,dpr,0,0); GCX=GW/2; GCY=GH*.44; }
-function graphStart(){ gw.classList.add("show"); gResize(); nodes=[{x:GCX,y:GCY,label:"NOVA",icon:"🧠",core:1,t:0}]; if(!gAnim) drawGraph(); }
-function graphAdd(icon,label){ const n=nodes.length-1, ang=n*2.399 - 1.2, rad=Math.min(GW,GH)*.28;
-  nodes.push({x:GCX+Math.cos(ang)*rad,y:GCY+Math.sin(ang)*rad,r:0,tr:24,label,icon,t:0}); }
+  gx.setTransform(dpr,0,0,dpr,0,0); GCX=GW/2; GCY=GH*.42; RAD=Math.min(GW,GH)*.30; }
+function graphStart(){ gw.classList.add("show"); gResize(); GT=0;
+  nodes=[{core:1,a:0,r:1,tr:1,label:"NOVA",icon:"🧠",t:0}]; if(!gAnim) drawGraph(); }
+function graphAdd(icon,label){ const n=nodes.length-1; nodes.push({a:n*2.399, r:0, tr:1, label, icon, t:0}); }
+/* arcs de cercle segmentés (look HUD/tech) */
+function ring(cx,cy,rad,seg,off,col,w){ gx.strokeStyle=col; gx.lineWidth=w;
+  for(let k=0;k<seg;k++){ const a0=off+k*(6.283/seg), a1=a0+(6.283/seg)*.6;
+    gx.beginPath(); gx.arc(cx,cy,rad,a0,a1); gx.stroke(); } }
+/* position orbitale (ellipse = fausse 3D) + profondeur pour le rendu */
+function nodePos(nd){ const ang=nd.a+GT*.15, ex=Math.cos(ang)*RAD*nd.r, ey=Math.sin(ang)*RAD*.60*nd.r;
+  return {x:GCX+ex, y:GCY+ey, depth:(Math.sin(ang)+1)/2}; }
 function drawGraph(){ gx.clearRect(0,0,GW,GH); const core=nodes[0]; if(!core){gAnim=null;return;}
-  core.t++; const pulse=28+Math.sin(core.t*.08)*3;
-  for(let i=1;i<nodes.length;i++){ const nd=nodes[i]; nd.r+=(nd.tr-nd.r)*.13; nd.t++;
-    gx.beginPath(); gx.moveTo(core.x,core.y); gx.lineTo(nd.x,nd.y); gx.strokeStyle="rgba(124,92,255,.25)"; gx.lineWidth=1.5; gx.stroke();
-    gx.beginPath(); gx.arc(nd.x,nd.y,nd.r,0,7); gx.fillStyle="rgba(34,211,238,.09)"; gx.strokeStyle="rgba(34,211,238,.6)"; gx.lineWidth=1.5; gx.shadowBlur=12; gx.shadowColor="#22d3ee"; gx.fill(); gx.stroke(); gx.shadowBlur=0;
-    gx.font="17px sans-serif"; gx.textAlign="center"; gx.textBaseline="middle"; gx.fillStyle="#fff"; gx.fillText(nd.icon,nd.x,nd.y);
-    gx.textBaseline="alphabetic"; gx.fillStyle="rgba(200,205,225,.7)"; gx.font="11px sans-serif"; gx.fillText(nd.label.slice(0,18),nd.x,nd.y+nd.r+14); }
-  gx.beginPath(); gx.arc(core.x,core.y,pulse,0,7); gx.fillStyle="rgba(124,92,255,.8)"; gx.shadowBlur=30; gx.shadowColor="#7c5cff"; gx.fill(); gx.shadowBlur=0;
-  gx.font="22px sans-serif"; gx.textAlign="center"; gx.textBaseline="middle"; gx.fillStyle="#fff"; gx.fillText("🧠",core.x,core.y);
-  gx.textBaseline="alphabetic"; gx.fillStyle="rgba(233,233,245,.85)"; gx.font="11px sans-serif"; gx.fillText("NOVA",core.x,core.y+pulse+16);
+  GT+=0.02; core.t++;
+  // Anneaux concentriques (contra-rotatifs) → ambiance cockpit/automation
+  for(let i=0;i<4;i++){ const rr=RAD*(0.5+i*0.42), dir=i%2?-1:1;
+    ring(GCX,GCY,rr, 3+i, GT*.2*dir, "rgba(124,92,255,"+(0.13-i*0.02)+")", 1.3);
+    ring(GCX,GCY,rr*0.9, 6+i*2, -GT*.16*dir, "rgba(34,211,238,"+(0.10-i*0.015)+")", 1); }
+  // Noeuds triés par profondeur (les plus proches devant = 3D)
+  const drawn=[];
+  for(let i=1;i<nodes.length;i++){ const nd=nodes[i]; nd.r+=(nd.tr-nd.r)*.07; nd.t++; const p=nodePos(nd); p.nd=nd; drawn.push(p); }
+  drawn.sort((a,b)=>a.depth-b.depth);
+  for(const p of drawn){ const g=gx.createLinearGradient(GCX,GCY,p.x,p.y);
+    g.addColorStop(0,"rgba(124,92,255,.55)"); g.addColorStop(1,"rgba(34,211,238,.12)");
+    gx.beginPath(); gx.moveTo(GCX,GCY); gx.lineTo(p.x,p.y); gx.strokeStyle=g; gx.lineWidth=1.4; gx.stroke(); }
+  for(const p of drawn){ const nd=p.nd, sc=(0.6+p.depth*0.7), R=22*sc*nd.r, al=(0.35+p.depth*0.65);
+    ring(p.x,p.y,R+6,4,GT*.6,"rgba(34,211,238,"+(0.3*al)+")",1);
+    gx.beginPath(); gx.arc(p.x,p.y,R,0,7); gx.fillStyle="rgba(10,14,30,"+(0.55*al)+")"; gx.strokeStyle="rgba(34,211,238,"+(0.9*al)+")";
+    gx.lineWidth=1.7; gx.shadowBlur=18*al; gx.shadowColor="#22d3ee"; gx.fill(); gx.stroke(); gx.shadowBlur=0;
+    gx.globalAlpha=al; gx.textAlign="center"; gx.textBaseline="middle"; gx.fillStyle="#fff";
+    gx.font=Math.round(17*sc)+"px sans-serif"; gx.fillText(nd.icon,p.x,p.y);
+    gx.textBaseline="alphabetic"; gx.fillStyle="rgba(215,220,240,"+al+")"; gx.font=Math.round(10.5*sc)+"px sans-serif";
+    gx.fillText(nd.label.slice(0,16),p.x,p.y+R+13); gx.globalAlpha=1; }
+  // Coeur HUD lumineux
+  const pulse=30+Math.sin(core.t*.07)*4;
+  ring(GCX,GCY,pulse+17,3,GT*.4,"rgba(124,92,255,.55)",2);
+  ring(GCX,GCY,pulse+9,6,-GT*.5,"rgba(34,211,238,.45)",1.4);
+  const cg=gx.createRadialGradient(GCX,GCY,2,GCX,GCY,pulse);
+  cg.addColorStop(0,"rgba(170,140,255,.95)"); cg.addColorStop(1,"rgba(124,92,255,.55)");
+  gx.beginPath(); gx.arc(GCX,GCY,pulse,0,7); gx.fillStyle=cg; gx.shadowBlur=42; gx.shadowColor="#7c5cff"; gx.fill(); gx.shadowBlur=0;
+  gx.textAlign="center"; gx.textBaseline="middle"; gx.fillStyle="#fff"; gx.font="24px sans-serif"; gx.fillText("🧠",GCX,GCY);
+  gx.textBaseline="alphabetic"; gx.fillStyle="rgba(233,233,245,.9)"; gx.font="700 11px sans-serif"; gx.fillText("NOVA",GCX,GCY+pulse+18);
   gAnim=requestAnimationFrame(drawGraph); }
-function graphEnd(){ setTimeout(()=>{ gw.classList.remove("show"); cancelAnimationFrame(gAnim); gAnim=null; },2600); }
+function graphEnd(){ setTimeout(()=>{ gw.classList.remove("show"); cancelAnimationFrame(gAnim); gAnim=null; },3200); }
 const ICON={search:"🔍",web:"🔍",mail:"📧",gmail:"📧",calendar:"📅",agenda:"📅",connected_app:"🔌",thought:"💭",obs:"👁️",code:"💻"};
 function iconFor(kind,tool){ const k=(tool||"").toLowerCase(); for(const key in ICON) if(k.includes(key)) return ICON[key]; return ICON[kind]||"⚙️"; }
 
@@ -237,13 +275,26 @@ function ask(){
       trace.push({icon:ic, label:stepLabel(d), detail:(d.q||d.text||"")});
       if(!answer){ bubble.innerHTML=thinkHTML(stepLabel(d), ic); pi=trace.length-1; chat.scrollTop=chat.scrollHeight; } }
     else if(d.type==="answer"){ answer=d.text||""; stopThink(); typewrite(bubble,answer); if(TTS) speak(answer); }
-    else if(d.type==="done"){ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false; attachReason(bubble,trace); }
+    else if(d.type==="done"){ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false; attachReason(bubble,trace); setTimeout(refreshUsage,900); }
   };
   es.onerror=()=>{ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false;
     if(!answer) bubble.innerHTML="⚠️ Connexion interrompue. Vérifie ta clé (⚙️) et réessaie."; else attachReason(bubble,trace); };
 }
 function typewrite(el,text){ const html=fmt(text); if(html.includes("<pre>")){ el.innerHTML=html; return; }
   let i=0; clearInterval(el._t); el._t=setInterval(()=>{ el.innerHTML=fmt(text.slice(0,i))+'<span style="opacity:.5">▍</span>'; chat.scrollTop=chat.scrollHeight; i+=2; if(i>=text.length){ clearInterval(el._t); el.innerHTML=html; } },12); }
+
+/* ═══ BARRE DE TOKENS ═══ */
+function fmtK(n){ n=+n||0; if(n>=1e6) return (n/1e6).toFixed(1).replace(/\.0$/,'')+"M";
+  if(n>=1000) return (n/1000).toFixed(n>=1e5?0:1).replace(/\.0$/,'')+"k"; return ""+n; }
+async function refreshUsage(){ try{ const r=await fetch(ORIGIN+"/agent/usage",{cache:"no-store"}); const d=await r.json();
+  const t=d.total||{used:0,limit:1}, lim=Math.max(1,t.limit), pct=Math.min(100, t.used/lim*100);
+  const el=document.getElementById("usage"); document.getElementById("ufill").style.width=pct+"%";
+  document.getElementById("utext").innerHTML="<b>"+fmtK(t.used)+"</b> / "+fmtK(t.limit);
+  el.classList.toggle("warn", pct>85);
+  const cb=d.cerebras||{used:0,limit:0}, gq=d.groq||{used:0,limit:0};
+  el.title="Tokens aujourd'hui — Cerebras "+fmtK(cb.used)+"/"+fmtK(cb.limit)+" · Groq "+fmtK(gq.used)+"/"+fmtK(gq.limit);
+}catch(e){ document.getElementById("utext").textContent="—"; } }
+refreshUsage(); setInterval(refreshUsage, 20000);
 
 /* ═══ VOIX ═══ */
 function speak(text){ try{ speechSynthesis.cancel(); const u=new SpeechSynthesisUtterance(text.replace(/[*#`>]/g,"").slice(0,600)); u.lang="fr-FR"; u.rate=1.05; speechSynthesis.speak(u); }catch(e){} }

@@ -99,25 +99,53 @@ def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
 # À la place : appel Composio déterministe → si ça échoue, message honnête (jamais
 # d'invention) ; si ça réussit, le LLM se contente de METTRE EN FORME les données réelles.
 
-def _week_bounds():
-    """Renvoie (timeMin, timeMax) ISO-8601 UTC pour la semaine en cours (lundi → lundi suivant)."""
+def _time_bounds(message: str):
+    """Renvoie (timeMin, timeMax, libellé) ISO-8601 UTC selon la période demandée
+    (aujourd'hui / demain / cette semaine / semaine prochaine / ce mois / mois prochain)."""
     from datetime import datetime, timezone, timedelta
+    m = message.lower()
     now = datetime.now(timezone.utc)
-    start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start + timedelta(days=7)
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     z = lambda d: d.isoformat().replace("+00:00", "Z")
-    return z(start), z(end)
+
+    if "après-demain" in m or "apres-demain" in m or "surlendemain" in m:
+        d0 = today + timedelta(days=2)
+        return z(d0), z(d0 + timedelta(days=1)), "après-demain"
+    if "demain" in m:
+        d0 = today + timedelta(days=1)
+        return z(d0), z(d0 + timedelta(days=1)), "demain"
+    if "aujourd" in m or "ma journée" in m or "ma journee" in m or "ce soir" in m:
+        return z(today), z(today + timedelta(days=1)), "aujourd'hui"
+
+    # Mois
+    if "mois" in m:
+        first_this = today.replace(day=1)
+        next_month = (first_this.replace(day=28) + timedelta(days=4)).replace(day=1)
+        if "prochain" in m or "suivant" in m or "d'après" in m or "d apres" in m:
+            start = next_month
+            end = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
+            return z(start), z(end), "le mois prochain"
+        return z(first_this), z(next_month), "ce mois-ci"
+
+    # Semaine (défaut). Lundi de la semaine courante.
+    monday = today - timedelta(days=today.weekday())
+    if ("prochaine" in m or "prochain" in m or "semaine pro" in m or "d'après" in m
+            or "d apres" in m or "suivante" in m or "next week" in m):
+        start = monday + timedelta(days=7)
+        return z(start), z(start + timedelta(days=7)), "la semaine prochaine"
+    return z(monday), z(monday + timedelta(days=7)), "cette semaine"
 
 
 def _resolve_app_action(message: str):
     """Mappe une demande agenda/mail vers une action Composio + ses arguments. Sinon (None, None)."""
     m = message.lower()
     cal = ("agenda", "calendrier", "calendar", "rendez-vous", "rendez vous", "rdv", "planning",
-           "planifie", "événement", "evenement", "réunion", "reunion", "meeting", "semaine")
+           "planifie", "événement", "evenement", "réunion", "reunion", "meeting", "semaine",
+           "journée", "journee", "aujourd", "demain", "mois")
     mail = ("mail", "mails", "email", "e-mail", "gmail", "boîte mail", "boite mail",
             "inbox", "messagerie", "mes messages")
     if any(h in m for h in cal):
-        tmin, tmax = _week_bounds()
+        tmin, tmax, _ = _time_bounds(message)
         return "GOOGLECALENDAR_EVENTS_LIST", {
             "calendarId": "primary", "timeMin": tmin, "timeMax": tmax,
             "maxResults": 25, "singleEvents": True, "orderBy": "startTime",
@@ -435,6 +463,23 @@ async def diag_composio(key: str = ""):
         _probe("C_toolkits_xapikey", "GET", f"{base}/api/v3/toolkits?limit=1",
                {"x-api-key": ck_s, "Content-Type": "application/json"})
     return {"meta": meta, "header_used": hdr_name, "probes": probes}
+
+
+@router.get("/usage")
+async def usage():
+    """Consommation de tokens du jour (Cerebras + Groq) — pour la barre sur /nova.
+    Lecture durable (Supabase si configuré), donc fiable après redéploiement."""
+    from llm import usage as U
+    out, tu, tl = {}, 0, 0
+    for p in ("cerebras", "groq"):
+        try:
+            used, limit = U.get_usage(p)
+        except Exception:
+            used, limit = 0, U.LIMITS.get(p, 0)
+        out[p] = {"used": int(used), "limit": int(limit)}
+        tu += int(used); tl += int(limit)
+    out["total"] = {"used": tu, "limit": tl}
+    return out
 
 
 @router.get("/diag/connect")
