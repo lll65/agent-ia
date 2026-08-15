@@ -75,10 +75,12 @@ async def llm_call(messages: list, model: str = None, temperature: float = 0.7) 
 
 
 def _temperature_for_role(agent_config: dict) -> float:
-    """Température adaptée au rôle. Finance = déterministe (0.2) pour des chiffres fiables."""
+    """Température adaptée au rôle. Factuel/finance = déterministe pour limiter les hallucinations."""
     role = (agent_config.get("role") or "").lower()
     if role in ("finance_analyst", "crypto_analyst") or "finance" in role:
         return 0.2
+    if agent_config.get("force_search"):
+        return 0.25  # questions factuelles/actu → basse température = moins d'inventions
     return 0.7
 
 
@@ -243,7 +245,7 @@ async def run_agent(
 
         if final:
             steps.append(step)
-            mem.remember(agent_id, "assistant", final)
+            mem.remember(agent_id, "assistant", final[:350])
             return {"answer": final, "steps": steps, "iterations": iteration + 1}
 
         if action:
@@ -354,7 +356,9 @@ async def run_agent_stream(
             messages.append({"role": "user", "content": (
                 f"OBSERVATION [search_web]: {obs[:1400]}\n\n"
                 "Utilise UNIQUEMENT ces résultats réels pour répondre, en citant leurs sources. "
-                "N'invente aucune autre source. Si l'info manque, dis-le.")})
+                "Toute source, DATE ou chiffre que tu cites DOIT apparaître mot pour mot dans ces "
+                "résultats — interdiction absolue d'inventer un nom de média, une date ou un montant. "
+                "Si l'info manque, dis clairement « je n'ai pas trouvé ».")})
             tool_calls_made += 1
         except Exception as e:
             logger.warning(f"[force_search] échec: {e}")
@@ -386,7 +390,7 @@ async def run_agent_stream(
             yield {"type": "thought", "text": thought, "iteration": iteration + 1}
 
         if final:
-            mem.remember(agent_id, "assistant", final)
+            mem.remember(agent_id, "assistant", final[:350])
             yield {"type": "final", "answer": final, "iterations": iteration + 1}
             return
 

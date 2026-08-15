@@ -142,18 +142,38 @@
   #voiceUI .vexit{ pointer-events:auto; margin-top:22px; padding:11px 22px; border:1px solid var(--stroke); border-radius:999px; background:var(--glass); color:var(--txt); cursor:pointer; font-size:14px; backdrop-filter:blur(10px); transition:.2s; }
   #voiceUI .vexit:hover{ border-color:var(--pink); color:#fff; }
 
-  /* ═══ PANNEAU historique / mémoire ═══ */
-  .panel{ position:fixed; top:0; right:0; bottom:0; width:min(360px,88vw); z-index:8; background:#0b0b17; border-left:1px solid var(--stroke); transform:translateX(100%); transition:transform .35s cubic-bezier(.2,.9,.3,1); display:flex; flex-direction:column; }
-  .panel.show{ transform:none; box-shadow:-20px 0 60px rgba(0,0,0,.5); }
-  .panel h3{ padding:16px; border-bottom:1px solid var(--stroke); display:flex; justify-content:space-between; align-items:center; }
-  .panel .ptabs{ display:flex; gap:6px; padding:10px 14px; }
-  .panel .pt{ flex:1; text-align:center; padding:9px; border-radius:10px; background:var(--glass); border:1px solid var(--stroke); cursor:pointer; font-size:13px; color:var(--dim); }
-  .panel .pt.on{ color:#fff; border-color:var(--neon); box-shadow:0 0 14px rgba(124,92,255,.35); }
-  .panel .pbody{ flex:1; overflow-y:auto; padding:12px 14px; font-size:13px; }
-  .panel .pitem{ padding:9px 11px; border-radius:10px; background:var(--glass); border:1px solid var(--stroke); margin-bottom:8px; line-height:1.45; word-break:break-word; }
-  .panel .pitem b{ color:var(--neon2); font-size:11px; text-transform:uppercase; letter-spacing:.08em; }
-  .panel .pclear{ margin:10px 14px 16px; padding:10px; text-align:center; border:1px solid var(--stroke); border-radius:10px; color:var(--dim); cursor:pointer; font-size:12.5px; }
-  .panel .pclear:hover{ color:var(--pink); border-color:var(--pink); }
+  /* ═══ SIDEBAR gauche (sessions) — thème Nova ═══ */
+  .menu{ display:none; }
+  .sidebar{ position:fixed; top:0; left:0; bottom:0; width:min(300px,84vw); z-index:12;
+    background:linear-gradient(180deg, rgba(16,16,32,.96), rgba(8,8,18,.98)); backdrop-filter:blur(18px);
+    border-right:1px solid var(--stroke); transform:translateX(-100%); transition:transform .35s cubic-bezier(.2,.9,.3,1);
+    display:flex; flex-direction:column; padding:14px 12px; gap:12px; }
+  .sidebar.show{ transform:none; box-shadow:24px 0 70px rgba(0,0,0,.55); }
+  .sbhead{ display:flex; align-items:center; justify-content:space-between; padding:2px 4px; }
+  .sbhead .b{ font-weight:800; letter-spacing:.28em; font-size:16px; background:linear-gradient(90deg,var(--neon),var(--neon2)); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .newchat{ display:flex; align-items:center; gap:9px; padding:12px 14px; border-radius:14px; cursor:pointer;
+    background:linear-gradient(135deg,var(--neon),var(--neon2)); color:#fff; font-weight:700; font-size:14px; border:none;
+    box-shadow:0 6px 22px rgba(124,92,255,.4); transition:.15s; }
+  .newchat:hover{ transform:translateY(-1px); box-shadow:0 8px 28px rgba(34,211,238,.5); }
+  .sblist{ flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:6px; scrollbar-width:thin; }
+  .sblabel{ font-size:10.5px; letter-spacing:.16em; color:var(--dim); text-transform:uppercase; padding:6px 6px 2px; }
+  .sbitem{ display:flex; align-items:center; gap:8px; padding:10px 11px; border-radius:11px; cursor:pointer;
+    background:var(--glass); border:1px solid transparent; color:var(--txt); font-size:13px; transition:.15s; }
+  .sbitem:hover{ border-color:var(--stroke); }
+  .sbitem.on{ border-color:var(--neon); box-shadow:0 0 14px rgba(124,92,255,.3); background:rgba(124,92,255,.12); }
+  .sbitem .sbt{ flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .sbitem .sbx{ opacity:0; color:var(--dim); font-size:12px; transition:.15s; }
+  .sbitem:hover .sbx{ opacity:.8; } .sbitem .sbx:hover{ color:var(--pink); }
+  .sbfoot{ display:flex; gap:8px; border-top:1px solid var(--stroke); padding-top:12px; }
+  .sbf{ flex:1; padding:10px; border-radius:11px; background:var(--glass); border:1px solid var(--stroke); color:var(--dim); cursor:pointer; font-size:12.5px; transition:.15s; }
+  .sbf:hover{ color:#fff; border-color:var(--neon); }
+  .sbf.on{ color:var(--neon2); border-color:var(--neon2); }
+  .scrim{ position:fixed; inset:0; z-index:11; background:rgba(0,0,0,.5); backdrop-filter:blur(2px); opacity:0; pointer-events:none; transition:opacity .3s; }
+  .scrim.show{ opacity:1; pointer-events:auto; }
+  /* Modale mémoire (thème Nova) */
+  .memb{ max-height:60vh; overflow-y:auto; margin-top:6px; display:flex; flex-direction:column; gap:8px; }
+  .pitem{ padding:9px 11px; border-radius:11px; background:var(--glass); border:1px solid var(--stroke); line-height:1.45; word-break:break-word; font-size:13px; }
+  .pitem b{ color:var(--neon2); font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; }
 
   @media (max-width:560px){ .logo{ font-size:22px } .bubble{ font-size:14.5px } .chips{ gap:6px } .usage{ display:none } }
   @media (prefers-reduced-motion:reduce){ #graph{ opacity:.9 } .logo,.send,.blob,#voiceUI .orb{ animation:none!important } }
@@ -165,6 +185,7 @@
   <div id="graphWrap"><span class="cap">RAISONNEMENT EN DIRECT</span><canvas id="graph"></canvas></div>
   <div class="app">
     <header>
+      <button class="ic" onclick="toggleSidebar()" title="Conversations">☰</button>
       <div class="logo">NOVA<small>ASSISTANT · DU FUTUR</small></div>
       <div class="tools">
         <div class="usage" id="usage" title="Tokens utilisés aujourd'hui">
@@ -173,7 +194,6 @@
         <button class="ic" id="wakeBtn" onclick="toggleWake()" title="Dire « Nova » pour ouvrir le mode vocal">👂</button>
         <button class="ic" id="voiceBtn" onclick="toggleVoiceMode()" title="Mode vocal (parler en direct)">🎙️</button>
         <button class="ic on" id="ttsBtn" onclick="toggleTTS()" title="Voix de Nova">🔊</button>
-        <button class="ic" onclick="openPanel()" title="Historique &amp; mémoire">☰</button>
         <button class="ic" onclick="openCfg()" title="Réglages">⚙️</button>
       </div>
     </header>
@@ -201,15 +221,25 @@
     <button class="vexit" onclick="toggleVoiceMode()">✕ Quitter le mode vocal</button>
   </div>
 
-  <div class="panel" id="panel">
-    <h3>Nova <span class="ic" onclick="closePanel()" title="Fermer" style="width:32px;height:32px;font-size:14px">✕</span></h3>
-    <div class="ptabs">
-      <div class="pt on" id="ptHist" onclick="showTab('hist')">💬 Conversations</div>
-      <div class="pt" id="ptMem" onclick="showTab('mem')">🧠 Mémoire</div>
+  <div class="scrim" id="scrim" onclick="toggleSidebar()"></div>
+  <aside class="sidebar" id="sidebar">
+    <div class="sbhead"><span class="b">NOVA</span>
+      <button class="ic" onclick="toggleSidebar()" title="Fermer" style="width:32px;height:32px;font-size:13px">✕</button></div>
+    <button class="newchat" onclick="newSession()"><span style="font-size:17px">＋</span> Nouvelle conversation</button>
+    <div class="sblabel">Conversations</div>
+    <div class="sblist" id="sblist"></div>
+    <div class="sbfoot">
+      <button class="sbf" onclick="openMemory()">🧠 Mémoire</button>
+      <button class="sbf" id="soundBtn" onclick="toggleSound()">🔉 Sons</button>
     </div>
-    <div class="pbody" id="pbody"></div>
-    <div class="pclear" id="pclear" onclick="clearActive()"></div>
-  </div>
+  </aside>
+
+  <div class="modal" id="memModal"><div class="card">
+    <h3>🧠 Mémoire de Nova <span class="ic" onclick="closeMemory()" style="width:30px;height:30px;font-size:13px">✕</span></h3>
+    <p>Ce que Nova retient sur toi (sert à personnaliser ses réponses).</p>
+    <div class="memb" id="memBody"></div>
+    <button onclick="clearMemory()" style="background:none;border:1px solid var(--stroke);color:var(--dim)">🗑️ Oublier tout</button>
+  </div></div>
 
   <div class="modal" id="cfg"><div class="card">
     <h3>🔑 Connexion à Nova</h3><p>Colle ta clé (valeur de <b>AGENT_API_KEY</b> sur Render). Elle reste sur ton appareil.</p>
@@ -242,30 +272,65 @@ function attachReason(bubble,trace){ if(!trace||!trace.length) return; const col
   d.innerHTML='<summary>Raisonnement · '+trace.length+' étape'+(trace.length>1?'s':'')+'</summary><div class="rsteps">'+steps+'</div>';
   col.appendChild(d); chat.scrollTop=chat.scrollHeight; }
 
-/* ═══ HISTORIQUE (local) + MÉMOIRE (serveur) ═══ */
-let HIST=[]; try{ HIST=JSON.parse(localStorage.getItem("nova_hist")||"[]"); }catch(e){ HIST=[]; }
-function histPush(role,text){ HIST.push({role,text,ts:Date.now()}); if(HIST.length>200) HIST=HIST.slice(-200);
-  try{ localStorage.setItem("nova_hist",JSON.stringify(HIST)); }catch(e){} }
-function renderHist(){ if(!HIST.length) return; if(hint)hint.remove();
-  for(const m of HIST){ addRow(m.role==="me"?"me":"ai", fmt(m.text)); } }
-let panelTab="hist";
-function openPanel(){ document.getElementById("panel").classList.add("show"); showTab(panelTab); }
-function closePanel(){ document.getElementById("panel").classList.remove("show"); }
-function showTab(t){ panelTab=t;
-  document.getElementById("ptHist").classList.toggle("on",t==="hist");
-  document.getElementById("ptMem").classList.toggle("on",t==="mem");
-  const body=document.getElementById("pbody"), clr=document.getElementById("pclear");
-  if(t==="hist"){ clr.textContent="🗑️ Effacer l'historique local";
-    body.innerHTML = HIST.length ? HIST.slice().reverse().map(m=>'<div class="pitem"><b>'+(m.role==="me"?"Toi":"Nova")+'</b><br>'+esc(m.text).slice(0,400)+'</div>').join("")
-      : '<div class="pitem">Aucune conversation pour l\'instant.</div>';
-  } else { clr.textContent="🗑️ Effacer la mémoire de Nova"; body.innerHTML='<div class="pitem">Chargement…</div>'; loadMemory(body); }
-}
-async function loadMemory(body){ try{ const r=await fetch(ORIGIN+"/agent/profil/history?limit=30",{cache:"no-store"}); const d=await r.json();
-  const h=(d.history||[]); body.innerHTML = h.length ? h.map(x=>'<div class="pitem"><b>'+esc(String(x.role||x.type||"note"))+'</b><br>'+esc(String(x.content||x.text||JSON.stringify(x))).slice(0,400)+'</div>').join("")
-    : '<div class="pitem">Nova ne mémorise encore rien sur toi. Parle-lui et elle retiendra tes préférences.</div>';
-}catch(e){ body.innerHTML='<div class="pitem">Mémoire indisponible pour le moment.</div>'; } }
-function clearActive(){ if(panelTab==="hist"){ if(confirm("Effacer l'historique local de cette conversation ?")){ HIST=[]; localStorage.removeItem("nova_hist"); showTab("hist"); document.querySelectorAll(".chat .row").forEach(r=>r.remove()); } }
-  else { if(confirm("Effacer ce que Nova mémorise sur toi ?")){ fetch(ORIGIN+"/agent/profil/memory",{method:"DELETE"}).then(()=>showTab("mem")).catch(()=>{}); } } }
+/* ═══ SESSIONS de conversation (façon Claude) ═══ */
+let SESSIONS=[], curId=null;
+function uid(){ return "s"+Date.now()+Math.floor(Math.random()*10000); }
+function saveSessions(){ try{ localStorage.setItem("nova_sessions",JSON.stringify(SESSIONS.slice(0,60))); localStorage.setItem("nova_cur",curId||""); }catch(e){} }
+function curSess(){ return SESSIONS.find(s=>s.id===curId); }
+function newSessionObj(){ const s={id:uid(),title:"Nouvelle conversation",ts:Date.now(),messages:[]}; SESSIONS.unshift(s); curId=s.id; return s; }
+function loadSessions(){ try{ SESSIONS=JSON.parse(localStorage.getItem("nova_sessions")||"[]"); }catch(e){ SESSIONS=[]; }
+  curId=localStorage.getItem("nova_cur")||null;
+  const old=localStorage.getItem("nova_hist");
+  if(old && !SESSIONS.length){ try{ const msgs=JSON.parse(old); if(msgs&&msgs.length){ const t=(msgs.find(m=>m.role==="me")||{}).text||"Conversation"; SESSIONS.push({id:uid(),title:t.slice(0,40),ts:Date.now(),messages:msgs}); } }catch(e){} localStorage.removeItem("nova_hist"); }
+  if(!SESSIONS.length) newSessionObj();
+  if(!curId || !curSess()) curId=SESSIONS[0].id;
+  saveSessions(); }
+function histPush(role,text){ const s=curSess(); if(!s) return; s.messages.push({role,text}); s.ts=Date.now();
+  if(s.title==="Nouvelle conversation" && role==="me") s.title=text.slice(0,42);
+  saveSessions(); renderSessions(); }
+function renderChat(){ document.querySelectorAll(".chat .row").forEach(r=>r.remove());
+  const s=curSess();
+  if(s && s.messages.length){ if(hint&&hint.parentNode)hint.remove(); for(const m of s.messages) addRow(m.role==="me"?"me":"ai", fmt(m.text)); }
+  else if(hint){ chat.appendChild(hint); } }
+function renderSessions(){ const el=document.getElementById("sblist"); if(!el) return;
+  el.innerHTML = SESSIONS.map(s=>'<div class="sbitem'+(s.id===curId?' on':'')+'" onclick="switchSession(\''+s.id+'\')">'
+    +'<span class="sbt">'+esc(s.title||"Sans titre")+'</span>'
+    +'<span class="sbx" onclick="deleteSession(\''+s.id+'\',event)">✕</span></div>').join(""); }
+function newSession(){ newSessionObj(); saveSessions(); renderChat(); renderSessions(); closeSidebar(); }
+function switchSession(id){ curId=id; saveSessions(); renderChat(); renderSessions(); closeSidebar(); }
+function deleteSession(id,ev){ if(ev)ev.stopPropagation(); SESSIONS=SESSIONS.filter(s=>s.id!==id);
+  if(!SESSIONS.length) newSessionObj(); if(curId===id) curId=SESSIONS[0].id; saveSessions(); renderChat(); renderSessions(); }
+function toggleSidebar(){ const sb=document.getElementById("sidebar"), sc=document.getElementById("scrim");
+  const on=!sb.classList.contains("show"); sb.classList.toggle("show",on); sc.classList.toggle("show",on); if(on){ renderSessions(); sndOpen(); } }
+function closeSidebar(){ document.getElementById("sidebar").classList.remove("show"); document.getElementById("scrim").classList.remove("show"); }
+
+/* Mémoire serveur (ce que Nova sait de toi) */
+function openMemory(){ closeSidebar(); document.getElementById("memModal").classList.add("show");
+  const body=document.getElementById("memBody"); body.innerHTML='<div class="pitem">Chargement…</div>';
+  fetch(ORIGIN+"/agent/profil/history?limit=40",{cache:"no-store"}).then(r=>r.json()).then(d=>{
+    const h=(d.history||[]).filter(x=>(x.role||x.type)==="user");
+    body.innerHTML = h.length ? h.slice(-30).reverse().map(x=>'<div class="pitem"><b>toi</b><br>'+esc(String(x.content||x.text||"")).slice(0,300)+'</div>').join("")
+      : '<div class="pitem">Nova ne retient encore rien sur toi. Dis-lui tes préférences (« je préfère les réponses courtes », « je suis à Lyon »…) et elle s\'en souviendra.</div>';
+  }).catch(()=>{ body.innerHTML='<div class="pitem">Mémoire indisponible.</div>'; }); }
+function closeMemory(){ document.getElementById("memModal").classList.remove("show"); }
+function clearMemory(){ if(confirm("Nova oublie tout ce qu'elle sait sur toi ?")){ fetch(ORIGIN+"/agent/profil/memory",{method:"DELETE"}).then(()=>openMemory()).catch(()=>{}); } }
+
+/* ═══ SONS DU FUTUR (Web Audio, synthétisés) ═══ */
+let SOUND=localStorage.getItem("nova_sound")!=="0", actx=null;
+function ac(){ if(!actx){ try{ actx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } return actx; }
+function beep(freq,dur,type,vol,slideTo){ if(!SOUND) return; const c=ac(); if(!c) return;
+  const t0=c.currentTime, o=c.createOscillator(), g=c.createGain();
+  o.type=type||"sine"; o.frequency.setValueAtTime(freq,t0);
+  if(slideTo) o.frequency.exponentialRampToValueAtTime(slideTo,t0+dur);
+  g.gain.setValueAtTime(0.0001,t0); g.gain.exponentialRampToValueAtTime(vol||0.07,t0+0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001,t0+dur);
+  o.connect(g); g.connect(c.destination); o.start(t0); o.stop(t0+dur+0.02); }
+function sndSend(){ beep(420,0.13,"triangle",0.06,900); }
+function sndReceive(){ beep(760,0.11,"sine",0.05,1140); setTimeout(()=>beep(1140,0.12,"sine",0.04,1520),70); }
+function sndOpen(){ beep(200,0.28,"sawtooth",0.04,620); }
+function sndPing(){ beep(1300,0.09,"sine",0.06,1700); }
+function toggleSound(){ SOUND=!SOUND; localStorage.setItem("nova_sound",SOUND?"1":"0");
+  document.getElementById("soundBtn").classList.toggle("on",SOUND); if(SOUND){ ac(); sndPing(); } }
 
 /* ═══ PARTICULES réactives ═══ */
 const pc=document.getElementById("particles"), px=pc.getContext("2d"); let PW,PH,parts=[],thinking=false;
@@ -341,7 +406,7 @@ const THINK_PHRASES=["Nova réfléchit…","J'analyse ta demande…","Je choisis
 function ask(){
   const inp=document.getElementById("in"), msg=inp.value.trim(); if(!msg) return; if(!KEY){ openCfg(); return; }
   document.body.classList.add("chatting");
-  inp.value=""; grow(inp); addRow("me",fmt(msg)); histPush("me",msg); const bubble=addRow("ai",thinkHTML(THINK_PHRASES[0],"💭"));
+  inp.value=""; grow(inp); addRow("me",fmt(msg)); histPush("me",msg); sndSend(); const bubble=addRow("ai",thinkHTML(THINK_PHRASES[0],"💭"));
   document.getElementById("send").disabled=true; thinking=true; document.body.classList.add("thinking"); graphStart();
   let answer="", trace=[], pi=0, streamed=false;
   // Rotation "comme Claude" : une phrase apparaît, s'efface, une autre la remplace.
@@ -367,7 +432,7 @@ function ask(){
       histPush("ai",answer);
       if(voiceMode){ vSet("Nova répond…", answer.slice(0,240)); speak(answer, ()=>{ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }); }
       else if(TTS) speak(answer); }
-    else if(d.type==="done"){ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false; attachReason(bubble,trace); setTimeout(refreshUsage,900); }
+    else if(d.type==="done"){ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false; attachReason(bubble,trace); sndReceive(); setTimeout(refreshUsage,900); }
   };
   es.onerror=()=>{ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false;
     if(!answer) bubble.innerHTML="⚠️ Connexion interrompue. Vérifie ta clé (⚙️) et réessaie."; else attachReason(bubble,trace); };
@@ -425,7 +490,7 @@ function vSet(s,sub){ const a=document.getElementById("vstatus"), b=document.get
 function toggleVoiceMode(){ if(!KEY){ openCfg(); return; }
   voiceMode=!voiceMode; document.body.classList.toggle("voice",voiceMode);
   document.getElementById("voiceBtn").classList.toggle("on",voiceMode);
-  if(voiceMode){ graphStart(); vSet("Je t'écoute…",""); startListen(); }
+  if(voiceMode){ sndOpen(); graphStart(); vSet("Je t'écoute…",""); startListen(); }
   else { stopListen(); speechSynthesis.cancel(); document.body.classList.remove("thinking"); graphEnd(); if(wakeOn) setTimeout(startWake,700); }
 }
 
@@ -442,7 +507,7 @@ function startWake(){ if(!wakeOn||voiceMode||wrec) return;
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition; wrec=new SR();
   wrec.lang="fr-FR"; wrec.continuous=true; wrec.interimResults=true;
   wrec.onresult=(e)=>{ for(let i=e.resultIndex;i<e.results.length;i++){ const tx=(e.results[i][0].transcript||"").toLowerCase();
-    if(/\bnova\b|\bhey nova\b|\bok nova\b|\bnovas\b/.test(tx)){ stopWake(); if(!voiceMode) toggleVoiceMode(); return; } } };
+    if(/\bnova\b|\bhey nova\b|\bok nova\b|\bnovas\b/.test(tx)){ stopWake(); sndPing(); if(!voiceMode) toggleVoiceMode(); return; } } };
   wrec.onerror=()=>{}; wrec.onend=()=>{ wrec=null; if(wakeOn && !voiceMode) setTimeout(startWake,500); };
   try{ wrec.start(); }catch(e){ wrec=null; } }
 function stopWake(){ if(wrec){ try{wrec.stop();}catch(e){}; wrec=null; } }
@@ -475,8 +540,9 @@ function toggleMic(){ const SR=window.SpeechRecognition||window.webkitSpeechReco
   rec.start();
 }
 
-/* Restaure la conversation précédente au chargement */
-renderHist();
+/* Restaure les sessions au chargement */
+loadSessions(); renderChat(); renderSessions();
+document.getElementById("soundBtn").classList.toggle("on",SOUND);
 </script>
 </body>
 </html>
