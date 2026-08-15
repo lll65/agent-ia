@@ -343,6 +343,13 @@ def _looks_like_failure(obs: str) -> bool:
     low = o.lower()
     if '"successful": false' in low or '"successful":false' in low:
         return True
+    # ⚠️ Composio renvoie parfois HTTP 200 avec l'erreur DANS le payload
+    # (ex. {"http_error": "401 Client Error: Unauthorized for url: https://api.canva.com/..."}).
+    # Il faut donc inspecter le contenu même quand le plugin a préfixé un ✅.
+    embedded = ("http_error", '"error"', "client error", "unauthorized", "forbidden",
+                "invalid_grant", "token expired", "insufficient", "\"status\": 4", "\"status\":4")
+    if any(b in low for b in embedded):
+        return True
     if o.startswith("✅"):
         return False  # succès explicite du plugin (même si liste vide)
     hard = ("❌", "⚠️", "🔑", "[self-heal]", "[plugin", "échou", " error", "\"error\"",
@@ -359,6 +366,26 @@ def _honest_no_access(action: str, obs: str) -> str:
     low = (obs or "").lower()
     key = getattr(config, "COMPOSIO_API_KEY", "") or ""
     masked = (key[:6] + "…" + key[-4:]) if len(key) > 12 else ((key[:3] + "…") if key else "(vide)")
+    # Cause : l'APP elle-même refuse (token OAuth expiré ou scopes insuffisants).
+    # Reconnaissable au fait que l'erreur cite l'API de l'app (api.canva.com, api.github.com…).
+    head = (action or "").split("_", 1)[0].lower()
+    tk = head if head in _TOOLKITS else ""
+    if ("http_error" in low or "api." in low) and ("401" in low or "unauthorized" in low
+                                                   or "403" in low or "forbidden" in low):
+        nice = tk.capitalize() if tk else "l'application"
+        scope_hint = ""
+        if tk == "canva":
+            scope_hint = ("\n\n💡 Pour Canva, la connexion doit inclure les autorisations d'**écriture** "
+                          "(`design:content:write`) — une connexion en lecture seule renvoie exactement cette erreur.")
+        link, _dbg = _composio_connect_link(tk) if tk else (None, "")
+        reco = (f"\n\n👉 **Reconnecte {nice} en un clic :**\n{link}" if link else
+                f"\n\n👉 Sur Composio → **Toolkits → {nice}** : supprime la connexion puis **reconnecte-la** "
+                "en acceptant toutes les autorisations.")
+        return (
+            f"🔐 **{nice} a refusé l'accès** (erreur d'autorisation renvoyée par son API, pas par moi).\n\n"
+            f"Ton compte est bien relié, mais le **jeton d'accès est expiré ou trop limité**.{scope_hint}{reco}\n\n"
+            f"_Détail technique : {obs[:220]}_"
+        )
     # Cause : aucun compte connecté pour cette entity → on génère le lien OAuth direct
     if ("no connected account" in low or "connectedaccountnotfound" in low.replace("_", "")
             or "no active connection" in low):
