@@ -459,6 +459,7 @@ def _direct_app_prepare(message: str):
         slug = _detect_toolkit(message)
         if slug and slug not in ("googlecalendar", "gmail"):
             g = _generic_app_flow(message, slug)
+            _remember_user(message)   # pour comprendre un suivi vague au tour suivant
             return {"steps": g["steps"], "done_answer": g["done_answer"]}
         return None
     import json as _json
@@ -523,6 +524,7 @@ def _direct_app_run(message: str):
         slug = _detect_toolkit(message)
         if slug and slug not in ("googlecalendar", "gmail"):
             g = _generic_app_flow(message, slug)
+            _remember_user(message)   # pour comprendre un suivi vague au tour suivant
             return {"steps": g["steps"], "answer": g["done_answer"], "ok": True}
         return None
     import json as _json
@@ -672,32 +674,74 @@ def _composio_list_actions(slug: str):
     return out
 
 
+def _remember_user(message: str) -> None:
+    """Trace le message dans la mémoire (le chemin direct ne passe pas par run_agent)."""
+    try:
+        get_memory().remember(_PROFILE_ID, "user", message.strip()[:300])
+    except Exception:
+        pass
+
+
+def _recent_user_context(n: int = 4) -> str:
+    """Derniers messages de l'utilisateur — permet de comprendre un suivi vague
+    (« canva » seul après « crée-moi une slide »)."""
+    try:
+        recent = get_memory().recall_recent(_PROFILE_ID, n * 2) or []
+    except Exception:
+        return ""
+    users = [m.get("content", "") for m in recent if (m.get("role") == "user")]
+    return " | ".join(u[:120] for u in users[-n:])
+
+
+def _friendly_actions(actions: list, limit: int = 8) -> str:
+    """Traduit les noms d'actions techniques en capacités lisibles."""
+    out = []
+    for a in actions:
+        nm = a["name"]
+        desc = (a.get("desc") or "").strip()
+        label = nm.split("_", 1)[-1].replace("_", " ").lower()
+        out.append(f"• **{label}**" + (f" — {desc[:70]}" if desc else ""))
+        if len(out) >= limit:
+            break
+    return "\n".join(out)
+
+
 def _generic_app_flow(message: str, slug: str):
     """Exécute une action sur N'IMPORTE QUELLE app connectée :
     1) découvre les actions réelles de l'app, 2) le LLM choisit l'action + arguments,
     3) exécution, 4) mise en forme des DONNÉES RÉELLES (jamais d'invention)."""
-    import json as _json
     actions = _composio_list_actions(slug)
-    steps = [{"kind": "action", "tool": "connected_app", "label": slug}]
+    steps = [{"kind": "action", "tool": slug, "label": slug}]
     if not actions:
         return {"steps": steps, "done_answer": (
             f"🔌 Je n'ai pas pu lister les actions disponibles pour **{slug}**. "
             "Vérifie que l'app est bien connectée sur Composio (et que ta clé `ak_` a la permission "
             "`tool_execution`), puis redemande-moi.")}
-    catalog = "\n".join(f"- {a['name']}: {a['desc']}" for a in actions[:60])
+    catalog = "\n".join(f"- {a['name']}: {a['desc']}" for a in actions[:70])
+    ctx = _recent_user_context()
     pick = _llm_json(
-        "Tu choisis l'action d'API à exécuter. Réponds en JSON STRICT : "
-        '{"action":"NOM_EXACT_DE_LA_LISTE","arguments":{...}}. '
-        "Utilise EXACTEMENT un nom présent dans la liste. Les arguments doivent être ceux attendus "
-        "par cette action (devine les noms standards ; mets {} si aucun n'est nécessaire). "
-        'Si aucune action ne convient, renvoie {"action":""}.',
-        f"Demande de l'utilisateur : {message}\n\nACTIONS DISPONIBLES ({slug}) :\n{catalog}")
+        "Tu choisis l'action d'API à exécuter pour l'utilisateur. Réponds en JSON STRICT : "
+        '{"action":"NOM_EXACT_DE_LA_LISTE","arguments":{...}}.\n'
+        "RÈGLES :\n"
+        "- Choisis TOUJOURS l'action la PLUS PROCHE de l'intention, même si la formulation est vague "
+        "ou incomplète. Sers-toi du contexte de conversation pour comprendre la demande.\n"
+        "- Si l'utilisateur veut créer quelque chose, privilégie une action CREATE ; s'il veut "
+        "consulter/voir, privilégie LIST/GET/FETCH/SEARCH.\n"
+        "- Le nom doit être EXACTEMENT celui de la liste.\n"
+        "- Les arguments : devine les noms standards attendus ; {} si aucun n'est requis.\n"
+        '- Ne renvoie {"action":""} QUE si vraiment AUCUNE action de la liste ne peut convenir.',
+        f"Contexte récent de la conversation : {ctx}\n\n"
+        f"Demande actuelle : {message}\n\nACTIONS DISPONIBLES ({slug}) :\n{catalog}")
     action = (pick.get("action") or "").strip().upper()
+    valid = {a["name"] for a in actions}
+    if action and action not in valid:  # tolère un nom approchant
+        near = [n for n in valid if action in n or n in action]
+        action = near[0] if near else ""
     if not action:
-        noms = ", ".join(a["name"] for a in actions[:8])
         return {"steps": steps, "done_answer": (
-            f"Je n'ai pas trouvé l'action **{slug}** correspondante. Reformule en précisant ce que tu veux "
-            f"(ex. actions dispo : {noms}…).")}
+            f"Dis-m'en un peu plus sur ce que tu veux faire avec **{slug.capitalize()}** 🙂\n\n"
+            f"Voici ce que je peux y faire :\n{_friendly_actions(actions)}\n\n"
+            f"_Exemple : « crée un design {slug} pour un flyer » ou « liste mes {slug} »._")}
     args = pick.get("arguments")
     if not isinstance(args, dict):
         args = {}
