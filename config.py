@@ -38,6 +38,10 @@ class Config:
     # Voix par défaut : "Charlotte" (fr, chaleureuse). Remplaçable par n'importe quel voice_id ElevenLabs.
     ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "XB0fDUnXU5powFXDhCwa")
     ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_multilingual_v2")
+    # Briefing du matin : ville pour la météo + planification proactive (Telegram si configuré).
+    BRIEFING_CITY = os.getenv("BRIEFING_CITY", "Paris")
+    BRIEFING_ENABLED = os.getenv("BRIEFING_ENABLED", "false").lower() == "true"
+    BRIEFING_HOUR = int(os.getenv("BRIEFING_HOUR", "7"))  # heure locale d'envoi (0-23)
     XAI_MODEL = os.getenv("XAI_MODEL", "grok-beta")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     CEREBRAS_MODEL = os.getenv("CEREBRAS_MODEL", "llama-3.3-70b")

@@ -95,6 +95,10 @@ def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
                    'Exemple mails : connected_app command="GMAIL_FETCH_EMAILS".')
     elif factual and "search_web" in tools:
         tools.remove("search_web"); tools.insert(0, "search_web")
+    if factual:
+        system += (" AUTO-VÉRIFICATION : pour chaque affirmation factuelle (chiffre, date, fait), indique "
+                   "brièvement la source entre parenthèses (issue des résultats de recherche). Marque d'un ⚠️ "
+                   "toute affirmation que les outils n'ont pas confirmée. N'invente jamais de source.")
     return {"id": _PROFILE_ID, "name": name, "system_prompt": system,
             "tools": tools, "force_search": factual, "model": config.LLM_MODEL}
 
@@ -321,6 +325,9 @@ def _format_app_result(message: str, action: str, obs: str, is_write: bool = Fal
 def _direct_app_prepare(message: str):
     """Comme _direct_app_run mais SANS formater (pour le streaming). Renvoie un dict :
     {steps, done_answer} si terminé (échec → message honnête), ou {steps, action, obs, is_write}."""
+    cx = _complex_app_flow(message)
+    if cx is not None:
+        return {"steps": cx["steps"], "done_answer": cx["done_answer"]}
     action, args = _resolve_app_action(message)
     if not action:
         return None
@@ -378,6 +385,9 @@ def _composio_connect_link(app_slug: str):
 
 def _direct_app_run(message: str):
     """Chemin déterministe agenda/mail. Renvoie {'steps','answer','ok'} ou None si non concerné."""
+    cx = _complex_app_flow(message)
+    if cx is not None:
+        return {"steps": cx["steps"], "answer": cx["done_answer"], "ok": True}
     action, args = _resolve_app_action(message)
     if not action:
         return None
@@ -394,6 +404,124 @@ def _direct_app_run(message: str):
         return {"steps": steps, "answer": _honest_no_access(action, obs), "ok": False}
     is_write = any(k in action for k in ("CREATE", "QUICK_ADD", "UPDATE", "DELETE", "PATCH", "SEND"))
     return {"steps": steps, "answer": _format_app_result(message, action, obs, is_write), "ok": True}
+
+
+# ── FLUX MULTI-ÉTAPES (Gmail envoi, agenda supprimer, créneau libre) ────────────
+def _llm_json(system: str, user: str, temperature: float = 0.1) -> dict:
+    """Appelle le LLM et parse un objet JSON (robuste)."""
+    from llm.client import chat
+    import re, json as _json
+    try:
+        out = chat([{"role": "system", "content": system}, {"role": "user", "content": user}], temperature=temperature)
+    except Exception:
+        return {}
+    m = re.search(r"\{.*\}", out, re.DOTALL)
+    if not m:
+        return {}
+    for cand in (m.group(0), m.group(0).replace("'", '"')):
+        try:
+            return _json.loads(cand)
+        except Exception:
+            continue
+    return {}
+
+
+def _tool(name_cmd: str, args: dict) -> str:
+    import json as _json
+    from plugins import get_loader
+    from agent.self_heal import safe_tool_call
+    return safe_tool_call(get_loader(), "connected_app",
+                          {"command": name_cmd, "arguments": _json.dumps(args)})
+
+
+def _gmail_send_flow(message: str):
+    ex = _llm_json(
+        "Extrais du message un email à envoyer. Réponds en JSON STRICT : "
+        '{"to":"email ou nom","subject":"...","body":"..."}. '
+        "Si le corps n'est pas explicite, rédige-le poliment en français d'après l'intention.",
+        message)
+    to = (ex.get("to") or "").strip()
+    subject = (ex.get("subject") or "").strip() or "(sans objet)"
+    body = (ex.get("body") or "").strip()
+    steps = [{"kind": "action", "tool": "connected_app", "label": "GMAIL_SEND_EMAIL"}]
+    if not body:
+        return {"steps": steps, "done_answer": "Je n'ai pas saisi le contenu du mail. Reformule : « envoie un mail à x@y.com pour dire que … »."}
+    if "@" not in to and to:
+        fetch = _tool("GMAIL_FETCH_EMAILS", {"maxResults": 20, "query": "in:anywhere"})
+        addr = _llm_json('À partir de ces mails (JSON réel), donne l\'adresse email de la personne. '
+                         'JSON STRICT {"email":"..."} ou {"email":""} si absente.',
+                         f"Personne: {to}\n\nMAILS:\n{fetch[:2500]}").get("email", "")
+        if addr and "@" in addr:
+            to = addr
+    if "@" not in to:
+        return {"steps": steps, "done_answer": f"Je n'ai pas l'adresse email de « {to or '?'} ». Donne-la-moi (ex : prenom@domaine.com) et j'envoie tout de suite."}
+    obs = _tool("GMAIL_SEND_EMAIL", {"recipient_email": to, "subject": subject, "body": body})
+    steps.append({"kind": "obs", "tool": "connected_app", "text": str(obs)[:160]})
+    if _looks_like_failure(obs):
+        return {"steps": steps, "done_answer": _honest_no_access("GMAIL_SEND_EMAIL", obs)}
+    return {"steps": steps, "done_answer": f"✅ Mail envoyé à **{to}**.\n\n**Objet :** {subject}\n\n{body[:500]}"}
+
+
+def _calendar_delete_flow(message: str):
+    m = message.lower()
+    period = message if any(w in m for w in ("semaine", "mois", "demain", "aujourd", "prochaine")) else "ce mois"
+    tmin, tmax, _ = _time_bounds(period)
+    lst = _tool("GOOGLECALENDAR_EVENTS_LIST", {"calendarId": "primary", "timeMin": tmin, "timeMax": tmax,
+                                               "maxResults": 30, "singleEvents": True, "orderBy": "startTime"})
+    steps = [{"kind": "action", "tool": "connected_app", "label": "GOOGLECALENDAR_EVENTS_LIST"},
+             {"kind": "obs", "tool": "connected_app", "text": str(lst)[:160]}]
+    if _looks_like_failure(lst):
+        return {"steps": steps, "done_answer": _honest_no_access("GOOGLECALENDAR_EVENTS_LIST", lst)}
+    pick = _llm_json("À partir de la liste d'événements (JSON réel), identifie celui à SUPPRIMER. "
+                     'JSON STRICT {"event_id":"...","title":"..."} ou {"event_id":""} si rien ne correspond.',
+                     f"Demande: {message}\n\nÉVÉNEMENTS:\n{lst[:2600]}")
+    eid = (pick.get("event_id") or "").strip()
+    if not eid:
+        return {"steps": steps, "done_answer": "Je n'ai pas trouvé l'événement à supprimer. Précise son intitulé ou sa date."}
+    obs = _tool("GOOGLECALENDAR_DELETE_EVENT", {"calendar_id": "primary", "event_id": eid})
+    steps.append({"kind": "obs", "tool": "connected_app", "text": str(obs)[:160]})
+    if _looks_like_failure(obs):
+        return {"steps": steps, "done_answer": _honest_no_access("GOOGLECALENDAR_DELETE_EVENT", obs)}
+    return {"steps": steps, "done_answer": f"✅ Événement supprimé : **{pick.get('title', '(sans titre)')}**."}
+
+
+def _free_slot_flow(message: str):
+    tmin, tmax, label = _time_bounds(message)
+    lst = _tool("GOOGLECALENDAR_EVENTS_LIST", {"calendarId": "primary", "timeMin": tmin, "timeMax": tmax,
+                                               "maxResults": 40, "singleEvents": True, "orderBy": "startTime"})
+    steps = [{"kind": "action", "tool": "connected_app", "label": "GOOGLECALENDAR_EVENTS_LIST"},
+             {"kind": "obs", "tool": "connected_app", "text": str(lst)[:160]}]
+    if _looks_like_failure(lst):
+        return {"steps": steps, "done_answer": _honest_no_access("GOOGLECALENDAR_EVENTS_LIST", lst)}
+    ans = _format_app_result(
+        f"Donne mes créneaux LIBRES pour {label} (plage 8h–20h), en te basant UNIQUEMENT sur ces "
+        f"événements réels. Liste les plages horaires libres, jour par jour.",
+        "GOOGLECALENDAR_EVENTS_LIST", lst, is_write=False)
+    return {"steps": steps, "done_answer": ans}
+
+
+def _complex_app_flow(message: str):
+    """Détecte et exécute les actions multi-étapes. Renvoie {steps, done_answer} ou None."""
+    m = message.lower()
+    mail_verb = any(v in m for v in ("envoie", "envoyer", "écris", "ecris", "rédige", "redige", "réponds", "reponds"))
+    if (("mail" in m or "email" in m or "e-mail" in m or "courriel" in m) and mail_verb) \
+            or m.startswith("réponds à") or m.startswith("reponds a"):
+        return _gmail_send_flow(message)
+    cal_words = ("agenda", "rdv", "rendez-vous", "rendez vous", "réunion", "reunion",
+                 "événement", "evenement", "calendrier", "meeting")
+    if any(v in m for v in ("supprime", "annule", "efface", "retire")) and any(c in m for c in cal_words):
+        return _calendar_delete_flow(message)
+    if any(w in m for w in ("libre", "créneau", "creneau", "disponible", "dispo", "quand suis-je")) \
+            and any(c in m for c in ("agenda", "semaine", "journée", "journee", "aujourd", "demain", "créneau", "creneau", "rdv", "réunion")):
+        return _free_slot_flow(message)
+    return None
+
+
+def _is_briefing(message: str) -> bool:
+    m = message.lower()
+    return ("briefing" in m or "brief du matin" in m or "quoi de neuf ce matin" in m
+            or "résumé du matin" in m or "resume du matin" in m
+            or ("résume" in m and "journée" in m) or ("resume" in m and "journee" in m))
 
 
 def _check_key(provided: str):
@@ -414,8 +542,11 @@ async def _ask_agent(message: str) -> str:
     try:
         if _is_smalltalk(message):
             return _smalltalk_reply(message)
-        # Agenda / mails → chemin déterministe (données réelles ou aveu honnête, jamais d'invention)
         loop = asyncio.get_running_loop()
+        if _is_briefing(message):
+            from agent.briefing import build_briefing
+            return await loop.run_in_executor(None, build_briefing)
+        # Agenda / mails → chemin déterministe (données réelles ou aveu honnête, jamais d'invention)
         direct = await loop.run_in_executor(None, _direct_app_run, message)
         if direct is not None:
             return direct["answer"]
@@ -490,6 +621,13 @@ async def ask_stream(q: str = "", key: str = ""):
                     yield sse({"type": "token", "t": tok})
                 yield sse({"type": "answer", "text": yield_acc[0], "final": True})
                 yield sse({"type": "done"}); return
+            # 1b) Briefing du matin (agenda + mails + météo + actu)
+            if _is_briefing(message):
+                yield sse({"type": "step", "kind": "action", "tool": "connected_app", "q": "briefing du matin"})
+                from agent.briefing import build_briefing
+                txt = await loop.run_in_executor(None, build_briefing)
+                yield sse({"type": "answer", "text": txt})
+                yield sse({"type": "done"}); return
             # 2) Agenda / mails → chemin déterministe (aucune invention), réponse streamée
             direct = await loop.run_in_executor(None, _direct_app_prepare, message)
             if direct is not None:
@@ -528,6 +666,16 @@ async def ask_stream(q: str = "", key: str = ""):
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.get("/briefing")
+async def briefing_ep(key: str = ""):
+    """Briefing du matin à la demande (agenda + mails + météo + actu)."""
+    _check_key(key)
+    loop = asyncio.get_running_loop()
+    from agent.briefing import build_briefing
+    txt = await loop.run_in_executor(None, build_briefing)
+    return {"briefing": txt}
 
 
 @router.get("/tts/status")

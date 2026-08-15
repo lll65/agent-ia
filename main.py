@@ -50,6 +50,12 @@ async def lifespan(app: FastAPI):
         bot_tasks.append(asyncio.create_task(run_discord_bot()))
         logger.info("Bot Discord démarré.")
 
+    # Briefing du matin proactif (agenda + mails + météo + actu) via Telegram
+    if config.BRIEFING_ENABLED:
+        from agent.briefing import morning_loop
+        bot_tasks.append(asyncio.create_task(morning_loop()))
+        logger.info(f"Briefing du matin activé (envoi à {config.BRIEFING_HOUR}h via Telegram).")
+
     # PEA Watcher — surveillance autonome + alertes Telegram
     if config.WATCHER_ENABLED:
         if config.TELEGRAM_TOKEN:
