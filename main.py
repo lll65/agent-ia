@@ -135,6 +135,13 @@ def nova_ui():
     return FileResponse(str(Path(__file__).parent / "ui" / "nova.html"))
 
 
+@app.get("/nova/brain", include_in_schema=False)
+def nova_brain():
+    """Constellation : l'escouade de sous-agents Nova et leur activité en temps réel."""
+    from fastapi.responses import FileResponse
+    return FileResponse(str(Path(__file__).parent / "ui" / "brain.html"))
+
+
 @app.get("/nova/manifest.webmanifest", include_in_schema=False)
 def nova_manifest():
     """Manifest PWA : rend Nova installable sur le téléphone (icône plein écran)."""
