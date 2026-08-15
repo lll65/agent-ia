@@ -46,7 +46,7 @@ class ComposioPlugin(Plugin):
     }
 
     def run(self, command: str = "", arguments="", action: str = "",
-            name: str = "", tool: str = "", app: str = "", **kw) -> str:
+            name: str = "", tool: str = "", app: str = "", user_id: str = "", **kw) -> str:
         from config import config
         # Ultra-tolérant : récupère le nom d'action dans n'importe quelle clé raisonnable
         command = (command or action or name or tool or app or kw.get("query") or "").strip()
@@ -63,7 +63,8 @@ class ComposioPlugin(Plugin):
 
         import requests
         args = _to_dict(arguments)
-        user = getattr(config, "COMPOSIO_USER_ID", "default") or "default"
+        # Identité : celle résolue par l'appelant (compte réellement connecté), sinon la config.
+        user = (user_id or "").strip() or getattr(config, "COMPOSIO_USER_ID", "default") or "default"
         # En-tête selon le TYPE de clé :
         #   ck_ → clé "consumer/MCP"  → en-tête x-consumer-api-key
         #   ak_ → clé de projet dev   → en-tête x-api-key
