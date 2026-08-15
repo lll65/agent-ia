@@ -31,12 +31,35 @@ _SMALLTALK = {
 }
 
 
+# Faits personnels : l'utilisateur se présente / donne une info sur lui.
+# → réponse naturelle courte + mémorisation. JAMAIS d'analyse ni de rapport.
+_PERSONAL_RE = (
+    r"\bj'?ai\s+\d{1,3}\s*ans?\b", r"\bje\s+m'?appelle\b", r"\bmon\s+(pr[ée]nom|nom)\s+(c'?est|est)\b",
+    r"\bj'?habite\b", r"\bje\s+vis\s+[àa]\b", r"\bje\s+suis\s+(un|une|en|au|à|a|étudiant|etudiant|lycéen|lyceen|développeur|developpeur)\b",
+    r"\bje\s+travaille\b", r"\bj'?aime\b", r"\bje\s+pr[ée]f[èe]re\b", r"\bje\s+d[ée]teste\b",
+    r"\bmon\s+(anniversaire|objectif|projet|but)\b", r"\bje\s+fais\s+(du|de la|des)\b",
+)
+
+
+def _is_personal_fact(message: str) -> bool:
+    import re
+    m = message.strip().lower()
+    if len(m.split()) > 25:
+        return False
+    if "?" in m:
+        return False  # une question n'est pas une simple confidence
+    return any(re.search(p, m) for p in _PERSONAL_RE)
+
+
 def _is_smalltalk(message: str) -> bool:
-    """True si le message est un simple bonjour / remerciement / test court."""
+    """True si le message est un simple bonjour / remerciement / test court,
+    ou une info personnelle que l'utilisateur partage (pas une demande de travail)."""
     m = message.strip().lower().rstrip("!?. ")
     if not m:
         return False
     if m in _SMALLTALK:
+        return True
+    if _is_personal_fact(message):
         return True
     # Court (≤ 4 mots) et commence par une salutation → chitchat
     words = m.split()
@@ -49,18 +72,62 @@ def _is_smalltalk(message: str) -> bool:
 def _smalltalk_messages(message: str) -> list:
     return [
         {"role": "system", "content": (
-            "Tu es Nova, l'assistant personnel de l'utilisateur. Réponds en français, "
-            "de façon chaleureuse, brève et naturelle. Ne parle JAMAIS de bourse, "
-            "d'actions, de crypto ou de finance sauf si on te le demande explicitement. "
-            "Propose simplement ton aide.")},
+            "Tu es Nova, l'assistante personnelle de l'utilisateur. Réponds en français, "
+            "de façon chaleureuse, BRÈVE (1 à 3 phrases maximum) et naturelle, comme un ami.\n"
+            "INTERDICTIONS ABSOLUES :\n"
+            "- Ne parle JAMAIS de bourse, actions, ETF, crypto, marchés, investissement, épargne "
+            "ou placements. Même si l'utilisateur mentionne son âge ou de l'argent.\n"
+            "- N'invente JAMAIS de chiffre, de cours, d'indice ou de statistique.\n"
+            "- Pas de titres, pas de listes à puces, pas de plan d'action, pas de rapport.\n"
+            "Si l'utilisateur te donne une info sur lui (âge, prénom, ville, goûts), accuse simplement "
+            "réception avec chaleur et dis que tu le retiens. Tu peux poser UNE question courte ou "
+            "proposer ton aide en une phrase.")},
         {"role": "user", "content": message},
     ]
+
+
+def _has_invented_market_data(text: str) -> bool:
+    """Filet de sécurité : dans le chemin conversationnel, AUCUN outil n'est appelé.
+    Donc tout cours/indice/prix cité y est forcément inventé → on le détecte."""
+    import re
+    t = (text or "").lower()
+    pats = (r"s&p\s*500", r"cac\s*40", r"nasdaq", r"dow jones", r"bitcoin", r"\bbtc\b",
+            r"\beth\b", r"ethereum", r"\bpts\b", r"points?\b.{0,12}\d{3,}")
+    hit = any(re.search(p, t) for p in pats)
+    return hit and bool(re.search(r"\d[\d\s.,]{2,}", t))
+
+
+def _remember_fact(message: str) -> None:
+    """Mémorise une info personnelle donnée par l'utilisateur (non fatal)."""
+    if not _is_personal_fact(message):
+        return
+    try:
+        get_memory().remember(_PROFILE_ID, "user", message.strip()[:200])
+    except Exception:
+        pass
 
 
 def _smalltalk_reply(message: str) -> str:
     """Réponse conversationnelle directe via le LLM, sans aucun outil."""
     from llm.client import chat
-    return chat(_smalltalk_messages(message), temperature=0.6)
+    _remember_fact(message)
+    out = chat(_smalltalk_messages(message), temperature=0.6)
+    if _has_invented_market_data(out) and not _finance_intent(message):
+        # Dérive détectée (chiffres de marché non demandés et non sourcés) → on régénère.
+        msgs = _smalltalk_messages(message) + [
+            {"role": "assistant", "content": out},
+            {"role": "user", "content": (
+                "Ta réponse contient des chiffres de marché que personne ne t'a demandés et que "
+                "tu ne peux pas connaître (aucun outil). Réponds à nouveau : 1 à 3 phrases, "
+                "chaleureuses, SANS aucun chiffre, SANS parler de bourse/crypto/investissement.")},
+        ]
+        try:
+            out2 = chat(msgs, temperature=0.3)
+            if out2 and not _has_invented_market_data(out2):
+                return out2
+        except Exception:
+            pass
+    return out
 
 
 # Intention "app connectée" → agenda/mails/calendar/slack/notion : on route vers
@@ -76,17 +143,40 @@ def _app_intent(message: str) -> bool:
     return any(h in m for h in _APP_HINTS)
 
 
+# Outils finance : RETIRÉS de la boîte à outils sauf demande explicite de finance.
+# (Les exposer en permanence poussait le modèle à parler bourse/crypto à tout propos.)
+_FINANCE_TOOLS = {"analyze_stock", "market_dashboard", "compare_stocks", "get_market_news",
+                  "crypto_market", "fear_greed", "currency_rates"}
+_FINANCE_WORDS = ("bourse", "action ", "actions", "titre", "etf", "crypto", "bitcoin", "btc",
+                  "ethereum", "marché", "marchés", "cac", "nasdaq", "s&p", "trading", "trader",
+                  "investir", "investissement", "placement", "portefeuille", "pea", "dividende",
+                  "cours de", "valneva", "ticker", "capitalisation", "boursier")
+
+
+def _finance_intent(message: str) -> bool:
+    m = message.lower()
+    return any(w in m for w in _FINANCE_WORDS)
+
+
 def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
     """Prépare la config de l'agent en priorisant le bon outil selon l'intention :
     - Intention app (agenda/mail/calendar/slack/notion) → connected_app en 1er, PAS de web.
-    - Sinon question factuelle → recherche web forcée en 1er."""
+    - Sinon question factuelle → recherche web forcée en 1er.
+    - Outils finance masqués sauf demande explicite (anti-dérive bourse)."""
     tools = list(get_loader().list_all().keys())
     app = _app_intent(message)
+    fin = _finance_intent(message)
+    if not fin:
+        tools = [t for t in tools if t not in _FINANCE_TOOLS]
     factual = (not app) and any(h in message.lower() for h in _FACTUAL_HINTS)
-    system = (f"Tu es {name}, l'assistant personnel de l'utilisateur. Français, concis et actionnable. "
+    system = (f"Tu es {name}, l'assistante personnelle de l'utilisateur. Français, chaleureuse, "
+              "concise. Réponds UNIQUEMENT à ce qui est demandé, avec une longueur proportionnée "
+              "(remarque anodine → 1-2 phrases). "
               "Jamais de source inventée : ne cite une source que si un outil te l'a réellement fournie. "
-              "N'utilise JAMAIS d'outil crypto/finance (crypto_market, fear_greed, etc.) sauf si la "
-              "question porte EXPLICITEMENT sur la bourse, la crypto ou un actif financier.")
+              "N'invente JAMAIS un cours, un indice, un prix ou une statistique.")
+    if not fin:
+        system += (" INTERDIT : ne parle pas de bourse, actions, crypto, marchés, investissement, "
+                   "épargne ou placements — l'utilisateur ne l'a pas demandé.")
     if app and "connected_app" in tools:
         tools.remove("connected_app"); tools.insert(0, "connected_app")
         system += (" Pour l'agenda, le calendrier, les mails, Slack ou Notion, utilise TOUJOURS l'outil "
@@ -615,8 +705,9 @@ async def ask_stream(q: str = "", key: str = ""):
 
         yield_acc = [""]
         try:
-            # 1) Chitchat → streamé directement
+            # 1) Chitchat / info personnelle → streamé directement (aucun outil)
             if _is_smalltalk(message):
+                _remember_fact(message)
                 async for tok in _stream_llm(_smalltalk_messages(message), 0.6):
                     yield sse({"type": "token", "t": tok})
                 yield sse({"type": "answer", "text": yield_acc[0], "final": True})

@@ -43,10 +43,15 @@ FINAL: [réponse complète, structurée, actionnelle]
    N'exécute PAS de code Python pour "inventer" des données qui devraient venir du web.
 3. ANTI-HALLUCINATION : ne cite JAMAIS une source, une date ou un chiffre précis sans qu'un OUTIL te l'ait
    réellement renvoyé. Sans appel d'outil correspondant → écris "estimation non vérifiée".
-4. FORMAT ADAPTATIF : n'applique le format financier (entrée/TP1/TP2/stop-loss/RR) QUE si la question porte
-   réellement sur l'analyse d'un actif (action, ETF, crypto). Pour tout autre sujet, structure selon le sujet.
-5. FINAL directement exploitable — structuré, plan d'action inclus. Jamais "je ne peux pas" sans alternative.
-6. DONNÉES PERSONNELLES (agenda, événements, mails, contacts, fichiers, messages) : elles ne peuvent venir
+4. SUJET RESPECTÉ : ne parle de bourse, actions, ETF, crypto, marchés, investissement ou épargne QUE si
+   l'utilisateur le demande explicitement. N'utilise le format financier (entrée/TP/stop-loss) que pour
+   l'analyse d'un actif précis réellement demandée. Ne change jamais de sujet de toi-même.
+5. LONGUEUR PROPORTIONNELLE : remarque simple ou question courte → réponse courte (1-3 phrases), sans titres
+   ni plan d'action. Réserve les réponses structurées aux vraies demandes complexes.
+6. FINAL directement exploitable. Jamais "je ne peux pas" sans alternative.
+7. CHIFFRES DE MARCHÉ : un cours, un indice (CAC 40, S&P 500), un prix de crypto ou une statistique ne
+   peuvent JAMAIS sortir de ta mémoire. Sans OBSERVATION d'outil correspondante, tu n'en cites aucun.
+8. DONNÉES PERSONNELLES (agenda, événements, mails, contacts, fichiers, messages) : elles ne peuvent venir
    QUE d'un outil (connected_app). Si aucun OUTIL ne te les a réellement renvoyées, ou si l'outil a échoué,
    tu DOIS le dire clairement ("je n'ai pas pu accéder à…"). Inventer un agenda, un mail ou un rendez-vous
    est une faute GRAVE et strictement interdite — même si le résultat semble plausible.
@@ -119,17 +124,18 @@ _STUB_KEYWORDS = (
     "attentes les résultats", "attends les résultats",
 )
 
-def _is_stub_answer(text: str, tool_calls_made: int) -> bool:
-    """Détecte une réponse paresseuse : le LLM répond sans avoir utilisé ses outils."""
-    if tool_calls_made > 0:
+def _is_stub_answer(text: str, tool_calls_made: int, needs_tools: bool = False) -> bool:
+    """Détecte une réponse VRAIMENT paresseuse : le LLM se défausse alors qu'un outil était requis.
+
+    ⚠️ Historique : l'ancienne heuristique « réponse < 400 caractères sans chiffre = stub »
+    forçait un appel d'outil sur TOUTE réponse courte, ce qui poussait le modèle à produire
+    des pavés remplis de chiffres… inventés. Supprimée : une réponse courte est souvent
+    la bonne réponse (« salut », « ok », une remarque personnelle).
+    """
+    if tool_calls_made > 0 or not needs_tools:
         return False
     t = text.lower()
-    if any(kw in t for kw in _STUB_KEYWORDS):
-        return True
-    # Réponse trop courte sans aucun chiffre = probablement générique
-    if len(text.strip()) < 400 and not any(c.isdigit() for c in text):
-        return True
-    return False
+    return any(kw in t for kw in _STUB_KEYWORDS)
 
 
 async def run_agent(
@@ -177,14 +183,15 @@ async def run_agent(
     if context:
         messages.append({"role": "assistant", "content": f"[Contexte mémoriel]\n{context}"})
 
-    # Injecter le rappel outil dans le message utilisateur si l'agent a des outils requis
+    # Rappel outil UNIQUEMENT si la question réclame des données réelles (factuel/temps réel).
+    # Auparavant ce rappel était injecté sur CHAQUE message → l'agent dégainait un outil même
+    # pour « j'ai 17 ans », ce qui produisait des rapports hors-sujet.
     required_tools = agent_config.get("tools") or []
     task_msg = task
-    if required_tools:
+    if required_tools and agent_config.get("force_search"):
         task_msg += (
-            f"\n\n[INSTRUCTION SYSTÈME: Tu as accès à {len(required_tools)} outil(s). "
-            f"Commence TOUJOURS par utiliser tes outils pour obtenir des données réelles "
-            f"avant de répondre. Premier outil disponible: {required_tools[0]}]"
+            f"\n\n[INSTRUCTION SYSTÈME: question factuelle → utilise tes outils pour obtenir des "
+            f"données réelles avant de répondre. Outil suggéré : {required_tools[0]}]"
         )
     messages.append({"role": "user", "content": task_msg})
     try:
@@ -195,6 +202,8 @@ async def run_agent(
     steps = []
     tool_calls_made = 0
     stub_retries = 0
+    # Un outil n'est "requis" que si la question est factuelle/temps réel (force_search).
+    needs_tools = bool(agent_config.get("force_search"))
 
     # Forçage déterministe de search_web sur les questions factuelles (idem run_agent_stream)
     if agent_config.get("force_search") and "search_web" in required_tools:
@@ -227,18 +236,17 @@ async def run_agent(
         # ── Détection réponse paresseuse (aucun outil appelé, réponse vague) ──
         response_text = final or llm_out
         if (final or (not action)) and required_tools and stub_retries < MAX_STUB_RETRIES:
-            if _is_stub_answer(response_text, tool_calls_made):
+            if _is_stub_answer(response_text, tool_calls_made, needs_tools):
                 stub_retries += 1
                 first_tool = required_tools[0]
                 logger.warning(f"[core] Réponse stub iter {iteration+1} — forçage outil '{first_tool}' (retry {stub_retries}/{MAX_STUB_RETRIES})")
                 messages.append({"role": "assistant", "content": llm_out})
                 messages.append({"role": "user", "content": (
-                    f"⛔ ERREUR : Tu as répondu sans utiliser tes outils. C'est interdit.\n"
-                    f"Tu DOIS d'abord appeler '{first_tool}' pour avoir des données RÉELLES.\n"
-                    f"Réponds MAINTENANT en utilisant ce format exact:\n"
-                    f"THOUGHT: Je vais récupérer les données réelles avec {first_tool}\n"
+                    f"Tu t'es défaussé alors qu'un outil pouvait répondre.\n"
+                    f"Utilise '{first_tool}' avec des paramètres adaptés à la question :\n"
+                    f"THOUGHT: je récupère les données réelles avec {first_tool}\n"
                     f"ACTION: {first_tool}\n"
-                    f"PARAMS: {{\"ticker\": \"...\"}}"
+                    f"PARAMS: {{...}}"
                 )})
                 # Ne pas incrémenter iteration — rejouer sans compter comme une itération normale
                 continue
@@ -259,8 +267,8 @@ async def run_agent(
             messages.append({"role": "assistant", "content": llm_out})
             messages.append({"role": "user", "content": (
                 f"OBSERVATION [{action}]: {observation[:1200]}\n\n"
-                f"Continue ton analyse. Si tu as toutes les données nécessaires, "
-                f"donne ta réponse FINAL complète et chiffrée:"
+                f"Continue. Si tu as les informations nécessaires, donne ta réponse FINAL "
+                f"— en te basant UNIQUEMENT sur les observations réelles ci-dessus :"
             )})
         else:
             steps.append(step)
@@ -331,16 +339,17 @@ async def run_agent_stream(
 
     required_tools = agent_config.get("tools") or []
     task_msg = task
-    if required_tools:
+    if required_tools and agent_config.get("force_search"):
         task_msg += (
-            f"\n\n[INSTRUCTION SYSTÈME: Tu as accès à {len(required_tools)} outil(s). "
-            f"Commence TOUJOURS par utiliser tes outils. Premier outil: {required_tools[0]}]"
+            f"\n\n[INSTRUCTION SYSTÈME: question factuelle → utilise tes outils pour des données "
+            f"réelles avant de répondre. Outil suggéré : {required_tools[0]}]"
         )
     messages.append({"role": "user", "content": task_msg})
     mem.remember(agent_id, "user", task)
 
     tool_calls_made = 0
     stub_retries    = 0
+    needs_tools     = bool(agent_config.get("force_search"))
 
     # ── FORÇAGE DÉTERMINISTE DE search_web pour les questions factuelles ──────
     # On exécute une VRAIE recherche DuckDuckGo AVANT le 1er appel LLM et on injecte
@@ -376,13 +385,13 @@ async def run_agent_stream(
         # Stub detection
         response_text = final or llm_out
         if (final or not action) and required_tools and stub_retries < 2:
-            if _is_stub_answer(response_text, tool_calls_made):
+            if _is_stub_answer(response_text, tool_calls_made, needs_tools):
                 stub_retries += 1
                 first_tool = required_tools[0]
                 messages.append({"role": "assistant", "content": llm_out})
                 messages.append({"role": "user", "content": (
-                    f"⛔ Tu as répondu sans outil. Utilise '{first_tool}' maintenant.\n"
-                    f"THOUGHT: Je vais récupérer les données réelles\nACTION: {first_tool}\nPARAMS: {{}}"
+                    f"Un outil peut répondre. Utilise '{first_tool}' maintenant.\n"
+                    f"THOUGHT: je récupère les données réelles\nACTION: {first_tool}\nPARAMS: {{}}"
                 )})
                 continue
 
