@@ -224,6 +224,16 @@ def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
         system += (" AUTO-VÉRIFICATION : pour chaque affirmation factuelle (chiffre, date, fait), indique "
                    "brièvement la source entre parenthèses (issue des résultats de recherche). Marque d'un ⚠️ "
                    "toute affirmation que les outils n'ont pas confirmée. N'invente jamais de source.")
+    # Spécialiste mobilisé → constellation + ton adapté au domaine
+    try:
+        from agent.squad import pick_agent, get_agent, record
+        aid = pick_agent(message)
+        if aid != "nova":
+            spec = get_agent(aid)
+            record(aid, "", message[:50])
+            system += f" Tu mobilises ton spécialiste **{spec['name']}** ({spec['desc']})."
+    except Exception:
+        pass
     return {"id": _PROFILE_ID, "name": name, "system_prompt": system,
             "tools": tools, "force_search": factual, "model": config.LLM_MODEL}
 
@@ -630,6 +640,18 @@ def _toolkit_user_id(slug: str) -> str:
     return uid
 
 
+def _agent_for_slug(slug: str) -> str:
+    """Sous-agent responsable d'une app (pour la constellation)."""
+    try:
+        from agent.squad import get_squad
+        for a in get_squad():
+            if slug in (a.get("apps") or []):
+                return a["id"]
+    except Exception:
+        pass
+    return "nova"
+
+
 def _tool(name_cmd: str, args: dict, slug: str = "") -> str:
     """Exécute une action Composio sous la BONNE identité (résolue automatiquement)."""
     import json as _json
@@ -638,6 +660,11 @@ def _tool(name_cmd: str, args: dict, slug: str = "") -> str:
     if not slug:  # déduit l'app depuis le préfixe de l'action (ex. CANVA_CREATE… → canva)
         head = (name_cmd or "").split("_", 1)[0].lower()
         slug = head if head in _TOOLKITS else ""
+    try:
+        from agent.squad import record
+        record(_agent_for_slug(slug), slug, name_cmd)
+    except Exception:
+        pass
     params = {"command": name_cmd, "arguments": _json.dumps(args)}
     uid = _toolkit_user_id(slug)
     if uid:
@@ -1256,6 +1283,22 @@ async def upload(request: Request):
     except Exception:
         pass
     return {"answer": answer, "file": safe}
+
+
+@router.get("/activity")
+async def activity():
+    """État de l'escouade + activité temps réel (alimente la constellation /nova/brain)."""
+    from agent.squad import snapshot
+    snap = snapshot()
+    # Marque les apps réellement connectées (pour les afficher allumées)
+    try:
+        connected = {s for s, _u, _st in _connected_accounts() if s}
+    except Exception:
+        connected = set()
+    for a in snap["squad"]:
+        a["connected"] = [x for x in (a.get("apps") or []) if x in connected]
+    snap["connected_apps"] = sorted(connected)
+    return snap
 
 
 @router.get("/apps")
