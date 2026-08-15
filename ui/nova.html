@@ -425,11 +425,18 @@ const ICON={search:"🔍",web:"🔍",mail:"📧",gmail:"📧",calendar:"📅",ag
 function iconFor(kind,tool){ const k=(tool||"").toLowerCase(); for(const key in ICON) if(k.includes(key)) return ICON[key]; return ICON[kind]||"⚙️"; }
 
 /* ═══ STREAMING (SSE) ═══ */
-function stepLabel(d){ const t=(d.tool||"").toLowerCase();
+const APP_LABEL={googlecalendar:"ton agenda",calendar:"ton agenda",gmail:"tes mails",linear:"Linear",
+  canva:"Canva",notion:"Notion",slack:"Slack",github:"GitHub",googledrive:"ton Drive",
+  googlesheets:"tes feuilles",googledocs:"tes documents",trello:"Trello",spotify:"Spotify",
+  youtube:"YouTube",whatsapp:"WhatsApp",discord:"Discord",twitter:"X",hubspot:"HubSpot",
+  airtable:"Airtable",asana:"Asana",jira:"Jira"};
+function stepLabel(d){ const t=(d.tool||"").toLowerCase(), q=(d.q||"").toLowerCase();
   if(d.kind==="thought") return "Nova réfléchit…";
   if(t.includes("search")||t.includes("web")) return "Recherche sur le web…";
-  if(t.includes("calendar")||t.includes("agenda")||t.includes("connected")) return "Consultation de ton agenda / tes apps…";
-  if(t.includes("mail")||t.includes("gmail")) return "Lecture de tes mails…";
+  if(t.includes("mail")||t.includes("gmail")||q.includes("gmail")) return "Lecture de tes mails…";
+  if(t.includes("calendar")||t.includes("agenda")||q.includes("calendar")) return "Consultation de ton agenda…";
+  for(const k in APP_LABEL){ if(t.includes(k)||q.includes(k)) return "Connexion à "+APP_LABEL[k]+"…"; }
+  if(t.includes("connected")) return "Connexion à ton app…";
   if(d.kind==="obs") return "Analyse des résultats…";
   return (d.tool? d.tool : "Traitement")+"…"; }
 function thinkHTML(txt,icon){ return '<span class="think"><span class="dot"></span>'+(icon?icon+" ":"")+esc(txt)+'<span class="cur">▍</span></span>'; }
