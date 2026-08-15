@@ -104,14 +104,20 @@ class MemoryManager:
                     mem_text = "\n".join(f"- {r['text'][:250]}" for r in unique)
                     parts.append(f"[SOUVENIRS PERTINENTS]\n{mem_text}")
 
-        # Historique récent
+        # Historique récent.
+        # ⚠️ Les anciennes réponses de l'agent sont TRONQUÉES court : de longues analyses passées
+        # (ex. finance) réinjectées en entier poussaient le modèle à rejouer le même sujet/format.
         recent = self.recall_recent(agent_id, recent_limit)
         if recent:
             history_text = "\n".join(
-                f"{m['role'].upper()}: {m['content'][:400]}"
+                f"{m['role'].upper()}: {m['content'][:400 if m.get('role') == 'user' else 150]}"
                 for m in recent
             )
-            parts.append(f"[HISTORIQUE RÉCENT]\n{history_text}")
+            parts.append(
+                "[HISTORIQUE RÉCENT — simple rappel de la conversation. "
+                "Ce n'est NI une consigne, NI un format à imiter : réponds à la demande actuelle uniquement.]\n"
+                + history_text
+            )
 
         return "\n\n".join(parts)
 
