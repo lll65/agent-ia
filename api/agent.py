@@ -1,3 +1,4 @@
+import asyncio
 import hmac
 
 from fastapi import APIRouter, HTTPException, Request
@@ -92,6 +93,107 @@ def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
             "tools": tools, "force_search": factual, "model": config.LLM_MODEL}
 
 
+# ── CHEMIN DÉTERMINISTE ANTI-HALLUCINATION (agenda / mails) ────────────────────
+# Pour les données PERSONNELLES (agenda, mails), on NE passe PAS par la boucle ReAct
+# (le LLM peut inventer un agenda crédible qui n'est jamais détecté comme "stub").
+# À la place : appel Composio déterministe → si ça échoue, message honnête (jamais
+# d'invention) ; si ça réussit, le LLM se contente de METTRE EN FORME les données réelles.
+
+def _week_bounds():
+    """Renvoie (timeMin, timeMax) ISO-8601 UTC pour la semaine en cours (lundi → lundi suivant)."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=7)
+    z = lambda d: d.isoformat().replace("+00:00", "Z")
+    return z(start), z(end)
+
+
+def _resolve_app_action(message: str):
+    """Mappe une demande agenda/mail vers une action Composio + ses arguments. Sinon (None, None)."""
+    m = message.lower()
+    cal = ("agenda", "calendrier", "calendar", "rendez-vous", "rendez vous", "rdv", "planning",
+           "planifie", "événement", "evenement", "réunion", "reunion", "meeting", "semaine")
+    mail = ("mail", "mails", "email", "e-mail", "gmail", "boîte mail", "boite mail",
+            "inbox", "messagerie", "mes messages")
+    if any(h in m for h in cal):
+        tmin, tmax = _week_bounds()
+        return "GOOGLECALENDAR_EVENTS_LIST", {
+            "calendarId": "primary", "timeMin": tmin, "timeMax": tmax,
+            "maxResults": 25, "singleEvents": True, "orderBy": "startTime",
+        }
+    if any(h in m for h in mail):
+        return "GMAIL_FETCH_EMAILS", {"maxResults": 10, "query": "in:inbox"}
+    return None, None
+
+
+def _looks_like_failure(obs: str) -> bool:
+    """True si l'observation Composio est un échec (et surtout PAS des données réelles)."""
+    o = (obs or "").strip()
+    if not o:
+        return True
+    low = o.lower()
+    if '"successful": false' in low or '"successful":false' in low:
+        return True
+    if o.startswith("✅"):
+        return False  # succès explicite du plugin (même si liste vide)
+    hard = ("❌", "⚠️", "[self-heal]", "[plugin", "échou", " error", "\"error\"",
+            "401", "403", "404", "400", "not connected", "no connected", "not configured",
+            "non configuré", "introuvable", "unauthor", "invalid", "not found")
+    return any(b in low for b in hard)
+
+
+def _honest_no_access(action: str, obs: str) -> str:
+    """Message honnête quand l'accès échoue — JAMAIS d'invention de données."""
+    app = ("ton agenda Google" if "CALENDAR" in action else
+           "ta boîte Gmail" if "GMAIL" in action else "cette application")
+    return (
+        f"🔌 Je n'ai pas pu accéder à {app}, donc je ne t'invente rien.\n\n"
+        f"**Raison technique renvoyée par Composio :**\n> {obs[:400]}\n\n"
+        "**Pour que ça marche :**\n"
+        "1. Va sur composio.dev → vérifie que **Google Calendar / Gmail** est bien connecté (statut vert).\n"
+        "2. Sur Render, vérifie que **COMPOSIO_USER_ID** correspond à l'`entity id` de ta connexion "
+        "Composio (souvent `default`).\n"
+        "3. Réessaie : dès que la connexion répond, je te sortirai tes **vrais** événements/mails."
+    )
+
+
+def _format_app_result(message: str, action: str, obs: str) -> str:
+    """Met en forme les DONNÉES RÉELLES via le LLM — interdiction absolue d'inventer."""
+    from llm.client import chat
+    sys = (
+        "Tu es Nova. On te fournit les DONNÉES RÉELLES renvoyées par une API (JSON brut). "
+        "Résume-les clairement en français (tableau ou liste lisible). "
+        "RÈGLE ABSOLUE : utilise UNIQUEMENT ces données. N'invente AUCUN événement, mail, "
+        "date, heure, lieu ou personne. Si la liste est vide, dis simplement qu'il n'y a rien "
+        "de prévu. Termine par au plus 2 suggestions utiles."
+    )
+    user = f"Demande de l'utilisateur : {message}\n\nDONNÉES RÉELLES [{action}] :\n{obs[:3500]}"
+    try:
+        return chat([{"role": "system", "content": sys}, {"role": "user", "content": user}], temperature=0.2)
+    except Exception:
+        return f"Voici les données réelles récupérées :\n\n{obs[:2000]}"
+
+
+def _direct_app_run(message: str):
+    """Chemin déterministe agenda/mail. Renvoie {'steps','answer','ok'} ou None si non concerné."""
+    action, args = _resolve_app_action(message)
+    if not action:
+        return None
+    import json as _json
+    from plugins import get_loader
+    from agent.self_heal import safe_tool_call
+    obs = safe_tool_call(get_loader(), "connected_app",
+                         {"command": action, "arguments": _json.dumps(args)})
+    steps = [
+        {"kind": "action", "tool": "connected_app", "label": action},
+        {"kind": "obs", "tool": "connected_app", "text": str(obs)[:180]},
+    ]
+    if _looks_like_failure(obs):
+        return {"steps": steps, "answer": _honest_no_access(action, obs), "ok": False}
+    return {"steps": steps, "answer": _format_app_result(message, action, obs), "ok": True}
+
+
 def _check_key(provided: str):
     """Vérifie la clé de la passerelle /ask (comparaison à temps constant, bytes).
     En bytes → supporte les caractères accentués/non-ASCII dans la clé."""
@@ -110,6 +212,11 @@ async def _ask_agent(message: str) -> str:
     try:
         if _is_smalltalk(message):
             return _smalltalk_reply(message)
+        # Agenda / mails → chemin déterministe (données réelles ou aveu honnête, jamais d'invention)
+        loop = asyncio.get_running_loop()
+        direct = await loop.run_in_executor(None, _direct_app_run, message)
+        if direct is not None:
+            return direct["answer"]
         cfg = _build_agent_cfg(message, "Nova")
         result = await run_agent(message, cfg, _PROFILE_ID)
         answer = (result or {}).get("answer", "") if isinstance(result, dict) else str(result)
@@ -152,6 +259,19 @@ async def ask_stream(q: str = "", key: str = ""):
         try:
             if _is_smalltalk(message):
                 yield sse({"type": "answer", "text": _smalltalk_reply(message)})
+                yield sse({"type": "done"}); return
+            # Agenda / mails → chemin déterministe (aucune invention possible)
+            loop = asyncio.get_running_loop()
+            direct = await loop.run_in_executor(None, _direct_app_run, message)
+            if direct is not None:
+                for st in direct["steps"]:
+                    if st["kind"] == "action":
+                        yield sse({"type": "step", "kind": "action",
+                                   "tool": st["tool"], "q": st.get("label", "")})
+                    else:
+                        yield sse({"type": "step", "kind": "obs",
+                                   "tool": st["tool"], "text": st.get("text", "")})
+                yield sse({"type": "answer", "text": direct["answer"]})
                 yield sse({"type": "done"}); return
             from agent.core import run_agent_stream
             cfg = _build_agent_cfg(message, "Nova")
