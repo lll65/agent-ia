@@ -52,7 +52,8 @@ class ComposioPlugin(Plugin):
         command = (command or action or name or tool or app or kw.get("query") or "").strip()
         if not arguments and isinstance(kw, dict):
             arguments = kw.get("arguments") or kw.get("input") or kw.get("params") or ""
-        key = getattr(config, "COMPOSIO_API_KEY", "")
+        # .strip() : élimine espaces/retours-ligne collés depuis Render (piège classique)
+        key = (getattr(config, "COMPOSIO_API_KEY", "") or "").strip()
         if not key:
             return ("⚠️ Composio non configuré. Crée un compte gratuit sur composio.dev, "
                     "connecte tes apps (Gmail, Agenda…), et mets COMPOSIO_API_KEY dans les variables Render.")
