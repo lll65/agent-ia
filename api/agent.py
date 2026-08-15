@@ -149,20 +149,30 @@ def _honest_no_access(action: str, obs: str) -> str:
            "ta boîte Gmail" if "GMAIL" in action else "cette application")
     low = (obs or "").lower()
     key = getattr(config, "COMPOSIO_API_KEY", "") or ""
+    masked = (key[:6] + "…" + key[-4:]) if len(key) > 12 else ((key[:3] + "…") if key else "(vide)")
     # Cause n°1 : clé API Composio refusée (401 / APIKey_InvalidAPIKey)
     if "invalid api key" in low or "invalidapikey" in low.replace("_", "") or "401" in low or "refus" in low:
+        if key.startswith("ak_"):
+            why = (f"La clé que **Render utilise en ce moment** est `{masked}` (type projet `ak_`), et "
+                   "Composio la refuse. Causes probables :\n"
+                   "  • Render n'a pas encore redéployé avec la nouvelle clé ;\n"
+                   "  • la clé ne vient pas du **même projet** que celui où tu connectes Google Agenda ;\n"
+                   "  • un espace / retour à la ligne s'est glissé au collage.")
+            todo = ("1. **Render → Environment** : `COMPOSIO_API_KEY` = ta clé `ak_` du projet `…first_project` (sans espace).\n"
+                    "2. **Manual Deploy → Deploy latest commit** pour forcer la prise en compte.\n"
+                    "3. Dans le projet Composio → **Clés API**, confirme que c'est bien cette clé.")
+        else:
+            why = (f"La clé que **Render utilise en ce moment** est `{masked}` — c'est une clé de type "
+                   "**consumer (`ck_`)** ou inconnue. L'API REST a besoin d'une clé de **projet `ak_`**. "
+                   "Autrement dit : ta nouvelle clé n'a pas encore été prise en compte par Render.")
+            todo = ("1. Récupère la clé **`ak_`** dans ton projet dev Composio → **Clés API**.\n"
+                    "2. **Render → Environment** : remplace `COMPOSIO_API_KEY` par cette clé `ak_` → **Save**.\n"
+                    "3. **Manual Deploy → Deploy latest commit**, puis attends ~2 min.")
         return (
-            f"🔌 Je n'ai pas pu accéder à {app} — **ta clé Composio est refusée**, donc je ne t'invente rien.\n\n"
-            "**Pourquoi :** ta clé commence par `ck_` — c'est une clé **« consumer / MCP »**. L'API que "
-            "j'utilise a besoin d'une clé de **projet développeur** qui commence par **`ak_`**.\n\n"
-            "**À faire (≈ 3 min) :**\n"
-            "1. Sur composio.dev, en bas à gauche, clique **« Accédez à la plateforme pour développeurs »**.\n"
-            "2. **Settings → API Keys** → copie la clé **`ak_…`** (ou génère-en une).\n"
-            "3. Dans **Apps/Toolkits**, connecte **Google Calendar** (et **Gmail**) — autorise ton compte Google.\n"
-            "4. Sur **Render → Environment**, mets cette clé `ak_…` dans `COMPOSIO_API_KEY` (sans espace) → **Save**.\n"
-            "5. Redemande-moi ton agenda : tu auras tes **vrais** événements.\n\n"
-            "_(Je viens aussi d'apprendre à Nova à envoyer le bon en-tête pour les clés `ck_` : "
-            "après le prochain redéploiement, ta clé actuelle sera au moins testée correctement.)_"
+            f"🔌 Je n'ai pas pu accéder à {app} — **clé Composio refusée**, donc je ne t'invente rien.\n\n"
+            f"**Diagnostic :** {why}\n\n"
+            f"**À faire :**\n{todo}\n\n"
+            "Puis redemande-moi ton agenda. _(Pas besoin de Gmail pour l'agenda : Google Calendar seul suffit.)_"
         )
     return (
         f"🔌 Je n'ai pas pu accéder à {app}, donc je ne t'invente rien.\n\n"
