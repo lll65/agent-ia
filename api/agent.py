@@ -151,6 +151,25 @@ def _honest_no_access(action: str, obs: str) -> str:
     low = (obs or "").lower()
     key = getattr(config, "COMPOSIO_API_KEY", "") or ""
     masked = (key[:6] + "…" + key[-4:]) if len(key) > 12 else ((key[:3] + "…") if key else "(vide)")
+    # Cause : aucun compte connecté pour cette entity → on génère le lien OAuth direct
+    if ("no connected account" in low or "connectedaccountnotfound" in low.replace("_", "")
+            or "no active connection" in low):
+        toolkit = ("googlecalendar" if "CALENDAR" in action else
+                   "gmail" if "GMAIL" in action else "")
+        link, dbg = _composio_connect_link(toolkit) if toolkit else (None, "app inconnue")
+        if link:
+            return (
+                f"🔗 **Dernière étape !** Ta clé fonctionne, il ne reste qu'à **connecter {app}**.\n\n"
+                f"👉 **Clique ici pour autoriser ton compte Google :**\n{link}\n\n"
+                "Autorise l'accès, puis redemande-moi ton agenda. "
+                "_(Ce lien connecte ton compte sous l'identité `default`, celle que j'utilise — tout sera aligné.)_"
+            )
+        return (
+            f"🔌 Presque ! Ta clé marche, mais **aucun compte {app} n'est connecté** pour l'identité `default`.\n\n"
+            "**À faire :** Composio → **Toolkits → Google Calendar → Connect account** → quand on te demande "
+            "l'**entity / user id**, mets **`default`** → autorise ton compte Google.\n\n"
+            f"_(Je n'ai pas pu générer le lien automatiquement : {dbg})_"
+        )
     # Cause : clé VALIDE mais sans permission d'exécution (403 tool_execution)
     if ("tool_execution" in low or "toolexecution" in low.replace("_", "")
             or "insufficientpermission" in low.replace("_", "") or "permission" in low):
@@ -215,6 +234,43 @@ def _format_app_result(message: str, action: str, obs: str) -> str:
         return chat([{"role": "system", "content": sys}, {"role": "user", "content": user}], temperature=0.2)
     except Exception:
         return f"Voici les données réelles récupérées :\n\n{obs[:2000]}"
+
+
+def _composio_connect_link(app_slug: str):
+    """Crée un lien OAuth Composio pour connecter une app sous l'entity COMPOSIO_USER_ID.
+    Renvoie (redirect_url|None, debug_str)."""
+    import requests, json as _json
+    ck = (getattr(config, "COMPOSIO_API_KEY", "") or "").strip()
+    user = getattr(config, "COMPOSIO_USER_ID", "default") or "default"
+    base = "https://backend.composio.dev"
+    h = {"x-api-key": ck, "Content-Type": "application/json"}
+    # 1) Trouver l'auth_config de l'app
+    try:
+        r = requests.get(f"{base}/api/v3/auth_configs?limit=100", headers=h, timeout=20)
+        if r.status_code != 200:
+            return None, f"auth_configs {r.status_code}: {r.text[:180]}"
+        data = r.json()
+        items = data.get("items", []) if isinstance(data, dict) else (data or [])
+        acid = None
+        for it in items:
+            if app_slug.lower() in _json.dumps(it).lower():
+                acid = it.get("id") or it.get("nano_id") or it.get("uuid")
+                if acid:
+                    break
+        if not acid:
+            return None, f"aucune auth config pour '{app_slug}' — crée-la dans Toolkits → {app_slug}"
+    except Exception as e:
+        return None, f"list exception: {type(e).__name__}: {str(e)[:150]}"
+    # 2) Créer le lien de connexion OAuth
+    try:
+        r = requests.post(f"{base}/api/v3/connected_accounts/link", headers=h,
+                          json={"auth_config_id": acid, "user_id": user}, timeout=20)
+        if r.status_code in (200, 201):
+            b = r.json()
+            return (b.get("redirect_url") or b.get("redirectUrl") or b.get("url")), f"ok acid={acid}"
+        return None, f"link {r.status_code}: {r.text[:180]}"
+    except Exception as e:
+        return None, f"link exception: {type(e).__name__}: {str(e)[:150]}"
 
 
 def _direct_app_run(message: str):
@@ -379,6 +435,18 @@ async def diag_composio(key: str = ""):
         _probe("C_toolkits_xapikey", "GET", f"{base}/api/v3/toolkits?limit=1",
                {"x-api-key": ck_s, "Content-Type": "application/json"})
     return {"meta": meta, "header_used": hdr_name, "probes": probes}
+
+
+@router.get("/diag/connect")
+async def diag_connect(key: str = "", app: str = "googlecalendar"):
+    """Connexion OAuth en 1 clic : redirige direct vers l'écran d'autorisation Google.
+    Ex : /agent/diag/connect?key=TA_CLE_AGENT&app=googlecalendar (ou app=gmail)."""
+    _check_key(key)
+    from fastapi.responses import RedirectResponse
+    link, dbg = _composio_connect_link(app)
+    if link:
+        return RedirectResponse(url=link)
+    return {"ok": False, "app": app, "detail": dbg}
 
 
 @router.get("/ask")

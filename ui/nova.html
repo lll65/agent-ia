@@ -50,7 +50,8 @@
   .rstep .rl{ color:var(--txt); font-weight:600; } .rstep .rd{ color:var(--dim); font-size:11.5px; word-break:break-word; }
   .bubble pre{ background:#05050c; border:1px solid var(--stroke); border-radius:10px; padding:11px; overflow-x:auto; margin:8px 0; font-size:13px; font-family:ui-monospace,monospace; }
   .bubble a{ color:var(--neon2); }
-  .think{ display:inline-flex; align-items:center; gap:8px; color:var(--dim); font-size:14px; }
+  .think{ display:inline-flex; align-items:center; gap:8px; color:var(--dim); font-size:14px; animation:fadeSwap .5s ease; }
+  @keyframes fadeSwap{ from{opacity:0; transform:translateY(7px); filter:blur(4px)} to{opacity:1; transform:none; filter:blur(0)} }
   .think .dot{ width:7px; height:7px; border-radius:50%; background:var(--neon2); box-shadow:0 0 10px var(--neon2); animation:blink 1s infinite; }
   .cur{ animation:blink 1s step-end infinite; color:var(--neon2); }
   @keyframes blink{ 50%{ opacity:.2 } }
@@ -215,22 +216,30 @@ function stepLabel(d){ const t=(d.tool||"").toLowerCase();
   if(d.kind==="obs") return "Analyse des résultats…";
   return (d.tool? d.tool : "Traitement")+"…"; }
 function thinkHTML(txt,icon){ return '<span class="think"><span class="dot"></span>'+(icon?icon+" ":"")+esc(txt)+'<span class="cur">▍</span></span>'; }
+const THINK_PHRASES=["Nova réfléchit…","J'analyse ta demande…","Je choisis les bons outils…","Je rassemble les informations…","Je réfléchis à la meilleure réponse…","Je structure tout ça…"];
 function ask(){
   const inp=document.getElementById("in"), msg=inp.value.trim(); if(!msg) return; if(!KEY){ openCfg(); return; }
   document.body.classList.add("chatting");
-  inp.value=""; grow(inp); addRow("me",fmt(msg)); const bubble=addRow("ai",thinkHTML("Nova réfléchit…"));
+  inp.value=""; grow(inp); addRow("me",fmt(msg)); const bubble=addRow("ai",thinkHTML(THINK_PHRASES[0],"💭"));
   document.getElementById("send").disabled=true; thinking=true; document.body.classList.add("thinking"); graphStart();
-  let answer="", trace=[];
+  let answer="", trace=[], pi=0;
+  // Rotation "comme Claude" : une phrase apparaît, s'efface, une autre la remplace.
+  // Une fois les vraies étapes arrivées, on cycle dessus (recherche web, agenda…).
+  const thinkTimer=setInterval(()=>{ if(answer) return;
+    if(trace.length){ pi=(pi+1)%trace.length; const s=trace[pi]; bubble.innerHTML=thinkHTML(s.label, s.icon); }
+    else { pi=(pi+1)%THINK_PHRASES.length; bubble.innerHTML=thinkHTML(THINK_PHRASES[pi],"💭"); }
+    chat.scrollTop=chat.scrollHeight; }, 1700);
+  const stopThink=()=>clearInterval(thinkTimer);
   const url=ORIGIN+"/agent/ask/stream?key="+encodeURIComponent(KEY)+"&q="+encodeURIComponent(msg);
   const es=new EventSource(url);
   es.onmessage=(e)=>{ let d; try{ d=JSON.parse(e.data);}catch{ return; }
     if(d.type==="step"){ const ic=iconFor(d.kind,d.tool); graphAdd(ic, d.tool||d.kind);
       trace.push({icon:ic, label:stepLabel(d), detail:(d.q||d.text||"")});
-      if(!answer){ bubble.innerHTML=thinkHTML(stepLabel(d), ic); chat.scrollTop=chat.scrollHeight; } }
-    else if(d.type==="answer"){ answer=d.text||""; typewrite(bubble,answer); if(TTS) speak(answer); }
-    else if(d.type==="done"){ es.close(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false; attachReason(bubble,trace); }
+      if(!answer){ bubble.innerHTML=thinkHTML(stepLabel(d), ic); pi=trace.length-1; chat.scrollTop=chat.scrollHeight; } }
+    else if(d.type==="answer"){ answer=d.text||""; stopThink(); typewrite(bubble,answer); if(TTS) speak(answer); }
+    else if(d.type==="done"){ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false; attachReason(bubble,trace); }
   };
-  es.onerror=()=>{ es.close(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false;
+  es.onerror=()=>{ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false;
     if(!answer) bubble.innerHTML="⚠️ Connexion interrompue. Vérifie ta clé (⚙️) et réessaie."; else attachReason(bubble,trace); };
 }
 function typewrite(el,text){ const html=fmt(text); if(html.includes("<pre>")){ el.innerHTML=html; return; }
