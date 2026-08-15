@@ -15,9 +15,10 @@ router = APIRouter()
 # Identifiant de mémoire stable (même profil que l'UI web/Telegram)
 _PROFILE_ID = "profil"
 
-_FACTUAL_HINTS = ("actualité", "news", "2024", "2025", "2026", "tendance", "aujourd'hui",
-                  "récent", "dernier", "meilleur", "prix de", "cours de", "combien",
-                  "qui est", "quand", "où", "statistiques", "chiffres", "météo", "cette semaine")
+_FACTUAL_HINTS = ("actualité", "actualités", "actu", "news", "2024", "2025", "2026", "tendance",
+                  "aujourd'hui", "récent", "dernier", "meilleur", "prix de", "cours de", "combien",
+                  "qui est", "quand", "où", "statistiques", "chiffres", "météo", "cette semaine",
+                  "quoi de neuf", "du jour")
 
 # Petits messages sociaux / chitchat → réponse directe SANS outils (évite que
 # "salut" déclenche une recherche web ou un réflexe finance).
@@ -80,7 +81,9 @@ def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
     app = _app_intent(message)
     factual = (not app) and any(h in message.lower() for h in _FACTUAL_HINTS)
     system = (f"Tu es {name}, l'assistant personnel de l'utilisateur. Français, concis et actionnable. "
-              "Jamais de source inventée : ne cite une source que si un outil te l'a réellement fournie.")
+              "Jamais de source inventée : ne cite une source que si un outil te l'a réellement fournie. "
+              "N'utilise JAMAIS d'outil crypto/finance (crypto_market, fear_greed, etc.) sauf si la "
+              "question porte EXPLICITEMENT sur la bourse, la crypto ou un actif financier.")
     if app and "connected_app" in tools:
         tools.remove("connected_app"); tools.insert(0, "connected_app")
         system += (" Pour l'agenda, le calendrier, les mails, Slack ou Notion, utilise TOUJOURS l'outil "
@@ -136,15 +139,45 @@ def _time_bounds(message: str):
     return z(monday), z(monday + timedelta(days=7)), "cette semaine"
 
 
+_CAL_CREATE = ("ajoute", "rajoute", "crée", "cree", "créer", "creer", "réserve", "reserve",
+               "bloque", "programme", "note un", "note une", "mets un", "mets une",
+               "mets-moi", "mets moi", "planifie un", "planifie une", "ajouter un", "ajouter une")
+
+
+def _clean_event_text(message: str) -> str:
+    """Nettoie la phrase pour Google Quick Add (retire les mots 'agenda' et le verbe d'ajout)."""
+    import re
+    t = " " + message + " "
+    for w in ("sur mon agenda", "dans mon agenda", "à mon agenda", "a mon agenda", "sur l'agenda",
+              "dans l'agenda", "dans le calendrier", "sur mon calendrier", "mon agenda", "l'agenda"):
+        t = re.sub(re.escape(w), " ", t, flags=re.I)
+    t = t.strip()
+    for w in ("ajoute-moi", "ajoute moi", "ajouter", "ajoute", "rajoute", "crée", "cree", "créer",
+              "creer", "réserve", "reserve", "bloque", "programme", "planifie", "mets-moi",
+              "mets moi", "mets", "note"):
+        t = re.sub(r"^\s*" + w + r"\b", "", t.strip(), flags=re.I)
+    return t.strip(" ,:\"'").strip() or message
+
+
 def _resolve_app_action(message: str):
     """Mappe une demande agenda/mail vers une action Composio + ses arguments. Sinon (None, None)."""
+    import re
     m = message.lower()
     cal = ("agenda", "calendrier", "calendar", "rendez-vous", "rendez vous", "rdv", "planning",
            "planifie", "événement", "evenement", "réunion", "reunion", "meeting", "semaine",
            "journée", "journee", "aujourd", "demain", "mois")
     mail = ("mail", "mails", "email", "e-mail", "gmail", "boîte mail", "boite mail",
             "inbox", "messagerie", "mes messages")
-    if any(h in m for h in cal):
+    has_time = bool(re.search(r"\d{1,2}\s*h", m)) or any(w in m for w in (
+        "demain", "aujourd", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi",
+        "dimanche", "ce soir", "midi", "matin", "après-midi", "apres-midi"))
+    cal_ctx = any(c in m for c in cal)
+
+    # ➕ CRÉATION d'événement (agenda) → Quick Add (Google parse la langue naturelle)
+    if any(v in m for v in _CAL_CREATE) and (cal_ctx or has_time):
+        return "GOOGLECALENDAR_QUICK_ADD", {"calendar_id": "primary", "text": _clean_event_text(message)}
+
+    if cal_ctx:
         tmin, tmax, _ = _time_bounds(message)
         return "GOOGLECALENDAR_EVENTS_LIST", {
             "calendarId": "primary", "timeMin": tmin, "timeMax": tmax,
@@ -247,16 +280,25 @@ def _honest_no_access(action: str, obs: str) -> str:
     )
 
 
-def _format_app_result(message: str, action: str, obs: str) -> str:
+def _format_app_result(message: str, action: str, obs: str, is_write: bool = False) -> str:
     """Met en forme les DONNÉES RÉELLES via le LLM — interdiction absolue d'inventer."""
     from llm.client import chat
-    sys = (
-        "Tu es Nova. On te fournit les DONNÉES RÉELLES renvoyées par une API (JSON brut). "
-        "Résume-les clairement en français (tableau ou liste lisible). "
-        "RÈGLE ABSOLUE : utilise UNIQUEMENT ces données. N'invente AUCUN événement, mail, "
-        "date, heure, lieu ou personne. Si la liste est vide, dis simplement qu'il n'y a rien "
-        "de prévu. Termine par au plus 2 suggestions utiles."
-    )
+    if is_write:
+        sys = (
+            "Tu es Nova. On te fournit la RÉPONSE RÉELLE d'une API après une action (création/"
+            "modification). Confirme brièvement et chaleureusement ce qui a été fait, en te basant "
+            "UNIQUEMENT sur ces données réelles (titre, date, heure exacts renvoyés). "
+            "N'invente rien. Si la réponse ne confirme pas clairement la création, dis-le honnêtement "
+            "et propose de réessayer. Format court (1-3 lignes), avec un ✅ si c'est confirmé."
+        )
+    else:
+        sys = (
+            "Tu es Nova. On te fournit les DONNÉES RÉELLES renvoyées par une API (JSON brut). "
+            "Résume-les clairement en français (tableau ou liste lisible). "
+            "RÈGLE ABSOLUE : utilise UNIQUEMENT ces données. N'invente AUCUN événement, mail, "
+            "date, heure, lieu ou personne. Si la liste est vide, dis simplement qu'il n'y a rien "
+            "de prévu. Termine par au plus 2 suggestions utiles."
+        )
     user = f"Demande de l'utilisateur : {message}\n\nDONNÉES RÉELLES [{action}] :\n{obs[:3500]}"
     try:
         return chat([{"role": "system", "content": sys}, {"role": "user", "content": user}], temperature=0.2)
@@ -317,7 +359,8 @@ def _direct_app_run(message: str):
     ]
     if _looks_like_failure(obs):
         return {"steps": steps, "answer": _honest_no_access(action, obs), "ok": False}
-    return {"steps": steps, "answer": _format_app_result(message, action, obs), "ok": True}
+    is_write = any(k in action for k in ("CREATE", "QUICK_ADD", "UPDATE", "DELETE", "PATCH", "SEND"))
+    return {"steps": steps, "answer": _format_app_result(message, action, obs, is_write), "ok": True}
 
 
 def _check_key(provided: str):
