@@ -33,6 +33,11 @@ class Config:
     # Clé sur composio.dev (gratuit 20k actions/mois). COMPOSIO_USER_ID = ton "entity" (défaut 'default').
     COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY", "")
     COMPOSIO_USER_ID = os.getenv("COMPOSIO_USER_ID", "default")
+    # Voix premium ElevenLabs (offre gratuite ~10k caractères/mois). VIDE = voix du navigateur.
+    ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
+    # Voix par défaut : "Charlotte" (fr, chaleureuse). Remplaçable par n'importe quel voice_id ElevenLabs.
+    ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "XB0fDUnXU5powFXDhCwa")
+    ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_multilingual_v2")
     XAI_MODEL = os.getenv("XAI_MODEL", "grok-beta")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     CEREBRAS_MODEL = os.getenv("CEREBRAS_MODEL", "llama-3.3-70b")

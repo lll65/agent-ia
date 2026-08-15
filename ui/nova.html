@@ -342,7 +342,7 @@ function ask(){
   document.body.classList.add("chatting");
   inp.value=""; grow(inp); addRow("me",fmt(msg)); histPush("me",msg); const bubble=addRow("ai",thinkHTML(THINK_PHRASES[0],"💭"));
   document.getElementById("send").disabled=true; thinking=true; document.body.classList.add("thinking"); graphStart();
-  let answer="", trace=[], pi=0;
+  let answer="", trace=[], pi=0, streamed=false;
   // Rotation "comme Claude" : une phrase apparaît, s'efface, une autre la remplace.
   // Une fois les vraies étapes arrivées, on cycle dessus (recherche web, agenda…).
   const thinkTimer=setInterval(()=>{ if(answer) return;
@@ -356,8 +356,14 @@ function ask(){
     if(d.type==="step"){ const ic=iconFor(d.kind,d.tool); graphAdd(ic, d.tool||d.kind);
       trace.push({icon:ic, label:stepLabel(d), detail:(d.q||d.text||"")});
       if(voiceMode) vSet(stepLabel(d),"");
-      if(!answer){ bubble.innerHTML=thinkHTML(stepLabel(d), ic); pi=trace.length-1; chat.scrollTop=chat.scrollHeight; } }
-    else if(d.type==="answer"){ answer=d.text||""; stopThink(); typewrite(bubble,answer); histPush("ai",answer);
+      if(!answer&&!streamed){ bubble.innerHTML=thinkHTML(stepLabel(d), ic); pi=trace.length-1; chat.scrollTop=chat.scrollHeight; } }
+    else if(d.type==="token"){ if(!streamed){ streamed=true; stopThink(); bubble.innerHTML=""; }
+      answer+=(d.t||""); bubble.innerHTML=fmt(answer)+'<span class="cur">▍</span>'; chat.scrollTop=chat.scrollHeight;
+      if(voiceMode) vSet("Nova répond…", answer.slice(-240)); }
+    else if(d.type==="answer"){ const fin=d.text||"";
+      if(streamed){ answer=fin||answer; bubble.innerHTML=fmt(answer); }
+      else { answer=fin; stopThink(); typewrite(bubble,answer); }
+      histPush("ai",answer);
       if(voiceMode){ vSet("Nova répond…", answer.slice(0,240)); speak(answer, ()=>{ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }); }
       else if(TTS) speak(answer); }
     else if(d.type==="done"){ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false; attachReason(bubble,trace); setTimeout(refreshUsage,900); }
@@ -393,8 +399,19 @@ function pickVoice(){ const vs=speechSynthesis.getVoices(); if(!vs.length) retur
     if(/f(e|é)minin|female/.test(n)) s+=1; return s; };
   pool.sort((a,b)=>score(b)-score(a)); NOVA_VOICE=pool[0]; }
 if("speechSynthesis" in window){ speechSynthesis.onvoiceschanged=pickVoice; pickVoice(); }
-function speak(text,onend){ try{ speechSynthesis.cancel();
-    const clean=text.replace(/[*#`>_|]/g,"").replace(/https?:\/\/\S+/g,"").slice(0,700);
+let PREMIUM_TTS=false, curAudio=null;
+fetch(ORIGIN+"/agent/tts/status",{cache:"no-store"}).then(r=>r.json()).then(d=>{ PREMIUM_TTS=!!(d&&d.enabled); }).catch(()=>{});
+function speak(text,onend){ const clean=(text||"").replace(/[*#`>_|]/g,"").replace(/https?:\/\/\S+/g,"").slice(0,900);
+  try{ speechSynthesis.cancel(); }catch(e){} if(curAudio){ try{curAudio.pause();}catch(e){} curAudio=null; }
+  if(PREMIUM_TTS && KEY && clean){
+    try{ const u=ORIGIN+"/agent/tts?key="+encodeURIComponent(KEY)+"&text="+encodeURIComponent(clean);
+      curAudio=new Audio(u); curAudio.onended=()=>{ curAudio=null; if(onend)onend(); };
+      curAudio.onerror=()=>{ curAudio=null; browserSpeak(clean,onend); };
+      curAudio.play().catch(()=>browserSpeak(clean,onend)); return;
+    }catch(e){} }
+  browserSpeak(clean,onend);
+}
+function browserSpeak(clean,onend){ try{ speechSynthesis.cancel();
     const u=new SpeechSynthesisUtterance(clean); u.lang="fr-FR"; if(NOVA_VOICE) u.voice=NOVA_VOICE;
     u.rate=1.0; u.pitch=1.05; u.onend=()=>{ if(onend) onend(); }; u.onerror=()=>{ if(onend) onend(); };
     speechSynthesis.speak(u);

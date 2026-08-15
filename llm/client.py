@@ -74,6 +74,46 @@ def chat(messages: list, temperature: float = 0.7, num_ctx: int = 4096) -> str:
     return _ollama_chat(messages, model, temperature, num_ctx)
 
 
+def chat_stream(messages: list, temperature: float = 0.6):
+    """Générateur : produit la réponse token par token (vrai streaming).
+    Compatible Groq/Cerebras (API OpenAI, stream=True). Repli non-stream sinon.
+    Yield des morceaux de texte (str)."""
+    from openai import OpenAI
+    provider = config.LLM_PROVIDER
+    model = config.LLM_MODEL
+    try:
+        if provider == "cerebras" and config.CEREBRAS_API_KEY:
+            client = OpenAI(api_key=config.CEREBRAS_API_KEY, base_url="https://api.cerebras.ai/v1")
+        elif provider == "groq" or config.GROQ_API_KEY:
+            client = OpenAI(api_key=config.GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+            model = config.GROQ_MODEL if provider != "groq" else model
+        else:
+            # Provider non-stream (Gemini/Ollama) → on renvoie tout d'un coup
+            yield chat(messages, temperature=temperature); return
+        total = 0
+        stream = client.chat.completions.create(
+            model=model, messages=messages, temperature=temperature, max_tokens=4096, stream=True)
+        for chunk in stream:
+            try:
+                delta = chunk.choices[0].delta.content
+            except Exception:
+                delta = None
+            if delta:
+                total += 1
+                yield delta
+        try:
+            from llm.usage import record
+            record(total, provider=provider)  # approx (tokens ≈ chunks)
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning(f"[chat_stream] échec streaming ({str(e)[:80]}) → repli non-stream")
+        try:
+            yield chat(messages, temperature=temperature)
+        except Exception as e2:
+            yield f"❌ Erreur LLM : {str(e2)[:200]}"
+
+
 def _groq_chat(messages: list, model: str, temperature: float) -> str:
     from groq import Groq
     client = Groq(api_key=config.GROQ_API_KEY)
