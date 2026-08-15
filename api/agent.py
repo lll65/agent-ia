@@ -754,9 +754,110 @@ def _generic_app_flow(message: str, slug: str):
     return {"steps": steps, "done_answer": _format_app_result(message, action, obs, is_write)}
 
 
+def _find_action(slug: str, *keywords):
+    """Retrouve le nom exact d'une action Composio à partir de mots-clés (robuste aux renommages)."""
+    for a in _composio_list_actions(slug):
+        nm = a["name"]
+        if all(k.upper() in nm for k in keywords):
+            return nm
+    return None
+
+
+def _github_project_flow(message: str):
+    """UNE commande = un projet complet sur GitHub :
+    1) le LLM génère le code (plusieurs fichiers), 2) création du dépôt,
+    3) push de chaque fichier. Aucune invention : on rapporte ce que GitHub renvoie vraiment."""
+    import base64, json as _json, re as _re
+    steps = [{"kind": "action", "tool": "github", "label": "GÉNÉRATION DU CODE"}]
+
+    # 1) Génération du projet
+    plan = _llm_json(
+        "Tu es un développeur senior. Génère un projet complet, fonctionnel et propre. "
+        "Réponds en JSON STRICT : "
+        '{"repo":"nom-court-en-kebab-case","description":"une phrase","private":false,'
+        '"files":{"README.md":"contenu","index.html":"contenu"}}. '
+        "RÈGLES : 3 à 8 fichiers maximum, du code RÉEL et complet (pas de TODO ni de placeholder), "
+        "toujours un README.md clair. Le contenu de chaque fichier est une chaîne JSON échappée.",
+        f"Projet demandé : {message}", temperature=0.3)
+    repo = _re.sub(r"[^A-Za-z0-9._-]", "-", (plan.get("repo") or "").strip())[:60].strip("-")
+    files = plan.get("files") or {}
+    if not repo or not isinstance(files, dict) or not files:
+        return {"steps": steps, "done_answer": (
+            "Je n'ai pas réussi à générer le projet. Redis-moi en une phrase ce que tu veux "
+            "(ex. « crée un projet GitHub : site portfolio en HTML/CSS »).")}
+    desc = (plan.get("description") or message)[:200]
+    private = bool(plan.get("private"))
+    steps.append({"kind": "obs", "tool": "github", "text": f"{len(files)} fichiers générés — dépôt « {repo} »"})
+
+    # 2) Propriétaire du compte
+    owner = ""
+    act_me = _find_action("github", "AUTHENTICATED_USER") or ""
+    if act_me and "REPOSITOR" not in act_me:
+        me = _tool(act_me, {})
+        m = _re.search(r'"login"\s*:\s*"([^"]+)"', me or "")
+        owner = m.group(1) if m else ""
+
+    # 3) Création du dépôt
+    act_create = _find_action("github", "CREATE", "REPOSITORY") or "GITHUB_CREATE_A_REPOSITORY_FOR_THE_AUTHENTICATED_USER"
+    steps.append({"kind": "action", "tool": "github", "label": act_create})
+    obs = _tool(act_create, {"name": repo, "description": desc, "private": private, "auto_init": False})
+    if _looks_like_failure(obs):
+        if "already exists" in (obs or "").lower():
+            return {"steps": steps, "done_answer": (
+                f"⚠️ Un dépôt **{repo}** existe déjà sur ton compte. Redemande-moi avec un autre nom "
+                f"(ex. « …, appelle-le {repo}-v2 »).")}
+        return {"steps": steps, "done_answer": _honest_no_access(act_create, obs)}
+    if not owner:
+        m = _re.search(r'"login"\s*:\s*"([^"]+)"', obs or "")
+        owner = m.group(1) if m else ""
+    m = _re.search(r'"html_url"\s*:\s*"([^"]+)"', obs or "")
+    url = m.group(1) if m else (f"https://github.com/{owner}/{repo}" if owner else "")
+
+    # 4) Push des fichiers
+    act_put = _find_action("github", "CREATE_OR_UPDATE_FILE") or "GITHUB_CREATE_OR_UPDATE_FILE_CONTENTS"
+    ok, failed = [], []
+    for path, content in list(files.items())[:8]:
+        if not isinstance(content, str):
+            content = _json.dumps(content, ensure_ascii=False, indent=2)
+        b64 = base64.b64encode(content.encode("utf-8")).decode()
+        r = _tool(act_put, {"owner": owner, "repo": repo, "path": str(path),
+                            "message": f"feat: ajout de {path}", "content": b64})
+        (ok if not _looks_like_failure(r) else failed).append(str(path))
+    steps.append({"kind": "obs", "tool": "github", "text": f"{len(ok)} fichier(s) poussé(s)"})
+
+    lines = [f"✅ Projet **{repo}** créé sur GitHub !"]
+    if url:
+        lines.append(f"\n🔗 {url}")
+    if ok:
+        lines.append("\n**Fichiers ajoutés :**\n" + "\n".join(f"- `{p}`" for p in ok))
+    if failed:
+        lines.append("\n⚠️ Non poussés : " + ", ".join(f"`{p}`" for p in failed) +
+                     "\n_(le dépôt existe, tu peux les ajouter à la main ou me redemander)_")
+    lines.append("\nDis-moi si tu veux que j'ajoute des fonctionnalités ou un autre fichier.")
+    return {"steps": steps, "done_answer": "\n".join(lines)}
+
+
+_MAKE_VERBS = ("crée", "cree", "créer", "creer", "fais", "fais-moi", "génère", "genere",
+               "générer", "generer", "développe", "developpe", "code", "construis", "build",
+               "monte", "mets en place", "réalise", "realise")
+_PROJECT_WORDS = ("projet", "repo", "dépôt", "depot", "repository", "site", "app", "application",
+                  "jeu", "game", "script", "bot", "api", "landing", "portfolio", "dashboard",
+                  "page web", "site web")
+
+
+def _is_github_project(message: str) -> bool:
+    """« crée un projet/site/app … sur GitHub » → génération de code + dépôt + push."""
+    m = message.lower()
+    if "github" not in m and "dépôt" not in m and "depot" not in m and "repo" not in m:
+        return False
+    return any(v in m for v in _MAKE_VERBS) and any(w in m for w in _PROJECT_WORDS)
+
+
 def _complex_app_flow(message: str):
     """Détecte et exécute les actions multi-étapes. Renvoie {steps, done_answer} ou None."""
     m = message.lower()
+    if _is_github_project(message):
+        return _github_project_flow(message)
     mail_verb = any(v in m for v in ("envoie", "envoyer", "écris", "ecris", "rédige", "redige", "réponds", "reponds"))
     if (("mail" in m or "email" in m or "e-mail" in m or "courriel" in m) and mail_verb) \
             or m.startswith("réponds à") or m.startswith("reponds a"):
