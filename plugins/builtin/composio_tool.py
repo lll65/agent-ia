@@ -65,28 +65,22 @@ class ComposioPlugin(Plugin):
         user = getattr(config, "COMPOSIO_USER_ID", "default") or "default"
         headers = {"x-api-key": key, "Content-Type": "application/json"}
 
-        # 1) API v3
+        # API v3 (la v2 est fermée : renvoie 410 "upgrade to v3").
         try:
             r = requests.post(f"{_BASE}/api/v3/tools/execute/{action}",
                               headers=headers, json={"user_id": user, "arguments": args}, timeout=30)
             if r.status_code == 200:
                 return _fmt(action, r.json())
-            v3_err = f"v3 {r.status_code}: {r.text[:200]}"
+            # Clé rejetée → message ciblé (cause n°1 des échecs)
+            if r.status_code in (401, 403) or "invalidapikey" in r.text.lower().replace("_", ""):
+                return ("❌ Clé API Composio invalide (variable COMPOSIO_API_KEY sur Render). "
+                        "Une clé de projet Composio valide commence par « ak_ ». "
+                        "Génère-la sur composio.dev → Settings → Project Settings → API Keys, "
+                        "colle-la dans COMPOSIO_API_KEY (sans espace), puis redéploie.")
+            return (f"❌ Action Composio '{action}' échouée (HTTP {r.status_code}).\n{r.text[:220]}\n"
+                    "Vérifie que l'app est connectée sur composio.dev et que le nom d'action est exact.")
         except Exception as e:
-            v3_err = f"v3 exception: {str(e)[:150]}"
-
-        # 2) API v2 (fallback)
-        try:
-            r = requests.post(f"{_BASE}/api/v2/actions/{action}/execute",
-                              headers=headers, json={"entityId": user, "input": args}, timeout=30)
-            if r.status_code == 200:
-                return _fmt(action, r.json())
-            v2_err = f"v2 {r.status_code}: {r.text[:200]}"
-        except Exception as e:
-            v2_err = f"v2 exception: {str(e)[:150]}"
-
-        return (f"❌ Action Composio '{action}' échouée.\n{v3_err}\n{v2_err}\n"
-                "Vérifie que l'app est bien connectée sur composio.dev et que le nom d'action est exact.")
+            return f"❌ Composio injoignable : {type(e).__name__}: {str(e)[:180]}"
 
 
 def _fmt(action: str, data) -> str:

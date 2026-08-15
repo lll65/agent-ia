@@ -147,6 +147,19 @@ def _honest_no_access(action: str, obs: str) -> str:
     """Message honnête quand l'accès échoue — JAMAIS d'invention de données."""
     app = ("ton agenda Google" if "CALENDAR" in action else
            "ta boîte Gmail" if "GMAIL" in action else "cette application")
+    low = (obs or "").lower()
+    # Cause n°1 : clé API Composio invalide (401 / APIKey_InvalidAPIKey)
+    if "invalid api key" in low or "invalidapikey" in low.replace("_", "") or "401" in low:
+        return (
+            f"🔌 Je n'ai pas pu accéder à {app} — **ta clé API Composio est refusée**, donc je ne t'invente rien.\n\n"
+            "**Le souci :** la variable `COMPOSIO_API_KEY` sur Render n'est pas une clé de projet valide "
+            "(une clé valide commence par **`ak_`** ; la tienne commence par `ck_`).\n\n"
+            "**À faire (2 min) :**\n"
+            "1. Va sur **composio.dev** → **Settings → Project Settings → API Keys**.\n"
+            "2. Copie la clé qui commence par **`ak_…`** (ou génère-en une).\n"
+            "3. Sur **Render → Environment**, remplace `COMPOSIO_API_KEY` par cette clé (sans espace ni retour à la ligne), puis **Save/Redeploy**.\n"
+            "4. Redemande-moi ton agenda : je te sortirai tes **vrais** événements."
+        )
     return (
         f"🔌 Je n'ai pas pu accéder à {app}, donc je ne t'invente rien.\n\n"
         f"**Raison technique renvoyée par Composio :**\n> {obs[:400]}\n\n"
