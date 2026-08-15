@@ -352,21 +352,36 @@ def _honest_no_access(action: str, obs: str) -> str:
     # Cause : aucun compte connecté pour cette entity → on génère le lien OAuth direct
     if ("no connected account" in low or "connectedaccountnotfound" in low.replace("_", "")
             or "no active connection" in low):
-        toolkit = ("googlecalendar" if "CALENDAR" in action else
-                   "gmail" if "GMAIL" in action else "")
-        link, dbg = _composio_connect_link(toolkit) if toolkit else (None, "app inconnue")
+        # Déduit l'app depuis le nom d'action (CANVA_… → canva, GITHUB_… → github, etc.)
+        head = (action or "").split("_", 1)[0].lower()
+        toolkit = head if head in _TOOLKITS else ""
+        nice = toolkit.capitalize() if toolkit else "cette application"
+        # L'app est peut-être connectée sous une AUTRE identité → on le dit précisément.
+        known = [(s, u) for s, u, _ in _connected_accounts()]
+        same = [u for s, u in known if s == toolkit]
+        used = _toolkit_user_id(toolkit)
+        if same:
+            return (
+                f"🔌 **{nice}** est bien connecté, mais sous l'identité **`{same[0]}`** — or l'action a été "
+                f"exécutée avec **`{used}`**.\n\n"
+                "Je viens d'apprendre à détecter automatiquement la bonne identité : **redemande-moi**, "
+                "ça devrait passer. Si l'erreur persiste, mets `COMPOSIO_USER_ID` = "
+                f"**`{same[0]}`** sur Render puis redéploie."
+            )
+        link, dbg = _composio_connect_link(toolkit) if toolkit else (None, "app non reconnue")
         if link:
             return (
-                f"🔗 **Dernière étape !** Ta clé fonctionne, il ne reste qu'à **connecter {app}**.\n\n"
-                f"👉 **Clique ici pour autoriser ton compte Google :**\n{link}\n\n"
-                "Autorise l'accès, puis redemande-moi ton agenda. "
-                "_(Ce lien connecte ton compte sous l'identité `default`, celle que j'utilise — tout sera aligné.)_"
+                f"🔗 **Dernière étape !** Ta clé fonctionne, il ne reste qu'à **connecter {nice}**.\n\n"
+                f"👉 **Clique ici pour autoriser ton compte :**\n{link}\n\n"
+                "Autorise l'accès, puis redemande-moi. "
+                f"_(Ce lien connecte le compte sous l'identité `{used}`, celle que j'utilise.)_"
             )
+        connectees = ", ".join(sorted({s for s, _ in known if s}) ) or "aucune"
         return (
-            f"🔌 Presque ! Ta clé marche, mais **aucun compte {app} n'est connecté** pour l'identité `default`.\n\n"
-            "**À faire :** Composio → **Toolkits → Google Calendar → Connect account** → quand on te demande "
-            "l'**entity / user id**, mets **`default`** → autorise ton compte Google.\n\n"
-            f"_(Je n'ai pas pu générer le lien automatiquement : {dbg})_"
+            f"🔌 Ta clé marche, mais **aucun compte {nice} connecté** n'a été trouvé pour l'identité `{used}`.\n\n"
+            f"**Apps actuellement connectées :** {connectees}\n\n"
+            f"**À faire :** Composio → **Toolkits → {nice} → Connect account** → autorise ton compte.\n\n"
+            f"_(Détail technique : {dbg})_"
         )
     # Cause : clé VALIDE mais sans permission d'exécution (403 tool_execution)
     if ("tool_execution" in low or "toolexecution" in low.replace("_", "")
@@ -562,12 +577,72 @@ def _llm_json(system: str, user: str, temperature: float = 0.1) -> dict:
     return {}
 
 
-def _tool(name_cmd: str, args: dict) -> str:
+_USERID_CACHE = {}
+
+
+def _connected_accounts():
+    """Comptes réellement connectés sur Composio : [(toolkit_slug, user_id, status)]."""
+    import requests
+    ck = (getattr(config, "COMPOSIO_API_KEY", "") or "").strip()
+    if not ck:
+        return []
+    try:
+        r = requests.get("https://backend.composio.dev/api/v3/connected_accounts",
+                         headers={"x-api-key": ck}, params={"limit": 100}, timeout=20)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        items = data.get("items", data if isinstance(data, list) else []) or []
+        out = []
+        for it in items:
+            tk = it.get("toolkit") or {}
+            slug = (tk.get("slug") if isinstance(tk, dict) else None) or it.get("toolkit_slug") or ""
+            uid = it.get("user_id") or it.get("entity_id") or ""
+            out.append((str(slug).lower(), str(uid), str(it.get("status", ""))))
+        return out
+    except Exception:
+        return []
+
+
+def _toolkit_user_id(slug: str) -> str:
+    """Identité (entity) sous laquelle CETTE app est réellement connectée.
+
+    Indispensable : une app connectée depuis le dashboard Composio n'utilise pas forcément
+    'default'. Sans ça → 404 'No connected account found for user ID default'.
+    """
+    if not slug:
+        return getattr(config, "COMPOSIO_USER_ID", "default") or "default"
+    if slug in _USERID_CACHE:
+        return _USERID_CACHE[slug]
+    uid = ""
+    accounts = _connected_accounts()
+    for s, u, st in accounts:
+        if s == slug.lower() and u and st.upper() not in ("FAILED", "EXPIRED", "INACTIVE"):
+            uid = u
+            break
+    if not uid:  # repli : première identité connue, sinon la valeur configurée
+        for s, u, st in accounts:
+            if u:
+                uid = u
+                break
+    uid = uid or (getattr(config, "COMPOSIO_USER_ID", "default") or "default")
+    _USERID_CACHE[slug] = uid
+    return uid
+
+
+def _tool(name_cmd: str, args: dict, slug: str = "") -> str:
+    """Exécute une action Composio sous la BONNE identité (résolue automatiquement)."""
     import json as _json
     from plugins import get_loader
     from agent.self_heal import safe_tool_call
-    return safe_tool_call(get_loader(), "connected_app",
-                          {"command": name_cmd, "arguments": _json.dumps(args)})
+    if not slug:  # déduit l'app depuis le préfixe de l'action (ex. CANVA_CREATE… → canva)
+        head = (name_cmd or "").split("_", 1)[0].lower()
+        slug = head if head in _TOOLKITS else ""
+    params = {"command": name_cmd, "arguments": _json.dumps(args)}
+    uid = _toolkit_user_id(slug)
+    if uid:
+        params["user_id"] = uid
+    return safe_tool_call(get_loader(), "connected_app", params)
 
 
 def _gmail_send_flow(message: str):
@@ -1208,7 +1283,9 @@ async def apps_list(key: str = ""):
                 detail = f"HTTP {r.status_code}: {r.text[:200]}"
         except Exception as e:
             detail = f"{type(e).__name__}: {str(e)[:150]}"
-    return {"connected": connected, "known_by_nova": sorted(_TOOLKITS.keys()), "detail": detail}
+    return {"connected": connected,
+            "identite_utilisee": {c["app"]: _toolkit_user_id(c["app"]) for c in connected},
+            "known_by_nova": sorted(_TOOLKITS.keys()), "detail": detail}
 
 
 @router.get("/diag/connect")
