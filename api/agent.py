@@ -46,10 +46,8 @@ def _is_smalltalk(message: str) -> bool:
     return False
 
 
-def _smalltalk_reply(message: str) -> str:
-    """Réponse conversationnelle directe via le LLM, sans aucun outil."""
-    from llm.client import chat
-    msgs = [
+def _smalltalk_messages(message: str) -> list:
+    return [
         {"role": "system", "content": (
             "Tu es Nova, l'assistant personnel de l'utilisateur. Réponds en français, "
             "de façon chaleureuse, brève et naturelle. Ne parle JAMAIS de bourse, "
@@ -57,7 +55,12 @@ def _smalltalk_reply(message: str) -> str:
             "Propose simplement ton aide.")},
         {"role": "user", "content": message},
     ]
-    return chat(msgs, temperature=0.6)
+
+
+def _smalltalk_reply(message: str) -> str:
+    """Réponse conversationnelle directe via le LLM, sans aucun outil."""
+    from llm.client import chat
+    return chat(_smalltalk_messages(message), temperature=0.6)
 
 
 # Intention "app connectée" → agenda/mails/calendar/slack/notion : on route vers
@@ -160,21 +163,26 @@ def _clean_event_text(message: str) -> str:
 
 
 def _resolve_app_action(message: str):
-    """Mappe une demande agenda/mail vers une action Composio + ses arguments. Sinon (None, None)."""
+    """Mappe une demande agenda/mail vers une action Composio + ses arguments. Sinon (None, None).
+    IMPORTANT : on n'active l'agenda QUE sur un mot d'agenda EXPLICITE (agenda, rdv, réunion…)
+    ou un verbe de planification. Les mots temporels seuls (semaine, aujourd'hui, demain) NE
+    déclenchent PAS l'agenda → sinon « l'action X cette semaine » partirait à tort vers le calendrier."""
     import re
     m = message.lower()
-    cal = ("agenda", "calendrier", "calendar", "rendez-vous", "rendez vous", "rdv", "planning",
-           "planifie", "événement", "evenement", "réunion", "reunion", "meeting", "semaine",
-           "journée", "journee", "aujourd", "demain", "mois")
+    # Mots d'agenda EXPLICITES (déclencheurs forts)
+    cal_strong = ("agenda", "calendrier", "calendar", "rendez-vous", "rendez vous", "rdv",
+                  "réunion", "reunion", "meeting", "événement", "evenement", "planning",
+                  "mes events", "mon planning")
+    plan = ("planifie ma", "planifie mon", "organise ma", "organise mon", "prépare ma", "prepare ma")
+    day_word = any(w in m for w in ("journée", "journee", "semaine", "jour", "mois"))
     mail = ("mail", "mails", "email", "e-mail", "gmail", "boîte mail", "boite mail",
-            "inbox", "messagerie", "mes messages")
-    has_time = bool(re.search(r"\d{1,2}\s*h", m)) or any(w in m for w in (
-        "demain", "aujourd", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi",
-        "dimanche", "ce soir", "midi", "matin", "après-midi", "apres-midi"))
-    cal_ctx = any(c in m for c in cal)
+            "inbox", "messagerie", "mes messages", "mes mails")
+    has_clock = bool(re.search(r"\d{1,2}\s*h(\d{2})?\b", m)) or "midi" in m or "minuit" in m
 
-    # ➕ CRÉATION d'événement (agenda) → Quick Add (Google parse la langue naturelle)
-    if any(v in m for v in _CAL_CREATE) and (cal_ctx or has_time):
+    cal_ctx = any(c in m for c in cal_strong) or (any(p in m for p in plan) and day_word)
+
+    # ➕ CRÉATION d'événement → Quick Add (langage naturel). Exige un mot d'agenda OU une heure précise.
+    if any(v in m for v in _CAL_CREATE) and (cal_ctx or has_clock):
         return "GOOGLECALENDAR_QUICK_ADD", {"calendar_id": "primary", "text": _clean_event_text(message)}
 
     if cal_ctx:
@@ -280,9 +288,7 @@ def _honest_no_access(action: str, obs: str) -> str:
     )
 
 
-def _format_app_result(message: str, action: str, obs: str, is_write: bool = False) -> str:
-    """Met en forme les DONNÉES RÉELLES via le LLM — interdiction absolue d'inventer."""
-    from llm.client import chat
+def _format_app_messages(message: str, action: str, obs: str, is_write: bool = False) -> list:
     if is_write:
         sys = (
             "Tu es Nova. On te fournit la RÉPONSE RÉELLE d'une API après une action (création/"
@@ -300,10 +306,37 @@ def _format_app_result(message: str, action: str, obs: str, is_write: bool = Fal
             "de prévu. Termine par au plus 2 suggestions utiles."
         )
     user = f"Demande de l'utilisateur : {message}\n\nDONNÉES RÉELLES [{action}] :\n{obs[:3500]}"
+    return [{"role": "system", "content": sys}, {"role": "user", "content": user}]
+
+
+def _format_app_result(message: str, action: str, obs: str, is_write: bool = False) -> str:
+    """Met en forme les DONNÉES RÉELLES via le LLM — interdiction absolue d'inventer."""
+    from llm.client import chat
     try:
-        return chat([{"role": "system", "content": sys}, {"role": "user", "content": user}], temperature=0.2)
+        return chat(_format_app_messages(message, action, obs, is_write), temperature=0.2)
     except Exception:
         return f"Voici les données réelles récupérées :\n\n{obs[:2000]}"
+
+
+def _direct_app_prepare(message: str):
+    """Comme _direct_app_run mais SANS formater (pour le streaming). Renvoie un dict :
+    {steps, done_answer} si terminé (échec → message honnête), ou {steps, action, obs, is_write}."""
+    action, args = _resolve_app_action(message)
+    if not action:
+        return None
+    import json as _json
+    from plugins import get_loader
+    from agent.self_heal import safe_tool_call
+    obs = safe_tool_call(get_loader(), "connected_app",
+                         {"command": action, "arguments": _json.dumps(args)})
+    steps = [
+        {"kind": "action", "tool": "connected_app", "label": action},
+        {"kind": "obs", "tool": "connected_app", "text": str(obs)[:180]},
+    ]
+    if _looks_like_failure(obs):
+        return {"steps": steps, "done_answer": _honest_no_access(action, obs)}
+    is_write = any(k in action for k in ("CREATE", "QUICK_ADD", "UPDATE", "DELETE", "PATCH", "SEND"))
+    return {"steps": steps, "action": action, "obs": obs, "is_write": is_write}
 
 
 def _composio_connect_link(app_slug: str):
@@ -425,22 +458,53 @@ async def ask_stream(q: str = "", key: str = ""):
             return f"data: {_json.dumps(obj, ensure_ascii=False)}\n\n"
         if not message:
             yield sse({"type": "answer", "text": "Message vide."}); yield sse({"type": "done"}); return
+        loop = asyncio.get_running_loop()
+
+        async def _stream_llm(messages, temp):
+            """Diffuse une réponse LLM token par token (dans un thread, non bloquant)."""
+            from llm.client import chat_stream
+            import queue as _q
+            box = _q.Queue()
+            def worker():
+                try:
+                    for tok in chat_stream(messages, temperature=temp):
+                        box.put(("t", tok))
+                except Exception as e:
+                    box.put(("t", f"❌ {str(e)[:120]}"))
+                box.put(("end", None))
+            loop.run_in_executor(None, worker)
+            acc = ""
+            while True:
+                kind, val = await loop.run_in_executor(None, box.get)
+                if kind == "end":
+                    break
+                acc += val
+                yield val
+            yield_acc[0] = acc
+
+        yield_acc = [""]
         try:
+            # 1) Chitchat → streamé directement
             if _is_smalltalk(message):
-                yield sse({"type": "answer", "text": _smalltalk_reply(message)})
+                async for tok in _stream_llm(_smalltalk_messages(message), 0.6):
+                    yield sse({"type": "token", "t": tok})
+                yield sse({"type": "answer", "text": yield_acc[0], "final": True})
                 yield sse({"type": "done"}); return
-            # Agenda / mails → chemin déterministe (aucune invention possible)
-            loop = asyncio.get_running_loop()
-            direct = await loop.run_in_executor(None, _direct_app_run, message)
+            # 2) Agenda / mails → chemin déterministe (aucune invention), réponse streamée
+            direct = await loop.run_in_executor(None, _direct_app_prepare, message)
             if direct is not None:
                 for st in direct["steps"]:
                     if st["kind"] == "action":
-                        yield sse({"type": "step", "kind": "action",
-                                   "tool": st["tool"], "q": st.get("label", "")})
+                        yield sse({"type": "step", "kind": "action", "tool": st["tool"], "q": st.get("label", "")})
                     else:
-                        yield sse({"type": "step", "kind": "obs",
-                                   "tool": st["tool"], "text": st.get("text", "")})
-                yield sse({"type": "answer", "text": direct["answer"]})
+                        yield sse({"type": "step", "kind": "obs", "tool": st["tool"], "text": st.get("text", "")})
+                if direct.get("done_answer") is not None:
+                    yield sse({"type": "answer", "text": direct["done_answer"]})
+                    yield sse({"type": "done"}); return
+                msgs = _format_app_messages(message, direct["action"], direct["obs"], direct["is_write"])
+                async for tok in _stream_llm(msgs, 0.2):
+                    yield sse({"type": "token", "t": tok})
+                yield sse({"type": "answer", "text": yield_acc[0], "final": True})
                 yield sse({"type": "done"}); return
             from agent.core import run_agent_stream
             cfg = _build_agent_cfg(message, "Nova")
@@ -464,6 +528,40 @@ async def ask_stream(q: str = "", key: str = ""):
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.get("/tts/status")
+async def tts_status():
+    """Indique si la voix premium (ElevenLabs) est active."""
+    return {"enabled": bool(getattr(config, "ELEVENLABS_API_KEY", ""))}
+
+
+@router.get("/tts")
+async def tts(text: str = "", key: str = ""):
+    """Voix premium ElevenLabs → renvoie un audio MP3. Repli navigateur si pas de clé."""
+    _check_key(key)
+    from fastapi.responses import Response, JSONResponse
+    ek = getattr(config, "ELEVENLABS_API_KEY", "")
+    if not ek:
+        return JSONResponse({"ok": False, "reason": "no_key"})
+    txt = (text or "").strip()[:900]
+    if not txt:
+        return JSONResponse({"ok": False, "reason": "empty"}, status_code=400)
+    import requests
+    vid = getattr(config, "ELEVENLABS_VOICE_ID", "")
+    model = getattr(config, "ELEVENLABS_MODEL", "eleven_multilingual_v2")
+    try:
+        r = requests.post(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{vid}",
+            headers={"xi-api-key": ek, "Content-Type": "application/json", "Accept": "audio/mpeg"},
+            json={"text": txt, "model_id": model,
+                  "voice_settings": {"stability": 0.45, "similarity_boost": 0.8, "style": 0.25}},
+            timeout=30)
+        if r.status_code == 200:
+            return Response(content=r.content, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+        return JSONResponse({"ok": False, "status": r.status_code, "body": r.text[:200]}, status_code=502)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=502)
 
 
 @router.get("/diag/composio")

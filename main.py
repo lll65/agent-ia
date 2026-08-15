@@ -129,6 +129,42 @@ def nova_ui():
     return FileResponse(str(Path(__file__).parent / "ui" / "nova.html"))
 
 
+@app.get("/nova/manifest.webmanifest", include_in_schema=False)
+def nova_manifest():
+    """Manifest PWA : rend Nova installable sur le téléphone (icône plein écran)."""
+    from fastapi.responses import JSONResponse
+    return JSONResponse({
+        "name": "Nova", "short_name": "Nova", "start_url": "/nova", "scope": "/",
+        "display": "standalone", "orientation": "portrait",
+        "background_color": "#060610", "theme_color": "#7c5cff",
+        "description": "Ton assistant IA personnel — vocal, connecté, du futur.",
+        "icons": [{"src": "/nova/icon.svg", "sizes": "any", "type": "image/svg+xml",
+                   "purpose": "any maskable"}],
+    })
+
+
+@app.get("/nova/icon.svg", include_in_schema=False)
+def nova_icon():
+    from fastapi.responses import Response
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">'
+           '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">'
+           '<stop offset="0" stop-color="#7c5cff"/><stop offset="1" stop-color="#22d3ee"/>'
+           '</linearGradient></defs><rect width="512" height="512" rx="116" fill="#0a0a18"/>'
+           '<text x="50%" y="55%" font-family="Arial,Helvetica,sans-serif" font-size="300" '
+           'font-weight="800" fill="url(#g)" text-anchor="middle" dominant-baseline="middle">N</text></svg>')
+    return Response(content=svg, media_type="image/svg+xml")
+
+
+@app.get("/sw.js", include_in_schema=False)
+def nova_sw():
+    """Service worker minimal (portée racine) → critère d'installabilité PWA rempli."""
+    from fastapi.responses import Response
+    js = ("self.addEventListener('install',e=>self.skipWaiting());"
+          "self.addEventListener('activate',e=>self.clients.claim());"
+          "self.addEventListener('fetch',e=>{});")
+    return Response(content=js, media_type="application/javascript")
+
+
 @app.get("/status", tags=["Info"])
 async def full_status():
     from api.llm import status as llm_status
