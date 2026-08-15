@@ -148,17 +148,21 @@ def _honest_no_access(action: str, obs: str) -> str:
     app = ("ton agenda Google" if "CALENDAR" in action else
            "ta boîte Gmail" if "GMAIL" in action else "cette application")
     low = (obs or "").lower()
-    # Cause n°1 : clé API Composio invalide (401 / APIKey_InvalidAPIKey)
-    if "invalid api key" in low or "invalidapikey" in low.replace("_", "") or "401" in low:
+    key = getattr(config, "COMPOSIO_API_KEY", "") or ""
+    # Cause n°1 : clé API Composio refusée (401 / APIKey_InvalidAPIKey)
+    if "invalid api key" in low or "invalidapikey" in low.replace("_", "") or "401" in low or "refus" in low:
         return (
-            f"🔌 Je n'ai pas pu accéder à {app} — **ta clé API Composio est refusée**, donc je ne t'invente rien.\n\n"
-            "**Le souci :** la variable `COMPOSIO_API_KEY` sur Render n'est pas une clé de projet valide "
-            "(une clé valide commence par **`ak_`** ; la tienne commence par `ck_`).\n\n"
-            "**À faire (2 min) :**\n"
-            "1. Va sur **composio.dev** → **Settings → Project Settings → API Keys**.\n"
-            "2. Copie la clé qui commence par **`ak_…`** (ou génère-en une).\n"
-            "3. Sur **Render → Environment**, remplace `COMPOSIO_API_KEY` par cette clé (sans espace ni retour à la ligne), puis **Save/Redeploy**.\n"
-            "4. Redemande-moi ton agenda : je te sortirai tes **vrais** événements."
+            f"🔌 Je n'ai pas pu accéder à {app} — **ta clé Composio est refusée**, donc je ne t'invente rien.\n\n"
+            "**Pourquoi :** ta clé commence par `ck_` — c'est une clé **« consumer / MCP »**. L'API que "
+            "j'utilise a besoin d'une clé de **projet développeur** qui commence par **`ak_`**.\n\n"
+            "**À faire (≈ 3 min) :**\n"
+            "1. Sur composio.dev, en bas à gauche, clique **« Accédez à la plateforme pour développeurs »**.\n"
+            "2. **Settings → API Keys** → copie la clé **`ak_…`** (ou génère-en une).\n"
+            "3. Dans **Apps/Toolkits**, connecte **Google Calendar** (et **Gmail**) — autorise ton compte Google.\n"
+            "4. Sur **Render → Environment**, mets cette clé `ak_…` dans `COMPOSIO_API_KEY` (sans espace) → **Save**.\n"
+            "5. Redemande-moi ton agenda : tu auras tes **vrais** événements.\n\n"
+            "_(Je viens aussi d'apprendre à Nova à envoyer le bon en-tête pour les clés `ck_` : "
+            "après le prochain redéploiement, ta clé actuelle sera au moins testée correctement.)_"
         )
     return (
         f"🔌 Je n'ai pas pu accéder à {app}, donc je ne t'invente rien.\n\n"
