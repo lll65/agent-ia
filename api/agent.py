@@ -160,21 +160,26 @@ def _clean_event_text(message: str) -> str:
 
 
 def _resolve_app_action(message: str):
-    """Mappe une demande agenda/mail vers une action Composio + ses arguments. Sinon (None, None)."""
+    """Mappe une demande agenda/mail vers une action Composio + ses arguments. Sinon (None, None).
+    IMPORTANT : on n'active l'agenda QUE sur un mot d'agenda EXPLICITE (agenda, rdv, réunion…)
+    ou un verbe de planification. Les mots temporels seuls (semaine, aujourd'hui, demain) NE
+    déclenchent PAS l'agenda → sinon « l'action X cette semaine » partirait à tort vers le calendrier."""
     import re
     m = message.lower()
-    cal = ("agenda", "calendrier", "calendar", "rendez-vous", "rendez vous", "rdv", "planning",
-           "planifie", "événement", "evenement", "réunion", "reunion", "meeting", "semaine",
-           "journée", "journee", "aujourd", "demain", "mois")
+    # Mots d'agenda EXPLICITES (déclencheurs forts)
+    cal_strong = ("agenda", "calendrier", "calendar", "rendez-vous", "rendez vous", "rdv",
+                  "réunion", "reunion", "meeting", "événement", "evenement", "planning",
+                  "mes events", "mon planning")
+    plan = ("planifie ma", "planifie mon", "organise ma", "organise mon", "prépare ma", "prepare ma")
+    day_word = any(w in m for w in ("journée", "journee", "semaine", "jour", "mois"))
     mail = ("mail", "mails", "email", "e-mail", "gmail", "boîte mail", "boite mail",
-            "inbox", "messagerie", "mes messages")
-    has_time = bool(re.search(r"\d{1,2}\s*h", m)) or any(w in m for w in (
-        "demain", "aujourd", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi",
-        "dimanche", "ce soir", "midi", "matin", "après-midi", "apres-midi"))
-    cal_ctx = any(c in m for c in cal)
+            "inbox", "messagerie", "mes messages", "mes mails")
+    has_clock = bool(re.search(r"\d{1,2}\s*h(\d{2})?\b", m)) or "midi" in m or "minuit" in m
 
-    # ➕ CRÉATION d'événement (agenda) → Quick Add (Google parse la langue naturelle)
-    if any(v in m for v in _CAL_CREATE) and (cal_ctx or has_time):
+    cal_ctx = any(c in m for c in cal_strong) or (any(p in m for p in plan) and day_word)
+
+    # ➕ CRÉATION d'événement → Quick Add (langage naturel). Exige un mot d'agenda OU une heure précise.
+    if any(v in m for v in _CAL_CREATE) and (cal_ctx or has_clock):
         return "GOOGLECALENDAR_QUICK_ADD", {"calendar_id": "primary", "text": _clean_event_text(message)}
 
     if cal_ctx:
