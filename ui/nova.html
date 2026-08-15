@@ -375,9 +375,13 @@ let nodes=[], gAnim=null, GW=innerWidth, GH=innerHeight, GCX=GW/2, GCY=GH*.42, G
 function gResize(){ const dpr=Math.min(devicePixelRatio||1,2); GW=innerWidth; GH=innerHeight;
   gc.width=GW*dpr; gc.height=GH*dpr; gc.style.width=GW+"px"; gc.style.height=GH+"px";
   gx.setTransform(dpr,0,0,dpr,0,0); GCX=GW/2; GCY=GH*.42; RAD=Math.min(GW,GH)*.30; }
-function graphStart(){ gw.classList.add("show"); gResize(); GT=0;
+function graphStart(){ gw.classList.add("show"); gResize(); GT=0; phaseCount=0;
   nodes=[{core:1,a:0,r:1,tr:1,label:"NOVA",icon:"🧠",t:0}]; if(!gAnim) drawGraph(); }
 function graphAdd(icon,label){ const n=nodes.length-1; nodes.push({a:n*2.399, r:0, tr:1, label, icon, t:0}); }
+/* Nœuds "de phase" : apparaissent DÈS le début (analyse, réflexion, rédaction) pour que le schéma
+   soit vivant immédiatement — y compris en simple discussion, où aucun outil n'est appelé. */
+let phaseCount=0;
+function graphPhase(icon,label){ if(phaseCount>=3) return; phaseCount++; graphAdd(icon,label); }
 /* arcs de cercle segmentés (look HUD/tech) */
 function ring(cx,cy,rad,seg,off,col,w){ gx.strokeStyle=col; gx.lineWidth=w;
   for(let k=0;k<seg;k++){ const a0=off+k*(6.283/seg), a1=a0+(6.283/seg)*.6;
@@ -435,6 +439,8 @@ function ask(){
   document.body.classList.add("chatting");
   inp.value=""; grow(inp); addRow("me",fmt(msg)); histPush("me",msg); sndSend(); const bubble=addRow("ai",thinkHTML(THINK_PHRASES[0],"💭"));
   document.getElementById("send").disabled=true; thinking=true; document.body.classList.add("thinking"); graphStart();
+  graphPhase("💭","Analyse");                       // nœud visible immédiatement
+  setTimeout(()=>{ if(thinking) graphPhase("⚙️","Réflexion"); }, 900);
   let answer="", trace=[], pi=0, streamed=false;
   // Rotation "comme Claude" : une phrase apparaît, s'efface, une autre la remplace.
   // Une fois les vraies étapes arrivées, on cycle dessus (recherche web, agenda…).
@@ -450,12 +456,12 @@ function ask(){
       trace.push({icon:ic, label:stepLabel(d), detail:(d.q||d.text||"")});
       if(voiceMode) vSet(stepLabel(d),"");
       if(!answer&&!streamed){ bubble.innerHTML=thinkHTML(stepLabel(d), ic); pi=trace.length-1; chat.scrollTop=chat.scrollHeight; } }
-    else if(d.type==="token"){ if(!streamed){ streamed=true; stopThink(); bubble.innerHTML=""; }
+    else if(d.type==="token"){ if(!streamed){ streamed=true; stopThink(); bubble.innerHTML=""; graphAdd("✍️","Rédaction"); }
       answer+=(d.t||""); bubble.innerHTML=fmt(answer)+'<span class="cur">▍</span>'; chat.scrollTop=chat.scrollHeight;
       if(voiceMode) vSet("Nova répond…", answer.slice(-240)); }
     else if(d.type==="answer"){ const fin=d.text||"";
       if(streamed){ answer=fin||answer; bubble.innerHTML=fmt(answer); }
-      else { answer=fin; stopThink(); typewrite(bubble,answer); }
+      else { answer=fin; stopThink(); graphAdd("✍️","Rédaction"); typewrite(bubble,answer); }
       histPush("ai",answer);
       if(voiceMode){ vSet("Nova répond…", answer.slice(0,240)); speak(answer, ()=>{ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }); }
       else if(TTS) speak(answer); }
