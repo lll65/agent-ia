@@ -324,6 +324,48 @@ async def ask_stream(q: str = "", key: str = ""):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@router.get("/diag/composio")
+async def diag_composio(key: str = ""):
+    """Auto-test Composio : appelle l'API et renvoie la réponse BRUTE (pour diagnostic).
+    Ouvre /agent/diag/composio?key=TA_CLE_AGENT et colle le JSON obtenu."""
+    _check_key(key)
+    import requests
+    ck = (getattr(config, "COMPOSIO_API_KEY", "") or "")
+    ck_s = ck.strip()
+    meta = {
+        "key_present": bool(ck_s),
+        "key_len_raw": len(ck),
+        "key_len_stripped": len(ck_s),
+        "key_prefix": ck_s[:6],
+        "key_suffix": ck_s[-4:] if len(ck_s) >= 4 else "",
+        "had_whitespace": ck != ck_s,
+        "user_id": getattr(config, "COMPOSIO_USER_ID", "default"),
+    }
+    base = "https://backend.composio.dev"
+    hdr_name = "x-consumer-api-key" if ck_s.startswith("ck_") else "x-api-key"
+    probes = {}
+
+    def _probe(label, method, url, headers, body=None):
+        try:
+            if method == "GET":
+                r = requests.get(url, headers=headers, timeout=20)
+            else:
+                r = requests.post(url, headers=headers, json=body, timeout=20)
+            probes[label] = {"status": r.status_code, "body": r.text[:900]}
+        except Exception as e:
+            probes[label] = {"error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+    h = {hdr_name: ck_s, "Content-Type": "application/json"}
+    _probe("A_toolkits_GET", "GET", f"{base}/api/v3/toolkits?limit=1", h)
+    _probe("B_execute_calendar", "POST", f"{base}/api/v3/tools/execute/GOOGLECALENDAR_EVENTS_LIST",
+           h, {"user_id": meta["user_id"], "arguments": {}})
+    # Essai en-tête alternatif (au cas où le serveur attend x-api-key même pour ck_)
+    if hdr_name != "x-api-key":
+        _probe("C_toolkits_xapikey", "GET", f"{base}/api/v3/toolkits?limit=1",
+               {"x-api-key": ck_s, "Content-Type": "application/json"})
+    return {"meta": meta, "header_used": hdr_name, "probes": probes}
+
+
 @router.get("/ask")
 async def ask_get(q: str = "", key: str = ""):
     """Version GET (pratique pour Siri Raccourcis / navigateur) : /agent/ask?q=...&key=..."""
