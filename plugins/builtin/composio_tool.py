@@ -80,14 +80,19 @@ class ComposioPlugin(Plugin):
                               headers=headers, json={"user_id": user, "arguments": args}, timeout=30)
             if r.status_code == 200:
                 return _fmt(action, r.json())
-            # Clé rejetée → message ciblé (cause n°1 des échecs)
-            if r.status_code in (401, 403) or "invalidapikey" in r.text.lower().replace("_", ""):
+            tl = r.text.lower().replace("_", "")
+            # 403 : clé VALIDE mais sans permission d'exécution (tool_execution)
+            if r.status_code == 403 or "insufficientpermission" in tl or "toolexecution" in tl:
+                return ("🔑 Ta clé Composio est VALIDE mais n'a pas la permission d'exécuter des outils "
+                        "(il lui manque « tool_execution » en écriture). "
+                        "Composio → projet → Clés API → accorde « tool_execution » (write) à ta clé, "
+                        "OU crée une nouvelle clé de projet en ACCÈS COMPLET, mets-la dans COMPOSIO_API_KEY, redéploie.")
+            # 401 : clé refusée
+            if r.status_code == 401 or "invalidapikey" in tl:
                 kind = "consumer/MCP (ck_)" if key.startswith("ck_") else "projet (ak_)"
-                return (f"❌ Clé API Composio refusée (clé de type {kind}, variable COMPOSIO_API_KEY). "
-                        "Si tu utilises une clé « ck_ » (dashboard.composio.dev → Sessions et clé API) et que ça "
-                        "échoue, prends plutôt une clé de PROJET « ak_ » sur la plateforme développeurs "
-                        "(lien « Accédez à la plateforme pour développeurs »), et connectes-y Google Agenda/Gmail. "
-                        "Colle la clé dans COMPOSIO_API_KEY (sans espace) puis redéploie.")
+                return (f"❌ Clé API Composio refusée (type {kind}, variable COMPOSIO_API_KEY). "
+                        "Prends une clé de PROJET « ak_ » en accès complet sur la plateforme développeurs, "
+                        "colle-la sans espace puis redéploie.")
             return (f"❌ Action Composio '{action}' échouée (HTTP {r.status_code}).\n{r.text[:220]}\n"
                     "Vérifie que l'app est connectée sur composio.dev et que le nom d'action est exact.")
         except Exception as e:

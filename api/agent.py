@@ -137,9 +137,10 @@ def _looks_like_failure(obs: str) -> bool:
         return True
     if o.startswith("✅"):
         return False  # succès explicite du plugin (même si liste vide)
-    hard = ("❌", "⚠️", "[self-heal]", "[plugin", "échou", " error", "\"error\"",
+    hard = ("❌", "⚠️", "🔑", "[self-heal]", "[plugin", "échou", " error", "\"error\"",
             "401", "403", "404", "400", "not connected", "no connected", "not configured",
-            "non configuré", "introuvable", "unauthor", "invalid", "not found")
+            "non configuré", "introuvable", "unauthor", "invalid", "not found",
+            "permission", "tool_execution", "toolexecution")
     return any(b in low for b in hard)
 
 
@@ -150,7 +151,21 @@ def _honest_no_access(action: str, obs: str) -> str:
     low = (obs or "").lower()
     key = getattr(config, "COMPOSIO_API_KEY", "") or ""
     masked = (key[:6] + "…" + key[-4:]) if len(key) > 12 else ((key[:3] + "…") if key else "(vide)")
-    # Cause n°1 : clé API Composio refusée (401 / APIKey_InvalidAPIKey)
+    # Cause : clé VALIDE mais sans permission d'exécution (403 tool_execution)
+    if ("tool_execution" in low or "toolexecution" in low.replace("_", "")
+            or "insufficientpermission" in low.replace("_", "") or "permission" in low):
+        return (
+            f"🔑 Je n'ai pas pu accéder à {app} — **ta clé Composio est valide mais n'a pas le droit d'exécuter des outils**, donc je ne t'invente rien.\n\n"
+            "**Ce qui manque :** la permission **`tool_execution`** (write) sur ta clé `ak_`. "
+            "(Bonne nouvelle : la clé et le projet sont bons, il ne reste que ça.)\n\n"
+            "**À faire (1 min) :**\n"
+            "1. Composio → ton projet → **Clés API**.\n"
+            "2. Ouvre ta clé (ou **crée-en une nouvelle en ACCÈS COMPLET**) et accorde-lui la permission "
+            "**`tool_execution` = Write** (idéalement « full access » à tous les outils).\n"
+            "3. Si tu as créé une **nouvelle** clé : remplace `COMPOSIO_API_KEY` sur Render → **Save** → redéploie.\n"
+            "4. Redemande-moi ton agenda."
+        )
+    # Cause : clé API Composio refusée (401 / APIKey_InvalidAPIKey)
     if "invalid api key" in low or "invalidapikey" in low.replace("_", "") or "401" in low or "refus" in low:
         if key.startswith("ak_"):
             why = (f"La clé que **Render utilise en ce moment** est `{masked}` (type projet `ak_`), et "
