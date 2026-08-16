@@ -196,6 +196,22 @@
   .pitem{ padding:9px 11px; border-radius:11px; background:var(--glass); border:1px solid var(--stroke); line-height:1.45; word-break:break-word; font-size:13px; }
   .pitem b{ color:var(--neon2); font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; }
 
+  /* ═══ APP INSTALLÉE (écran d'accueil) : gérer l'encoche et la barre du bas ═══
+     En standalone il n'y a plus les barres Safari : sans ces marges, le contenu colle aux
+     bords et paraît décentré. */
+  @media (display-mode:standalone), (display-mode:fullscreen){
+    .app{ height:100dvh;
+          padding-top:calc(env(safe-area-inset-top) + 6px);
+          padding-bottom:calc(env(safe-area-inset-bottom) + 6px);
+          padding-left:calc(env(safe-area-inset-left) + 12px);
+          padding-right:calc(env(safe-area-inset-right) + 12px); }
+    #voiceUI{ padding-top:calc(env(safe-area-inset-top) + 12px);
+              padding-bottom:calc(env(safe-area-inset-bottom) + 20px); }
+    .sidebar{ padding-top:calc(env(safe-area-inset-top) + 12px);
+              padding-bottom:calc(env(safe-area-inset-bottom) + 12px); }
+    .modal{ padding-top:calc(env(safe-area-inset-top) + 16px);
+            padding-bottom:calc(env(safe-area-inset-bottom) + 16px); }
+  }
   /* ═══ MOBILE : compact, une seule rangée de suggestions, hauteur dvh ═══ */
   @media (max-width:620px){
     .app{ height:100dvh; padding:8px 10px max(8px,env(safe-area-inset-bottom)); }
@@ -738,16 +754,50 @@ function pickVoice(){ const vs=speechSynthesis.getVoices(); if(!vs.length) retur
     if(/f(e|é)minin|female/.test(n)) s+=1; return s; };
   pool.sort((a,b)=>score(b)-score(a)); NOVA_VOICE=pool[0]; }
 if("speechSynthesis" in window){ speechSynthesis.onvoiceschanged=pickVoice; pickVoice(); }
-let PREMIUM_TTS=false, curAudio=null;
-fetch(ORIGIN+"/agent/tts/status",{cache:"no-store"}).then(r=>r.json()).then(d=>{ PREMIUM_TTS=!!(d&&d.enabled); }).catch(()=>{});
-function speak(text,onend){ const clean=(text||"").replace(/[*#`>_|]/g,"").replace(/https?:\/\/\S+/g,"").slice(0,900);
-  try{ speechSynthesis.cancel(); }catch(e){} if(curAudio){ try{curAudio.pause();}catch(e){} curAudio=null; }
-  if(PREMIUM_TTS && KEY && clean){
-    try{ const u=ORIGIN+"/agent/tts?key="+encodeURIComponent(KEY)+"&text="+encodeURIComponent(clean);
-      curAudio=new Audio(u); curAudio.onended=()=>{ curAudio=null; if(onend)onend(); };
-      curAudio.onerror=()=>{ curAudio=null; browserSpeak(clean,onend); };
-      curAudio.play().catch(()=>browserSpeak(clean,onend)); return;
-    }catch(e){} }
+/* ═══ AUDIO SERVEUR (fiable sur iPhone, même en app installée) ═══
+   iOS bloque la synthèse du navigateur (surtout en mode "écran d'accueil"). On lit donc un vrai
+   fichier audio produit par le serveur. Astuce iOS : on "déverrouille" UN élément <audio> lors du
+   premier geste, puis on réutilise TOUJOURS le même — les lectures suivantes passent sans geste. */
+let SERVER_TTS=true, AUDIO=null, AUDIO_OK=false;
+fetch(ORIGIN+"/agent/tts/status",{cache:"no-store"}).then(r=>r.json())
+  .then(d=>{ SERVER_TTS=!!(d&&d.enabled); }).catch(()=>{ SERVER_TTS=false; });
+function unlockAudio(){ if(AUDIO) return;
+  try{ AUDIO=new Audio();
+    AUDIO.setAttribute("playsinline",""); AUDIO.preload="auto";
+    // mp3 silencieux minimal → autorise les lectures futures sans geste
+    AUDIO.src="data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4LjI5LjEwMAAAAAAAAAAAAAAA//tQxAADB8AhSmxhIIEVCSiJrDCQBTcu3UrAIwUdkRgQbFAZC1CQEwTJ9mjRvBA4UOLD8nKVOWfh+UlK3z/177OXrfOdKl7pyn3Xf//WreyTRUoAWgBgkOAGbZHBgG1OF6zM82DWbZaUmMBptgQhGjsyYqc9ae9XFz280948NMBWInljyzsNRFLPWdnZGWrddDsjK1unuSrVN9jJsK8KuQtQCtMBjCEtImISdNKJOopIpBFpNSMbIHCSRpRR5iakjTiyzLhchUUBwCgyKiweBv/7UsQbg8isVNZ5hAAI0IqZzzCAAQAAAA0gAAABAAAANIAAAAQAAAA0gAAABAAAANIAAAAQAAAA0gAAABAAAANIAAAAQAAAA0gAAABAAAANIAAAAQAAAA0gAAABAAAANIAAAAQAAAA0gAAABAAAANIAAAAQAAAA0gAAABAAAANIAAAAQAAAA0g";
+    AUDIO.volume=0;
+    const pr=AUDIO.play();
+    if(pr&&pr.then) pr.then(()=>{ AUDIO_OK=true; AUDIO.volume=1; }).catch(()=>{});
+    else { AUDIO_OK=true; AUDIO.volume=1; }
+  }catch(e){} }
+addEventListener("pointerdown",unlockAudio,{once:true});
+addEventListener("touchend",unlockAudio,{once:true});
+addEventListener("click",unlockAudio,{once:true});
+
+function stopSpeaking(){ try{ speechSynthesis.cancel(); }catch(e){}
+  if(AUDIO){ try{ AUDIO.pause(); }catch(e){} } }
+
+function speak(text,onend){
+  const clean=(text||"").replace(/[*#`>_|]/g,"").replace(/https?:\/\/\S+/g,"").slice(0,900);
+  LAST_SPOKEN=clean; stopSpeaking();
+  if(!clean){ if(onend) onend(); return; }
+  if(SERVER_TTS && KEY){
+    unlockAudio();
+    try{
+      stopListen(true);                       // le micro doit lâcher la session audio
+      const url=ORIGIN+"/agent/tts?key="+encodeURIComponent(KEY)+"&text="+encodeURIComponent(clean);
+      let done=false; const fin=()=>{ if(!done){ done=true; showReplay(false); if(onend) onend(); } };
+      AUDIO.onended=fin;
+      AUDIO.onerror=()=>{ if(!done){ done=true; browserSpeak(clean,onend); } };
+      AUDIO.volume=1; AUDIO.src=url;
+      const pr=AUDIO.play();
+      if(pr&&pr.catch) pr.catch(()=>{ if(!done){ showReplay(true); done=true;
+        // lecture refusée (aucun geste) → on propose le bouton et on reprend l'écoute
+        if(onend) onend(); } });
+      return;
+    }catch(e){}
+  }
   browserSpeak(clean,onend);
 }
 /* ═══ VOIX SUR MOBILE (iOS surtout) ═══
@@ -768,8 +818,8 @@ addEventListener("touchend",primeTTS,{once:true});
 addEventListener("click",primeTTS,{once:true});
 
 function showReplay(show){ const b=document.getElementById("replayBtn"); if(b) b.style.display=show?"":"none"; }
-function replayVoice(){ primeTTS(); showReplay(false);
-  if(LAST_SPOKEN) browserSpeak(LAST_SPOKEN, ()=>{ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }); }
+function replayVoice(){ primeTTS(); unlockAudio(); showReplay(false);
+  if(LAST_SPOKEN) speak(LAST_SPOKEN, ()=>{ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }); }
 
 function browserSpeak(clean,onend){
   LAST_SPOKEN=clean;
@@ -823,22 +873,39 @@ function startWake(){ if(!wakeOn||voiceMode||wrec) return;
   try{ wrec.start(); }catch(e){ wrec=null; } }
 function stopWake(){ if(wrec){ try{wrec.stop();}catch(e){}; wrec=null; } }
 if("serviceWorker" in navigator){ navigator.serviceWorker.register("/sw.js").catch(()=>{}); }
+/* Écoute avec TOLÉRANCE AUX PAUSES : on n'envoie la question qu'après un vrai silence
+   (SILENCE_MS). Tu peux donc chercher tes mots sans que Nova parte trop tôt. */
+const SILENCE_MS=2600;
+let silenceTimer=null, heard="";
+function armSilence(){ clearTimeout(silenceTimer);
+  silenceTimer=setTimeout(()=>{ const t=(heard||"").trim();
+    if(t && voiceMode){ stopListen(true); askVoice(t); } }, SILENCE_MS); }
 function startListen(){ const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(!SR){ vSet("Micro non supporté — essaie Chrome/Edge",""); return; }
+  if(!SR){ vSet("Micro non supporté sur ce navigateur",""); return; }
   if(vrec) return;
-  vrec=new SR(); vrec.lang="fr-FR"; vrec.interimResults=true; vrec.continuous=false;
-  let finalTxt="";
+  heard=""; clearTimeout(silenceTimer);
+  vrec=new SR(); vrec.lang="fr-FR"; vrec.interimResults=true; vrec.continuous=true;
   document.body.classList.add("listening"); vSet("Je t'écoute…","");
-  vrec.onresult=(e)=>{ let itx=""; finalTxt="";
-    for(let i=0;i<e.results.length;i++){ const r=e.results[i]; if(r.isFinal) finalTxt+=r[0].transcript; else itx+=r[0].transcript; }
-    vSet("Je t'écoute…", finalTxt||itx); };
-  vrec.onerror=()=>{};
-  vrec.onend=()=>{ vrec=null; document.body.classList.remove("listening"); if(!voiceMode) return;
-    const t=finalTxt.trim(); if(t) askVoice(t); else startListen(); };
+  vrec.onspeechstart=()=>{ stopSpeaking(); };        // tu parles → Nova se tait aussitôt
+  vrec.onresult=(e)=>{
+    stopSpeaking();                                   // interruption : elle te laisse la parole
+    let fin="", itx="";
+    for(let i=0;i<e.results.length;i++){ const r=e.results[i];
+      if(r.isFinal) fin+=r[0].transcript+" "; else itx+=r[0].transcript; }
+    heard=(fin+itx).trim();
+    vSet("Je t'écoute…", heard);
+    armSilence();                                     // chaque mot repousse l'envoi
+  };
+  vrec.onerror=(e)=>{ if(e && e.error==="not-allowed") vSet("Micro refusé — autorise-le dans les réglages",""); };
+  vrec.onend=()=>{ vrec=null; document.body.classList.remove("listening");
+    if(!voiceMode) return;
+    const t=(heard||"").trim();
+    if(t){ clearTimeout(silenceTimer); askVoice(t); }  // le navigateur a coupé : on envoie
+    else setTimeout(()=>{ if(voiceMode && !vrec) startListen(); },250); };
   try{ vrec.start(); }catch(e){ vrec=null; }
 }
-function stopListen(hard){ document.body.classList.remove("listening");
-  if(vrec){ try{ hard && vrec.abort ? vrec.abort() : vrec.stop(); }catch(e){}; vrec=null; } }
+function stopListen(hard){ document.body.classList.remove("listening"); clearTimeout(silenceTimer);
+  if(vrec){ try{ vrec.onend=null; hard && vrec.abort ? vrec.abort() : vrec.stop(); }catch(e){}; vrec=null; } }
 function askVoice(text){ document.body.classList.remove("listening"); vSet("Nova réfléchit…", text);
   const inp=document.getElementById("in"); inp.value=text; ask(); }
 let rec=null;
