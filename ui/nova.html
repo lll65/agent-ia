@@ -146,9 +146,12 @@
   body.thinking .chips{ opacity:.15; }
 
   /* ═══ MODE VOCAL plein écran ═══ */
-  #voiceUI{ display:none; position:fixed; inset:0; z-index:4; flex-direction:column; align-items:center; justify-content:flex-end; padding:0 24px max(40px,env(safe-area-inset-bottom)); pointer-events:none; }
+  #voiceUI{ display:none; position:fixed; inset:0; z-index:4; flex-direction:column; align-items:center; justify-content:center; gap:4px; padding:max(24px,env(safe-area-inset-top)) 24px max(32px,env(safe-area-inset-bottom)); pointer-events:none; }
   body.voice #voiceUI{ display:flex; }
-  body.voice .chat, body.voice .chips, body.voice .composer{ display:none; }
+  /* Mode vocal : interface épurée — on ne garde que l'orbe, le texte et le bouton quitter */
+  body.voice .chat, body.voice .chips, body.voice .composer, body.voice header{ display:none; }
+  body.voice #attachBar{ display:none!important; }
+  body.voice .app::before{ display:none; }
   body.voice #graphWrap{ display:block!important; opacity:1!important; }
   #voiceUI .orb{ width:120px; height:120px; border-radius:50%; margin-bottom:20px; background:radial-gradient(circle at 35% 30%,#a78bfa,#7c5cff 60%,#4c1d95); box-shadow:0 0 60px rgba(124,92,255,.7); animation:orbPulse 2.4s ease-in-out infinite; }
   body.listening #voiceUI .orb{ background:radial-gradient(circle at 35% 30%,#67e8f9,#22d3ee 60%,#0e7490); box-shadow:0 0 70px rgba(34,211,238,.8); animation:orbPulse 1.1s ease-in-out infinite; }
@@ -254,12 +257,15 @@
     <div class="sblabel">Conversations</div>
     <div class="sblist" id="sblist"></div>
     <div class="sbfoot">
-      <button class="sbf" onclick="wakeDevices()" title="Ouvrir le mode vocal sur tes autres appareils">📱 Réveil</button>
-      <button class="sbf" onclick="openAuto()">🌙 Auto</button>
+      <button class="sbf" onclick="openAuto()">🌙 Automatisations</button>
       <button class="sbf" onclick="location.href='/nova/brain'">🌌 Escouade</button>
       <button class="sbf" onclick="openMemory()">🧠 Mémoire</button>
       <button class="sbf" id="soundBtn" onclick="toggleSound()">🔉 Sons</button>
+      <!-- Réveil, mot-clé, voix… se pilotent aussi à la voix : « réveille mon téléphone », « active le mot-clé » -->
       <button class="sbf wide" id="wakeBtn" onclick="toggleWake()" title="Dire « Nova » ouvre le mode vocal">✨ Mot-clé « Nova »</button>
+      <div class="sbf wide" style="cursor:default;border:0;background:none;color:var(--dim);font-size:11px;padding:4px 0">
+        💡 Tu peux aussi me dire : « nouvelle conversation », « ouvre mes automatisations », « réveille mon téléphone »…
+      </div>
     </div>
   </aside>
 
@@ -328,8 +334,11 @@ function loadSessions(){ try{ SESSIONS=JSON.parse(localStorage.getItem("nova_ses
   curId=localStorage.getItem("nova_cur")||null;
   const old=localStorage.getItem("nova_hist");
   if(old && !SESSIONS.length){ try{ const msgs=JSON.parse(old); if(msgs&&msgs.length){ const t=(msgs.find(m=>m.role==="me")||{}).text||"Conversation"; SESSIONS.push({id:uid(),title:t.slice(0,40),ts:Date.now(),messages:msgs}); } }catch(e){} localStorage.removeItem("nova_hist"); }
-  if(!SESSIONS.length) newSessionObj();
-  if(!curId || !curSess()) curId=SESSIONS[0].id;
+  // À l'ouverture on démarre TOUJOURS sur une conversation neuve (les précédentes restent
+  // accessibles dans la sidebar). On réutilise la dernière si elle est déjà vide.
+  const vide = SESSIONS.find(s => !s.messages.length);
+  if(vide){ curId = vide.id; SESSIONS = [vide, ...SESSIONS.filter(s => s.id !== vide.id)]; }
+  else newSessionObj();
   saveSessions(); }
 function histPush(role,text){ const s=curSess(); if(!s) return; s.messages.push({role,text}); s.ts=Date.now();
   if(s.title==="Nouvelle conversation" && role==="me") s.title=text.slice(0,42);
@@ -539,11 +548,54 @@ function stepLabel(d){ const t=(d.tool||"").toLowerCase(), q=(d.q||"").toLowerCa
   return (d.tool? d.tool : "Traitement")+"…"; }
 function thinkHTML(txt,icon){ return '<span class="think"><span class="dot"></span>'+(icon?icon+" ":"")+esc(txt)+'<span class="cur">▍</span></span>'; }
 const THINK_PHRASES=["Nova réfléchit…","J'analyse ta demande…","Je choisis les bons outils…","Je rassemble les informations…","Je réfléchis à la meilleure réponse…","Je structure tout ça…"];
+/* ═══ COMMANDES EN LANGAGE NATUREL ═══
+   Plutôt que multiplier les boutons : tu dis (ou écris) ce que tu veux et Nova pilote l'interface. */
+const UI_COMMANDS=[
+  { re:/(nouvelle|nouveau) (conversation|discussion|chat)|recommence (à|a) z(é|e)ro|efface (tout|l'écran)/,
+    run:()=>{ newSession(); return "✨ Nouvelle conversation."; } },
+  { re:/(ouvre|montre|affiche|voir).*(automatisation|automatisations|t(â|a)ches? auto)/,
+    run:()=>{ openAuto(); return "🌙 J'ouvre tes automatisations."; } },
+  { re:/(ouvre|montre|affiche|voir).*(m(é|e)moire|ce que tu sais)/,
+    run:()=>{ openMemory(); return "🧠 Voici ce que je retiens sur toi."; } },
+  { re:/(ouvre|montre|affiche|voir).*(escouade|constellation|cerveau|brain|agents?)/,
+    run:()=>{ setTimeout(()=>location.href="/nova/brain",700); return "🌌 J'ouvre la constellation."; } },
+  { re:/(ouvre|montre|affiche|voir).*(conversations?|historique)/,
+    run:()=>{ toggleSidebar(); return "💬 Voici tes conversations."; } },
+  { re:/(coupe|d(é|e)sactive|arr(ê|e)te).*(son|sons|bruit)/,
+    run:()=>{ if(SOUND) toggleSound(); return "🔇 Sons coupés."; } },
+  { re:/(active|remets|allume).*(son|sons)/,
+    run:()=>{ if(!SOUND) toggleSound(); return "🔉 Sons réactivés."; } },
+  { re:/(coupe|d(é|e)sactive|arr(ê|e)te).*(voix|parle plus|de parler)/,
+    run:()=>{ if(TTS) toggleTTS(); return "🔇 Je n'utiliserai plus la voix."; } },
+  { re:/(active|remets).*(voix|parle)/,
+    run:()=>{ if(!TTS) toggleTTS(); return "🔊 Voix réactivée."; } },
+  { re:/(mode )?vocal|parle(-| )moi|(é|e)coute(-| )moi/,
+    run:()=>{ if(!voiceMode) setTimeout(toggleVoiceMode,400); return "🎙️ J'active le mode vocal."; } },
+  { re:/(r(é|e)veille|lance|ouvre).*(t(é|e)l(é|e)phone|mobile|autres? appareils?)/,
+    run:()=>{ wakeDevices(); return "📱 Mode vocal lancé sur tes autres appareils."; } },
+  { re:/(active|allume).*(mot(-| )cl(é|e)|d(é|e)tection)/,
+    run:()=>{ if(!wakeOn) toggleWake(); return "✨ Dis « Nova » quand tu veux me parler."; } },
+];
+function tryUICommand(msg){
+  const m=msg.toLowerCase().trim();
+  if(m.split(/\s+/).length>9) return null;      // une vraie demande, pas une commande d'interface
+  for(const c of UI_COMMANDS){ if(c.re.test(m)){ try{ return c.run(); }catch(e){ return null; } } }
+  return null;
+}
+
 function ask(){
   const inp=document.getElementById("in"), msg=inp.value.trim();
   if(!KEY){ openCfg(); return; }
   if(ATTACH){ inp.value=""; grow(inp); sendAttachment(msg); return; }   // fichier joint → analyse
   if(!msg) return;
+  // Commande d'interface ? → Nova agit tout de suite, sans appeler le serveur
+  const done=tryUICommand(msg);
+  if(done){ inp.value=""; grow(inp); document.body.classList.add("chatting");
+    addRow("me",fmt(msg)); histPush("me",msg); sndSend();
+    const b=addRow("ai",""); typewrite(b,done); histPush("ai",done);
+    if(voiceMode){ vSet(done,""); speak(done, ()=>{ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }); }
+    else if(TTS) speak(done);
+    return; }
   document.body.classList.add("chatting");
   inp.value=""; grow(inp); addRow("me",fmt(msg)); histPush("me",msg); sndSend(); const bubble=addRow("ai",thinkHTML(THINK_PHRASES[0],"💭"));
   document.getElementById("send").disabled=true; thinking=true; document.body.classList.add("thinking"); graphStart();
@@ -664,10 +716,33 @@ function speak(text,onend){ const clean=(text||"").replace(/[*#`>_|]/g,"").repla
     }catch(e){} }
   browserSpeak(clean,onend);
 }
-function browserSpeak(clean,onend){ try{ speechSynthesis.cancel();
-    const u=new SpeechSynthesisUtterance(clean); u.lang="fr-FR"; if(NOVA_VOICE) u.voice=NOVA_VOICE;
-    u.rate=1.0; u.pitch=1.05; u.onend=()=>{ if(onend) onend(); }; u.onerror=()=>{ if(onend) onend(); };
-    speechSynthesis.speak(u);
+/* Mobile : la synthèse vocale est bloquée tant qu'elle n'a pas été "déverrouillée" par un
+   geste utilisateur. On la débloque au 1er tap (bouton vocal), sinon Nova reste muette. */
+let TTS_READY=false;
+function primeTTS(){ if(TTS_READY) return; try{
+    const u=new SpeechSynthesisUtterance(" "); u.volume=0; u.lang="fr-FR";
+    speechSynthesis.speak(u); TTS_READY=true; }catch(e){} }
+addEventListener("pointerdown",primeTTS,{once:true});
+addEventListener("touchstart",primeTTS,{once:true});
+
+function browserSpeak(clean,onend){
+  try{
+    stopListen();                      // le micro doit se taire avant que Nova parle (mobile)
+    speechSynthesis.cancel();
+    if(speechSynthesis.paused){ try{ speechSynthesis.resume(); }catch(e){} }
+    const say=()=>{
+      const u=new SpeechSynthesisUtterance(clean); u.lang="fr-FR";
+      if(NOVA_VOICE) u.voice=NOVA_VOICE;
+      u.rate=1.0; u.pitch=1.05;
+      let done=false; const fin=()=>{ if(!done){ done=true; if(onend) onend(); } };
+      u.onend=fin; u.onerror=fin;
+      speechSynthesis.speak(u);
+      // Filet : si rien ne démarre (blocage mobile), on relance une fois puis on continue.
+      setTimeout(()=>{ if(!speechSynthesis.speaking && !done){
+        try{ speechSynthesis.resume(); speechSynthesis.speak(u); }catch(e){}
+        setTimeout(()=>{ if(!speechSynthesis.speaking) fin(); }, 700); } }, 350);
+    };
+    setTimeout(say, 140);              // laisse le temps au micro de se couper
   }catch(e){ if(onend) onend(); } }
 
 /* ═══ MODE VOCAL (conversation en direct) ═══ */
@@ -677,7 +752,7 @@ function vSet(s,sub){ const a=document.getElementById("vstatus"), b=document.get
 function toggleVoiceMode(){ if(!KEY){ openCfg(); return; }
   voiceMode=!voiceMode; document.body.classList.toggle("voice",voiceMode);
   document.getElementById("voiceBtn").classList.toggle("on",voiceMode);
-  if(voiceMode){ sndOpen(); graphStart(); vSet("Je t'écoute…",""); startListen(); }
+  if(voiceMode){ primeTTS(); ac(); sndOpen(); graphStart(); vSet("Je t'écoute…",""); startListen(); }
   else { stopListen(); speechSynthesis.cancel(); document.body.classList.remove("thinking"); graphEnd(); if(wakeOn) setTimeout(startWake,700); }
 }
 
