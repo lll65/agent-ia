@@ -514,14 +514,12 @@ def _direct_app_prepare(message: str):
             _remember_user(message)   # pour comprendre un suivi vague au tour suivant
             return {"steps": g["steps"], "done_answer": g["done_answer"]}
         return None
-    import json as _json
-    from plugins import get_loader
-    from agent.self_heal import safe_tool_call
-    obs = safe_tool_call(get_loader(), "connected_app",
-                         {"command": action, "arguments": _json.dumps(args)})
+    # ⚠️ Passe par _tool() : identité Composio résolue + activité enregistrée (constellation).
+    obs = _tool(action, args)
+    slug = (action or "").split("_", 1)[0].lower()
     steps = [
-        {"kind": "action", "tool": "connected_app", "label": action},
-        {"kind": "obs", "tool": "connected_app", "text": str(obs)[:180]},
+        {"kind": "action", "tool": slug, "label": action},
+        {"kind": "obs", "tool": slug, "text": str(obs)[:180]},
     ]
     if _looks_like_failure(obs):
         return {"steps": steps, "done_answer": _honest_no_access(action, obs)}
@@ -579,14 +577,11 @@ def _direct_app_run(message: str):
             _remember_user(message)   # pour comprendre un suivi vague au tour suivant
             return {"steps": g["steps"], "answer": g["done_answer"], "ok": True}
         return None
-    import json as _json
-    from plugins import get_loader
-    from agent.self_heal import safe_tool_call
-    obs = safe_tool_call(get_loader(), "connected_app",
-                         {"command": action, "arguments": _json.dumps(args)})
+    obs = _tool(action, args)   # identité résolue + activité enregistrée
+    slug = (action or "").split("_", 1)[0].lower()
     steps = [
-        {"kind": "action", "tool": "connected_app", "label": action},
-        {"kind": "obs", "tool": "connected_app", "text": str(obs)[:180]},
+        {"kind": "action", "tool": slug, "label": action},
+        {"kind": "obs", "tool": slug, "text": str(obs)[:180]},
     ]
     if _looks_like_failure(obs):
         return {"steps": steps, "answer": _honest_no_access(action, obs), "ok": False}
@@ -801,6 +796,15 @@ def _composio_list_actions(slug: str):
             continue
     _TOOLS_CACHE[slug] = out
     return out
+
+
+def _log_activity(message: str) -> None:
+    """Trace CHAQUE demande dans la constellation (même une simple discussion)."""
+    try:
+        from agent.squad import pick_agent, record
+        record(pick_agent(message), "", message[:60])
+    except Exception:
+        pass
 
 
 def _remember_user(message: str) -> None:
@@ -1089,6 +1093,7 @@ async def _ask_agent(message: str) -> str:
     Robuste : toute erreur est renvoyée comme message lisible (jamais de 500)."""
     import logging
     try:
+        _log_activity(message)
         if _is_smalltalk(message):
             return _smalltalk_reply(message)
         loop = asyncio.get_running_loop()
@@ -1164,6 +1169,7 @@ async def ask_stream(q: str = "", key: str = ""):
 
         yield_acc = [""]
         try:
+            _log_activity(message)   # visible immédiatement dans la constellation
             # 1) Chitchat / info personnelle → streamé directement (aucun outil)
             if _is_smalltalk(message):
                 _remember_fact(message)

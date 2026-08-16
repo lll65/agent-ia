@@ -128,18 +128,22 @@ def root():
     }
 
 
+_NOCACHE = {"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"}
+
+
 @app.get("/nova", include_in_schema=False)
 def nova_ui():
     """Interface futuriste custom (parle à /agent/ask). Alternative animée à Gradio."""
     from fastapi.responses import FileResponse
-    return FileResponse(str(Path(__file__).parent / "ui" / "nova.html"))
+    # no-store : sans ça le navigateur garde l'ancienne version après un déploiement.
+    return FileResponse(str(Path(__file__).parent / "ui" / "nova.html"), headers=_NOCACHE)
 
 
 @app.get("/nova/brain", include_in_schema=False)
 def nova_brain():
     """Constellation : l'escouade de sous-agents Nova et leur activité en temps réel."""
     from fastapi.responses import FileResponse
-    return FileResponse(str(Path(__file__).parent / "ui" / "brain.html"))
+    return FileResponse(str(Path(__file__).parent / "ui" / "brain.html"), headers=_NOCACHE)
 
 
 @app.get("/nova/manifest.webmanifest", include_in_schema=False)
