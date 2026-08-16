@@ -50,6 +50,10 @@ async def lifespan(app: FastAPI):
         bot_tasks.append(asyncio.create_task(run_discord_bot()))
         logger.info("Bot Discord démarré.")
 
+    # Automatisations — Nova exécute seule les tâches planifiées (« pendant que tu dors »)
+    from agent.automations import scheduler_loop
+    bot_tasks.append(asyncio.create_task(scheduler_loop()))
+
     # Briefing du matin proactif (agenda + mails + météo + actu) via Telegram
     if config.BRIEFING_ENABLED:
         from agent.briefing import morning_loop

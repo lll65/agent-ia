@@ -1383,6 +1383,62 @@ async def upload(request: Request):
     return {"answer": answer, "file": safe}
 
 
+class AutoReq(BaseModel):
+    key: Optional[str] = None
+    titre: Optional[str] = None
+    prompt: Optional[str] = None
+    hour: Optional[int] = 8
+    days: Optional[list] = None
+    icon: Optional[str] = "⚡"
+    active: Optional[bool] = None
+    id: Optional[str] = None
+
+
+@router.get("/automations")
+async def automations_list(key: str = ""):
+    """Liste les automatisations + les modèles proposés."""
+    _check_key(key)
+    from agent.automations import list_all, TEMPLATES
+    return {"items": list_all(), "templates": TEMPLATES}
+
+
+@router.post("/automations")
+async def automations_add(req: AutoReq):
+    """Crée une automatisation (tâche que Nova exécutera seule)."""
+    _check_key(req.key or "")
+    if not (req.titre and req.prompt):
+        raise HTTPException(status_code=400, detail="titre et prompt requis.")
+    from agent.automations import add
+    return add(req.titre, req.prompt, req.hour or 8, req.days, req.icon or "⚡")
+
+
+@router.post("/automations/toggle")
+async def automations_toggle(req: AutoReq):
+    """Active/désactive une automatisation."""
+    _check_key(req.key or "")
+    from agent.automations import update
+    return {"ok": update(req.id or "", active=req.active)}
+
+
+@router.post("/automations/run")
+async def automations_run(req: AutoReq):
+    """Lance une automatisation immédiatement (pour tester sans attendre l'heure)."""
+    _check_key(req.key or "")
+    from agent.automations import list_all, run_one
+    item = next((i for i in list_all() if i["id"] == (req.id or "")), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="Automatisation introuvable.")
+    return {"answer": await run_one(item)}
+
+
+@router.delete("/automations")
+async def automations_delete(id: str = "", key: str = ""):
+    """Supprime une automatisation."""
+    _check_key(key)
+    from agent.automations import delete
+    return {"ok": delete(id)}
+
+
 @router.get("/activity")
 async def activity():
     """État de l'escouade + activité temps réel (alimente la constellation /nova/brain)."""
