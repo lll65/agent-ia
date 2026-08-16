@@ -134,12 +134,19 @@
   #drop .dz{ padding:44px 60px; border:2px dashed var(--neon); border-radius:24px; text-align:center;
     box-shadow:0 0 60px rgba(124,92,255,.45); background:rgba(255,255,255,.04); }
   #drop .dz b{ display:block; font-size:19px; margin-top:10px; }
-  /* Barre de tokens */
-  .usage{ display:flex; align-items:center; gap:7px; font-size:10.5px; color:var(--dim); margin-right:4px; }
-  .ubar{ width:64px; height:6px; border-radius:6px; background:var(--glass); border:1px solid var(--stroke); overflow:hidden; }
-  .ubar i{ display:block; height:100%; width:0%; background:linear-gradient(90deg,var(--neon),var(--neon2)); box-shadow:0 0 10px var(--neon2); transition:width .7s ease; }
-  .usage.warn .ubar i{ background:linear-gradient(90deg,#f59e0b,#ef4444); }
-  .usage b{ color:var(--txt); font-weight:600; }
+  /* Jauge d'énergie (cellules qui se vident au fil de la consommation) */
+  .usage{ display:flex; align-items:center; gap:8px; margin-right:6px; cursor:default; }
+  .usage .bolt{ font-size:13px; filter:drop-shadow(0 0 6px rgba(34,211,238,.8)); animation:boltPulse 3.2s ease-in-out infinite; }
+  @keyframes boltPulse{ 0%,100%{ opacity:.85 } 50%{ opacity:1; filter:drop-shadow(0 0 12px rgba(34,211,238,1)) } }
+  .cells{ display:flex; gap:3px; align-items:center; }
+  .cell{ width:5px; height:15px; border-radius:2px; background:rgba(255,255,255,.08);
+         border:1px solid rgba(255,255,255,.10); transition:background .5s, box-shadow .5s; }
+  .cell.on{ background:linear-gradient(180deg,var(--neon2),var(--neon)); border-color:transparent;
+            box-shadow:0 0 8px rgba(34,211,238,.75); }
+  .usage.mid .cell.on{ background:linear-gradient(180deg,#fbbf24,#f59e0b); box-shadow:0 0 8px rgba(251,191,36,.75); }
+  .usage.low .cell.on{ background:linear-gradient(180deg,#fb7185,#ef4444); box-shadow:0 0 9px rgba(239,68,68,.85); animation:lowBlink 1.4s infinite; }
+  @keyframes lowBlink{ 50%{ opacity:.45 } }
+  .usage .pct{ font-size:11px; font-weight:700; color:var(--txt); letter-spacing:.02em; min-width:30px; }
   /* Quand Nova réfléchit : la conversation s'efface pour laisser voir le schéma 3D */
   body.thinking .chat .row{ opacity:.10; filter:blur(1.5px); transition:opacity .5s ease, filter .5s ease; }
   body.thinking .chat .row:last-child{ opacity:1; filter:none; }
@@ -153,7 +160,8 @@
   body.voice #attachBar{ display:none!important; }
   body.voice .app::before{ display:none; }
   body.voice #graphWrap{ display:block!important; opacity:1!important; }
-  #voiceUI .orb{ width:120px; height:120px; border-radius:50%; margin-bottom:20px; background:radial-gradient(circle at 35% 30%,#a78bfa,#7c5cff 60%,#4c1d95); box-shadow:0 0 60px rgba(124,92,255,.7); animation:orbPulse 2.4s ease-in-out infinite; }
+  /* Sur grand écran, l'ensemble descend un peu pour occuper le centre optique de la page */
+  #voiceUI .orb{ width:120px; height:120px; border-radius:50%; margin:8vh 0 20px; background:radial-gradient(circle at 35% 30%,#a78bfa,#7c5cff 60%,#4c1d95); box-shadow:0 0 60px rgba(124,92,255,.7); animation:orbPulse 2.4s ease-in-out infinite; }
   body.listening #voiceUI .orb{ background:radial-gradient(circle at 35% 30%,#67e8f9,#22d3ee 60%,#0e7490); box-shadow:0 0 70px rgba(34,211,238,.8); animation:orbPulse 1.1s ease-in-out infinite; }
   @keyframes orbPulse{ 0%,100%{ transform:scale(1) } 50%{ transform:scale(1.12) } }
   #voiceUI .vstatus{ font-size:20px; font-weight:700; letter-spacing:.02em; text-align:center; text-shadow:0 0 20px rgba(124,92,255,.6); }
@@ -252,8 +260,8 @@
       <button class="ic" onclick="toggleSidebar()" title="Conversations">☰</button>
       <div class="logo">NOVA<small>ASSISTANT · DU FUTUR</small></div>
       <div class="tools">
-        <div class="usage" id="usage" title="Tokens utilisés aujourd'hui">
-          <span>🪙</span><div class="ubar"><i id="ufill"></i></div><span id="utext">…</span>
+        <div class="usage" id="usage" title="Énergie restante aujourd'hui">
+          <span class="bolt">⚡</span><div class="cells" id="ucells"></div><span class="pct" id="utext">…</span>
         </div>
         <button class="ic" id="voiceBtn" onclick="toggleVoiceMode()" title="Mode vocal (parler en direct)">🎙️</button>
         <button class="ic on" id="ttsBtn" onclick="toggleTTS()" title="Voix de Nova">🔊</button>
@@ -530,7 +538,11 @@ function gResize(){ const dpr=Math.min(devicePixelRatio||1,2); GW=innerWidth; GH
   gx.setTransform(dpr,0,0,dpr,0,0); GCX=GW/2;
   // En mode vocal le schéma remonte : sinon son cœur se retrouve derrière l'orbe.
   const voice=document.body.classList.contains("voice");
-  GCY=GH*(voice?.17:.42); RAD=Math.min(GW,GH)*(voice?.20:.30); }
+  // En vocal le schéma remonte pour ne pas passer derrière l'orbe — mais seulement sur mobile,
+  // où la place manque. Sur grand écran il garde une position centrale et ample.
+  const petit = GW < 620;
+  GCY = GH * (voice ? (petit ? .17 : .21) : .42);
+  RAD = Math.min(GW, GH) * (voice ? (petit ? .20 : .26) : .30); }
 addEventListener("resize",()=>{ if(gAnim) gResize(); });
 function graphStart(){ gw.classList.add("show"); gResize(); GT=0; phaseCount=0;
   nodes=[{core:1,a:0,r:1,tr:1,label:"NOVA",icon:"🧠",t:0}]; if(!gAnim) drawGraph(); }
@@ -732,13 +744,21 @@ function sendAttachment(question){
 /* ═══ BARRE DE TOKENS ═══ */
 function fmtK(n){ n=+n||0; if(n>=1e6) return (n/1e6).toFixed(1).replace(/\.0$/,'')+"M";
   if(n>=1000) return (n/1000).toFixed(n>=1e5?0:1).replace(/\.0$/,'')+"k"; return ""+n; }
+/* Jauge d'énergie : 10 cellules qui s'éteignent au fil de la consommation du jour */
+const CELLS=10;
 async function refreshUsage(){ try{ const r=await fetch(ORIGIN+"/agent/usage",{cache:"no-store"}); const d=await r.json();
-  const t=d.total||{used:0,limit:1}, lim=Math.max(1,t.limit), pct=Math.min(100, t.used/lim*100);
-  const el=document.getElementById("usage"); document.getElementById("ufill").style.width=pct+"%";
-  document.getElementById("utext").innerHTML="<b>"+fmtK(t.used)+"</b> / "+fmtK(t.limit);
-  el.classList.toggle("warn", pct>85);
+  const t=d.total||{used:0,limit:1}, lim=Math.max(1,t.limit);
+  const left=Math.max(0, Math.min(100, 100 - (t.used/lim*100)));      // énergie restante
+  const el=document.getElementById("usage"), box=document.getElementById("ucells");
+  const on=Math.max(left>0?1:0, Math.round(left/100*CELLS));
+  if(box.children.length!==CELLS){ box.innerHTML=Array.from({length:CELLS},()=>'<i class="cell"></i>').join(""); }
+  [...box.children].forEach((c,i)=>c.classList.toggle("on", i<on));
+  document.getElementById("utext").textContent=Math.round(left)+"%";
+  el.classList.toggle("mid", left<=40 && left>15); el.classList.toggle("low", left<=15);
   const cb=d.cerebras||{used:0,limit:0}, gq=d.groq||{used:0,limit:0};
-  el.title="Tokens aujourd'hui — Cerebras "+fmtK(cb.used)+"/"+fmtK(cb.limit)+" · Groq "+fmtK(gq.used)+"/"+fmtK(gq.limit);
+  el.title="Énergie restante aujourd'hui : "+Math.round(left)+"%\n"
+          +"Cerebras "+fmtK(cb.used)+"/"+fmtK(cb.limit)+" · Groq "+fmtK(gq.used)+"/"+fmtK(gq.limit)
+          +"\n(se recharge chaque jour)";
 }catch(e){ document.getElementById("utext").textContent="—"; } }
 refreshUsage(); setInterval(refreshUsage, 20000);
 
