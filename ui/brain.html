@@ -66,8 +66,13 @@
 const ORIGIN=location.origin, cv=document.getElementById("c"), ctx=cv.getContext("2d");
 let W,H,CX,CY,T=0;
 let SQUAD=[],ACTIVE={},COUNTS={},CONNECTED=[];
-/* ── caméra 3D ── */
+/* ── caméra 3D ──
+   ⚠️ dragging/lx/ly/pinch DOIVENT être déclarés ici : draw() les lit dès la 1re frame.
+   Déclarés plus bas, ils étaient dans la "zone morte temporelle" (let) → draw() levait
+   « Cannot access 'dragging' before initialization », l'animation ne démarrait jamais et
+   tout le script suivant (écouteurs souris, tick()) n'était jamais exécuté → écran noir. */
 let yaw=0.6, pitch=-0.32, dist=1, autoSpin=true;
+let dragging=false, lx=0, ly=0, pinch=0;
 function resize(){ const d=Math.min(devicePixelRatio||1,2); W=innerWidth; H=innerHeight;
   cv.width=W*d; cv.height=H*d; cv.style.width=W+"px"; cv.style.height=H+"px"; ctx.setTransform(d,0,0,d,0,0);
   CX=W/2; CY=H/2; }
@@ -198,7 +203,6 @@ function hexA(hex,a){ const h=(hex||"#7c5cff").replace("#",""); const b=parseInt
 draw();
 
 /* ── Navigation : glisser / molette / pincer ── */
-let dragging=false,lx=0,ly=0,pinch=0;
 function down(x,y){ dragging=true; lx=x; ly=y; cv.classList.add("drag"); }
 function move(x,y){ if(!dragging) return; yaw+=(x-lx)*0.006; pitch+=(y-ly)*0.005;
   pitch=Math.max(-1.35,Math.min(1.35,pitch)); lx=x; ly=y; }

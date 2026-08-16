@@ -180,8 +180,10 @@
   .sbitem .sbt{ flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .sbitem .sbx{ opacity:0; color:var(--dim); font-size:12px; transition:.15s; }
   .sbitem:hover .sbx{ opacity:.8; } .sbitem .sbx:hover{ color:var(--pink); }
-  .sbfoot{ display:flex; gap:8px; border-top:1px solid var(--stroke); padding-top:12px; }
-  .sbf{ flex:1; padding:10px; border-radius:11px; background:var(--glass); border:1px solid var(--stroke); color:var(--dim); cursor:pointer; font-size:12.5px; transition:.15s; }
+  /* Grille 2 colonnes : les boutons restent alignés quel que soit leur nombre */
+  .sbfoot{ display:grid; grid-template-columns:1fr 1fr; gap:8px; border-top:1px solid var(--stroke); padding-top:12px; }
+  .sbf{ padding:10px 8px; border-radius:11px; background:var(--glass); border:1px solid var(--stroke); color:var(--dim); cursor:pointer; font-size:12.5px; transition:.15s; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .sbf.wide{ grid-column:1 / -1; }
   .sbf:hover{ color:#fff; border-color:var(--neon); }
   .sbf.on{ color:var(--neon2); border-color:var(--neon2); }
   .scrim{ position:fixed; inset:0; z-index:11; background:rgba(0,0,0,.5); backdrop-filter:blur(2px); opacity:0; pointer-events:none; transition:opacity .3s; }
@@ -256,7 +258,7 @@
       <button class="sbf" onclick="location.href='/nova/brain'">🌌 Escouade</button>
       <button class="sbf" onclick="openMemory()">🧠 Mémoire</button>
       <button class="sbf" id="soundBtn" onclick="toggleSound()">🔉 Sons</button>
-      <button class="sbf" id="wakeBtn" onclick="toggleWake()" title="Dire « Nova » ouvre le mode vocal">✨ Mot-clé</button>
+      <button class="sbf wide" id="wakeBtn" onclick="toggleWake()" title="Dire « Nova » ouvre le mode vocal">✨ Mot-clé « Nova »</button>
     </div>
   </aside>
 
