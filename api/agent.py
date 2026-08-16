@@ -287,18 +287,44 @@ _CAL_CREATE = ("ajoute", "rajoute", "crée", "cree", "créer", "creer", "réserv
 
 
 def _clean_event_text(message: str) -> str:
-    """Nettoie la phrase pour Google Quick Add (retire les mots 'agenda' et le verbe d'ajout)."""
+    """Nettoie la phrase pour Google Quick Add (retire l'appel à Nova, le verbe et les mots 'agenda')."""
     import re
     t = " " + message + " "
+    # 1) On enlève l'interpellation ("Nova, ...", "dis Nova ...") — sinon elle finit dans le titre.
+    t = re.sub(r"^[\s,]*(h?ey\s+|ok\s+|dis\s+)?nova[\s,:!]*", " ", t.strip(), flags=re.I)
+    # 2) Les mentions de l'agenda
     for w in ("sur mon agenda", "dans mon agenda", "à mon agenda", "a mon agenda", "sur l'agenda",
-              "dans l'agenda", "dans le calendrier", "sur mon calendrier", "mon agenda", "l'agenda"):
+              "dans l'agenda", "dans le calendrier", "sur mon calendrier", "mon agenda", "l'agenda",
+              "mon calendrier", "agenda"):
         t = re.sub(re.escape(w), " ", t, flags=re.I)
-    t = t.strip()
+    t = re.sub(r"\s+", " ", t).strip()
+    # 3) Le verbe d'ajout, puis les mots creux ("une tâche", "un événement"…)
     for w in ("ajoute-moi", "ajoute moi", "ajouter", "ajoute", "rajoute", "crée", "cree", "créer",
               "creer", "réserve", "reserve", "bloque", "programme", "planifie", "mets-moi",
               "mets moi", "mets", "note"):
         t = re.sub(r"^\s*" + w + r"\b", "", t.strip(), flags=re.I)
+    t = re.sub(r"^\s*(une?\s+)?(t[âa]che|[ée]v[ée]nement|rappel|truc|chose)\s+(de\s+|pour\s+)?",
+               "", t.strip(), flags=re.I)
     return t.strip(" ,:\"'").strip() or message
+
+
+def _event_text(message: str) -> str:
+    """Titre + moment prêts pour Quick Add. Le LLM extrait l'essentiel (robuste à l'oral),
+    avec repli sur le nettoyage par règles si l'extraction échoue."""
+    base = _clean_event_text(message)
+    ex = _llm_json(
+        "Extrais l'événement à mettre dans un agenda. JSON STRICT : "
+        '{"titre":"…","quand":"…"}. '
+        "titre = 2 à 4 mots MAX décrivant l'activité, sans verbe d'ajout, sans le mot « agenda », "
+        "sans le mot « Nova », première lettre en majuscule (ex. « Travail », « Rendez-vous dentiste »). "
+        "quand = l'expression temporelle telle quelle (ex. « demain 14h », « lundi 9h »), "
+        "chaîne vide si aucune n'est donnée.",
+        f"Phrase : {message}")
+    titre = (ex.get("titre") or "").strip(" .\"'")
+    quand = (ex.get("quand") or "").strip(" .\"'")
+    if titre and len(titre) <= 60:
+        return (titre + (" " + quand if quand else "")).strip()
+    return base
 
 
 def _resolve_app_action(message: str):
@@ -322,7 +348,7 @@ def _resolve_app_action(message: str):
 
     # ➕ CRÉATION d'événement → Quick Add (langage naturel). Exige un mot d'agenda OU une heure précise.
     if any(v in m for v in _CAL_CREATE) and (cal_ctx or has_clock):
-        return "GOOGLECALENDAR_QUICK_ADD", {"calendar_id": "primary", "text": _clean_event_text(message)}
+        return "GOOGLECALENDAR_QUICK_ADD", {"calendar_id": "primary", "text": _event_text(message)}
 
     if cal_ctx:
         tmin, tmax, _ = _time_bounds(message)
