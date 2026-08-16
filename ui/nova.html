@@ -196,7 +196,34 @@
   .pitem{ padding:9px 11px; border-radius:11px; background:var(--glass); border:1px solid var(--stroke); line-height:1.45; word-break:break-word; font-size:13px; }
   .pitem b{ color:var(--neon2); font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; }
 
-  @media (max-width:560px){ .logo{ font-size:22px } .bubble{ font-size:14.5px } .chips{ gap:6px } .usage{ display:none } }
+  /* ═══ MOBILE : compact, une seule rangée de suggestions, hauteur dvh ═══ */
+  @media (max-width:620px){
+    .app{ height:100dvh; padding:8px 10px max(8px,env(safe-area-inset-bottom)); }
+    .logo{ font-size:19px; letter-spacing:.24em } .logo small{ font-size:8.5px }
+    .usage{ display:none }
+    header{ padding:2px 2px 8px } .ic{ width:36px; height:36px; font-size:14px; border-radius:10px }
+    /* suggestions : rangée unique qui défile horizontalement au lieu de 4 lignes */
+    .chips{ flex-wrap:nowrap; overflow-x:auto; gap:6px; padding:1px 0 8px; scrollbar-width:none; -webkit-overflow-scrolling:touch }
+    .chips::-webkit-scrollbar{ display:none }
+    .chip{ flex:0 0 auto; font-size:12px; padding:6px 11px }
+    .bubble{ font-size:14.5px; padding:11px 13px } .col,.me .bubble{ max-width:88% }
+    .composer{ gap:7px; padding-top:6px }
+    .composer textarea{ padding:11px 13px; font-size:16px }   /* 16px = pas de zoom auto iOS */
+    .send,.micbtn{ width:46px; border-radius:13px; font-size:17px }
+    .hint{ font-size:12.5px; padding:0 18px }
+  }
+  /* Mode vocal sur mobile : le schéma passe en fond discret, rien ne se superpose */
+  @media (max-width:620px){
+    body.voice #graphWrap{ opacity:.32 }
+    body.voice #graphWrap .cap{ display:none }
+    #voiceUI .orb{ width:96px; height:96px; margin-bottom:14px }
+    #voiceUI .vstatus{ font-size:17px }
+    #voiceUI .vsub{ font-size:14px; max-width:92vw }
+  }
+  /* Le texte du mode vocal reste lisible par-dessus le schéma */
+  #voiceUI .vstatus,#voiceUI .vsub{ text-shadow:0 2px 14px rgba(5,5,13,.95), 0 0 26px rgba(5,5,13,.9); }
+  #voiceUI .vwrap{ background:radial-gradient(60% 60% at 50% 50%, rgba(6,6,16,.82), transparent 75%);
+                   padding:16px 20px; border-radius:24px; display:flex; flex-direction:column; align-items:center; gap:6px; }
   @media (prefers-reduced-motion:reduce){ #graph{ opacity:.9 } .logo,.send,.blob,#voiceUI .orb{ animation:none!important } }
 </style>
 </head>
@@ -241,8 +268,11 @@
 
   <div id="voiceUI">
     <div class="orb"></div>
-    <div class="vstatus" id="vstatus">Appuie sur 🎙️ pour parler</div>
-    <div class="vsub" id="vsub"></div>
+    <div class="vwrap">
+      <div class="vstatus" id="vstatus">Appuie sur 🎙️ pour parler</div>
+      <div class="vsub" id="vsub"></div>
+    </div>
+    <button class="vexit" id="replayBtn" onclick="replayVoice()" style="display:none">🔊 Écouter la réponse</button>
     <button class="vexit" onclick="toggleVoiceMode()">✕ Quitter le mode vocal</button>
   </div>
 
@@ -481,7 +511,11 @@ const gw=document.getElementById("graphWrap"), gc=document.getElementById("graph
 let nodes=[], gAnim=null, GW=innerWidth, GH=innerHeight, GCX=GW/2, GCY=GH*.42, GT=0, RAD=220;
 function gResize(){ const dpr=Math.min(devicePixelRatio||1,2); GW=innerWidth; GH=innerHeight;
   gc.width=GW*dpr; gc.height=GH*dpr; gc.style.width=GW+"px"; gc.style.height=GH+"px";
-  gx.setTransform(dpr,0,0,dpr,0,0); GCX=GW/2; GCY=GH*.42; RAD=Math.min(GW,GH)*.30; }
+  gx.setTransform(dpr,0,0,dpr,0,0); GCX=GW/2;
+  // En mode vocal le schéma remonte : sinon son cœur se retrouve derrière l'orbe.
+  const voice=document.body.classList.contains("voice");
+  GCY=GH*(voice?.17:.42); RAD=Math.min(GW,GH)*(voice?.20:.30); }
+addEventListener("resize",()=>{ if(gAnim) gResize(); });
 function graphStart(){ gw.classList.add("show"); gResize(); GT=0; phaseCount=0;
   nodes=[{core:1,a:0,r:1,tr:1,label:"NOVA",icon:"🧠",t:0}]; if(!gAnim) drawGraph(); }
 function graphAdd(icon,label){ const n=nodes.length-1; nodes.push({a:n*2.399, r:0, tr:1, label, icon, t:0}); }
@@ -716,33 +750,48 @@ function speak(text,onend){ const clean=(text||"").replace(/[*#`>_|]/g,"").repla
     }catch(e){} }
   browserSpeak(clean,onend);
 }
-/* Mobile : la synthèse vocale est bloquée tant qu'elle n'a pas été "déverrouillée" par un
-   geste utilisateur. On la débloque au 1er tap (bouton vocal), sinon Nova reste muette. */
-let TTS_READY=false;
-function primeTTS(){ if(TTS_READY) return; try{
-    const u=new SpeechSynthesisUtterance(" "); u.volume=0; u.lang="fr-FR";
+/* ═══ VOIX SUR MOBILE (iOS surtout) ═══
+   Deux contraintes propres à iOS :
+   1. La synthèse doit être "amorcée" par un VRAI geste utilisateur, avec une vraie phrase.
+   2. La reconnaissance vocale (micro) monopolise la session audio : tant qu'elle n'est pas
+      ABORTÉE, la synthèse reste silencieuse. D'où abort() + délai avant de parler. */
+const IOS=/iP(hone|ad|od)/.test(navigator.userAgent) ||
+          (navigator.platform==="MacIntel" && navigator.maxTouchPoints>1);
+let TTS_READY=false, LAST_SPOKEN="";
+function primeTTS(){ if(TTS_READY||!("speechSynthesis" in window)) return;
+  try{ speechSynthesis.cancel();
+    const u=new SpeechSynthesisUtterance("Bonjour"); u.lang="fr-FR"; u.volume=0.01; u.rate=1.6;
+    if(NOVA_VOICE) u.voice=NOVA_VOICE;
     speechSynthesis.speak(u); TTS_READY=true; }catch(e){} }
 addEventListener("pointerdown",primeTTS,{once:true});
-addEventListener("touchstart",primeTTS,{once:true});
+addEventListener("touchend",primeTTS,{once:true});
+addEventListener("click",primeTTS,{once:true});
+
+function showReplay(show){ const b=document.getElementById("replayBtn"); if(b) b.style.display=show?"":"none"; }
+function replayVoice(){ primeTTS(); showReplay(false);
+  if(LAST_SPOKEN) browserSpeak(LAST_SPOKEN, ()=>{ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }); }
 
 function browserSpeak(clean,onend){
+  LAST_SPOKEN=clean;
   try{
-    stopListen();                      // le micro doit se taire avant que Nova parle (mobile)
-    speechSynthesis.cancel();
-    if(speechSynthesis.paused){ try{ speechSynthesis.resume(); }catch(e){} }
+    stopListen(true);                       // abort() : libère la session audio immédiatement
+    try{ speechSynthesis.cancel(); }catch(e){}
     const say=()=>{
+      try{ if(speechSynthesis.paused) speechSynthesis.resume(); }catch(e){}
       const u=new SpeechSynthesisUtterance(clean); u.lang="fr-FR";
       if(NOVA_VOICE) u.voice=NOVA_VOICE;
-      u.rate=1.0; u.pitch=1.05;
-      let done=false; const fin=()=>{ if(!done){ done=true; if(onend) onend(); } };
-      u.onend=fin; u.onerror=fin;
-      speechSynthesis.speak(u);
-      // Filet : si rien ne démarre (blocage mobile), on relance une fois puis on continue.
-      setTimeout(()=>{ if(!speechSynthesis.speaking && !done){
-        try{ speechSynthesis.resume(); speechSynthesis.speak(u); }catch(e){}
-        setTimeout(()=>{ if(!speechSynthesis.speaking) fin(); }, 700); } }, 350);
+      u.rate=1.0; u.pitch=1.05; u.volume=1;
+      let done=false; const fin=()=>{ if(!done){ done=true; showReplay(false); if(onend) onend(); } };
+      u.onstart=()=>showReplay(false); u.onend=fin; u.onerror=fin;
+      try{ speechSynthesis.speak(u); }catch(e){ fin(); return; }
+      // Si rien ne sort (blocage iOS) : une relance, puis on propose un bouton d'écoute.
+      setTimeout(()=>{ if(done) return;
+        if(!speechSynthesis.speaking){
+          try{ speechSynthesis.resume(); speechSynthesis.speak(u); }catch(e){}
+          setTimeout(()=>{ if(!speechSynthesis.speaking && !done){ showReplay(true); fin(); } }, 900);
+        } }, 450);
     };
-    setTimeout(say, 140);              // laisse le temps au micro de se couper
+    setTimeout(say, IOS ? 550 : 160);       // iOS a besoin de plus de temps après le micro
   }catch(e){ if(onend) onend(); } }
 
 /* ═══ MODE VOCAL (conversation en direct) ═══ */
@@ -752,7 +801,7 @@ function vSet(s,sub){ const a=document.getElementById("vstatus"), b=document.get
 function toggleVoiceMode(){ if(!KEY){ openCfg(); return; }
   voiceMode=!voiceMode; document.body.classList.toggle("voice",voiceMode);
   document.getElementById("voiceBtn").classList.toggle("on",voiceMode);
-  if(voiceMode){ primeTTS(); ac(); sndOpen(); graphStart(); vSet("Je t'écoute…",""); startListen(); }
+  if(voiceMode){ primeTTS(); ac(); sndOpen(); graphStart(); gResize(); vSet("Je t'écoute…",""); startListen(); }
   else { stopListen(); speechSynthesis.cancel(); document.body.classList.remove("thinking"); graphEnd(); if(wakeOn) setTimeout(startWake,700); }
 }
 
@@ -788,7 +837,8 @@ function startListen(){ const SR=window.SpeechRecognition||window.webkitSpeechRe
     const t=finalTxt.trim(); if(t) askVoice(t); else startListen(); };
   try{ vrec.start(); }catch(e){ vrec=null; }
 }
-function stopListen(){ document.body.classList.remove("listening"); if(vrec){ try{vrec.stop();}catch(e){}; vrec=null; } }
+function stopListen(hard){ document.body.classList.remove("listening");
+  if(vrec){ try{ hard && vrec.abort ? vrec.abort() : vrec.stop(); }catch(e){}; vrec=null; } }
 function askVoice(text){ document.body.classList.remove("listening"); vSet("Nova réfléchit…", text);
   const inp=document.getElementById("in"); inp.value=text; ask(); }
 let rec=null;
