@@ -254,6 +254,7 @@
     <div class="sblabel">Conversations</div>
     <div class="sblist" id="sblist"></div>
     <div class="sbfoot">
+      <button class="sbf" onclick="wakeDevices()" title="Ouvrir le mode vocal sur tes autres appareils">📱 Réveil</button>
       <button class="sbf" onclick="openAuto()">🌙 Auto</button>
       <button class="sbf" onclick="location.href='/nova/brain'">🌌 Escouade</button>
       <button class="sbf" onclick="openMemory()">🧠 Mémoire</button>
@@ -726,9 +727,29 @@ function toggleMic(){ const SR=window.SpeechRecognition||window.webkitSpeechReco
   rec.start();
 }
 
+/* ═══ RÉVEIL VOCAL MULTI-APPAREILS ═══
+   1) /nova?voice=1  → ouvre directement le mode vocal (idéal pour un raccourci Siri/Assistant)
+   2) Un appareil peut réveiller les autres (bouton 📱) : ils ouvrent le mode vocal à distance. */
+let WAKE_SINCE=Date.now()/1000;
+async function pollWake(){ if(!KEY||voiceMode) return;
+  try{ const d=await (await fetch(ORIGIN+"/agent/voice/pending?since="+WAKE_SINCE,{cache:"no-store"})).json();
+    if(d && d.wake){ WAKE_SINCE=d.ts; sndPing(); if(!voiceMode) toggleVoiceMode(); }
+  }catch(e){} }
+setInterval(pollWake, 3000);
+async function wakeDevices(){ if(!KEY){ openCfg(); return; }
+  try{ await fetch(ORIGIN+"/agent/voice/wake",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({key:KEY,titre:"mon ordinateur"})});
+    WAKE_SINCE=Date.now()/1000+2;   // ne pas se réveiller soi-même
+    sndReceive(); vFlash("📱 Mode vocal demandé sur tes autres appareils");
+    alert("📱 Mode vocal lancé sur tes appareils qui ont Nova ouvert.");
+  }catch(e){ alert("Impossible de contacter le serveur."); } }
+
 /* Restaure les sessions au chargement */
 loadSessions(); renderChat(); renderSessions();
 document.getElementById("soundBtn").classList.toggle("on",SOUND);
+/* Lancement direct en mode vocal via ?voice=1 (raccourci Siri « Nova ») */
+if(new URLSearchParams(location.search).get("voice")==="1"){
+  addEventListener("load",()=>setTimeout(()=>{ if(KEY && !voiceMode) toggleVoiceMode(); },300)); }
 </script>
 </body>
 </html>

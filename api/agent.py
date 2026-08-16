@@ -887,6 +887,29 @@ def _is_capability_question(message: str) -> bool:
     return any(p in m for p in pats)
 
 
+def _plain_capabilities(slug: str, actions: list) -> str:
+    """Traduit les actions techniques en phrases claires, en français."""
+    from llm.client import chat
+    liste = "\n".join(f"- {a['name']}: {(a.get('desc') or '')[:90]}" for a in actions[:40])
+    try:
+        out = chat([
+            {"role": "system", "content": (
+                "On te donne les actions d'API disponibles pour une application. Résume en FRANÇAIS "
+                "ce que l'assistant peut concrètement y faire, du point de vue de l'utilisateur.\n"
+                "RÈGLES : 4 à 6 puces maximum, une ligne chacune, commençant par un verbe à l'infinitif "
+                "(ex. « Créer un ticket avec un titre et une description »). Regroupe les actions "
+                "similaires. Pas de noms techniques, pas d'anglais, pas de descriptions tronquées. "
+                "Réponds UNIQUEMENT par les puces.")},
+            {"role": "user", "content": f"Application : {slug}\n\nACTIONS :\n{liste}"},
+        ], temperature=0.2)
+        lines = [l.strip() for l in (out or "").splitlines() if l.strip().startswith(("•", "-", "*"))]
+        if lines:
+            return "\n".join("• " + l.lstrip("•-* ").strip() for l in lines[:6])
+    except Exception:
+        pass
+    return _friendly_actions(actions, 6)
+
+
 def _capability_answer(slug: str) -> str:
     """Réponse conversationnelle à « as-tu accès à X ? » — basée sur l'état RÉEL."""
     nice = slug.capitalize()
@@ -897,7 +920,7 @@ def _capability_answer(slug: str) -> str:
                 f"\n\nConnecte-le sur Composio → **Toolkits → {nice}**.")
         return (f"Pas encore : **{nice}** n'est pas connecté à mon compte Composio.{reco}")
     actions = _composio_list_actions(slug)
-    caps = _friendly_actions(actions, 6) if actions else ""
+    caps = _plain_capabilities(slug, actions) if actions else ""
     return (f"Oui ✅ — **{nice}** est bien connecté, j'y ai accès.\n\n"
             f"Voici ce que je peux y faire :\n{caps}\n\n{_examples_for(slug)}")
 
@@ -1437,6 +1460,28 @@ async def automations_delete(id: str = "", key: str = ""):
     _check_key(key)
     from agent.automations import delete
     return {"ok": delete(id)}
+
+
+# ── Réveil vocal à distance (PC → téléphone) ──────────────────────────────────
+_WAKE = {"ts": 0.0, "from": ""}
+
+
+@router.post("/voice/wake")
+async def voice_wake(req: AutoReq):
+    """Demande à tes autres appareils d'ouvrir le mode vocal (page Nova ouverte)."""
+    _check_key(req.key or "")
+    import time as _t
+    _WAKE["ts"] = _t.time()
+    _WAKE["from"] = (req.titre or "un autre appareil")[:40]
+    return {"ok": True}
+
+
+@router.get("/voice/pending")
+async def voice_pending(since: float = 0.0):
+    """Un réveil a-t-il été demandé depuis ce timestamp ? (interrogé par les appareils)"""
+    import time as _t
+    fresh = _WAKE["ts"] > since and (_t.time() - _WAKE["ts"]) < 60
+    return {"wake": bool(fresh), "ts": _WAKE["ts"], "from": _WAKE["from"]}
 
 
 @router.get("/activity")
