@@ -1257,10 +1257,49 @@ async def briefing_ep(key: str = ""):
     return {"briefing": txt}
 
 
+def _split_tts(text: str, limit: int = 180):
+    """Découpe le texte en morceaux ≤ limit, en coupant sur la ponctuation."""
+    import re
+    parts, cur = [], ""
+    for piece in re.split(r"(?<=[.!?;:,])\s+", text):
+        while len(piece) > limit:                      # phrase très longue → coupe dure
+            parts.append(piece[:limit]); piece = piece[limit:]
+        if len(cur) + len(piece) + 1 <= limit:
+            cur = (cur + " " + piece).strip()
+        else:
+            if cur:
+                parts.append(cur)
+            cur = piece
+    if cur:
+        parts.append(cur)
+    return [p for p in parts if p.strip()][:12]
+
+
+def _gtts_mp3(text: str) -> bytes:
+    """Voix gratuite sans clé (endpoint TTS de Google Traduction). Renvoie du MP3 ou b''.
+    Les trames MP3 se concatènent : on assemble simplement les morceaux."""
+    import requests
+    out = b""
+    for i, chunk in enumerate(_split_tts(text)):
+        try:
+            r = requests.get("https://translate.google.com/translate_tts",
+                             params={"ie": "UTF-8", "q": chunk, "tl": "fr",
+                                     "client": "tw-ob", "idx": i, "total": 1, "textlen": len(chunk)},
+                             headers={"User-Agent": "Mozilla/5.0", "Referer": "https://translate.google.com/"},
+                             timeout=15)
+            if r.status_code == 200 and r.content[:2] in (b"\xff\xfb", b"\xff\xf3", b"ID", b"\xff\xf2"):
+                out += r.content
+            else:
+                break
+        except Exception:
+            break
+    return out
+
+
 @router.get("/tts/status")
 async def tts_status():
-    """Indique si la voix premium (ElevenLabs) est active."""
-    return {"enabled": bool(getattr(config, "ELEVENLABS_API_KEY", ""))}
+    """La voix serveur est-elle disponible ? (ElevenLabs si clé, sinon voix gratuite)"""
+    return {"enabled": True, "premium": bool(getattr(config, "ELEVENLABS_API_KEY", ""))}
 
 
 @router.get("/tts")
@@ -1269,11 +1308,17 @@ async def tts(text: str = "", key: str = ""):
     _check_key(key)
     from fastapi.responses import Response, JSONResponse
     ek = getattr(config, "ELEVENLABS_API_KEY", "")
-    if not ek:
-        return JSONResponse({"ok": False, "reason": "no_key"})
     txt = (text or "").strip()[:900]
     if not txt:
         return JSONResponse({"ok": False, "reason": "empty"}, status_code=400)
+    if not ek:
+        # Pas de clé premium → voix gratuite côté serveur (indispensable sur iPhone, où la
+        # synthèse du navigateur est bloquée, surtout en app installée).
+        mp3 = _gtts_mp3(txt)
+        if mp3:
+            return Response(content=mp3, media_type="audio/mpeg",
+                            headers={"Cache-Control": "no-store"})
+        return JSONResponse({"ok": False, "reason": "tts_unavailable"}, status_code=502)
     import requests
     vid = getattr(config, "ELEVENLABS_VOICE_ID", "")
     model = getattr(config, "ELEVENLABS_MODEL", "eleven_multilingual_v2")
