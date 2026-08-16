@@ -514,14 +514,12 @@ def _direct_app_prepare(message: str):
             _remember_user(message)   # pour comprendre un suivi vague au tour suivant
             return {"steps": g["steps"], "done_answer": g["done_answer"]}
         return None
-    import json as _json
-    from plugins import get_loader
-    from agent.self_heal import safe_tool_call
-    obs = safe_tool_call(get_loader(), "connected_app",
-                         {"command": action, "arguments": _json.dumps(args)})
+    # ⚠️ Passe par _tool() : identité Composio résolue + activité enregistrée (constellation).
+    obs = _tool(action, args)
+    slug = (action or "").split("_", 1)[0].lower()
     steps = [
-        {"kind": "action", "tool": "connected_app", "label": action},
-        {"kind": "obs", "tool": "connected_app", "text": str(obs)[:180]},
+        {"kind": "action", "tool": slug, "label": action},
+        {"kind": "obs", "tool": slug, "text": str(obs)[:180]},
     ]
     if _looks_like_failure(obs):
         return {"steps": steps, "done_answer": _honest_no_access(action, obs)}
@@ -579,14 +577,11 @@ def _direct_app_run(message: str):
             _remember_user(message)   # pour comprendre un suivi vague au tour suivant
             return {"steps": g["steps"], "answer": g["done_answer"], "ok": True}
         return None
-    import json as _json
-    from plugins import get_loader
-    from agent.self_heal import safe_tool_call
-    obs = safe_tool_call(get_loader(), "connected_app",
-                         {"command": action, "arguments": _json.dumps(args)})
+    obs = _tool(action, args)   # identité résolue + activité enregistrée
+    slug = (action or "").split("_", 1)[0].lower()
     steps = [
-        {"kind": "action", "tool": "connected_app", "label": action},
-        {"kind": "obs", "tool": "connected_app", "text": str(obs)[:180]},
+        {"kind": "action", "tool": slug, "label": action},
+        {"kind": "obs", "tool": slug, "text": str(obs)[:180]},
     ]
     if _looks_like_failure(obs):
         return {"steps": steps, "answer": _honest_no_access(action, obs), "ok": False}
@@ -801,6 +796,15 @@ def _composio_list_actions(slug: str):
             continue
     _TOOLS_CACHE[slug] = out
     return out
+
+
+def _log_activity(message: str) -> None:
+    """Trace CHAQUE demande dans la constellation (même une simple discussion)."""
+    try:
+        from agent.squad import pick_agent, record
+        record(pick_agent(message), "", message[:60])
+    except Exception:
+        pass
 
 
 def _remember_user(message: str) -> None:
@@ -1089,6 +1093,7 @@ async def _ask_agent(message: str) -> str:
     Robuste : toute erreur est renvoyée comme message lisible (jamais de 500)."""
     import logging
     try:
+        _log_activity(message)
         if _is_smalltalk(message):
             return _smalltalk_reply(message)
         loop = asyncio.get_running_loop()
@@ -1164,6 +1169,7 @@ async def ask_stream(q: str = "", key: str = ""):
 
         yield_acc = [""]
         try:
+            _log_activity(message)   # visible immédiatement dans la constellation
             # 1) Chitchat / info personnelle → streamé directement (aucun outil)
             if _is_smalltalk(message):
                 _remember_fact(message)
@@ -1375,6 +1381,62 @@ async def upload(request: Request):
     except Exception:
         pass
     return {"answer": answer, "file": safe}
+
+
+class AutoReq(BaseModel):
+    key: Optional[str] = None
+    titre: Optional[str] = None
+    prompt: Optional[str] = None
+    hour: Optional[int] = 8
+    days: Optional[list] = None
+    icon: Optional[str] = "⚡"
+    active: Optional[bool] = None
+    id: Optional[str] = None
+
+
+@router.get("/automations")
+async def automations_list(key: str = ""):
+    """Liste les automatisations + les modèles proposés."""
+    _check_key(key)
+    from agent.automations import list_all, TEMPLATES
+    return {"items": list_all(), "templates": TEMPLATES}
+
+
+@router.post("/automations")
+async def automations_add(req: AutoReq):
+    """Crée une automatisation (tâche que Nova exécutera seule)."""
+    _check_key(req.key or "")
+    if not (req.titre and req.prompt):
+        raise HTTPException(status_code=400, detail="titre et prompt requis.")
+    from agent.automations import add
+    return add(req.titre, req.prompt, req.hour or 8, req.days, req.icon or "⚡")
+
+
+@router.post("/automations/toggle")
+async def automations_toggle(req: AutoReq):
+    """Active/désactive une automatisation."""
+    _check_key(req.key or "")
+    from agent.automations import update
+    return {"ok": update(req.id or "", active=req.active)}
+
+
+@router.post("/automations/run")
+async def automations_run(req: AutoReq):
+    """Lance une automatisation immédiatement (pour tester sans attendre l'heure)."""
+    _check_key(req.key or "")
+    from agent.automations import list_all, run_one
+    item = next((i for i in list_all() if i["id"] == (req.id or "")), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="Automatisation introuvable.")
+    return {"answer": await run_one(item)}
+
+
+@router.delete("/automations")
+async def automations_delete(id: str = "", key: str = ""):
+    """Supprime une automatisation."""
+    _check_key(key)
+    from agent.automations import delete
+    return {"ok": delete(id)}
 
 
 @router.get("/activity")
