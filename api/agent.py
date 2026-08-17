@@ -686,7 +686,36 @@ def _llm_json(system: str, user: str, temperature: float = 0.1) -> dict:
     return {}
 
 
-_USERID_CACHE = {}
+# Caches AVEC EXPIRATION : sans TTL, connecter une nouvelle app (ou en reconnecter une
+# avec de nouvelles autorisations) restait sans effet jusqu'au redémarrage du serveur.
+_CACHE_TTL = 600.0          # 10 minutes
+_USERID_CACHE = {}          # slug -> (valeur, horodatage)
+_ACCOUNTS_CACHE = {"data": None, "ts": 0.0}
+
+
+def _cache_get(store: dict, key: str):
+    import time as _t
+    hit = store.get(key)
+    if hit and (_t.monotonic() - hit[1]) < _CACHE_TTL:
+        return hit[0]
+    return None
+
+
+def _cache_put(store: dict, key: str, val):
+    import time as _t
+    store[key] = (val, _t.monotonic())
+
+
+def invalidate_caches(slug: str = "") -> None:
+    """Vide les caches — appelé quand une app semble avoir changé de connexion."""
+    if slug:
+        _USERID_CACHE.pop(slug, None)
+        _TOOLS_CACHE.pop(slug, None)
+    else:
+        _USERID_CACHE.clear()
+        _TOOLS_CACHE.clear()
+    _ACCOUNTS_CACHE["data"] = None
+    _ACCOUNTS_CACHE["ts"] = 0.0
 
 
 def _connected_accounts():
@@ -721,8 +750,9 @@ def _toolkit_user_id(slug: str) -> str:
     """
     if not slug:
         return getattr(config, "COMPOSIO_USER_ID", "default") or "default"
-    if slug in _USERID_CACHE:
-        return _USERID_CACHE[slug]
+    cached = _cache_get(_USERID_CACHE, slug)
+    if cached:
+        return cached
     uid = ""
     accounts = _connected_accounts()
     for s, u, st in accounts:
@@ -735,7 +765,7 @@ def _toolkit_user_id(slug: str) -> str:
                 uid = u
                 break
     uid = uid or (getattr(config, "COMPOSIO_USER_ID", "default") or "default")
-    _USERID_CACHE[slug] = uid
+    _cache_put(_USERID_CACHE, slug, uid)
     return uid
 
 
@@ -753,9 +783,6 @@ def _agent_for_slug(slug: str) -> str:
 
 def _tool(name_cmd: str, args: dict, slug: str = "") -> str:
     """Exécute une action Composio sous la BONNE identité (résolue automatiquement)."""
-    import json as _json
-    from plugins import get_loader
-    from agent.self_heal import safe_tool_call
     if not slug:  # déduit l'app depuis le préfixe de l'action (ex. CANVA_CREATE… → canva)
         head = (name_cmd or "").split("_", 1)[0].lower()
         slug = head if head in _TOOLKITS else ""
@@ -764,6 +791,31 @@ def _tool(name_cmd: str, args: dict, slug: str = "") -> str:
         record(_agent_for_slug(slug), slug, name_cmd)
     except Exception:
         pass
+    return _tool_call(name_cmd, args, slug)
+
+
+def _tool_call(name_cmd: str, args: dict, slug: str) -> str:
+    """Exécution + reprise automatique si l'identité en cache est périmée
+    (cas typique : tu viens juste de connecter l'app)."""
+    import json as _json
+    from plugins import get_loader
+    from agent.self_heal import safe_tool_call
+
+    def _run(uid):
+        params = {"command": name_cmd, "arguments": _json.dumps(args)}
+        if uid:
+            params["user_id"] = uid
+        return safe_tool_call(get_loader(), "connected_app", params)
+
+    obs = _run(_toolkit_user_id(slug))
+    low = str(obs or "").lower()
+    if "no connected account" in low or "connectedaccountnotfound" in low.replace("_", ""):
+        invalidate_caches(slug)                     # l'app a peut-être été (re)connectée
+        obs2 = _run(_toolkit_user_id(slug))
+        if not _looks_like_failure(obs2):
+            return obs2
+        return obs2 if obs2 else obs
+    return obs
     params = {"command": name_cmd, "arguments": _json.dumps(args)}
     uid = _toolkit_user_id(slug)
     if uid:
@@ -892,8 +944,9 @@ def _build_args(action: str, spec: dict, message: str, ctx: str = "", error: str
 def _composio_list_actions(slug: str):
     """Liste les actions Composio disponibles pour une app (mise en cache).
     Renvoie [{'name':..., 'desc':...}] — permet à Nova de gérer n'importe quelle app."""
-    if slug in _TOOLS_CACHE:
-        return _TOOLS_CACHE[slug]
+    cached = _cache_get(_TOOLS_CACHE, slug)
+    if cached is not None:
+        return cached
     import requests
     ck = (getattr(config, "COMPOSIO_API_KEY", "") or "").strip()
     if not ck:
@@ -926,7 +979,7 @@ def _composio_list_actions(slug: str):
                 break
         except Exception:
             continue
-    _TOOLS_CACHE[slug] = out
+    _cache_put(_TOOLS_CACHE, slug, out)
     return out
 
 
@@ -1407,22 +1460,38 @@ async def ask_stream(q: str = "", key: str = ""):
             yield sse({"type": "answer", "text": "Message vide."}); yield sse({"type": "done"}); return
         loop = asyncio.get_running_loop()
 
-        async def _stream_llm(messages, temp):
-            """Diffuse une réponse LLM token par token (dans un thread, non bloquant)."""
+        async def _stream_llm(messages, temp, deadline: float = 150.0):
+            """Diffuse une réponse LLM token par token (dans un thread, non bloquant).
+
+            ⚠️ Chaque attente est BORNÉE : un `get()` bloquant sans délai immobiliserait un
+            thread du pool si le modèle cessait de répondre — et le pool finirait saturé.
+            """
             from llm.client import chat_stream
             import queue as _q
+            import time as _t
             box = _q.Queue()
+
             def worker():
                 try:
                     for tok in chat_stream(messages, temperature=temp):
                         box.put(("t", tok))
                 except Exception as e:
                     box.put(("t", f"❌ {str(e)[:120]}"))
-                box.put(("end", None))
+                finally:
+                    box.put(("end", None))       # garanti, même en cas d'erreur
+
             loop.run_in_executor(None, worker)
-            acc = ""
+            acc, fin = "", _t.monotonic() + deadline
             while True:
-                kind, val = await loop.run_in_executor(None, box.get)
+                if _t.monotonic() > fin:
+                    acc += "\n\n⚠️ (réponse interrompue : délai dépassé)"
+                    yield "\n\n⚠️ (réponse interrompue : délai dépassé)"
+                    break
+                try:
+                    kind, val = await loop.run_in_executor(
+                        None, lambda: box.get(timeout=2.0))
+                except Exception:
+                    continue                     # file vide : on repasse par le contrôle de délai
                 if kind == "end":
                     break
                 acc += val
@@ -1771,7 +1840,9 @@ async def upload(request: Request):
     from pathlib import Path as _P
     import re as _re
     updir = _P("data/uploads"); updir.mkdir(parents=True, exist_ok=True)
+    # Nom de fichier assaini : on retire tout séparateur ET les « .. » (traversée de dossier)
     safe = _re.sub(r"[^A-Za-z0-9._-]", "_", (up.filename or "fichier"))[:80]
+    safe = safe.replace("..", "_").lstrip(".") or "fichier"
     dest = updir / safe
     try:
         content = await up.read()
@@ -1879,7 +1950,9 @@ async def serve_file(p: str = "", key: str = ""):
     try:
         target = _P(p).resolve()
         roots = [_P("output").resolve(), _P("data").resolve()]
-        if not any(str(target).startswith(str(r)) for r in roots) or not target.is_file():
+        # is_relative_to : vrai confinement (startswith laisserait passer « output-secret/ »)
+        inside = any(target == r or r in target.parents for r in roots)
+        if not inside or not target.is_file():
             raise HTTPException(status_code=404, detail="Fichier introuvable.")
         return FileResponse(str(target))
     except HTTPException:

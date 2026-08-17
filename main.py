@@ -8,6 +8,7 @@ Point d'entrée principal — démarre:
 import asyncio
 import logging
 import os
+import re
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -24,6 +25,33 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+class _RedactSecrets(logging.Filter):
+    """Masque les secrets dans les logs.
+
+    Les requêtes SSE (EventSource) ne peuvent pas porter d'en-tête : la clé transite
+    donc en paramètre d'URL et se retrouvait EN CLAIR dans les logs d'accès Render.
+    Ce filtre la remplace par « *** » partout où elle apparaît.
+    """
+    _PAT = re.compile(r"((?:key|api_key|token|password)=)[^&\s\"']+", re.I)
+
+    def filter(self, record):
+        try:
+            if record.args:
+                record.args = tuple(
+                    self._PAT.sub(r"\1***", a) if isinstance(a, str) else a
+                    for a in record.args
+                )
+            if isinstance(record.msg, str):
+                record.msg = self._PAT.sub(r"\1***", record.msg)
+        except Exception:
+            pass
+        return True
+
+
+for _name in ("uvicorn.access", "uvicorn.error", "uvicorn", ""):
+    logging.getLogger(_name).addFilter(_RedactSecrets())
 
 
 @asynccontextmanager
