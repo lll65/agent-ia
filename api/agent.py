@@ -157,12 +157,24 @@ _TOOLKITS = {
     "airtable":       ("airtable",),
     "asana":          ("asana",),
     "jira":           ("jira",),
+    "googlemaps":     ("maps", "google maps", "itinéraire", "itineraire", "trajet", "adresse",
+                       "comment aller", "temps de route", "restaurant près", "restaurant pres"),
+    "googletasks":    ("google tasks", "ma liste de tâches", "ma liste de taches", "mes tâches",
+                       "mes taches", "todo", "to-do"),
+    "todoist":        ("todoist",),
+    "outlook":        ("outlook",),
+    "dropbox":        ("dropbox",),
+    "figma":          ("figma",),
+    "reddit":         ("reddit",),
+    "perplexity":     ("perplexity",),
 }
 
 # Ordre de priorité : les slugs les plus spécifiques d'abord (évite que "message" prenne le pas)
-_TOOLKIT_ORDER = ("linear", "canva", "notion", "slack", "github", "googlesheets", "googledocs",
-                  "googledrive", "trello", "spotify", "youtube", "whatsapp", "discord", "twitter",
-                  "hubspot", "airtable", "asana", "jira", "googlecalendar", "gmail")
+_TOOLKIT_ORDER = ("linear", "canva", "notion", "slack", "github", "figma", "googlesheets",
+                  "googledocs", "googledrive", "dropbox", "trello", "spotify", "youtube",
+                  "whatsapp", "discord", "twitter", "reddit", "hubspot", "airtable", "asana",
+                  "jira", "todoist", "googletasks", "googlemaps", "outlook", "perplexity",
+                  "googlecalendar", "gmail")
 
 
 def _detect_toolkit(message: str):
@@ -385,6 +397,17 @@ def _looks_like_failure(obs: str) -> bool:
     return any(b in low for b in hard)
 
 
+def _is_param_error(obs: str) -> bool:
+    """Erreur due aux PARAMÈTRES envoyés (400) — donc corrigeable automatiquement,
+    par opposition à un problème d'accès (401/403/404)."""
+    low = (obs or "").lower()
+    if "401" in low or "403" in low or "no connected account" in low:
+        return False
+    return ("400" in low or "invalid_field" in low or "bad request" in low
+            or "must be defined" in low or "is required" in low or "missing" in low
+            or "invalid" in low or "validation" in low)
+
+
 def _honest_no_access(action: str, obs: str) -> str:
     """Message honnête quand l'accès échoue — JAMAIS d'invention de données."""
     app = ("ton agenda Google" if "CALENDAR" in action else
@@ -484,14 +507,25 @@ def _honest_no_access(action: str, obs: str) -> str:
             f"**À faire :**\n{todo}\n\n"
             "Puis redemande-moi ton agenda. _(Pas besoin de Gmail pour l'agenda : Google Calendar seul suffit.)_"
         )
+    # Erreur de paramètres (400) : l'accès fonctionne, c'est la requête qui n'allait pas.
+    if _is_param_error(obs):
+        import re as _re
+        # Le message utile est souvent dans un JSON imbriqué et échappé → on déséchappe d'abord
+        flat = (obs or "").replace('\\"', '"').replace("\\\\", "\\")
+        cands = _re.findall(r'"message"\s*:\s*"([^"]{6,300})"', flat)
+        detail = next((c for c in reversed(cands) if not c.lstrip().startswith("{")), "")[:220]
+        nice = tk.capitalize() if tk else "cette application"
+        return (
+            f"⚠️ **{nice} a refusé la demande** — l'accès fonctionne, mais il manquait une précision.\n\n"
+            + (f"**Ce que {nice} répond :** {detail}\n\n" if detail else "")
+            + "J'ai tenté de corriger automatiquement, sans succès. **Sois plus précis** et je réessaie "
+              "(ex. « crée une **présentation** Canva intitulée Projet X », « crée un **document** Canva »).")
+    nice = tk.capitalize() if tk else "cette application"
     return (
-        f"🔌 Je n'ai pas pu accéder à {app}, donc je ne t'invente rien.\n\n"
-        f"**Raison technique renvoyée par Composio :**\n> {obs[:400]}\n\n"
-        "**Pour que ça marche :**\n"
-        "1. Va sur composio.dev → vérifie que **Google Calendar / Gmail** est bien connecté (statut vert).\n"
-        "2. Sur Render, vérifie que **COMPOSIO_USER_ID** correspond à l'`entity id` de ta connexion "
-        "Composio (souvent `default`).\n"
-        "3. Réessaie : dès que la connexion répond, je te sortirai tes **vrais** événements/mails."
+        f"🔌 Je n'ai pas pu accéder à {nice}, donc je ne t'invente rien.\n\n"
+        f"**Raison technique :**\n> {obs[:350]}\n\n"
+        f"**Pistes :** vérifie que **{nice}** est bien connecté sur composio.dev (statut vert), "
+        "puis redemande-moi."
     )
 
 
@@ -815,7 +849,11 @@ def _composio_list_actions(slug: str):
                 if not nm:
                     continue
                 desc = (it.get("description") or "")[:110]
-                out.append({"name": str(nm).upper(), "desc": desc})
+                # Paramètres attendus : permet de remplir les champs OBLIGATOIRES du premier coup
+                schema = it.get("input_parameters") or it.get("parameters") or {}
+                props = list((schema.get("properties") or {}).keys())[:12]
+                req = (schema.get("required") or [])[:8]
+                out.append({"name": str(nm).upper(), "desc": desc, "props": props, "required": req})
             if out:
                 break
         except Exception:
@@ -994,7 +1032,31 @@ def _generic_app_flow(message: str, slug: str):
         args = {}
     steps[0]["label"] = action
     obs = _tool(action, args)
-    steps.append({"kind": "obs", "tool": "connected_app", "text": str(obs)[:180]})
+    steps.append({"kind": "obs", "tool": slug, "text": str(obs)[:180]})
+
+    # ── AUTO-CORRECTION : l'API indique souvent ce qui manque
+    # (ex. Canva : « One of 'design_type' or 'asset_id' must be defined »).
+    # On relit son message d'erreur, on corrige les paramètres et on réessaie UNE fois.
+    if _looks_like_failure(obs) and _is_param_error(obs):
+        import json as _j
+        spec = next((a for a in actions if a["name"] == action), {})
+        fix = _llm_json(
+            "Un appel d'API a échoué à cause de PARAMÈTRES manquants ou invalides. Corrige-les.\n"
+            'Réponds en JSON STRICT : {"arguments":{…}} — l\'ensemble COMPLET des paramètres à '
+            "réenvoyer. Le message d'erreur indique en général le champ manquant, et parfois ses "
+            "valeurs possibles. Choisis une valeur par défaut raisonnable si besoin "
+            "(ex. type de design courant : 'presentation', 'doc', 'whiteboard').",
+            f"Action : {action}\nParamètres possibles : {spec.get('props')}\n"
+            f"Obligatoires : {spec.get('required')}\n"
+            f"Paramètres envoyés : {_j.dumps(args, ensure_ascii=False)}\n"
+            f"ERREUR : {str(obs)[:700]}\nDemande initiale : {message}")
+        new_args = fix.get("arguments")
+        if isinstance(new_args, dict) and new_args and new_args != args:
+            steps.append({"kind": "action", "tool": slug, "label": action + " (paramètres corrigés)"})
+            obs2 = _tool(action, new_args)
+            steps.append({"kind": "obs", "tool": slug, "text": str(obs2)[:180]})
+            obs = obs2
+
     if _looks_like_failure(obs):
         return {"steps": steps, "done_answer": _honest_no_access(action, obs)}
     is_write = any(k in action for k in ("CREATE", "UPDATE", "DELETE", "SEND", "ADD", "POST", "PATCH"))
