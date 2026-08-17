@@ -86,20 +86,35 @@
      Une orbe endormie qui respire, et qui se réveille dès que tu commences à écrire. */
   .hint{ display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px;
          margin:auto 0; color:var(--dim); font-size:13px; }
-  .sleeper{ position:relative; width:132px; height:132px; }
-  .sleeper .core{ position:absolute; inset:0; border-radius:50%;
-    background:radial-gradient(circle at 36% 30%, #b9a6ff, #7c5cff 58%, #3b2a8c 100%);
-    box-shadow:0 0 46px rgba(124,92,255,.42), inset 0 -14px 30px rgba(0,0,0,.35);
-    animation:sleepBreath 5.4s ease-in-out infinite; }
-  .sleeper .halo{ position:absolute; inset:-22px; border-radius:50%; border:1px solid rgba(124,92,255,.22);
-    animation:sleepHalo 5.4s ease-in-out infinite; }
-  .sleeper .halo.h2{ inset:-40px; animation-delay:.5s; border-color:rgba(34,211,238,.14); }
-  .sleeper .zzz{ position:absolute; right:-2px; top:2px; font-size:15px; opacity:.5;
+  .sleeper{ position:relative; width:210px; height:210px; }
+  .sleeper .core{ position:absolute; inset:38px; border-radius:50%;
+    background:radial-gradient(circle at 36% 30%, #c9b8ff, #7c5cff 56%, #33236e 100%);
+    box-shadow:0 0 60px rgba(124,92,255,.55), inset 0 -16px 34px rgba(0,0,0,.4);
+    animation:sleepBreath 4.2s ease-in-out infinite; }
+  /* Respiration franche : l'orbe gonfle et s'éclaire nettement */
+  @keyframes sleepBreath{ 0%,100%{ transform:scale(.88); filter:brightness(.6) }
+                          50%{ transform:scale(1.14); filter:brightness(1.25) } }
+  .sleeper .halo{ position:absolute; inset:14px; border-radius:50%; border:1.5px solid rgba(124,92,255,.35);
+    animation:sleepHalo 4.2s ease-in-out infinite; }
+  .sleeper .halo.h2{ inset:0; animation-delay:.7s; border-color:rgba(34,211,238,.28); }
+  @keyframes sleepHalo{ 0%,100%{ transform:scale(.9); opacity:.25 } 50%{ transform:scale(1.12); opacity:.85 } }
+  .sleeper .zzz{ position:absolute; right:16px; top:14px; font-size:17px; opacity:.5; z-index:2;
     animation:zzzFloat 4.2s ease-in-out infinite; }
-  @keyframes sleepBreath{ 0%,100%{ transform:scale(1); filter:brightness(.78) }
-                          50%{ transform:scale(1.06); filter:brightness(1) } }
-  @keyframes sleepHalo{ 0%,100%{ transform:scale(1); opacity:.45 } 50%{ transform:scale(1.1); opacity:.9 } }
-  @keyframes zzzFloat{ 0%,100%{ transform:translateY(0); opacity:.25 } 50%{ transform:translateY(-9px); opacity:.65 } }
+  @keyframes zzzFloat{ 0%,100%{ transform:translateY(0); opacity:.2 } 50%{ transform:translateY(-12px); opacity:.75 } }
+  /* Ses facultés gravitent autour d'elle, au ralenti pendant le sommeil */
+  .sleeper .orbit{ position:absolute; inset:0; animation:orbitSpin 26s linear infinite; }
+  .sleeper .orbit.o2{ animation-duration:38s; animation-direction:reverse; }
+  @keyframes orbitSpin{ to{ transform:rotate(360deg) } }
+  .sleeper .sat{ position:absolute; width:30px; height:30px; margin:-15px 0 0 -15px; border-radius:10px;
+    display:grid; place-items:center; font-size:14px; background:rgba(255,255,255,.05);
+    border:1px solid var(--stroke); backdrop-filter:blur(6px);
+    animation:satBreathe 4.2s ease-in-out infinite; }
+  @keyframes satBreathe{ 0%,100%{ opacity:.3; box-shadow:none } 50%{ opacity:.85; box-shadow:0 0 14px rgba(124,92,255,.5) } }
+  .sleeper .sat i{ display:block; animation:orbitSpin 26s linear infinite reverse; font-style:normal; }
+  .sleeper .orbit.o2 .sat i{ animation-duration:38s; animation-direction:normal; }
+  /* Réveil : tout accélère et s'illumine */
+  body.waking .sleeper .orbit{ animation-duration:6s; }
+  body.waking .sleeper .sat{ animation:none; opacity:1; box-shadow:0 0 18px rgba(34,211,238,.6); border-color:rgba(34,211,238,.5); }
   .hint .htxt{ font-size:14px; letter-spacing:.02em; transition:.4s; }
   .hint .hsub{ font-size:11.5px; opacity:.6; letter-spacing:.1em; text-transform:uppercase; }
   /* Réveil : quand tu écris, elle s'illumine et se redresse */
@@ -325,7 +340,14 @@
 
     <div class="chat" id="chat">
       <div class="hint" id="hint">
-        <div class="sleeper"><span class="halo"></span><span class="halo h2"></span>
+        <div class="sleeper">
+          <span class="halo"></span><span class="halo h2"></span>
+          <span class="orbit"><span class="sat" style="left:50%;top:0"><i>📅</i></span>
+            <span class="sat" style="left:100%;top:50%"><i>📧</i></span>
+            <span class="sat" style="left:50%;top:100%"><i>🔍</i></span>
+            <span class="sat" style="left:0;top:50%"><i>💻</i></span></span>
+          <span class="orbit o2"><span class="sat" style="left:85%;top:15%"><i>🎨</i></span>
+            <span class="sat" style="left:15%;top:85%"><i>📋</i></span></span>
           <span class="core"></span><span class="zzz">z<sup>z</sup></span></div>
         <div class="htxt" id="hintTxt">Nova est en veille…</div>
         <div class="hsub">écris ou parle pour la réveiller</div>
@@ -638,6 +660,12 @@ function graphStart(){ gw.classList.add("show"); gResize(); GT=0; phaseCount=0;
 function graphAdd(icon,label,detail){ const n=nodes.length-1;
   nodes.push({a:n*2.399, r:0, tr:1, label, icon, t:0, sub:_subs(detail)}); }
 /* Découpe le détail d'une étape en 1-3 sous-bulles courtes (mots-clés lisibles) */
+/* Mots-clés de ta demande → sous-bulles de l'étape « Analyse » */
+function _keywords(msg){ const stop=new Set(["le","la","les","un","une","des","de","du","et","ou","à","a",
+  "au","aux","je","tu","il","on","me","moi","mon","ma","mes","ton","ta","tes","est","sur","dans","pour",
+  "que","qui","quoi","avec","fait","fais","peux","veux","stp","the"]);
+  return (msg||"").toLowerCase().replace(/[^\wàâçéèêëîïôûùüÿœ\s-]/g," ").split(/\s+/)
+    .filter(w=>w.length>2 && !stop.has(w)).slice(0,3).join(" · "); }
 function _subs(detail){ if(!detail) return [];
   return String(detail).replace(/\s+/g," ").trim()
     .split(/[·,;•\n]|(?:\s-\s)/).map(s=>s.trim()).filter(s=>s.length>2)
@@ -645,7 +673,7 @@ function _subs(detail){ if(!detail) return [];
 /* Nœuds "de phase" : apparaissent DÈS le début (analyse, réflexion, rédaction) pour que le schéma
    soit vivant immédiatement — y compris en simple discussion, où aucun outil n'est appelé. */
 let phaseCount=0;
-function graphPhase(icon,label){ if(phaseCount>=3) return; phaseCount++; graphAdd(icon,label); }
+function graphPhase(icon,label,detail){ if(phaseCount>=3) return; phaseCount++; graphAdd(icon,label,detail); }
 /* arcs de cercle segmentés (look HUD/tech) */
 function ring(cx,cy,rad,seg,off,col,w){ gx.strokeStyle=col; gx.lineWidth=w;
   for(let k=0;k<seg;k++){ const a0=off+k*(6.283/seg), a1=a0+(6.283/seg)*.6;
@@ -767,8 +795,9 @@ function ask(){
   document.body.classList.add("chatting");
   inp.value=""; grow(inp); addRow("me",fmt(msg)); histPush("me",msg); sndSend(); const bubble=addRow("ai",thinkHTML(THINK_PHRASES[0],"💭"));
   document.getElementById("send").disabled=true; thinking=true; document.body.classList.add("thinking"); graphStart();
-  graphPhase("💭","Analyse");                       // nœud visible immédiatement
-  setTimeout(()=>{ if(thinking) graphPhase("⚙️","Réflexion"); }, 900);
+  // Nœuds de phase AVEC leur détail → les sous-bulles apparaissent tout de suite
+  graphPhase("💭","Analyse", _keywords(msg));
+  setTimeout(()=>{ if(thinking) graphPhase("⚙️","Réflexion","intention · outils · contexte"); }, 900);
   let answer="", trace=[], pi=0, streamed=false;
   // Rotation "comme Claude" : une phrase apparaît, s'efface, une autre la remplace.
   // Une fois les vraies étapes arrivées, on cycle dessus (recherche web, agenda…).

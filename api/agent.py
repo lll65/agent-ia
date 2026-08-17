@@ -1006,6 +1006,44 @@ def _capability_answer(slug: str) -> str:
             f"Voici ce que je peux y faire :\n{caps}\n\n{_examples_for(slug)}")
 
 
+def _canva_design_args(message: str) -> dict:
+    """Canva attend un OBJET imbriqué, pas une chaîne :
+       {"design_type": {"type": "preset", "name": "doc"}}
+    Les presets valides sont : doc, presentation, whiteboard."""
+    m = message.lower()
+    if any(w in m for w in ("présentation", "presentation", "slide", "diapo", "powerpoint", "deck")):
+        preset = "presentation"
+    elif any(w in m for w in ("tableau blanc", "whiteboard", "brainstorm", "mind map")):
+        preset = "whiteboard"
+    else:
+        preset = "doc"
+    # Titre = ce que l'utilisateur veut voir écrit, débarrassé de la commande
+    import re
+    t = message
+    # 1) si une consigne d'écriture est présente, on garde ce qui suit
+    m2 = re.search(r"(?:[ée]cri[stre]*|marqu[eé]|intitul[ée]e?|appelle|nomm[ée]e?|titre)\s*"
+                   r"(?:dessus|dedans|:|«|\"|')?\s*(.+)$", t, flags=re.I)
+    if m2:
+        t = m2.group(1)
+    else:
+        # 2) sinon on retire les formules de commande et le nom de l'app
+        t = re.sub(r"\b(va sur|ouvre|cr[ée]e?r?|fais(-moi)?|g[ée]n[èe]re)\b", " ", t, flags=re.I)
+        t = re.sub(r"\b(un|une|le|la|les|des|sur|dans|avec|moi)\b", " ", t, flags=re.I)
+        t = re.sub(r"\b(canva|design|document|doc|pr[ée]sentation|slide|diapo|tableau blanc|whiteboard)\b",
+                   " ", t, flags=re.I)
+    t = re.sub(r"^\s*(et|puis)\s+", "", t.strip(), flags=re.I)
+    t = re.sub(r"\s+", " ", t).strip(" .,:;«»\"'")
+    return {"design_type": {"type": "preset", "name": preset},
+            "title": (t[:60] if len(t) >= 3 else "Nouveau design")}
+
+
+# Paramètres connus pour les actions capricieuses (évite un aller-retour d'erreur)
+def _known_args(action: str, message: str):
+    if "CANVA" in action and "CREATE" in action and "DESIGN" in action:
+        return _canva_design_args(message)
+    return None
+
+
 def _generic_app_flow(message: str, slug: str):
     """Exécute une action sur N'IMPORTE QUELLE app connectée :
     1) découvre les actions réelles de l'app, 2) le LLM choisit l'action + arguments,
@@ -1047,6 +1085,9 @@ def _generic_app_flow(message: str, slug: str):
     args = pick.get("arguments")
     if not isinstance(args, dict):
         args = {}
+    known = _known_args(action, message)      # formes exactes connues (ex. Canva design_type)
+    if known:
+        args = {**args, **known}
     steps[0]["label"] = action
     obs = _tool(action, args)
     steps.append({"kind": "obs", "tool": slug, "text": str(obs)[:180]})
