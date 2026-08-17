@@ -146,34 +146,64 @@ def _xai_chat(messages: list, model: str, temperature: float) -> str:
 
 def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> str:
     """
-    Analyse une image via un modèle multimodal Groq (Llama 4 Scout par défaut).
-    Encode l'image en base64 et l'envoie au format OpenAI vision.
+    Analyse une image. Essaie Groq (Llama 4 Scout) puis Gemini en repli :
+    l'analyse de photos ne dépend donc plus d'un seul fournisseur.
     """
     import base64
     import mimetypes
 
-    if not config.GROQ_API_KEY:
-        raise RuntimeError("Analyse d'image : une clé Groq est requise (modèle vision).")
-
     with open(image_path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode()
+        raw = f.read()
+    b64 = base64.b64encode(raw).decode()
     mime = mimetypes.guess_type(image_path)[0] or "image/jpeg"
+    question = prompt or "Décris cette image en détail, en français."
+    errors = []
 
-    from groq import Groq
-    client = Groq(api_key=config.GROQ_API_KEY)
-    resp = client.chat.completions.create(
-        model=config.GROQ_VISION_MODEL,
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt or "Décris cette image en détail, en français."},
-                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
-            ],
-        }],
-        temperature=temperature,
-        max_tokens=2048,
-    )
-    return resp.choices[0].message.content or ""
+    # 1) Groq vision
+    if config.GROQ_API_KEY:
+        try:
+            from groq import Groq
+            client = Groq(api_key=config.GROQ_API_KEY)
+            resp = client.chat.completions.create(
+                model=config.GROQ_VISION_MODEL,
+                messages=[{"role": "user", "content": [
+                    {"type": "text", "text": question},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                ]}],
+                temperature=temperature, max_tokens=2048,
+            )
+            out = resp.choices[0].message.content or ""
+            if out.strip():
+                return out
+            errors.append("Groq: réponse vide")
+        except Exception as e:
+            errors.append(f"Groq: {str(e)[:120]}")
+
+    # 2) Gemini vision (gratuit, sans carte bancaire)
+    if getattr(config, "GEMINI_API_KEY", ""):
+        try:
+            import requests
+            url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+                   f"{config.GEMINI_MODEL}:generateContent")
+            r = requests.post(url, params={"key": config.GEMINI_API_KEY}, timeout=90, json={
+                "contents": [{"parts": [{"text": question},
+                                        {"inline_data": {"mime_type": mime, "data": b64}}]}],
+                "generationConfig": {"temperature": temperature, "maxOutputTokens": 2048},
+            })
+            if r.status_code == 200:
+                parts = ((r.json().get("candidates") or [{}])[0]
+                         .get("content", {}).get("parts", []))
+                out = "".join(p.get("text", "") for p in parts).strip()
+                if out:
+                    return out
+            errors.append(f"Gemini: HTTP {r.status_code}")
+        except Exception as e:
+            errors.append(f"Gemini: {str(e)[:120]}")
+
+    raise RuntimeError(
+        "Aucun modèle de vision disponible. Ajoute GROQ_API_KEY (gratuit sur console.groq.com) "
+        "ou GEMINI_API_KEY (gratuit sur aistudio.google.com) dans les variables Render."
+        + (f" Détails : {' | '.join(errors)}" if errors else ""))
 
 
 def _cerebras_chat(messages: list, model: str, temperature: float) -> str:

@@ -840,6 +840,55 @@ def _free_slot_flow(message: str):
 _TOOLS_CACHE = {}
 
 
+def _trim_schema(schema, depth: int = 0):
+    """Réduit un JSON Schema à l'essentiel (type, forme imbriquée, valeurs autorisées, exemple).
+    Objectif : le modèle voit la STRUCTURE exacte attendue et ne se trompe plus de forme."""
+    if not isinstance(schema, dict) or depth > 3:
+        return {}
+    keep = {}
+    t = schema.get("type")
+    if t:
+        keep["type"] = t
+    for k in ("enum", "default", "example", "format"):
+        if schema.get(k) is not None:
+            keep[k] = schema[k]
+    if schema.get("required"):
+        keep["required"] = schema["required"][:10]
+    props = schema.get("properties")
+    if isinstance(props, dict):
+        keep["properties"] = {k: _trim_schema(v, depth + 1) for k, v in list(props.items())[:14]}
+    items = schema.get("items")
+    if isinstance(items, dict):
+        keep["items"] = _trim_schema(items, depth + 1)
+    if schema.get("description") and depth > 0:
+        keep["description"] = str(schema["description"])[:90]
+    return keep
+
+
+def _build_args(action: str, spec: dict, message: str, ctx: str = "", error: str = "") -> dict:
+    """Construit les arguments d'une action à partir de son SCHÉMA réel.
+    Étape séparée du choix de l'action : le modèle se concentre sur la forme attendue."""
+    import json as _j
+    schema = _j.dumps(spec.get("schema") or {}, ensure_ascii=False)[:2200]
+    sys = ("Tu construis les ARGUMENTS d'un appel d'API à partir de son schéma JSON.\n"
+           'Réponds en JSON STRICT : {"arguments":{…}}.\n'
+           "RÈGLES :\n"
+           "- RESPECTE EXACTEMENT la structure du schéma : si un champ est un objet, envoie un objet "
+           '(ex. {"design_type":{"type":"preset","name":"doc"}}), jamais une chaîne.\n'
+           "- Remplis TOUS les champs obligatoires ; ignore les champs inutiles.\n"
+           "- Si un champ a une liste de valeurs autorisées (enum), choisis-en une.\n"
+           "- Déduis les valeurs de la demande de l'utilisateur ; sinon mets une valeur par défaut sensée.")
+    usr = (f"Action : {action}\nObligatoires : {spec.get('required')}\n"
+           f"SCHÉMA :\n{schema}\n\nDemande : {message}")
+    if ctx:
+        usr += f"\nContexte récent : {ctx}"
+    if error:
+        usr += f"\n\n⚠️ L'appel précédent a ÉCHOUÉ avec cette erreur — corrige-la :\n{error[:600]}"
+    out = _llm_json(sys, usr)
+    args = out.get("arguments")
+    return args if isinstance(args, dict) else {}
+
+
 def _composio_list_actions(slug: str):
     """Liste les actions Composio disponibles pour une app (mise en cache).
     Renvoie [{'name':..., 'desc':...}] — permet à Nova de gérer n'importe quelle app."""
@@ -866,11 +915,13 @@ def _composio_list_actions(slug: str):
                 if not nm:
                     continue
                 desc = (it.get("description") or "")[:110]
-                # Paramètres attendus : permet de remplir les champs OBLIGATOIRES du premier coup
+                # Schéma d'entrée COMPLET : indispensable pour connaître la FORME attendue
+                # (ex. Canva : design_type est un objet imbriqué, pas une chaîne).
                 schema = it.get("input_parameters") or it.get("parameters") or {}
-                props = list((schema.get("properties") or {}).keys())[:12]
-                req = (schema.get("required") or [])[:8]
-                out.append({"name": str(nm).upper(), "desc": desc, "props": props, "required": req})
+                props = list((schema.get("properties") or {}).keys())[:14]
+                req = (schema.get("required") or [])[:10]
+                out.append({"name": str(nm).upper(), "desc": desc, "props": props,
+                            "required": req, "schema": _trim_schema(schema)})
             if out:
                 break
         except Exception:
@@ -1082,38 +1133,33 @@ def _generic_app_flow(message: str, slug: str):
         return {"steps": steps, "done_answer": (
             f"Dis-m'en un peu plus sur ce que tu veux faire avec **{slug.capitalize()}** 🙂\n\n"
             f"Voici ce que je peux y faire :\n{_friendly_actions(actions)}\n\n{_examples_for(slug)}")}
-    args = pick.get("arguments")
-    if not isinstance(args, dict):
-        args = {}
-    known = _known_args(action, message)      # formes exactes connues (ex. Canva design_type)
+    # ── ÉTAPE 2 : construire les arguments À PARTIR DU SCHÉMA RÉEL de l'action.
+    # Séparer « quelle action » de « quels arguments » évite les erreurs de forme
+    # (objet imbriqué vs chaîne), quelle que soit l'app — donc aussi pour les futures.
+    spec = next((a for a in actions if a["name"] == action), {})
+    args = _build_args(action, spec, message, ctx)
+    if not args:
+        a2 = pick.get("arguments")
+        args = a2 if isinstance(a2, dict) else {}
+    known = _known_args(action, message)      # formes vérifiées à la main (filet de sécurité)
     if known:
         args = {**args, **known}
     steps[0]["label"] = action
     obs = _tool(action, args)
     steps.append({"kind": "obs", "tool": slug, "text": str(obs)[:180]})
 
-    # ── AUTO-CORRECTION : l'API indique souvent ce qui manque
-    # (ex. Canva : « One of 'design_type' or 'asset_id' must be defined »).
-    # On relit son message d'erreur, on corrige les paramètres et on réessaie UNE fois.
-    if _looks_like_failure(obs) and _is_param_error(obs):
-        import json as _j
-        spec = next((a for a in actions if a["name"] == action), {})
-        fix = _llm_json(
-            "Un appel d'API a échoué à cause de PARAMÈTRES manquants ou invalides. Corrige-les.\n"
-            'Réponds en JSON STRICT : {"arguments":{…}} — l\'ensemble COMPLET des paramètres à '
-            "réenvoyer. Le message d'erreur indique en général le champ manquant, et parfois ses "
-            "valeurs possibles. Choisis une valeur par défaut raisonnable si besoin "
-            "(ex. type de design courant : 'presentation', 'doc', 'whiteboard').",
-            f"Action : {action}\nParamètres possibles : {spec.get('props')}\n"
-            f"Obligatoires : {spec.get('required')}\n"
-            f"Paramètres envoyés : {_j.dumps(args, ensure_ascii=False)}\n"
-            f"ERREUR : {str(obs)[:700]}\nDemande initiale : {message}")
-        new_args = fix.get("arguments")
-        if isinstance(new_args, dict) and new_args and new_args != args:
-            steps.append({"kind": "action", "tool": slug, "label": action + " (paramètres corrigés)"})
-            obs2 = _tool(action, new_args)
-            steps.append({"kind": "obs", "tool": slug, "text": str(obs2)[:180]})
-            obs = obs2
+    # ── AUTO-CORRECTION : on renvoie l'erreur de l'API au constructeur d'arguments,
+    # qui la lit et corrige (jusqu'à 2 tentatives).
+    tries = 0
+    while _looks_like_failure(obs) and _is_param_error(obs) and tries < 2:
+        tries += 1
+        new_args = _build_args(action, spec, message, ctx, error=str(obs))
+        if not new_args or new_args == args:
+            break
+        args = new_args
+        steps.append({"kind": "action", "tool": slug, "label": f"{action} (correction {tries})"})
+        obs = _tool(action, args)
+        steps.append({"kind": "obs", "tool": slug, "text": str(obs)[:180]})
 
     if _looks_like_failure(obs):
         return {"steps": steps, "done_answer": _honest_no_access(action, obs)}
@@ -1220,9 +1266,56 @@ def _is_github_project(message: str) -> bool:
     return any(v in m for v in _MAKE_VERBS) and any(w in m for w in _PROJECT_WORDS)
 
 
+def _visual_flow(message: str):
+    """« écris X sur une slide/visuel/image » → génère une vraie image avec le texte.
+    L'API Canva gratuite ne sait pas écrire dans un design (l'autofill exige un plan
+    Enterprise) : on produit donc le visuel nous-mêmes, gratuitement et instantanément."""
+    from plugins.builtin.visual_maker import make_visual
+    steps = [{"kind": "action", "tool": "create_visual", "label": "CREATE_VISUAL"}]
+    ex = _llm_json(
+        "Extrais ce qu'il faut mettre sur un visuel. JSON STRICT : "
+        '{"texte":"…","sous_titre":"","theme":"nova|sombre|chaud|nature|clair",'
+        '"format":"carre|story|slide|banniere|post"}. '
+        "texte = la phrase à afficher (sans les mots de commande). "
+        "format : « slide/présentation » → slide, « story/insta » → story, sinon carre.",
+        f"Demande : {message}")
+    texte = (ex.get("texte") or "").strip()
+    if not texte:
+        texte = _canva_design_args(message).get("title", "")
+    if not texte or texte == "Nouveau design":
+        return {"steps": steps, "done_answer": "Dis-moi le texte à écrire (ex. « fais un visuel avec écrit Bienvenue »)."}
+    try:
+        path = make_visual(texte, (ex.get("sous_titre") or "").strip(),
+                           ex.get("theme") or "nova", ex.get("format") or "carre")
+    except Exception as e:
+        return {"steps": steps, "done_answer": f"❌ Création du visuel impossible : {str(e)[:160]}"}
+    steps.append({"kind": "obs", "tool": "create_visual", "text": path})
+    url = f"/agent/file?p={path}&key=__KEY__"
+    return {"steps": steps, "done_answer": (
+        f"✅ Visuel créé avec « **{texte}** » 🎨\n\n"
+        f"![visuel]({url})\n\n"
+        f"[Ouvrir en grand]({url})\n\n"
+        "_Astuce : je peux changer le thème (nova, sombre, chaud, nature, clair) et le format "
+        "(carré, story, slide, bannière). Tu peux ensuite l'importer dans Canva._")}
+
+
+def _wants_visual(message: str) -> bool:
+    """Écrire un texte SUR quelque chose de visuel → générateur d'image."""
+    m = message.lower()
+    verbe = any(v in m for v in ("écri", "ecri", "marque", "affiche", "mets"))
+    support = any(w in m for w in ("visuel", "image", "slide", "affiche", "carte", "story",
+                                   "bannière", "banniere", "post", "citation", "miniature"))
+    if verbe and support:
+        return True
+    # « fais un visuel avec écrit … » / « crée une image avec le texte … »
+    return bool(("visuel" in m or "image" in m) and any(v in m for v in ("cré", "cre", "fais", "génère", "genere")))
+
+
 def _complex_app_flow(message: str):
     """Détecte et exécute les actions multi-étapes. Renvoie {steps, done_answer} ou None."""
     m = message.lower()
+    if _wants_visual(message):
+        return _visual_flow(message)
     if _is_github_project(message):
         return _github_project_flow(message)
     mail_verb = any(v in m for v in ("envoie", "envoyer", "écris", "ecris", "rédige", "redige", "réponds", "reponds"))
@@ -1482,6 +1575,108 @@ async def tts(text: str = "", key: str = ""):
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=502)
 
 
+@router.get("/selftest")
+async def selftest(key: str = ""):
+    """Auto-diagnostic complet : vérifie chaque brique et dit ce qui marche / ce qui manque."""
+    _check_key(key)
+    loop = asyncio.get_running_loop()
+
+    def run() -> dict:
+        res = {}
+
+        def check(nom, fn):
+            try:
+                ok, det = fn()
+                res[nom] = {"ok": bool(ok), "detail": str(det)[:200]}
+            except Exception as e:
+                res[nom] = {"ok": False, "detail": f"{type(e).__name__}: {str(e)[:160]}"}
+
+        # 1) Modèle de langage
+        def _llm():
+            from llm.client import chat
+            out = chat([{"role": "user", "content": "Réponds juste : ok"}], temperature=0)
+            return bool(out and out.strip()), f"{config.LLM_PROVIDER}/{config.LLM_MODEL} → {str(out)[:40]}"
+        check("llm", _llm)
+
+        # 2) Recherche web
+        def _web():
+            from plugins import get_loader
+            from agent.self_heal import safe_tool_call
+            o = safe_tool_call(get_loader(), "search_web", {"query": "test", "mode": "web"})
+            return (not _looks_like_failure(o)), str(o)[:120]
+        check("recherche_web", _web)
+
+        # 3) Vision (photos)
+        def _vision():
+            has = bool(config.GROQ_API_KEY) or bool(getattr(config, "GEMINI_API_KEY", ""))
+            return has, ("Groq" if config.GROQ_API_KEY else "") + (" + Gemini" if getattr(config, "GEMINI_API_KEY", "") else "") or "aucune clé vision (GROQ_API_KEY ou GEMINI_API_KEY)"
+        check("analyse_photos", _vision)
+
+        # 4) Générateur de visuels
+        def _vis():
+            from plugins.builtin.visual_maker import make_visual
+            p = make_visual("Auto-test Nova", "", "nova", "post")
+            return True, p
+        check("generateur_visuels", _vis)
+
+        # 5) Voix serveur
+        def _tts():
+            if getattr(config, "ELEVENLABS_API_KEY", ""):
+                return True, "ElevenLabs (premium)"
+            mp3 = _gtts_mp3("test")
+            return bool(mp3), f"voix gratuite ({len(mp3)} octets)"
+        check("voix", _tts)
+
+        # 6) Composio : clé, identité, apps
+        def _composio():
+            if not (getattr(config, "COMPOSIO_API_KEY", "") or "").strip():
+                return False, "COMPOSIO_API_KEY absente"
+            accs = _connected_accounts()
+            apps = sorted({s for s, _u, _st in accs if s})
+            return bool(apps), ("apps connectées : " + ", ".join(apps) if apps else "aucune app connectée")
+        check("composio", _composio)
+
+        # 7) Mémoire / profil
+        def _mem():
+            from agent.profile import list_facts
+            n = len(list_facts())
+            try:
+                get_memory().recall_recent(_PROFILE_ID, 1)
+            except Exception:
+                from agent.memory import init_db      # table absente → on la crée
+                init_db()
+                get_memory().recall_recent(_PROFILE_ID, 1)
+            return True, f"{n} fait(s) mémorisé(s)"
+        check("memoire", _mem)
+
+        # 8) Automatisations
+        def _auto():
+            from agent.automations import list_all
+            items = list_all()
+            return True, f"{len(items)} automatisation(s), {sum(1 for i in items if i.get('active'))} active(s)"
+        check("automatisations", _auto)
+
+        # 9) Compteur d'énergie
+        def _usage():
+            from llm import usage as U
+            u, l = U.get_usage("cerebras")
+            return True, f"cerebras {u}/{l}"
+        check("energie", _usage)
+
+        # 10) Actions par app connectée (détecte un connecteur cassé)
+        try:
+            for slug in sorted({s for s, _u, _st in _connected_accounts() if s})[:6]:
+                acts = _composio_list_actions(slug)
+                res[f"app_{slug}"] = {"ok": bool(acts), "detail": f"{len(acts)} action(s) disponibles"}
+        except Exception as e:
+            res["apps_detail"] = {"ok": False, "detail": str(e)[:150]}
+
+        ko = [k for k, v in res.items() if not v["ok"]]
+        return {"resultats": res, "ok": len(res) - len(ko), "ko": len(ko), "a_corriger": ko}
+
+    return await loop.run_in_executor(None, run)
+
+
 @router.get("/diag/composio")
 async def diag_composio(key: str = ""):
     """Auto-test Composio : appelle l'API et renvoie la réponse BRUTE (pour diagnostic).
@@ -1673,6 +1868,24 @@ async def voice_pending(since: float = 0.0):
     import time as _t
     fresh = _WAKE["ts"] > since and (_t.time() - _WAKE["ts"]) < 60
     return {"wake": bool(fresh), "ts": _WAKE["ts"], "from": _WAKE["from"]}
+
+
+@router.get("/file")
+async def serve_file(p: str = "", key: str = ""):
+    """Sert un fichier produit par Nova (visuels, exports). Chemin restreint à output/ et data/."""
+    _check_key(key)
+    from fastapi.responses import FileResponse
+    from pathlib import Path as _P
+    try:
+        target = _P(p).resolve()
+        roots = [_P("output").resolve(), _P("data").resolve()]
+        if not any(str(target).startswith(str(r)) for r in roots) or not target.is_file():
+            raise HTTPException(status_code=404, detail="Fichier introuvable.")
+        return FileResponse(str(target))
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=404, detail="Fichier introuvable.")
 
 
 @router.get("/profile")
