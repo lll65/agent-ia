@@ -161,7 +161,8 @@
   body.voice .app::before{ display:none; }
   body.voice #graphWrap{ display:block!important; opacity:1!important; }
   /* Sur grand écran, l'ensemble descend un peu pour occuper le centre optique de la page */
-  #voiceUI .orb{ width:120px; height:120px; border-radius:50%; margin:8vh 0 20px; background:radial-gradient(circle at 35% 30%,#a78bfa,#7c5cff 60%,#4c1d95); box-shadow:0 0 60px rgba(124,92,255,.7); animation:orbPulse 2.4s ease-in-out infinite; }
+  /* L'orbe descend nettement : le schéma occupe le haut, l'orbe le bas de l'écran */
+  #voiceUI .orb{ width:120px; height:120px; border-radius:50%; margin:26vh 0 20px; background:radial-gradient(circle at 35% 30%,#a78bfa,#7c5cff 60%,#4c1d95); box-shadow:0 0 60px rgba(124,92,255,.7); animation:orbPulse 2.4s ease-in-out infinite; }
   body.listening #voiceUI .orb{ background:radial-gradient(circle at 35% 30%,#67e8f9,#22d3ee 60%,#0e7490); box-shadow:0 0 70px rgba(34,211,238,.8); animation:orbPulse 1.1s ease-in-out infinite; }
   @keyframes orbPulse{ 0%,100%{ transform:scale(1) } 50%{ transform:scale(1.12) } }
   #voiceUI .vstatus{ font-size:20px; font-weight:700; letter-spacing:.02em; text-align:center; text-shadow:0 0 20px rgba(124,92,255,.6); }
@@ -541,12 +542,18 @@ function gResize(){ const dpr=Math.min(devicePixelRatio||1,2); GW=innerWidth; GH
   // En vocal le schéma remonte pour ne pas passer derrière l'orbe — mais seulement sur mobile,
   // où la place manque. Sur grand écran il garde une position centrale et ample.
   const petit = GW < 620;
-  GCY = GH * (voice ? (petit ? .17 : .21) : .42);
-  RAD = Math.min(GW, GH) * (voice ? (petit ? .20 : .26) : .30); }
+  GCY = GH * (voice ? (petit ? .26 : .30) : .50);
+  RAD = Math.min(GW, GH) * (voice ? (petit ? .19 : .24) : .30); }
 addEventListener("resize",()=>{ if(gAnim) gResize(); });
 function graphStart(){ gw.classList.add("show"); gResize(); GT=0; phaseCount=0;
   nodes=[{core:1,a:0,r:1,tr:1,label:"NOVA",icon:"🧠",t:0}]; if(!gAnim) drawGraph(); }
-function graphAdd(icon,label){ const n=nodes.length-1; nodes.push({a:n*2.399, r:0, tr:1, label, icon, t:0}); }
+function graphAdd(icon,label,detail){ const n=nodes.length-1;
+  nodes.push({a:n*2.399, r:0, tr:1, label, icon, t:0, sub:_subs(detail)}); }
+/* Découpe le détail d'une étape en 1-3 sous-bulles courtes (mots-clés lisibles) */
+function _subs(detail){ if(!detail) return [];
+  return String(detail).replace(/\s+/g," ").trim()
+    .split(/[·,;•\n]|(?:\s-\s)/).map(s=>s.trim()).filter(s=>s.length>2)
+    .slice(0,3).map(s=>s.length>22? s.slice(0,21)+"…" : s); }
 /* Nœuds "de phase" : apparaissent DÈS le début (analyse, réflexion, rédaction) pour que le schéma
    soit vivant immédiatement — y compris en simple discussion, où aucun outil n'est appelé. */
 let phaseCount=0;
@@ -578,7 +585,18 @@ function drawGraph(){ gx.clearRect(0,0,GW,GH); const core=nodes[0]; if(!core){gA
     gx.globalAlpha=al; gx.textAlign="center"; gx.textBaseline="middle"; gx.fillStyle="#fff";
     gx.font=Math.round(17*sc)+"px sans-serif"; gx.fillText(nd.icon,p.x,p.y);
     gx.textBaseline="alphabetic"; gx.fillStyle="rgba(215,220,240,"+al+")"; gx.font=Math.round(10.5*sc)+"px sans-serif";
-    gx.fillText(nd.label.slice(0,16),p.x,p.y+R+13); gx.globalAlpha=1; }
+    gx.fillText(nd.label.slice(0,16),p.x,p.y+R+13);
+    // Sous-bulles : le détail de l'étape, en petits satellites reliés au nœud
+    if(nd.sub && nd.sub.length){ const dir=(p.x<GCX?-1:1);
+      nd.sub.forEach((s,k)=>{ const sx=p.x+dir*(R+26), sy=p.y+(k-(nd.sub.length-1)/2)*17;
+        gx.beginPath(); gx.moveTo(p.x+dir*R,p.y); gx.lineTo(sx-dir*3,sy);
+        gx.strokeStyle="rgba(34,211,238,"+(0.28*al)+")"; gx.lineWidth=1; gx.stroke();
+        gx.beginPath(); gx.arc(sx,sy,3,0,7); gx.fillStyle="rgba(34,211,238,"+(0.7*al)+")"; gx.fill();
+        gx.textAlign=dir<0?"right":"left"; gx.font=Math.round(9*sc)+"px sans-serif";
+        gx.fillStyle="rgba(190,198,225,"+(0.75*al)+")";
+        gx.fillText(s, sx+dir*7, sy+3); });
+      gx.textAlign="center"; }
+    gx.globalAlpha=1; }
   // Coeur HUD lumineux
   const pulse=30+Math.sin(core.t*.07)*4;
   ring(GCX,GCY,pulse+17,3,GT*.4,"rgba(124,92,255,.55)",2);
@@ -674,7 +692,7 @@ function ask(){
   const url=ORIGIN+"/agent/ask/stream?key="+encodeURIComponent(KEY)+"&q="+encodeURIComponent(msg);
   const es=new EventSource(url);
   es.onmessage=(e)=>{ let d; try{ d=JSON.parse(e.data);}catch{ return; }
-    if(d.type==="step"){ const ic=iconFor(d.kind,d.tool); graphAdd(ic, d.tool||d.kind);
+    if(d.type==="step"){ const ic=iconFor(d.kind,d.tool); graphAdd(ic, d.tool||d.kind, d.q||d.text||"");
       trace.push({icon:ic, label:stepLabel(d), detail:(d.q||d.text||"")});
       if(voiceMode) vSet(stepLabel(d),"");
       if(!answer&&!streamed){ bubble.innerHTML=thinkHTML(stepLabel(d), ic); pi=trace.length-1; chat.scrollTop=chat.scrollHeight; } }
