@@ -58,6 +58,11 @@
   .rstep .rl{ color:var(--txt); font-weight:600; } .rstep .rd{ color:var(--dim); font-size:11.5px; word-break:break-word; }
   .bubble pre{ background:#05050c; border:1px solid var(--stroke); border-radius:10px; padding:11px; overflow-x:auto; margin:8px 0; font-size:13px; font-family:ui-monospace,monospace; }
   .bubble a{ color:var(--neon2); }
+  /* Aperçu des visuels créés par Nova */
+  .imgw{ display:block; margin:10px 0; }
+  .imgw img{ max-width:100%; border-radius:14px; border:1px solid var(--stroke);
+             box-shadow:0 8px 30px rgba(0,0,0,.45); transition:.2s; }
+  .imgw:hover img{ border-color:var(--neon); box-shadow:0 8px 34px rgba(124,92,255,.4); }
   .think{ display:inline-flex; align-items:center; gap:8px; color:var(--dim); font-size:14px; animation:fadeSwap .5s ease; }
   @keyframes fadeSwap{ from{opacity:0; transform:translateY(7px); filter:blur(4px)} to{opacity:1; transform:none; filter:blur(0)} }
   .think .dot{ width:7px; height:7px; border-radius:50%; background:var(--neon2); box-shadow:0 0 10px var(--neon2); animation:blink 1s infinite; }
@@ -447,7 +452,15 @@ function wake(v){ if(woke || !v || !v.trim()) return; woke=true;
 function keydown(e){ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); ask(); } }
 function quick(el){ document.getElementById("in").value=el.textContent; ask(); }
 function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
-function fmt(s){ return esc(s).replace(/```([\s\S]*?)```/g,(m,c)=>"<pre>"+c.trim()+"</pre>").replace(/\*\*(.+?)\*\*/g,"<b>$1</b>").replace(/(https?:\/\/[^\s]+)/g,'<a href="$1" target="_blank">$1</a>').replace(/\n/g,"<br>"); }
+function fmt(s){
+  let t=String(s==null?"":s).split("__KEY__").join(encodeURIComponent(KEY));   // liens de fichiers
+  t=esc(t).replace(/```([\s\S]*?)```/g,(m,c)=>"<pre>"+c.trim()+"</pre>");
+  // Images produites par Nova : ![alt](url) → aperçu cliquable
+  t=t.replace(/!\[[^\]]*\]\(([^)]+)\)/g, (m,u)=>'<a href="'+u+'" target="_blank" class="imgw"><img src="'+u+'" alt="visuel"></a>');
+  t=t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');   // liens markdown
+  return t.replace(/\*\*(.+?)\*\*/g,"<b>$1</b>")
+          .replace(/(?<!["'=(])(https?:\/\/[^\s<]+)/g,'<a href="$1" target="_blank">$1</a>')
+          .replace(/\n/g,"<br>"); }
 function addRow(who,html){ if(hint)hint.remove(); const r=document.createElement("div"); r.className="row "+(who==="me"?"me":"ai");
   r.innerHTML = who==="ai"
     ? '<div class="avatar">🧠</div><div class="col"><div class="bubble">'+html+'</div></div>'
@@ -771,7 +784,24 @@ const UI_COMMANDS=[
     run:()=>{ wakeDevices(); return "📱 Mode vocal lancé sur tes autres appareils."; } },
   { re:/(active|allume).*(mot(-| )cl(é|e)|d(é|e)tection)/,
     run:()=>{ if(!wakeOn) toggleWake(); return "✨ Dis « Nova » quand tu veux me parler."; } },
+  { re:/(diagnostic|auto(-| )test|selftest|test complet|tout (va|marche) bien|(é|e)tat (du )?syst(è|e)me)/,
+    run:()=>{ runSelfTest(); return "🩺 Je lance mon auto-diagnostic…"; } },
 ];
+/* Auto-diagnostic : Nova teste toutes ses briques et affiche le bilan */
+async function runSelfTest(){
+  const b=addRow("ai", thinkHTML("Vérification de toutes mes fonctions…","🩺"));
+  try{ const d=await (await fetch(ORIGIN+"/agent/selftest?key="+encodeURIComponent(KEY),{cache:"no-store"})).json();
+    const noms={llm:"Modèle de langage",recherche_web:"Recherche web",analyse_photos:"Analyse de photos",
+      generateur_visuels:"Création de visuels",voix:"Voix",composio:"Apps connectées",memoire:"Mémoire",
+      automatisations:"Automatisations",energie:"Compteur d'énergie"};
+    let out="🩺 **Diagnostic complet**\n\n";
+    for(const [k,v] of Object.entries(d.resultats||{})){
+      const nom=noms[k] || (k.startsWith("app_")? "App · "+k.slice(4) : k);
+      out += (v.ok?"✅":"❌")+" **"+nom+"** — "+(v.detail||"")+"\n"; }
+    out += "\n"+(d.ko? "⚠️ **"+d.ko+" point(s) à corriger.** Dis-moi lequel et je t'aide."
+                     : "🎉 **Tout fonctionne.**");
+    typewrite(b,out); histPush("ai",out);
+  }catch(e){ b.innerHTML="❌ Diagnostic impossible : "+esc(String(e).slice(0,120)); } }
 function tryUICommand(msg){
   const m=msg.toLowerCase().trim();
   if(m.split(/\s+/).length>9) return null;      // une vraie demande, pas une commande d'interface
