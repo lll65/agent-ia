@@ -69,9 +69,19 @@ def _is_smalltalk(message: str) -> bool:
     return False
 
 
+def _profile_ctx() -> str:
+    """Ce que Nova sait de l'utilisateur, à injecter pour personnaliser ses réponses."""
+    try:
+        from agent.profile import context_block
+        blk = context_block()
+        return ("\n\n" + blk) if blk else ""
+    except Exception:
+        return ""
+
+
 def _smalltalk_messages(message: str) -> list:
     return [
-        {"role": "system", "content": (
+        {"role": "system", "content": _profile_ctx().strip() + "\n" + (
             "Tu es Nova, l'assistante personnelle de l'utilisateur. Réponds en français, "
             "de façon chaleureuse, BRÈVE (1 à 3 phrases maximum) et naturelle, comme un ami.\n"
             "INTERDICTIONS ABSOLUES :\n"
@@ -98,11 +108,16 @@ def _has_invented_market_data(text: str) -> bool:
 
 
 def _remember_fact(message: str) -> None:
-    """Mémorise une info personnelle donnée par l'utilisateur (non fatal)."""
+    """Mémorise une info personnelle : fait structuré dans le profil + trace dans l'historique."""
     if not _is_personal_fact(message):
         return
     try:
         get_memory().remember(_PROFILE_ID, "user", message.strip()[:200])
+    except Exception:
+        pass
+    try:
+        from agent.profile import learn_from
+        learn_from(message)
     except Exception:
         pass
 
@@ -246,6 +261,7 @@ def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
             system += f" Tu mobilises ton spécialiste **{spec['name']}** ({spec['desc']})."
     except Exception:
         pass
+    system += _profile_ctx()          # personnalisation à partir des faits retenus
     return {"id": _PROFILE_ID, "name": name, "system_prompt": system,
             "tools": tools, "force_search": factual, "model": config.LLM_MODEL}
 
@@ -655,10 +671,11 @@ def _llm_json(system: str, user: str, temperature: float = 0.1) -> dict:
     from llm.client import chat
     import re, json as _json
     try:
-        out = chat([{"role": "system", "content": system}, {"role": "user", "content": user}], temperature=temperature)
+        out = chat([{"role": "system", "content": system}, {"role": "user", "content": user}],
+                   temperature=temperature) or ""      # le modèle peut renvoyer un contenu vide
     except Exception:
         return {}
-    m = re.search(r"\{.*\}", out, re.DOTALL)
+    m = re.search(r"\{.*\}", str(out), re.DOTALL)
     if not m:
         return {}
     for cand in (m.group(0), m.group(0).replace("'", '"')):
@@ -1615,6 +1632,56 @@ async def voice_pending(since: float = 0.0):
     import time as _t
     fresh = _WAKE["ts"] > since and (_t.time() - _WAKE["ts"]) < 60
     return {"wake": bool(fresh), "ts": _WAKE["ts"], "from": _WAKE["from"]}
+
+
+@router.get("/profile")
+async def profile_get(key: str = ""):
+    """Faits que Nova retient sur toi (structurés, pas des bouts de messages)."""
+    _check_key(key)
+    from agent.profile import list_facts, CATEGORIES
+    return {"facts": list_facts(), "categories": CATEGORIES}
+
+
+@router.delete("/profile")
+async def profile_delete(id: str = "", key: str = ""):
+    """Supprime un fait, ou tout le profil si id est vide."""
+    _check_key(key)
+    from agent.profile import delete_fact, clear_all
+    if id:
+        return {"ok": delete_fact(id)}
+    clear_all()
+    return {"ok": True}
+
+
+class TitleReq(BaseModel):
+    key: Optional[str] = None
+    question: Optional[str] = None
+    answer: Optional[str] = None
+
+
+@router.post("/title")
+async def make_title(req: TitleReq):
+    """Titre court et propre pour une conversation (3-5 mots), généré après le 1er échange."""
+    _check_key(req.key or "")
+    from llm.client import chat
+    q = (req.question or "").strip()[:400]
+    a = (req.answer or "").strip()[:400]
+    if not q:
+        raise HTTPException(status_code=400, detail="question requise.")
+    try:
+        out = chat([
+            {"role": "system", "content": (
+                "Donne un TITRE de conversation en français : 3 à 5 mots, clair et descriptif, "
+                "première lettre en majuscule, SANS guillemets, SANS ponctuation finale, "
+                "SANS reprendre la phrase mot pour mot. "
+                "Exemples : « Création d'un design Canva », « Agenda de la semaine », "
+                "« Bilan des points GPS ». Réponds UNIQUEMENT par le titre.")},
+            {"role": "user", "content": f"Question : {q}\nRéponse : {a}"},
+        ], temperature=0.3)
+        titre = (out or "").strip().strip('"«».').split("\n")[0][:48]
+    except Exception:
+        titre = ""
+    return {"title": titre or q[:42]}
 
 
 @router.get("/activity")

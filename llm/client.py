@@ -129,7 +129,7 @@ def _groq_chat(messages: list, model: str, temperature: float) -> str:
         record(getattr(getattr(resp, "usage", None), "total_tokens", 0))
     except Exception:
         pass
-    return resp.choices[0].message.content
+    return resp.choices[0].message.content or ""
 
 
 def _xai_chat(messages: list, model: str, temperature: float) -> str:
@@ -141,7 +141,7 @@ def _xai_chat(messages: list, model: str, temperature: float) -> str:
         temperature=temperature,
         max_tokens=4096,
     )
-    return resp.choices[0].message.content
+    return resp.choices[0].message.content or ""
 
 
 def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> str:
@@ -173,7 +173,7 @@ def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> 
         temperature=temperature,
         max_tokens=2048,
     )
-    return resp.choices[0].message.content
+    return resp.choices[0].message.content or ""
 
 
 def _cerebras_chat(messages: list, model: str, temperature: float) -> str:
@@ -220,7 +220,7 @@ def _cerebras_chat(messages: list, model: str, temperature: float) -> str:
                 record(getattr(getattr(resp, "usage", None), "total_tokens", 0), provider="cerebras")
             except Exception:
                 pass
-            return resp.choices[0].message.content
+            return resp.choices[0].message.content or ""
         except Exception as e:
             last_err = e
             txt = str(e).lower()
