@@ -1,5 +1,6 @@
 import asyncio
 import hmac
+import re
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -1014,6 +1015,41 @@ def _composio_list_actions(slug: str):
     return out
 
 
+def _route_detail(message: str) -> str:
+    """Décrit ce que Nova a RÉELLEMENT décidé pour ce message (affiché en sous-bulles).
+    Ce sont de vraies décisions du routeur, vérifiables — pas un habillage."""
+    bouts = []
+    if _is_smalltalk(message):
+        bouts.append("conversation")
+        if _is_personal_fact(message):
+            bouts.append("info à retenir")
+        bouts.append("sans outil")
+        return " · ".join(bouts)
+    if _is_briefing(message):
+        return "briefing · agenda + mails + météo + actu"
+    slug = _detect_toolkit(message)
+    if slug:
+        bouts.append(f"app : {slug}")
+        if _is_capability_question(message):
+            bouts.append("question sur ses capacités")
+        elif _wants_visual(message):
+            bouts.append("génération de visuel")
+        else:
+            act, _ = _resolve_app_action(message)
+            bouts.append(f"action : {act.split('_', 1)[-1].lower().replace('_', ' ')}" if act else "action à choisir")
+        return " · ".join(bouts)
+    if _wants_visual(message):
+        return "création d'image · texte à composer"
+    if _finance_intent(message):
+        bouts.append("finance")
+    if any(h in message.lower() for h in _FACTUAL_HINTS):
+        bouts.append("question factuelle")
+        bouts.append("recherche web requise")
+    else:
+        bouts.append("raisonnement")
+    return " · ".join(bouts) or "analyse de la demande"
+
+
 def _log_activity(message: str) -> None:
     """Trace CHAQUE demande dans la constellation (même une simple discussion)."""
     try:
@@ -1063,14 +1099,30 @@ def _useful_actions(actions: list, limit: int = 8) -> list:
     return [{"name": n, "desc": d} for _s, n, d in scored[:limit]]
 
 
+_VERBES_FR = {
+    "create": "Créer", "get": "Consulter", "list": "Lister", "update": "Modifier",
+    "delete": "Supprimer", "send": "Envoyer", "search": "Rechercher", "fetch": "Récupérer",
+    "add": "Ajouter", "remove": "Retirer", "download": "Télécharger", "upload": "Envoyer",
+    "move": "Déplacer", "copy": "Copier", "find": "Trouver", "read": "Lire", "write": "Écrire",
+}
+
+
 def _friendly_actions(actions: list, limit: int = 8) -> str:
-    """Traduit les noms d'actions techniques en capacités lisibles."""
+    """Capacités en FRANÇAIS. Repli utilisé si la traduction par le modèle échoue :
+    on ne montre plus les descriptions anglaises tronquées de l'API."""
     best = _useful_actions(actions, limit) or actions[:limit]
     out = []
     for a in best:
-        label = a["name"].split("_", 1)[-1].replace("_", " ").lower()
-        desc = (a.get("desc") or "").strip()
-        out.append(f"• **{label}**" + (f" — {desc[:70]}" if desc else ""))
+        mots = a["name"].split("_")[1:]                     # on retire le préfixe de l'app
+        if not mots:
+            continue
+        verbe = _VERBES_FR.get(mots[0].lower())
+        reste = " ".join(m.lower() for m in (mots[1:] if verbe else mots))
+        # on enlève les mots parasites fréquents dans les noms d'actions
+        for parasite in ("the", "a", "an", "for", "authenticated", "user", "specific", "by", "id"):
+            reste = re.sub(rf"\b{parasite}\b", " ", reste)
+        reste = re.sub(r"\s+", " ", reste).strip()
+        out.append(f"• {verbe} {reste}".strip() if verbe else f"• {reste.capitalize()}")
     return "\n".join(out)
 
 
@@ -1532,6 +1584,10 @@ async def ask_stream(q: str = "", key: str = ""):
         yield_acc = [""]
         try:
             _log_activity(message)   # visible immédiatement dans la constellation
+            # Le serveur annonce ses VRAIES décisions de routage → sous-bulles authentiques
+            # (et non des mots-clés extraits de la question, qui simulaient un raisonnement).
+            yield sse({"type": "step", "kind": "route", "tool": "analyse",
+                       "text": _route_detail(message)})
             # 1) Chitchat / info personnelle → streamé directement (aucun outil)
             if _is_smalltalk(message):
                 _remember_fact(message)

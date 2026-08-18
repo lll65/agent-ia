@@ -739,6 +739,9 @@ function _subs(detail){ if(!detail) return [];
    soit vivant immédiatement — y compris en simple discussion, où aucun outil n'est appelé. */
 let phaseCount=0;
 function graphPhase(icon,label,detail){ if(phaseCount>=3) return; phaseCount++; graphAdd(icon,label,detail); }
+/* Renseigne après coup les sous-bulles d'un nœud déjà affiché (ex. « Analyse ») */
+function graphSetSub(label,detail){ const n=nodes.find(x=>x.label===label);
+  if(n){ const s=_subs(detail); if(s.length) n.sub=s; } }
 /* arcs de cercle segmentés (look HUD/tech) */
 function ring(cx,cy,rad,seg,off,col,w){ gx.strokeStyle=col; gx.lineWidth=w;
   for(let k=0;k<seg;k++){ const a0=off+k*(6.283/seg), a1=a0+(6.283/seg)*.6;
@@ -933,6 +936,9 @@ function ask(){
   const url=ORIGIN+"/agent/ask/stream?key="+encodeURIComponent(KEY)+"&q="+encodeURIComponent(msg);
   const es=new EventSource(url);
   es.onmessage=(e)=>{ let d; try{ d=JSON.parse(e.data);}catch{ return; }
+    // Décisions réelles du routeur → sous-bulles du nœud « Analyse »
+    if(d.type==="step" && d.kind==="route"){ graphSetSub("Analyse", d.text||"");
+      trace.push({icon:"💭", label:"Analyse de ta demande", detail:d.text||""}); return; }
     if(d.type==="step"){ const ic=iconFor(d.kind,d.tool); graphAdd(ic, d.tool||d.kind, d.q||d.text||"");
       trace.push({icon:ic, label:stepLabel(d), detail:(d.q||d.text||"")});
       if(voiceMode) vSet(stepLabel(d),"");
