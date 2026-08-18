@@ -706,7 +706,11 @@ function graphAdd(icon,label,detail){
   // (sinon chaque outil apparaissait deux fois : action + résultat).
   const last=nodes[nodes.length-1];
   if(last && !last.core && last.label===label && !last.done){
-    last.done=true; const s=_subs(detail); if(s.length) last.sub=s; return; }
+    // On CONSERVE la requête et on AJOUTE le résultat en dessous : on doit voir
+    // ce que Nova a cherché ET ce qu'elle a trouvé, pas seulement le second.
+    last.done=true; const s=_subs(detail);
+    if(s.length) last.sub=[...(last.sub||[]), ...s].slice(0,3);
+    return; }
   if(nodes.length-1>=MAX_NODES){        // on recycle le plus ancien
     nodes.splice(1,1); nodes.forEach((n,i)=>{ if(i){ n.a=(i-1)*2.399; n.ring=(i-1)%3; } }); }
   const n=nodes.length-1;
@@ -731,7 +735,9 @@ function _subs(detail){ if(!detail) return [];
   let d=String(detail)
     .replace(/^[🔎🔍📧📅✅❌⚠️\s]*/,"")                    // pictogrammes de tête
     .replace(/\*\*(.+?)\*\*/g,"$1")                        // gras Markdown
-    .replace(/^R[ée]sultats? web\s*:?\s*/i,"")             // « Résultats web : »
+    // « Résultats web : <requête déjà affichée> (6) 1. Vrai titre » → on garde le vrai titre
+    .replace(/^R[ée]sultats? web\s*:?[^(]*\(\d+\)\s*\d*\.?\s*/i,"")
+    .replace(/^R[ée]sultats? web\s*:?\s*/i,"")
     .replace(/\(\d+\)\s*/g,"").replace(/\s+/g," ").trim();
   return d.split(/[·,;•\n]|(?:\s-\s)/).map(s=>s.trim())
     .filter(s=>s.length>2).slice(0,3).map(s=>_cut(s,24)); }
@@ -850,6 +856,17 @@ function stepLabel(d){ const t=(d.tool||"").toLowerCase(), q=(d.q||"").toLowerCa
   if(t.includes("connected")) return "Connexion à ton app…";
   if(d.kind==="obs") return "Analyse des résultats…";
   return (d.tool? d.tool : "Traitement")+"…"; }
+/* Libellé de nœud en français : « search_web » n'a aucun sens pour toi */
+const NODE_FR={search_web:"Recherche web", connected_app:"App connectée", thought:"Réflexion",
+  obs:"Résultat", create_visual:"Création visuel", analyse:"Analyse",
+  googlecalendar:"Agenda", gmail:"Mails", canva:"Canva", linear:"Linear", github:"GitHub",
+  googlemaps:"Maps", google_maps:"Maps", googlesheets:"Feuilles", notion:"Notion", slack:"Slack"};
+function nodeLabel(d){ const t=(d.tool||"").toLowerCase();
+  if(NODE_FR[t]) return NODE_FR[t];
+  for(const k in NODE_FR){ if(t.includes(k)) return NODE_FR[k]; }
+  if(d.kind==="thought") return "Réflexion";
+  if(d.kind==="obs") return "Résultat";
+  return (d.tool||d.kind||"Étape").replace(/_/g," "); }
 function thinkHTML(txt,icon){ return '<span class="think"><span class="dot"></span>'+(icon?icon+" ":"")+esc(txt)+'<span class="cur">▍</span></span>'; }
 const THINK_PHRASES=["Nova réfléchit…","J'analyse ta demande…","Je choisis les bons outils…","Je rassemble les informations…","Je réfléchis à la meilleure réponse…","Je structure tout ça…"];
 /* ═══ COMMANDES EN LANGAGE NATUREL ═══
@@ -939,7 +956,7 @@ function ask(){
     // Décisions réelles du routeur → sous-bulles du nœud « Analyse »
     if(d.type==="step" && d.kind==="route"){ graphSetSub("Analyse", d.text||"");
       trace.push({icon:"💭", label:"Analyse de ta demande", detail:d.text||""}); return; }
-    if(d.type==="step"){ const ic=iconFor(d.kind,d.tool); graphAdd(ic, d.tool||d.kind, d.q||d.text||"");
+    if(d.type==="step"){ const ic=iconFor(d.kind,d.tool); graphAdd(ic, nodeLabel(d), d.q||d.text||"");
       trace.push({icon:ic, label:stepLabel(d), detail:(d.q||d.text||"")});
       if(voiceMode) vSet(stepLabel(d),"");
       if(!answer&&!streamed){ bubble.innerHTML=thinkHTML(stepLabel(d), ic); pi=trace.length-1; chat.scrollTop=chat.scrollHeight; } }

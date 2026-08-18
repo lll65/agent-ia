@@ -260,7 +260,12 @@ def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
             "3. Si après ces tentatives tu n'as toujours pas la réponse exacte : dis-le franchement, "
             "donne ce que tu as trouvé de plus proche, ET termine par le LIEN le plus officiel/pertinent "
             "issu des résultats (page du site concerné) pour que l'utilisateur vérifie lui-même. "
-            "Ne donne jamais un lien que les résultats ne contiennent pas.")
+            "Ne donne jamais un lien que les résultats ne contiennent pas.\n"
+            "FRAÎCHEUR DES INFOS : indique la date de chaque information quand elle est disponible. "
+            "Si les résultats datent de plusieurs semaines ou mois alors que la demande portait sur "
+            "« aujourd'hui » / « du jour », signale-le explicitement en tête de réponse "
+            "(ex. « ⚠️ Je n'ai pas trouvé d'actualité datée d'aujourd'hui ; voici les plus récentes "
+            "que j'ai, du 29 juillet »). Ne présente jamais une information ancienne comme récente.")
     # Spécialiste mobilisé → constellation + ton adapté au domaine
     try:
         from agent.squad import pick_agent, get_agent, record
