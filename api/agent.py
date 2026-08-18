@@ -248,9 +248,18 @@ def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
     elif factual and "search_web" in tools:
         tools.remove("search_web"); tools.insert(0, "search_web")
     if factual:
-        system += (" AUTO-VÉRIFICATION : pour chaque affirmation factuelle (chiffre, date, fait), indique "
-                   "brièvement la source entre parenthèses (issue des résultats de recherche). Marque d'un ⚠️ "
-                   "toute affirmation que les outils n'ont pas confirmée. N'invente jamais de source.")
+        system += (
+            " AUTO-VÉRIFICATION : pour chaque affirmation factuelle (chiffre, date, fait), indique "
+            "brièvement la source entre parenthèses (issue des résultats de recherche). Marque d'un ⚠️ "
+            "toute affirmation que les outils n'ont pas confirmée. N'invente jamais de source.\n"
+            "RECHERCHE TENACE — ne renonce pas au premier essai :\n"
+            "1. Reformule la requête à chaque tentative (mots-clés différents, synonymes, sigle ET nom "
+            "complet, ajoute l'année, ajoute « site officiel » ou le nom du site attendu).\n"
+            "2. Fais jusqu'à 4 recherches successives tant que l'information précise manque.\n"
+            "3. Si après ces tentatives tu n'as toujours pas la réponse exacte : dis-le franchement, "
+            "donne ce que tu as trouvé de plus proche, ET termine par le LIEN le plus officiel/pertinent "
+            "issu des résultats (page du site concerné) pour que l'utilisateur vérifie lui-même. "
+            "Ne donne jamais un lien que les résultats ne contiennent pas.")
     # Spécialiste mobilisé → constellation + ton adapté au domaine
     try:
         from agent.squad import pick_agent, get_agent, record
@@ -1675,10 +1684,21 @@ async def selftest(key: str = ""):
             return (not _looks_like_failure(o)), str(o)[:120]
         check("recherche_web", _web)
 
-        # 3) Vision (photos)
+        # 3) Vision (photos) — avec contrôle du FORMAT des clés
         def _vision():
-            has = bool(config.GROQ_API_KEY) or bool(getattr(config, "GEMINI_API_KEY", ""))
-            return has, ("Groq" if config.GROQ_API_KEY else "") + (" + Gemini" if getattr(config, "GEMINI_API_KEY", "") else "") or "aucune clé vision (GROQ_API_KEY ou GEMINI_API_KEY)"
+            gq = (config.GROQ_API_KEY or "").strip()
+            gm = (getattr(config, "GEMINI_API_KEY", "") or "").strip()
+            notes = []
+            if gq:
+                notes.append("Groq ✓" if gq.startswith("gsk_")
+                             else f"Groq ⚠ format inattendu (devrait commencer par « gsk_ », ici « {gq[:4]}… »)")
+            if gm:
+                notes.append("Gemini ✓" if gm.startswith("AIza")
+                             else f"Gemini ⚠ format inattendu (devrait commencer par « AIza », ici « {gm[:4]}… »)")
+            if not notes:
+                return False, "aucune clé vision (ajoute GROQ_API_KEY ou GEMINI_API_KEY)"
+            ok = any("✓" in n for n in notes)
+            return ok, " · ".join(notes)
         check("analyse_photos", _vision)
 
         # 4) Générateur de visuels
