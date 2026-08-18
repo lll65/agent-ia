@@ -25,53 +25,72 @@ def _is_rate_limit(exc: Exception) -> bool:
     return "429" in text or "rate limit" in text or "too many requests" in text or "quota" in text
 
 
+def _providers_disponibles():
+    """Chaîne de secours : le fournisseur préféré d'abord, puis TOUS les autres configurés.
+    Avant, seuls 2 étaient essayés — si Cerebras passait en payant (402) et Groq atteignait sa
+    limite, Nova devenait muette alors qu'une autre clé était peut-être disponible."""
+    chaine = []
+
+    def add(nom, cle, fn, modele):
+        if cle and nom not in [c[0] for c in chaine]:
+            chaine.append((nom, fn, modele))
+
+    prefere = (config.LLM_PROVIDER or "").lower()
+    tous = {
+        "cerebras": (config.CEREBRAS_API_KEY, _cerebras_chat, config.CEREBRAS_MODEL),
+        "groq":     (config.GROQ_API_KEY, _groq_chat, config.GROQ_MODEL),
+        "gemini":   (getattr(config, "GEMINI_API_KEY", ""), _gemini_chat, config.GEMINI_MODEL),
+        "xai":      (getattr(config, "XAI_API_KEY", ""), _xai_chat, getattr(config, "XAI_MODEL", "")),
+    }
+    if prefere in tous:                       # le préféré passe en tête
+        add(prefere, *tous[prefere])
+    for nom, (cle, fn, mod) in tous.items():
+        add(nom, cle, fn, mod)
+    return chaine
+
+
+def _explique(nom: str, err: Exception) -> str:
+    """Message clair pour l'utilisateur selon le type de panne."""
+    t = str(err).lower()
+    if "payment_required" in t or "402" in t or "billing" in t:
+        return f"{nom} : offre gratuite épuisée (paiement demandé)"
+    if _is_rate_limit(err):
+        return f"{nom} : limite journalière atteinte"
+    if "401" in t or "invalid api key" in t or "unauthorized" in t:
+        return f"{nom} : clé invalide"
+    if "not_found" in t or "404" in t:
+        return f"{nom} : modèle indisponible"
+    return f"{nom} : {str(err)[:70]}"
+
+
 def chat(messages: list, temperature: float = 0.7, num_ctx: int = 4096) -> str:
-    """Appel synchrone — utilisable depuis n'importe quel contexte.
+    """Appel synchrone. Essaie chaque fournisseur configuré jusqu'à ce qu'un réponde."""
+    chaine = _providers_disponibles()
+    if not chaine:
+        return _ollama_chat(messages, config.LLM_MODEL, temperature, num_ctx)
 
-    Fallback automatique Groq → Cerebras sur erreur 429.
-    """
-    provider = config.LLM_PROVIDER
-    model = config.LLM_MODEL
-
-    if provider == "groq":
+    soucis = []
+    for nom, fn, modele in chaine:
         try:
-            return _groq_chat(messages, model, temperature)
+            out = fn(messages, modele or config.LLM_MODEL, temperature)
+            if out and out.strip():
+                if soucis:
+                    logger.warning(f"[LLM] bascule sur {nom} après : {' | '.join(soucis)}")
+                return out
+            soucis.append(f"{nom} : réponse vide")
         except Exception as e:
-            if _is_rate_limit(e) and config.CEREBRAS_API_KEY:
-                logger.warning(
-                    f"[LLM] Groq 429 (rate limit) — bascule automatique sur Cerebras "
-                    f"({config.CEREBRAS_MODEL})."
-                )
-                try:
-                    return _cerebras_chat(messages, config.CEREBRAS_MODEL, temperature)
-                except Exception as e2:
-                    logger.error(
-                        f"[LLM] ÉCHEC des deux providers. Groq: {e} | Cerebras: {e2}"
-                    )
-                    raise RuntimeError(
-                        f"Groq ET Cerebras ont échoué. Groq(429)={e} ; Cerebras={e2}"
-                    ) from e2
-            # Pas un 429 ou pas de fallback dispo → on remonte clairement
-            logger.error(f"[LLM] Groq a échoué (pas de fallback applicable): {e}")
-            raise
+            soucis.append(_explique(nom, e))
+            logger.warning(f"[LLM] {nom} indisponible → fournisseur suivant. ({str(e)[:90]})")
 
-    if provider == "xai":
-        return _xai_chat(messages, model, temperature)
-    if provider == "cerebras":
-        try:
-            return _cerebras_chat(messages, model, temperature)
-        except Exception as e:
-            # Cerebras saturé/indispo → bascule sur Groq si dispo
-            if config.GROQ_API_KEY:
-                logger.warning(f"[LLM] Cerebras KO ({str(e)[:80]}) — bascule sur Groq.")
-                try:
-                    return _groq_chat(messages, config.GROQ_MODEL, temperature)
-                except Exception as e2:
-                    raise RuntimeError(f"Cerebras ET Groq ont échoué. Cerebras={e} ; Groq={e2}") from e2
-            raise
-    if provider == "gemini":
-        return _gemini_chat(messages, model, temperature)
-    return _ollama_chat(messages, model, temperature, num_ctx)
+    # Dernier recours : Ollama local (souvent absent en ligne)
+    try:
+        return _ollama_chat(messages, config.LLM_MODEL, temperature, num_ctx)
+    except Exception:
+        pass
+    raise RuntimeError(
+        "Aucun modèle disponible pour le moment.\n• " + "\n• ".join(soucis) +
+        "\n\nAjoute ou renouvelle une clé gratuite : console.groq.com (Groq) "
+        "ou aistudio.google.com (Gemini), puis mets-la dans les variables Render.")
 
 
 def chat_stream(messages: list, temperature: float = 0.6):

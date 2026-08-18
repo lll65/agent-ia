@@ -225,7 +225,11 @@
   body.thinking .chips{ opacity:.15; }
 
   /* ═══ MODE VOCAL plein écran ═══ */
-  #voiceUI{ display:none; position:fixed; inset:0; z-index:4; flex-direction:column; align-items:center; justify-content:center; gap:4px; padding:max(24px,env(safe-area-inset-top)) 24px max(32px,env(safe-area-inset-bottom)); pointer-events:none; }
+  /* Mode vocal : le contenu occupe toute la hauteur — schéma en haut, orbe et texte en bas */
+  #voiceUI{ display:none; position:fixed; inset:0; z-index:4; flex-direction:column; align-items:center;
+    justify-content:flex-end; gap:4px;
+    padding:max(24px,env(safe-area-inset-top)) 24px max(40px,env(safe-area-inset-bottom));
+    pointer-events:none; }
   body.voice #voiceUI{ display:flex; }
   /* Mode vocal : interface épurée — on ne garde que l'orbe, le texte et le bouton quitter */
   body.voice .chat, body.voice .chips, body.voice .composer, body.voice header{ display:none; }
@@ -234,7 +238,7 @@
   body.voice #graphWrap{ display:block!important; opacity:1!important; }
   /* Sur grand écran, l'ensemble descend un peu pour occuper le centre optique de la page */
   /* L'orbe descend nettement : le schéma occupe le haut, l'orbe le bas de l'écran */
-  #voiceUI .orb{ width:120px; height:120px; border-radius:50%; margin:26vh 0 20px; background:radial-gradient(circle at 35% 30%,#a78bfa,#7c5cff 60%,#4c1d95); box-shadow:0 0 60px rgba(124,92,255,.7); animation:orbPulse 2.4s ease-in-out infinite; }
+  #voiceUI .orb{ width:132px; height:132px; border-radius:50%; margin:0 0 18px; background:radial-gradient(circle at 35% 30%,#a78bfa,#7c5cff 60%,#4c1d95); box-shadow:0 0 60px rgba(124,92,255,.7); animation:orbPulse 2.4s ease-in-out infinite; }
   body.listening #voiceUI .orb{ background:radial-gradient(circle at 35% 30%,#67e8f9,#22d3ee 60%,#0e7490); box-shadow:0 0 70px rgba(34,211,238,.8); animation:orbPulse 1.1s ease-in-out infinite; }
   @keyframes orbPulse{ 0%,100%{ transform:scale(1) } 50%{ transform:scale(1.12) } }
   #voiceUI .vstatus{ font-size:20px; font-weight:700; letter-spacing:.02em; text-align:center; text-shadow:0 0 20px rgba(124,92,255,.6); }
@@ -683,8 +687,12 @@ function gResize(){ const dpr=Math.min(devicePixelRatio||1,2); GW=innerWidth; GH
   // En vocal le schéma remonte pour ne pas passer derrière l'orbe — mais seulement sur mobile,
   // où la place manque. Sur grand écran il garde une position centrale et ample.
   const petit = GW < 620;
-  GCY = GH * (voice ? (petit ? .26 : .30) : .50);
-  RAD = Math.min(GW, GH) * (voice ? (petit ? .19 : .24) : .30); }
+  // En mode vocal, le schéma occupe TOUT l'espace disponible (il n'y a pas de texte à lire) :
+  // centre plus haut mais rayon nettement plus large, calculé sur la largeur ET la hauteur.
+  GCY = GH * (voice ? (petit ? .30 : .34) : .50);
+  RAD = voice
+      ? Math.min(GW * (petit ? .42 : .34), GH * (petit ? .26 : .34))
+      : Math.min(GW, GH) * .30; }
 addEventListener("resize",()=>{ if(gAnim) gResize(); });
 function graphStart(){ gw.classList.remove("mini"); gw.classList.add("show");
   const mb=document.getElementById("graphMini"); if(mb) mb.classList.remove("show");
@@ -909,10 +917,12 @@ function ask(){
   document.body.classList.add("chatting");
   inp.value=""; grow(inp); addRow("me",fmt(msg)); histPush("me",msg); sndSend(); const bubble=addRow("ai",thinkHTML(THINK_PHRASES[0],"💭"));
   document.getElementById("send").disabled=true; thinking=true; document.body.classList.add("thinking"); graphStart();
-  // Nœuds de phase AVEC leur détail → les sous-bulles apparaissent tout de suite
-  graphPhase("💭","Analyse", _keywords(msg));
-  setTimeout(()=>{ if(thinking) graphPhase("⚙️","Réflexion","intention · outils · contexte"); }, 900);
+  // ⚠️ Ces nœuds ne portent AUCUN détail inventé : afficher des mots-clés extraits de la
+  // question (« salut · nova · ans ») donnait l'illusion d'un raisonnement inexistant.
+  // Seules les VRAIES pensées et actions renvoyées par l'agent portent des sous-bulles.
   let answer="", trace=[], pi=0, streamed=false;
+  graphPhase("💭","Analyse");
+  setTimeout(()=>{ if(thinking && !trace.length) graphPhase("⚙️","Réflexion"); }, 1100);
   // Rotation "comme Claude" : une phrase apparaît, s'efface, une autre la remplace.
   // Une fois les vraies étapes arrivées, on cycle dessus (recherche web, agenda…).
   const thinkTimer=setInterval(()=>{ if(answer) return;
