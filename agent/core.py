@@ -63,6 +63,11 @@ _MOIS = ("janvier", "février", "mars", "avril", "mai", "juin", "juillet",
          "août", "septembre", "octobre", "novembre", "décembre")
 
 
+def _JOURS_COURT(d) -> str:
+    """« 18 août 2026 » — date en clair pour cibler l'actualité du jour."""
+    return f"{d.day} {_MOIS[d.month - 1]} {d.year}"
+
+
 def date_du_jour() -> str:
     """Date courante en clair. Sans elle, le modèle raisonne avec l'année de son
     entraînement (d'où des recherches en « 2024 ») et se trompe sur « aujourd'hui »."""
@@ -316,9 +321,11 @@ def search_query(task: str) -> str:
                 f"Nous sommes le {auj.strftime('%d/%m/%Y')}. L'année en cours est {auj.year}.\n"
                 "Transforme la demande en une REQUÊTE de moteur de recherche efficace.\n"
                 "RÈGLES : 3 à 8 mots-clés, pas de question, pas de mots vides (le, la, pour, quand…), "
-                "garde les noms propres et sigles. Si la demande porte sur l'actualité ou une "
-                f"information récente, ajoute « {auj.year} » — JAMAIS une année passée. "
-                "Réponds UNIQUEMENT par la requête, sans guillemets.")},
+                "garde les noms propres et sigles.\n"
+                f"• Actualité DU JOUR (« aujourd'hui », « du jour », « ce matin ») → ajoute la date "
+                f"précise « {_JOURS_COURT(auj)} » pour ne pas ramener des articles vieux de plusieurs mois.\n"
+                f"• Autre information récente → ajoute simplement « {auj.year} ».\n"
+                "• JAMAIS une année passée. Réponds UNIQUEMENT par la requête, sans guillemets.")},
             {"role": "user", "content": t[:300]},
         ], temperature=0.2) or ""
         q = out.strip().strip('"«».\n').split("\n")[0]
