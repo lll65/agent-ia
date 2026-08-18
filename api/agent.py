@@ -751,6 +751,26 @@ def _connected_accounts():
         return []
 
 
+def _norm_slug(s: str) -> str:
+    """Compare les identifiants d'app en ignorant tirets/underscores.
+    Composio écrit « google_maps » là où nous écrivons « googlemaps »."""
+    return (s or "").lower().replace("_", "").replace("-", "").strip()
+
+
+def _real_slug(slug: str) -> str:
+    """Renvoie l'identifiant EXACT utilisé par Composio pour cette app (sinon le nôtre)."""
+    if not slug:
+        return slug
+    cible = _norm_slug(slug)
+    try:
+        for s, _u, _st in _connected_accounts():
+            if s and _norm_slug(s) == cible:
+                return s
+    except Exception:
+        pass
+    return slug
+
+
 def _toolkit_user_id(slug: str) -> str:
     """Identité (entity) sous laquelle CETTE app est réellement connectée.
 
@@ -765,7 +785,7 @@ def _toolkit_user_id(slug: str) -> str:
     uid = ""
     accounts = _connected_accounts()
     for s, u, st in accounts:
-        if s == slug.lower() and u and st.upper() not in ("FAILED", "EXPIRED", "INACTIVE"):
+        if _norm_slug(s) == _norm_slug(slug) and u and st.upper() not in ("FAILED", "EXPIRED", "INACTIVE"):
             uid = u
             break
     if not uid:  # repli : première identité connue, sinon la valeur configurée
@@ -961,10 +981,12 @@ def _composio_list_actions(slug: str):
     if not ck:
         return []
     h = {"x-api-key": ck, "Content-Type": "application/json"}
+    vrai = _real_slug(slug)      # identifiant exact chez Composio (ex. « google_maps »)
     out = []
     for url, params in (
+        ("https://backend.composio.dev/api/v3/tools", {"toolkit_slug": vrai, "limit": 100}),
+        ("https://backend.composio.dev/api/v3/tools", {"toolkit_slugs": vrai, "limit": 100}),
         ("https://backend.composio.dev/api/v3/tools", {"toolkit_slug": slug, "limit": 100}),
-        ("https://backend.composio.dev/api/v3/tools", {"toolkit_slugs": slug, "limit": 100}),
     ):
         try:
             r = requests.get(url, headers=h, params=params, timeout=20)
