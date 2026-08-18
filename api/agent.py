@@ -1614,7 +1614,8 @@ def _gtts_mp3(text: str) -> bytes:
 
 
 @router.get("/tts/status")
-async def tts_status():
+async def tts_status(key: str = ""):
+    _check_key(key)
     """La voix serveur est-elle disponible ? (ElevenLabs si clé, sinon voix gratuite)"""
     return {"enabled": True, "premium": bool(getattr(config, "ELEVENLABS_API_KEY", ""))}
 
@@ -1809,7 +1810,8 @@ async def diag_composio(key: str = ""):
 
 
 @router.get("/usage")
-async def usage():
+async def usage(key: str = ""):
+    _check_key(key)
     """Consommation de tokens du jour (Cerebras + Groq) — pour la barre sur /nova.
     Lecture durable (Supabase si configuré), donc fiable après redéploiement."""
     from llm import usage as U
@@ -1954,7 +1956,8 @@ async def voice_wake(req: AutoReq):
 
 
 @router.get("/voice/pending")
-async def voice_pending(since: float = 0.0):
+async def voice_pending(since: float = 0.0, key: str = ""):
+    _check_key(key)
     """Un réveil a-t-il été demandé depuis ce timestamp ? (interrogé par les appareils)"""
     import time as _t
     fresh = _WAKE["ts"] > since and (_t.time() - _WAKE["ts"]) < 60
@@ -2032,7 +2035,8 @@ async def make_title(req: TitleReq):
 
 
 @router.get("/activity")
-async def activity():
+async def activity(key: str = ""):
+    _check_key(key)          # l'activité contient des extraits de tes messages
     """État de l'escouade + activité temps réel (alimente la constellation /nova/brain)."""
     from agent.squad import snapshot
     snap = snapshot()
@@ -2120,6 +2124,7 @@ class ChatRequest(BaseModel):
     message: str
     agent_id: Optional[str] = "default"
     show_steps: Optional[bool] = False
+    key: Optional[str] = None          # requis : la route fait parler l'agent
 
 
 class ChatResponse(BaseModel):
@@ -2131,7 +2136,10 @@ class ChatResponse(BaseModel):
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, request: Request):
+    # ⚠️ Route protégée : sans clé, n'importe qui pourrait faire parler l'agent
+    # (et consommer tes jetons, voire déclencher des actions sur tes apps).
+    _check_key(req.key or request.headers.get("Authorization", "").replace("Bearer ", "").strip())
     agent_id = req.agent_id or "default"
 
     if agent_id == "default":
@@ -2165,22 +2173,28 @@ async def chat(req: ChatRequest):
 
 
 @router.get("/{agent_id}/history")
-async def agent_history(agent_id: str, limit: int = 20):
+async def agent_history(agent_id: str, limit: int = 20, key: str = ""):
+    # ⚠️ Contient tes conversations : jamais accessible sans clé.
+    _check_key(key)
     return {"agent_id": agent_id, "history": get_memory().recall_recent(agent_id, limit)}
 
 
 @router.delete("/{agent_id}/memory")
-async def clear_memory(agent_id: str):
+async def clear_memory(agent_id: str, key: str = ""):
+    # ⚠️ Destructif : sans clé, n'importe qui pourrait effacer ta mémoire.
+    _check_key(key)
     get_memory().clear(agent_id)
     return {"message": f"Mémoire de '{agent_id}' effacée."}
 
 
 @router.get("/{agent_id}/summary")
-async def get_summary(agent_id: str):
+async def get_summary(agent_id: str, key: str = ""):
+    _check_key(key)          # résumé de tes échanges
     summary = get_memory().get_summary(agent_id)
     return {"agent_id": agent_id, "summary": summary or "Aucun résumé disponible."}
 
 
 @router.get("/tools/list")
-async def available_tools():
+async def available_tools(key: str = ""):
+    _check_key(key)          # ne pas divulguer les capacités de l'agent
     return {"tools": get_loader().list_all()}
