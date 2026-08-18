@@ -58,6 +58,20 @@ FINAL: [réponse complète, structurée, actionnelle]
 """
 
 
+_JOURS = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
+_MOIS = ("janvier", "février", "mars", "avril", "mai", "juin", "juillet",
+         "août", "septembre", "octobre", "novembre", "décembre")
+
+
+def date_du_jour() -> str:
+    """Date courante en clair. Sans elle, le modèle raisonne avec l'année de son
+    entraînement (d'où des recherches en « 2024 ») et se trompe sur « aujourd'hui »."""
+    from datetime import datetime
+    d = datetime.now()
+    return (f"Nous sommes le {_JOURS[d.weekday()]} {d.day} {_MOIS[d.month - 1]} {d.year}, "
+            f"il est {d.strftime('%H:%M')}. L'année en cours est {d.year}.")
+
+
 def build_system(agent_config: dict, plugins: dict) -> str:
     available  = agent_config.get("tools") or list(plugins.keys())
     tools_list = "\n".join(
@@ -65,7 +79,7 @@ def build_system(agent_config: dict, plugins: dict) -> str:
         for name, desc in plugins.items()
         if name in available
     )
-    return SYSTEM_TEMPLATE.format(
+    return f"[DATE] {date_du_jour()}\n\n" + SYSTEM_TEMPLATE.format(
         master_directives=_MASTER_SYS,
         name=agent_config.get("name", "Agent IA"),
         description=agent_config.get("system_prompt", "Tu es un assistant polyvalent."),
@@ -291,17 +305,28 @@ def search_query(task: str) -> str:
     gestion 2026 date ».
     """
     from llm.client import chat
+    from datetime import datetime
     t = (task or "").strip()
+    # ⚠️ Le modèle ignore la date du jour et met l'année de son entraînement (« 2024 »).
+    # On la lui donne explicitement, sinon les recherches d'actualité sont périmées.
+    auj = datetime.now()
     try:
         out = chat([
             {"role": "system", "content": (
+                f"Nous sommes le {auj.strftime('%d/%m/%Y')}. L'année en cours est {auj.year}.\n"
                 "Transforme la demande en une REQUÊTE de moteur de recherche efficace.\n"
                 "RÈGLES : 3 à 8 mots-clés, pas de question, pas de mots vides (le, la, pour, quand…), "
-                "garde les noms propres, sigles et années, ajoute l'année en cours si c'est utile. "
+                "garde les noms propres et sigles. Si la demande porte sur l'actualité ou une "
+                f"information récente, ajoute « {auj.year} » — JAMAIS une année passée. "
                 "Réponds UNIQUEMENT par la requête, sans guillemets.")},
             {"role": "user", "content": t[:300]},
         ], temperature=0.2) or ""
         q = out.strip().strip('"«».\n').split("\n")[0]
+        # Garde-fou : le modèle glisse parfois une année périmée (2023/2024/2025).
+        # Si l'utilisateur n'a PAS demandé cette année-là, on la remplace par l'année courante.
+        for vieille in range(2020, auj.year):
+            if str(vieille) in q and str(vieille) not in t:
+                q = q.replace(str(vieille), str(auj.year))
         if 3 <= len(q) <= 120:
             return q
     except Exception as e:
