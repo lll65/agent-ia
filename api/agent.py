@@ -1694,8 +1694,9 @@ async def selftest(key: str = ""):
                 notes.append("Groq ✓" if gq.startswith("gsk_")
                              else f"Groq ⚠ format inattendu (devrait commencer par « gsk_ », ici « {gq[:4]}… »)")
             if gm:
-                notes.append("Gemini ✓" if gm.startswith("AIza")
-                             else f"Gemini ⚠ format inattendu (devrait commencer par « AIza », ici « {gm[:4]}… »)")
+                # Google émet DEUX formats : anciennes clés « AIza… » et nouvelles « AQ.… »
+                notes.append("Gemini ✓" if (gm.startswith("AIza") or gm.startswith("AQ."))
+                             else f"Gemini ⚠ format inattendu (attendu « AIza… » ou « AQ.… », ici « {gm[:4]}… »)")
             if not notes:
                 return False, "aucune clé vision (ajoute GROQ_API_KEY ou GEMINI_API_KEY)"
             ok = any("✓" in n for n in notes)

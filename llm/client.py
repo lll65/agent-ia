@@ -230,11 +230,15 @@ def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> 
             import requests
             url = ("https://generativelanguage.googleapis.com/v1beta/models/"
                    f"{config.GEMINI_MODEL}:generateContent")
-            r = requests.post(url, params={"key": config.GEMINI_API_KEY}, timeout=90, json={
+            corps = {
                 "contents": [{"parts": [{"text": question},
                                         {"inline_data": {"mime_type": mime, "data": b64}}]}],
                 "generationConfig": {"temperature": temperature, "maxOutputTokens": 2048},
-            })
+            }
+            r = requests.post(url, headers=_gemini_auth(), json=corps, timeout=90)
+            if r.status_code in (400, 401, 403):      # repli : ancienne méthode ?key=
+                r = requests.post(url, params={"key": config.GEMINI_API_KEY},
+                                  json=corps, timeout=90)
             if r.status_code == 200:
                 parts = ((r.json().get("candidates") or [{}])[0]
                          .get("content", {}).get("parts", []))
@@ -307,6 +311,18 @@ def _cerebras_chat(messages: list, model: str, temperature: float) -> str:
     raise RuntimeError(f"Cerebras: aucun modèle accessible ({last_err})")
 
 
+
+def _gemini_auth() -> dict:
+    """En-têtes d'authentification Gemini.
+
+    Google émet deux formats de clés : anciennes « AIza… » (paramètre ?key=) et nouvelles
+    « AQ.… ». L'en-tête x-goog-api-key fonctionne pour LES DEUX — on l'utilise donc en
+    priorité, et on garde ?key= en secours pour les intégrations plus anciennes.
+    """
+    return {"x-goog-api-key": (config.GEMINI_API_KEY or "").strip(),
+            "Content-Type": "application/json"}
+
+
 def _gemini_chat(messages: list, model: str, temperature: float) -> str:
     """
     Google AI Studio (Gemini) via l'API REST generativeLanguage.
@@ -347,12 +363,10 @@ def _gemini_chat(messages: list, model: str, temperature: float) -> str:
         f"https://generativelanguage.googleapis.com/v1beta/models/"
         f"{model}:generateContent"
     )
-    resp = requests.post(
-        url,
-        params={"key": config.GEMINI_API_KEY},
-        json=payload,
-        timeout=120,
-    )
+    resp = requests.post(url, headers=_gemini_auth(), json=payload, timeout=120)
+    if resp.status_code in (400, 401, 403):           # repli : ancienne méthode ?key=
+        resp = requests.post(url, params={"key": config.GEMINI_API_KEY},
+                             json=payload, timeout=120)
 
     if resp.status_code != 200:
         raise RuntimeError(
