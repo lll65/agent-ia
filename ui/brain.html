@@ -64,6 +64,9 @@
 
 <script>
 const ORIGIN=location.origin, cv=document.getElementById("c"), ctx=cv.getContext("2d");
+/* Même clé que le chat : les endpoints sont protégés, sans elle rien n'est lisible. */
+const KEY = localStorage.getItem("nova_key")||"";
+const K = "key="+encodeURIComponent(KEY);
 let W,H,CX,CY,T=0;
 let SQUAD=[],ACTIVE={},COUNTS={},CONNECTED=[];
 /* ── caméra 3D ──
@@ -223,7 +226,7 @@ function resetView(){ yaw=0.6; pitch=-0.32; dist=1; }
 /* ── Données live ── */
 let lastSig="";
 async function tick(){
-  try{ const d=await (await fetch(ORIGIN+"/agent/activity",{cache:"no-store"})).json();
+  try{ const d=await (await fetch(ORIGIN+"/agent/activity?"+K,{cache:"no-store"})).json();
     SQUAD=d.squad||[]; ACTIVE=d.active||{}; COUNTS=d.counts||{}; CONNECTED=d.connected_apps||[];
     document.getElementById("sAg").textContent=SQUAD.length;
     document.getElementById("sApps").textContent=CONNECTED.length;
@@ -244,8 +247,9 @@ async function tick(){
       return '<div class="ev"><span>'+a.icon+'</span><span class="n">'+esc(e.label||a.name)+'</span>'
            + '<span class="t">il y a '+fmtAgo(e.ago)+'</span></div>'; }).join("")
       : '<div class="empty">En veille… parle à Nova dans l\'autre onglet.</div>';
-  }catch(e){}
-  try{ const u=await (await fetch(ORIGIN+"/agent/usage",{cache:"no-store"})).json();
+  }catch(e){ if(!KEY){ document.getElementById("evs").innerHTML =
+      '<div class="empty">🔒 Ouvre d\'abord le chat et saisis ta clé (⚙️) : les données sont protégées.</div>'; } }
+  try{ const u=await (await fetch(ORIGIN+"/agent/usage?"+K,{cache:"no-store"})).json();
     document.getElementById("sTok").textContent=fmtK((u.total||{}).used); }catch(e){}
 }
 function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }

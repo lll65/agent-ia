@@ -454,7 +454,10 @@ const chat=document.getElementById("chat"), hint=document.getElementById("hint")
 document.getElementById("ttsBtn").classList.toggle("on", TTS);
 if(!KEY) openCfg();
 function openCfg(){ document.getElementById("key").value=KEY; document.getElementById("cfg").classList.add("show"); }
-function saveCfg(){ KEY=document.getElementById("key").value.trim(); localStorage.setItem("nova_key",KEY); document.getElementById("cfg").classList.remove("show"); }
+function saveCfg(){ KEY=document.getElementById("key").value.trim(); localStorage.setItem("nova_key",KEY);
+  document.getElementById("cfg").classList.remove("show");
+  // les endpoints sont protégés : on relance ce qui dépend de la clé
+  try{ checkTTS(); refreshUsage(); }catch(e){} }
 function toggleTTS(){ TTS=!TTS; localStorage.setItem("nova_tts",TTS?"1":"0"); document.getElementById("ttsBtn").classList.toggle("on",TTS); if(!TTS) speechSynthesis.cancel(); }
 function grow(t){ t.style.height="auto"; t.style.height=Math.min(t.scrollHeight,120)+"px"; wake(t.value); }
 /* Nova en veille : elle s'illumine dès que tu commences à écrire */
@@ -992,7 +995,7 @@ function fmtK(n){ n=+n||0; if(n>=1e6) return (n/1e6).toFixed(1).replace(/\.0$/,'
   if(n>=1000) return (n/1000).toFixed(n>=1e5?0:1).replace(/\.0$/,'')+"k"; return ""+n; }
 /* Jauge d'énergie : 10 cellules qui s'éteignent au fil de la consommation du jour */
 const CELLS=10;
-async function refreshUsage(){ try{ const r=await fetch(ORIGIN+"/agent/usage",{cache:"no-store"}); const d=await r.json();
+async function refreshUsage(){ try{ const r=await fetch(ORIGIN+"/agent/usage?key="+encodeURIComponent(KEY),{cache:"no-store"}); const d=await r.json();
   const t=d.total||{used:0,limit:1}, lim=Math.max(1,t.limit);
   const left=Math.max(0, Math.min(100, 100 - (t.used/lim*100)));      // énergie restante
   const el=document.getElementById("usage"), box=document.getElementById("ucells");
@@ -1025,8 +1028,10 @@ if("speechSynthesis" in window){ speechSynthesis.onvoiceschanged=pickVoice; pick
    fichier audio produit par le serveur. Astuce iOS : on "déverrouille" UN élément <audio> lors du
    premier geste, puis on réutilise TOUJOURS le même — les lectures suivantes passent sans geste. */
 let SERVER_TTS=true, AUDIO=null, AUDIO_OK=false;
-fetch(ORIGIN+"/agent/tts/status",{cache:"no-store"}).then(r=>r.json())
-  .then(d=>{ SERVER_TTS=!!(d&&d.enabled); }).catch(()=>{ SERVER_TTS=false; });
+function checkTTS(){ if(!KEY) return;
+  fetch(ORIGIN+"/agent/tts/status?key="+encodeURIComponent(KEY),{cache:"no-store"})
+    .then(r=>r.json()).then(d=>{ SERVER_TTS=!!(d&&d.enabled); }).catch(()=>{ SERVER_TTS=false; }); }
+checkTTS();
 function unlockAudio(){ if(AUDIO) return;
   try{ AUDIO=new Audio();
     AUDIO.setAttribute("playsinline",""); AUDIO.preload="auto";
@@ -1190,7 +1195,7 @@ function toggleMic(){ const SR=window.SpeechRecognition||window.webkitSpeechReco
    2) Un appareil peut réveiller les autres (bouton 📱) : ils ouvrent le mode vocal à distance. */
 let WAKE_SINCE=Date.now()/1000;
 async function pollWake(){ if(!KEY||voiceMode) return;
-  try{ const d=await (await fetch(ORIGIN+"/agent/voice/pending?since="+WAKE_SINCE,{cache:"no-store"})).json();
+  try{ const d=await (await fetch(ORIGIN+"/agent/voice/pending?since="+WAKE_SINCE+"&key="+encodeURIComponent(KEY),{cache:"no-store"})).json();
     if(d && d.wake){ WAKE_SINCE=d.ts; sndPing(); if(!voiceMode) toggleVoiceMode(); }
   }catch(e){} }
 setInterval(pollWake, 3000);

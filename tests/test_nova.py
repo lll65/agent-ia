@@ -289,6 +289,15 @@ def test_securite():
     pat = re.compile(r"((?:key|api_key|token|password)=)[^&\s\"']+", re.I)
     check("clé masquée", pat.sub(r"\1***", "GET /agent/ask?key=SECRET&q=x"), "GET /agent/ask?key=***&q=x")
 
+    # AUCUNE route ne doit être accessible sans clé (garde-fou pour les futures routes)
+    src = (Path(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
+    pos = [(m.start(), m.group(1).upper(), m.group(2))
+           for m in re.finditer(r'@router\.(get|post|delete|put)\("([^"]+)"', src)]
+    pos.append((len(src), "", ""))
+    ouvertes = [f"{pos[i][1]} {pos[i][2]}" for i in range(len(pos) - 1)
+                if "_check_key" not in src[pos[i][0]:pos[i + 1][0]]]
+    check("aucune route publique", ouvertes, [])
+
 
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
