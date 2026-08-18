@@ -231,7 +231,14 @@ async def full_status():
 # via un thread) rendait l'UI injoignable publiquement. Ici Gradio partage l'event
 # loop d'uvicorn → plus besoin du hack de thread + event loop maison, et les bots
 # Telegram/Discord + le PEA Watcher continuent de tourner dans le lifespan de l'app.
-_HEADLESS = "--no-ui" in sys.argv or os.getenv("DISABLE_UI", "").lower() == "true"
+# ⚠️ SÉCURITÉ : l'interface Gradio /ui n'a AUCUNE authentification — n'importe qui
+# connaissant l'adresse pourrait faire parler l'agent et agir sur les apps connectées.
+# Elle est donc DÉSACTIVÉE par défaut (l'interface Nova /nova, elle, exige la clé).
+# Pour la réactiver temporairement (débogage local) : ENABLE_GRADIO_UI=true
+_UI_ACTIVEE = os.getenv("ENABLE_GRADIO_UI", "").lower() == "true"
+_HEADLESS = (not _UI_ACTIVEE) or "--no-ui" in sys.argv or os.getenv("DISABLE_UI", "").lower() == "true"
+if _HEADLESS:
+    logger.info("Interface Gradio /ui désactivée (sans authentification). Utilise /nova.")
 if not _HEADLESS:
     try:
         # Ordre important : build_ui applique le patch de compat huggingface_hub
