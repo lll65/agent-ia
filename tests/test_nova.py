@@ -247,6 +247,31 @@ def test_caches():
         A._toolkit_user_id = vrai_uid
 
 
+# ── 11a. Identifiants d'app : Composio écrit « google_maps », nous « googlemaps » ──
+def test_slugs():
+    check("normalisation", A._norm_slug("google_maps"), A._norm_slug("googlemaps"))
+    check("tirets aussi", A._norm_slug("google-maps"), "googlemaps")
+    vrai = A._connected_accounts
+    A._connected_accounts = lambda: [("google_maps", "user-42", "ACTIVE")]
+    A._USERID_CACHE.clear()
+    try:
+        check("slug réel", A._real_slug("googlemaps"), "google_maps")
+        check("identité retrouvée", A._toolkit_user_id("googlemaps"), "user-42")
+    finally:
+        A._connected_accounts = vrai
+        A._USERID_CACHE.clear()
+
+
+# ── 11c. Modèles LLM : auto-guérison quand un modèle est retiré ───────────────
+def test_modeles():
+    import llm.client as L
+    check_true("chaîne multi-fournisseurs", hasattr(L, "_providers_disponibles"))
+    check_true("402 traduit", "gratuite" in L._explique("cerebras", Exception("Error code: 402 payment_required")))
+    check_true("429 traduit", "limite" in L._explique("groq", Exception("429 rate limit")))
+    check_true("404 traduit", "indisponible" in L._explique("gemini", Exception("404 model not found")))
+    check_true("401 traduit", "invalide" in L._explique("groq", Exception("401 invalid api key")))
+
+
 # ── 11b. Requêtes de recherche reformulées ────────────────────────────────────
 def test_requetes():
     import agent.core as C
@@ -302,7 +327,7 @@ def test_securite():
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
-               test_caches, test_requetes, test_securite):
+               test_caches, test_slugs, test_modeles, test_requetes, test_securite):
         try:
             fn()
         except Exception as e:

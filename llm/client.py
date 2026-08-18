@@ -133,22 +133,52 @@ def chat_stream(messages: list, temperature: float = 0.6):
             yield f"❌ Erreur LLM : {str(e2)[:200]}"
 
 
+_MODELES_OK = {}          # fournisseur -> modèle qui a réellement fonctionné
+
+
 def _groq_chat(messages: list, model: str, temperature: float) -> str:
+    """Groq avec auto-guérison : les modèles sont régulièrement retirés (404).
+    On essaie le modèle configuré, des noms connus, puis ceux réellement offerts au compte."""
     from groq import Groq
     client = Groq(api_key=config.GROQ_API_KEY)
-    resp = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=temperature,
-        max_tokens=4096,
-    )
-    # Suivi de consommation (limite journalière gratuite)
-    try:
-        from llm.usage import record
-        record(getattr(getattr(resp, "usage", None), "total_tokens", 0))
+
+    candidats = []
+    for m in (_MODELES_OK.get("groq"), model, config.GROQ_MODEL,
+              "llama-3.3-70b-versatile", "llama-3.1-8b-instant",
+              "meta-llama/llama-4-scout-17b-16e-instruct",
+              "openai/gpt-oss-120b", "qwen/qwen3-32b", "gemma2-9b-it"):
+        if m and m not in candidats:
+            candidats.append(m)
+    try:                                   # modèles réellement disponibles sur CE compte
+        for mo in client.models.list().data:
+            mid = getattr(mo, "id", "") or ""
+            bas = mid.lower()
+            if mid and mid not in candidats and not any(
+                    k in bas for k in ("whisper", "tts", "guard", "vision", "embed")):
+                candidats.append(mid)
     except Exception:
         pass
-    return resp.choices[0].message.content or ""
+
+    derniere = None
+    for m in candidats:
+        try:
+            resp = client.chat.completions.create(
+                model=m, messages=messages, temperature=temperature, max_tokens=4096)
+            _MODELES_OK["groq"] = m
+            try:
+                from llm.usage import record
+                record(getattr(getattr(resp, "usage", None), "total_tokens", 0))
+            except Exception:
+                pass
+            return resp.choices[0].message.content or ""
+        except Exception as e:
+            derniere = e
+            t = str(e).lower()
+            if any(k in t for k in ("not_found", "does not exist", "404", "decommission", "no longer")):
+                logger.warning(f"[LLM] Groq : modèle '{m}' retiré, essai suivant…")
+                continue
+            raise
+    raise RuntimeError(f"Groq : aucun modèle texte accessible ({derniere})")
 
 
 def _xai_chat(messages: list, model: str, temperature: float) -> str:
@@ -359,19 +389,43 @@ def _gemini_chat(messages: list, model: str, temperature: float) -> str:
     if system_parts:
         payload["systemInstruction"] = {"parts": [{"text": "\n\n".join(system_parts)}]}
 
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model}:generateContent"
-    )
-    resp = requests.post(url, headers=_gemini_auth(), json=payload, timeout=120)
-    if resp.status_code in (400, 401, 403):           # repli : ancienne méthode ?key=
-        resp = requests.post(url, params={"key": config.GEMINI_API_KEY},
-                             json=payload, timeout=120)
+    # Auto-guérison : les noms de modèles Gemini changent (404). On essaie le modèle
+    # configuré, des noms connus, puis ceux réellement offerts par l'API.
+    candidats = []
+    for m in (_MODELES_OK.get("gemini"), model, config.GEMINI_MODEL,
+              "gemini-2.0-flash", "gemini-flash-latest", "gemini-2.5-flash",
+              "gemini-1.5-flash", "gemini-2.5-pro"):
+        if m and m not in candidats:
+            candidats.append(m)
+    try:
+        lst = requests.get("https://generativelanguage.googleapis.com/v1beta/models",
+                           headers=_gemini_auth(), timeout=20)
+        if lst.status_code == 200:
+            for mo in (lst.json().get("models") or []):
+                nom = (mo.get("name") or "").replace("models/", "")
+                if nom and nom not in candidats and "generateContent" in (mo.get("supportedGenerationMethods") or []):
+                    candidats.append(nom)
+    except Exception:
+        pass
 
-    if resp.status_code != 200:
-        raise RuntimeError(
-            f"Gemini HTTP {resp.status_code}: {resp.text[:300]}"
-        )
+    resp, derniere = None, ""
+    for m in candidats:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
+        r = requests.post(url, headers=_gemini_auth(), json=payload, timeout=120)
+        if r.status_code in (400, 401, 403):          # repli : ancienne méthode ?key=
+            r = requests.post(url, params={"key": config.GEMINI_API_KEY}, json=payload, timeout=120)
+        if r.status_code == 200:
+            _MODELES_OK["gemini"] = m
+            resp = r
+            break
+        derniere = f"{r.status_code}: {r.text[:200]}"
+        if r.status_code in (404, 400):
+            logger.warning(f"[LLM] Gemini : modèle '{m}' indisponible, essai suivant…")
+            continue
+        break
+
+    if resp is None or resp.status_code != 200:
+        raise RuntimeError(f"Gemini HTTP {derniere or 'aucun modèle accessible'}")
 
     data = resp.json()
     candidates = data.get("candidates") or []
