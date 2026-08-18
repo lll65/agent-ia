@@ -247,6 +247,23 @@ def test_caches():
         A._toolkit_user_id = vrai_uid
 
 
+# ── 11b. Requêtes de recherche reformulées ────────────────────────────────────
+def test_requetes():
+    import agent.core as C
+    import llm.client as L
+    vrai = L.chat
+    L.chat = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("hors ligne"))  # force le repli
+    try:
+        q = C.search_query("Quand se fait la rentrée pour les premières année à Pau à l'uppa ?")
+        check_true("mots vides retirés", "quand" not in q.lower() and "pour" not in q.lower())
+        check_true("noms propres gardés", "uppa" in q.lower() and "pau" in q.lower())
+        check_true("pas de point d'interrogation", "?" not in q)
+        check_true("requête courte", len(q.split()) <= 8)
+        check_true("vide toléré", isinstance(C.search_query(""), str))
+    finally:
+        L.chat = vrai
+
+
 # ── 11. Sécurité : confinement des fichiers ───────────────────────────────────
 def test_securite():
     import re
@@ -276,7 +293,7 @@ def test_securite():
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
-               test_caches, test_securite):
+               test_caches, test_requetes, test_securite):
         try:
             fn()
         except Exception as e:

@@ -159,23 +159,49 @@ def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> 
     question = prompt or "Décris cette image en détail, en français."
     errors = []
 
-    # 1) Groq vision
+    # 1) Groq vision — auto-guérison : les noms de modèles changent souvent (404).
+    #    On essaie le modèle configuré, des noms connus, puis ceux réellement accessibles au compte.
     if config.GROQ_API_KEY:
+        candidates = []
+        for m in (config.GROQ_VISION_MODEL,
+                  "meta-llama/llama-4-scout-17b-16e-instruct",
+                  "meta-llama/llama-4-maverick-17b-128e-instruct",
+                  "llama-3.2-90b-vision-preview",
+                  "llama-3.2-11b-vision-preview"):
+            if m and m not in candidates:
+                candidates.append(m)
         try:
             from groq import Groq
             client = Groq(api_key=config.GROQ_API_KEY)
-            resp = client.chat.completions.create(
-                model=config.GROQ_VISION_MODEL,
-                messages=[{"role": "user", "content": [
-                    {"type": "text", "text": question},
-                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
-                ]}],
-                temperature=temperature, max_tokens=2048,
-            )
-            out = resp.choices[0].message.content or ""
-            if out.strip():
-                return out
-            errors.append("Groq: réponse vide")
+            try:  # modèles réellement disponibles sur CE compte
+                for mo in client.models.list().data:
+                    mid = getattr(mo, "id", "") or ""
+                    if mid and mid not in candidates and any(
+                            k in mid.lower() for k in ("vision", "scout", "maverick", "llava")):
+                        candidates.append(mid)
+            except Exception:
+                pass
+            for m in candidates:
+                try:
+                    resp = client.chat.completions.create(
+                        model=m,
+                        messages=[{"role": "user", "content": [
+                            {"type": "text", "text": question},
+                            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                        ]}],
+                        temperature=temperature, max_tokens=2048,
+                    )
+                    out = resp.choices[0].message.content or ""
+                    if out.strip():
+                        return out
+                except Exception as e:
+                    txt = str(e).lower()
+                    if any(k in txt for k in ("not_found", "does not exist", "404", "decommission")):
+                        logger.warning(f"[vision] modèle Groq '{m}' indisponible, essai suivant…")
+                        continue
+                    errors.append(f"Groq({m}): {str(e)[:90]}")
+                    break
+            errors.append("Groq: aucun modèle vision accessible")
         except Exception as e:
             errors.append(f"Groq: {str(e)[:120]}")
 

@@ -208,8 +208,9 @@ async def run_agent(
     # Forçage déterministe de search_web sur les questions factuelles (idem run_agent_stream)
     if agent_config.get("force_search") and "search_web" in required_tools:
         try:
-            obs = safe_tool_call(loader, "search_web", {"query": task[:200], "mode": "web"})
-            steps.append({"type": "action", "tool": "search_web", "params": {"query": task[:120]}})
+            _q = search_query(task)
+            obs = safe_tool_call(loader, "search_web", {"query": _q, "mode": "web"})
+            steps.append({"type": "action", "tool": "search_web", "params": {"query": _q}})
             steps.append({"type": "observation", "tool": "search_web", "result": obs[:400]})
             messages.append({"role": "assistant",
                              "content": f'ACTION: search_web\nPARAMS: {{"query": "{task[:120]}"}}'})
@@ -280,6 +281,37 @@ async def run_agent(
     last = steps[-1].get("llm_output", "Limite d'itérations atteinte.") if steps else "Limite d'itérations atteinte."
     mem.remember(agent_id, "assistant", last)
     return {"answer": last, "steps": steps, "iterations": config.MAX_ITERATIONS}
+
+
+def search_query(task: str) -> str:
+    """Transforme la demande en VRAIE requête de recherche (mots-clés), pas la phrase entière.
+
+    Envoyer « Quand se fait la rentrée pour les premières année à Pau à l'uppa en eco gestion ? »
+    à un moteur donne de mauvais résultats : on en extrait « rentrée UPPA Pau licence économie
+    gestion 2026 date ».
+    """
+    from llm.client import chat
+    t = (task or "").strip()
+    try:
+        out = chat([
+            {"role": "system", "content": (
+                "Transforme la demande en une REQUÊTE de moteur de recherche efficace.\n"
+                "RÈGLES : 3 à 8 mots-clés, pas de question, pas de mots vides (le, la, pour, quand…), "
+                "garde les noms propres, sigles et années, ajoute l'année en cours si c'est utile. "
+                "Réponds UNIQUEMENT par la requête, sans guillemets.")},
+            {"role": "user", "content": t[:300]},
+        ], temperature=0.2) or ""
+        q = out.strip().strip('"«».\n').split("\n")[0]
+        if 3 <= len(q) <= 120:
+            return q
+    except Exception as e:
+        logger.warning(f"[search_query] reformulation ignorée: {e}")
+    # Repli : on retire la ponctuation et les mots vides les plus courants
+    stop = {"quand", "comment", "pourquoi", "est", "ce", "que", "qui", "quoi", "le", "la", "les",
+            "un", "une", "des", "de", "du", "pour", "à", "a", "en", "se", "fait", "dans", "sur",
+            "mon", "ma", "mes", "je", "tu", "il", "elle", "veux", "peux", "stp", "quel", "quelle"}
+    mots = [w for w in re.sub(r"[^\w\sÀ-ÿ']", " ", t).split() if w.lower() not in stop]
+    return " ".join(mots[:8])[:120] or t[:120]
 
 
 def _extract_thought(llm_out: str) -> str:
@@ -357,8 +389,9 @@ async def run_agent_stream(
     # il ne peut plus halluciner ni exécuter un script Python à la place.
     if agent_config.get("force_search") and "search_web" in required_tools:
         try:
-            obs = safe_tool_call(loader, "search_web", {"query": task[:200], "mode": "web"})
-            yield {"type": "action", "tool": "search_web", "params": {"query": task[:120]}, "iteration": 0}
+            _q = search_query(task)
+            obs = safe_tool_call(loader, "search_web", {"query": _q, "mode": "web"})
+            yield {"type": "action", "tool": "search_web", "params": {"query": _q}, "iteration": 0}
             yield {"type": "observation", "tool": "search_web", "result": obs[:400], "iteration": 0}
             messages.append({"role": "assistant",
                              "content": f'THOUGHT: recherche web pour données réelles\nACTION: search_web\nPARAMS: {{"query": "{task[:120]}"}}'})

@@ -468,7 +468,9 @@ function addRow(who,html){ if(hint)hint.remove(); const r=document.createElement
   chat.appendChild(r); chat.scrollTop=chat.scrollHeight; return r.querySelector(".bubble"); }
 /* Ajoute le menu déroulant "Raisonnement" sous une bulle IA à partir de la trace collectée */
 function attachReason(bubble,trace){ if(!trace||!trace.length) return; const col=bubble.parentElement;
-  const steps=trace.map(s=>'<div class="rstep"><span class="ri">'+s.icon+'</span><span><span class="rl">'+esc(s.label)+'</span>'+(s.detail?'<br><span class="rd">'+esc(s.detail)+'</span>':'')+'</span></div>').join("");
+  const steps=trace.map(s=>{ const d=_clean(s.detail);
+    return '<div class="rstep"><span class="ri">'+s.icon+'</span><span><span class="rl">'+esc(s.label)+'</span>'
+      +(d?'<br><span class="rd">'+esc(d)+'</span>':'')+'</span></div>'; }).join("");
   const d=document.createElement("details"); d.className="reason";
   d.innerHTML='<summary>Raisonnement · '+trace.length+' étape'+(trace.length>1?'s':'')+'</summary><div class="rsteps">'+steps+'</div>';
   col.appendChild(d); chat.scrollTop=chat.scrollHeight; }
@@ -670,7 +672,16 @@ function gResize(){ const dpr=Math.min(devicePixelRatio||1,2); GW=innerWidth; GH
 addEventListener("resize",()=>{ if(gAnim) gResize(); });
 function graphStart(){ gw.classList.add("show"); gResize(); GT=0; phaseCount=0;
   nodes=[{core:1,a:0,r:1,tr:1,label:"NOVA",icon:"🧠",t:0}]; if(!gAnim) drawGraph(); }
-function graphAdd(icon,label,detail){ const n=nodes.length-1;
+const MAX_NODES=8;                       // au-delà, le schéma devient illisible
+function graphAdd(icon,label,detail){
+  // Une observation ENRICHIT l'étape précédente au lieu de créer un doublon
+  // (sinon chaque outil apparaissait deux fois : action + résultat).
+  const last=nodes[nodes.length-1];
+  if(last && !last.core && last.label===label && !last.done){
+    last.done=true; const s=_subs(detail); if(s.length) last.sub=s; return; }
+  if(nodes.length-1>=MAX_NODES){        // on recycle le plus ancien
+    nodes.splice(1,1); nodes.forEach((n,i)=>{ if(i) n.a=(i-1)*2.399; }); }
+  const n=nodes.length-1;
   nodes.push({a:n*2.399, r:0, tr:1, label, icon, t:0, sub:_subs(detail)}); }
 /* Découpe le détail d'une étape en 1-3 sous-bulles courtes (mots-clés lisibles) */
 /* Mots-clés de ta demande → sous-bulles de l'étape « Analyse » */
@@ -679,10 +690,22 @@ function _keywords(msg){ const stop=new Set(["le","la","les","un","une","des","d
   "que","qui","quoi","avec","fait","fais","peux","veux","stp","the"]);
   return (msg||"").toLowerCase().replace(/[^\wàâçéèêëîïôûùüÿœ\s-]/g," ").split(/\s+/)
     .filter(w=>w.length>2 && !stop.has(w)).slice(0,3).join(" · "); }
+/* Détail d'étape lisible : sans pictogrammes ni Markdown, coupé sur un mot entier */
+function _clean(d){ if(!d) return "";
+  return _cut(String(d).replace(/^[🔎🔍📧📅✅❌⚠️\s]*/,"").replace(/\*\*(.+?)\*\*/g,"$1")
+    .replace(/^R[ée]sultats? web\s*:?\s*/i,"").replace(/\s+/g," ").trim(), 130); }
+/* Coupe proprement, à la fin d'un mot */
+function _cut(s,n){ s=String(s||"").trim(); if(s.length<=n) return s;
+  const c=s.slice(0,n), i=c.lastIndexOf(" ");
+  return (i>n*0.5? c.slice(0,i) : c).trim()+"…"; }
 function _subs(detail){ if(!detail) return [];
-  return String(detail).replace(/\s+/g," ").trim()
-    .split(/[·,;•\n]|(?:\s-\s)/).map(s=>s.trim()).filter(s=>s.length>2)
-    .slice(0,3).map(s=>s.length>22? s.slice(0,21)+"…" : s); }
+  let d=String(detail)
+    .replace(/^[🔎🔍📧📅✅❌⚠️\s]*/,"")                    // pictogrammes de tête
+    .replace(/\*\*(.+?)\*\*/g,"$1")                        // gras Markdown
+    .replace(/^R[ée]sultats? web\s*:?\s*/i,"")             // « Résultats web : »
+    .replace(/\(\d+\)\s*/g,"").replace(/\s+/g," ").trim();
+  return d.split(/[·,;•\n]|(?:\s-\s)/).map(s=>s.trim())
+    .filter(s=>s.length>2).slice(0,3).map(s=>_cut(s,24)); }
 /* Nœuds "de phase" : apparaissent DÈS le début (analyse, réflexion, rédaction) pour que le schéma
    soit vivant immédiatement — y compris en simple discussion, où aucun outil n'est appelé. */
 let phaseCount=0;
