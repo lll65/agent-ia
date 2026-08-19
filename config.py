@@ -49,6 +49,10 @@ class Config:
     # La clé commence par « nvapi- ». Remplace avantageusement Cerebras devenu payant.
     NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "")
     NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "meta/llama-3.3-70b-instruct")
+    # OpenRouter — une seule clé donne accès à des dizaines de modèles (dont des gratuits).
+    # La clé commence par « sk-or- ». Sert de filet universel quand les autres tombent.
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+    OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
 
     # Fournisseur préféré : "cerebras" (1M tokens/jour gratuit = 10x Groq) ou "groq".
     LLM_PREFER = os.getenv("LLM_PREFER", "cerebras")
