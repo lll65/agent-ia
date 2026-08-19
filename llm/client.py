@@ -26,6 +26,30 @@ def _is_rate_limit(exc: Exception) -> bool:
 
 
 _MODELES_OK = {}   # fournisseur -> modèle qui a réellement fonctionné (mémorisé)
+_MODELES_KO = {}   # (fournisseur, modèle) -> horodatage du dernier échec
+_KO_TTL = 3600.0   # on réessaie au bout d'une heure (au cas où ce soit passager)
+
+
+def _est_hs(nom: str, modele: str) -> bool:
+    """Ce modèle a-t-il échoué récemment ? Évite de retenter un modèle retiré
+    (ex. GLM déprécié) à chaque message : la réponse partirait avec un aller-retour perdu."""
+    import time
+    t = _MODELES_KO.get((nom, modele))
+    return bool(t and (time.monotonic() - t) < _KO_TTL)
+
+
+def _marque_hs(nom: str, modele: str) -> None:
+    import time
+    _MODELES_KO[(nom, modele)] = time.monotonic()
+    if _MODELES_OK.get(nom) == modele:      # ne plus le proposer comme « connu bon »
+        _MODELES_OK.pop(nom, None)
+
+
+def _modeles_exclus() -> set:
+    """Modèles à ne jamais utiliser — utile pour anticiper une dépréciation annoncée.
+    Variable Render : MODELES_EXCLUS=glm-5.2,autre-modele"""
+    import os
+    return {m.strip().lower() for m in (os.environ.get("MODELES_EXCLUS") or "").split(",") if m.strip()}
 
 
 # ── ROUTAGE PAR TÂCHE ─────────────────────────────────────────────────────────
@@ -236,7 +260,7 @@ def _groq_chat(messages: list, model: str, temperature: float) -> str:
         pass
 
     derniere = None
-    for m in candidats:
+    for m in [c for c in candidats if not _est_hs('nvidia', c)] or candidats:
         try:
             resp = client.chat.completions.create(
                 model=m, messages=messages, temperature=temperature, max_tokens=4096)
@@ -255,6 +279,7 @@ def _groq_chat(messages: list, model: str, temperature: float) -> str:
             if any(k in t for k in ("not_found", "does not exist", "404", "decommission",
                                     "no longer", "400", "tool choice", "unsupported",
                                     "invalid_request", "does not support")):
+                _marque_hs("groq", m)
                 logger.warning(f"[LLM] Groq : modèle '{m}' inutilisable ({str(e)[:60]}), essai suivant…")
                 continue
             raise
@@ -319,6 +344,10 @@ def _nvidia_chat(messages: list, model: str, temperature: float, niveau: str = "
                         "esm", "fold", "voicechat", "content-safety", "speaker", "noise",
                         "detector", "translate", "calibration", "retriever", "protein")):
                     dispo.append(mid)
+            exclus = _modeles_exclus()
+            dispo = [m for m in dispo
+                     if not _est_hs("nvidia", m)
+                     and not any(x in m.lower() for x in exclus)]
             dispo.sort(key=lambda x: -_score_niveau(x, niveau))
             for mid in dispo:
                 if mid not in candidats:
@@ -346,6 +375,7 @@ def _nvidia_chat(messages: list, model: str, temperature: float, niveau: str = "
             t = str(e).lower()
             if any(k in t for k in ("not_found", "does not exist", "404", "400",
                                     "unsupported", "invalid_request", "not available")):
+                _marque_hs("nvidia", m)      # retiré/déprécié → on ne le retente pas de suite
                 logger.warning(f"[LLM] NVIDIA : modèle '{m}' inutilisable, essai suivant…")
                 continue
             raise
@@ -389,6 +419,7 @@ def _openrouter_chat(messages: list, model: str, temperature: float) -> str:
             t = str(e).lower()
             if any(k in t for k in ("not_found", "404", "400", "no endpoints",
                                     "unsupported", "invalid_request", "not available")):
+                _marque_hs("openrouter", m)
                 logger.warning(f"[LLM] OpenRouter : modèle '{m}' inutilisable, essai suivant…")
                 continue
             raise
@@ -634,6 +665,7 @@ def _gemini_chat(messages: list, model: str, temperature: float) -> str:
             break
         derniere = f"{r.status_code}: {r.text[:200]}"
         if r.status_code in (404, 400):
+            _marque_hs("gemini", m)
             logger.warning(f"[LLM] Gemini : modèle '{m}' indisponible, essai suivant…")
             continue
         break
