@@ -29,6 +29,31 @@ def _strip(s: str) -> str:
     return _html.unescape(re.sub(r"<[^>]+>", "", s or "")).strip()
 
 
+def _extrait(s: str, maxi: int = 300) -> str:
+    """Résumé d'un résultat, débarrassé de ses répétitions.
+
+    Certaines pages (podcasts, agrégateurs) répètent le même paragraphe 3 fois : la
+    même description occupait 2 000 caractères du contexte du modèle, chassant les
+    résultats suivants et le poussant à répondre à côté.
+    """
+    t = re.sub(r"\s+", " ", _strip(s))
+    if not t:
+        return ""
+    vues, garde = set(), []
+    for phrase in re.split(r"(?<=[.!?])\s+|\s*\[\.\.\.\]\s*", t):
+        p = phrase.strip()
+        if len(p) < 3:
+            continue
+        cle = re.sub(r"[^\wÀ-ÿ]", "", p.lower())[:70]
+        if cle in vues:
+            continue
+        vues.add(cle)
+        garde.append(p)
+        if sum(len(x) for x in garde) >= maxi:
+            break
+    return " ".join(garde)[:maxi].strip()
+
+
 # ⏱️ Budget d'UNE recherche. Les délais s'empilaient (Tavily 20 s + deux hôtes
 # DuckDuckGo à 15 s + la librairie), et l'agent rejouait le tout : une seule question
 # pouvait engloutir tout le temps imparti et finir sur « la recherche a pris trop de
@@ -64,7 +89,7 @@ def _ddg_html(query: str, max_results: int, region: str = "fr-fr",
             # Snippets
             snips = re.findall(r'result__snippet[^>]*>(.*?)</a>', txt, re.DOTALL)
             for i, s in enumerate(snips[:len(out)]):
-                out[i]["body"] = _strip(s)[:300]
+                out[i]["body"] = _extrait(s)
             if out:
                 return out
         except Exception:
@@ -72,7 +97,7 @@ def _ddg_html(query: str, max_results: int, region: str = "fr-fr",
     return out
 
 
-def _tavily(query: str, max_results: int) -> list[dict]:
+def _tavily(query: str, max_results: int, mode: str = "web") -> list[dict]:
     """Recherche via Tavily (fiable depuis un serveur, ~1000/mois gratuit). Clé requise."""
     try:
         from config import config
@@ -83,10 +108,11 @@ def _tavily(query: str, max_results: int) -> list[dict]:
         return []
     try:
         import requests
-        r = requests.post("https://api.tavily.com/search",
-                          json={"api_key": key, "query": query, "max_results": max_results,
-                                "search_depth": "basic"},
-                          timeout=12)
+        charge = {"api_key": key, "query": query, "max_results": max_results,
+                  "search_depth": "basic"}
+        if mode == "news":                       # Tavily sait cibler l'actualité récente
+            charge.update(topic="news", days=3)
+        r = requests.post("https://api.tavily.com/search", json=charge, timeout=12)
         if r.status_code != 200:
             return []
         data = r.json().get("results", [])
@@ -128,8 +154,10 @@ class WebSearchPlugin(Plugin):
         # Chaque repli n'est tenté que s'il reste du temps : mieux vaut rendre les
         # résultats d'un moteur que d'épuiser le budget à en interroger trois.
         fin = time.monotonic() + BUDGET_RECHERCHE
-        results = _tavily(query, max_results)
-        if not results and mode != "news" and time.monotonic() < fin:
+        results = _tavily(query, max_results, mode)
+        if not results and time.monotonic() < fin:
+            # Même en mode actualité : l'endpoint HTML reste le repli le plus fiable
+            # depuis un serveur, et la requête est déjà datée.
             results = _ddg_html(query, max_results, fin=fin)
         if not results and time.monotonic() < fin:
             results = _ddg_lib(query, max_results, mode)
@@ -143,7 +171,7 @@ class WebSearchPlugin(Plugin):
         lines = [head]
         for i, r in enumerate(results, 1):
             title = _strip(r.get("title", ""))
-            body = _strip(r.get("body") or r.get("excerpt") or "")
+            body = _extrait(r.get("body") or r.get("excerpt") or "")
             url = r.get("href") or r.get("url") or ""
             src = _domain(url) or r.get("source", "")
             date = (r.get("date", "") or "")[:10]

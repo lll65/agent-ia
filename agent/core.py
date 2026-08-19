@@ -326,7 +326,9 @@ async def run_agent(
     if agent_config.get("force_search") and "search_web" in required_tools:
         try:
             _q = await _off(search_query, task)
-            obs = await _off(safe_tool_call, loader, "search_web", {"query": _q, "mode": "web"}, "", _fin_pre)
+            obs = await _off(safe_tool_call, loader, "search_web",
+                             {"query": _q, "mode": "news" if veut_actualite(task) else "web"},
+                             "", _fin_pre)
             observations.append(obs)
             deja_cherche[_cle_requete(_q)] = obs
             steps.append({"type": "action", "tool": "search_web", "params": {"query": _q}})
@@ -479,12 +481,92 @@ def search_query(task: str) -> str:
             return q
     except Exception as e:
         logger.warning(f"[search_query] reformulation ignorée: {e}")
-    # Repli : on retire la ponctuation et les mots vides les plus courants
-    stop = {"quand", "comment", "pourquoi", "est", "ce", "que", "qui", "quoi", "le", "la", "les",
-            "un", "une", "des", "de", "du", "pour", "à", "a", "en", "se", "fait", "dans", "sur",
-            "mon", "ma", "mes", "je", "tu", "il", "elle", "veux", "peux", "stp", "quel", "quelle"}
-    mots = [w for w in re.sub(r"[^\w\sÀ-ÿ']", " ", t).split() if w.lower() not in stop]
-    return " ".join(mots[:8])[:120] or t[:120]
+    return requete_simple(t)
+
+
+# Verbes de COMMANDE : ils décrivent ce que Nova doit faire, pas ce qu'il faut chercher.
+# « Résume l'actu tech du jour » cherché tel quel ramenait un podcast intitulé
+# « L'Actu Tech, chaque jour Patrick résume… » au lieu de l'actualité elle-même.
+_VERBES_DEMANDE = {
+    "résume", "resume", "résumé", "resumé", "résumes", "donne", "donnes", "donner",
+    "explique", "expliques", "expliquer", "dis", "dit", "dire", "montre", "montres",
+    "cherche", "cherches", "recherche", "recherches", "trouve", "trouves", "raconte",
+    "parle", "parles", "liste", "listes", "indique", "détaille", "detaille", "précise",
+    "presente", "présente", "fais", "fait", "faire", "peux", "peut", "pourrais",
+    "voudrais", "veux", "aimerais", "sais", "connais", "penses", "pense",
+}
+_STOP_REQUETE = {
+    "quand", "comment", "pourquoi", "est", "ce", "que", "qui", "quoi", "le", "la", "les",
+    "un", "une", "des", "de", "du", "pour", "à", "a", "en", "se", "dans", "sur", "au", "aux",
+    "mon", "ma", "mes", "je", "tu", "il", "elle", "on", "nous", "vous", "moi", "me", "te",
+    "stp", "svp", "quel", "quelle", "quels", "quelles", "y", "et", "ou", "où", "son", "sa",
+    "plait", "plaît", "merci", "please", "the", "of", "toi", "lui", "leur", "d", "l", "s",
+}
+# Ces mots signalent qu'on veut du RÉCENT → il faut dater la requête, sinon le moteur
+# ramène des pages génériques sans rapport avec la journée en cours.
+_MOTS_DU_JOUR = ("aujourd'hui", "aujourdhui", "du jour", "ce matin", "ce soir", "cette nuit",
+                 "maintenant", "actuellement", "en ce moment", "de la journée")
+_MOTS_RECENT = ("actu", "actus", "actualité", "actualite", "actualités", "actualites", "news",
+                "nouvelles", "quoi de neuf", "dernières", "dernieres", "récent", "recent",
+                "cette semaine", "en direct", "live")
+
+
+# Tournures de politesse / de demande à retirer AVANT le découpage en mots : découpées,
+# elles laissaient des résidus (« quoi de neuf » → « neuf »).
+_TOURNURES = ("quoi de neuf", "est ce que", "est-ce que", "s'il te plait", "s'il te plaît",
+              "s'il vous plait", "peux tu", "peux-tu", "pourrais tu", "pourrais-tu",
+              "c'est quoi", "qu'est ce que", "qu'est-ce que", "parle moi de", "parle-moi de",
+              "dis moi", "dis-moi", "donne moi", "donne-moi", "montre moi", "montre-moi")
+
+
+def _normalise(t: str) -> str:
+    """Apostrophes typographiques, élisions détachées : tout ramené à une forme unique."""
+    t = (t or "").replace("’", "'").replace("ʼ", "'")
+    t = re.sub(r"\baujourd\s+hui\b", "aujourd'hui", t, flags=re.I)
+    return t
+
+
+def veut_actualite(task: str) -> bool:
+    """La demande porte-t-elle sur l'actualité ? (→ requête datée, résultats récents)"""
+    m = _normalise(task).lower()
+    return any(k in m for k in _MOTS_DU_JOUR) or any(k in m for k in _MOTS_RECENT)
+
+
+def requete_simple(task: str) -> str:
+    """Requête de recherche construite SANS modèle — donc toujours disponible.
+
+    Le repli précédent se contentait de retirer quelques mots vides : « Résume l'actu tech
+    du jour » devenait « Résume l'actu tech jour », qui ramenait un podcast. Ici on retire
+    les verbes de commande ET on ajoute la date quand la demande porte sur l'actualité.
+    """
+    from datetime import datetime
+    t = _normalise(task).strip()
+    if not t:
+        return ""
+    auj = datetime.now()
+    bas = t.lower()
+    nettoye = t                                   # on garde la casse : « UPPA », « IA »…
+    for tour in _TOURNURES:                       # retirées en entier, pas mot à mot
+        nettoye = re.sub(re.escape(tour), " ", nettoye, flags=re.I)
+    mots = []
+    for w in re.sub(r"[^\w\sÀ-ÿ'-]", " ", nettoye).split():
+        w = re.sub(r"^(?:[ldnjmtsc]|qu)'", "", w, flags=re.I)  # l'actu → actu, d'IA → IA
+        nu = w.lower().strip("'-")
+        if not nu or nu in _STOP_REQUETE or nu in _VERBES_DEMANDE:
+            continue
+        # « aujourd'hui », « jour »… sont remplacés par une vraie date, plus bas
+        if nu in ("jour", "journée", "journee", "aujourd'hui", "aujourdhui", "matin",
+                  "soir", "moment", "nuit"):
+            continue
+        mots.append("actualité" if nu in ("actu", "actus") else w)
+        if len(mots) >= 8:
+            break
+    q = " ".join(mots).strip()
+    if any(k in bas for k in _MOTS_DU_JOUR) or "du jour" in bas:
+        q = f"{q} {_JOURS_COURT(auj)}".strip()          # « 19 août 2026 »
+    elif any(k in bas for k in _MOTS_RECENT):
+        q = f"{q} {auj.year}".strip()
+    return q[:120] or t[:120]
 
 
 def _extract_thought(llm_out: str) -> str:
@@ -579,7 +661,9 @@ async def run_agent_stream(
         try:
             _q = await _off(search_query, task)
             yield {"type": "action", "tool": "search_web", "params": {"query": _q}, "iteration": 0}
-            obs = await _off(safe_tool_call, loader, "search_web", {"query": _q, "mode": "web"}, "", _fin)
+            _mode = "news" if veut_actualite(task) else "web"
+            obs = await _off(safe_tool_call, loader, "search_web",
+                             {"query": _q, "mode": _mode}, "", _fin)
             observations.append(obs)
             deja_cherche[_cle_requete(_q)] = obs
             yield {"type": "observation", "tool": "search_web", "result": obs[:400], "iteration": 0}
