@@ -267,15 +267,21 @@ def _score_niveau(mid: str, niveau: str) -> int:
     au lieu d'une liste figée qui devient périmée."""
     b = mid.lower()
     petit = any(k in b for k in ("lightning", "mini", "small", "nano", "flash", "instant",
-                                 "-3b", "-4b", "-7b", "-8b", "-9b", "12b"))
-    gros = any(k in b for k in ("ultra", "-pro", "max", "405b", "550b", "480b", "253b",
-                                "235b", "-r1", "reasoning", "thinking"))
-    # Sans indice de taille dans le nom (ex. « glm-5.2 »), on suppose un modèle polyvalent
-    moyen = any(k in b for k in ("30b", "49b", "70b", "72b", "120b", "instruct", "chat")) \
-        or not (petit or gros)
-    # Familles reconnues pour leur qualité générale
-    bonus = 3 if any(k in b for k in ("glm", "nemotron", "deepseek")) else \
-        (2 if any(k in b for k in ("llama", "qwen", "mistral")) else 0)
+                                 "-xs", "-1b", "-2b", "-3b", "-4b", "-7b", "-8b", "-9b"))
+    gros = any(k in b for k in ("ultra", "super", "-pro", "max", "405b", "550b", "480b",
+                                "253b", "235b", "120b", "-r1", "reasoning", "thinking"))
+    # Catégories EXCLUSIVES : sinon « super-49b » cumulait les points « gros » et « moyen »
+    # et passait devant un vrai grand modèle comme « ultra-550b ».
+    if gros:
+        petit = moyen = False
+    elif petit:
+        moyen = False
+    else:
+        # Sans indice de taille (ex. « glm-5.2 »), on suppose un modèle polyvalent
+        moyen = True
+    # Familles reconnues pour leur polyvalence et l'usage d'outils (essentiel pour un agent)
+    bonus = 3 if any(k in b for k in ("glm", "nemotron", "deepseek", "gpt-oss")) else \
+        (2 if any(k in b for k in ("llama", "qwen", "mistral", "gemma", "minimax", "step")) else 0)
     if niveau == "rapide":
         return (6 if petit else 0) + (2 if moyen else 0) - (4 if gros else 0) + bonus
     if niveau == "puissant":
@@ -305,9 +311,13 @@ def _nvidia_chat(messages: list, model: str, temperature: float, niveau: str = "
             for mo in client.models.list().data:
                 mid = getattr(mo, "id", "") or ""
                 b = mid.lower()
-                if mid and not any(k in b for k in ("embed", "rerank", "ocr", "speech", "tts",
-                                                    "riva", "guard", "diffusion", "image", "video",
-                                                    "vila", "clip", "parakeet")):
+                # Le catalogue mêle des modèles qui ne savent pas discuter (vidéo, embeddings,
+                # biologie, détection, traduction, sécurité) : on ne garde que les conversationnels.
+                if mid and not any(k in b for k in (
+                        "embed", "rerank", "ocr", "speech", "tts", "riva", "guard", "diffusion",
+                        "video", "vila", "clip", "parakeet", "cosmos", "ising", "bevformer",
+                        "esm", "fold", "voicechat", "content-safety", "speaker", "noise",
+                        "detector", "translate", "calibration", "retriever", "protein")):
                     dispo.append(mid)
             dispo.sort(key=lambda x: -_score_niveau(x, niveau))
             for mid in dispo:
