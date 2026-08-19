@@ -1900,7 +1900,7 @@ async def usage(key: str = ""):
     Lecture durable (Supabase si configuré), donc fiable après redéploiement."""
     from llm import usage as U
     out, tu, tl = {}, 0, 0
-    for p in ("cerebras", "groq"):
+    for p in ("cerebras", "groq", "gemini"):
         try:
             used, limit = U.get_usage(p)
         except Exception:
