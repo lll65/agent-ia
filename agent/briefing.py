@@ -87,8 +87,10 @@ async def morning_loop():
             txt = await loop.run_in_executor(None, build_briefing)
             if config.TELEGRAM_TOKEN and getattr(config, "TELEGRAM_CHAT_ID", ""):
                 import requests
-                requests.post(f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}/sendMessage",
-                              json={"chat_id": config.TELEGRAM_CHAT_ID, "text": txt[:4000]}, timeout=20)
+                from agent.core import _off
+                await _off(requests.post,
+                           f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}/sendMessage",
+                           json={"chat_id": config.TELEGRAM_CHAT_ID, "text": txt[:4000]}, timeout=20)
                 logger.info("[briefing] envoyé via Telegram.")
         except asyncio.CancelledError:
             break

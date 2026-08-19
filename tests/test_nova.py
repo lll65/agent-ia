@@ -324,10 +324,125 @@ def test_securite():
     check("aucune route publique", ouvertes, [])
 
 
+# ── 15. Boucle asyncio jamais bloquée ────────────────────────────────────────
+def test_non_bloquant():
+    """Un appel réseau lent NE DOIT PAS geler la boucle : sinon plus aucun octet SSE
+    ne part et Nova « réfléchit » indéfiniment (bug observé en production)."""
+    import asyncio
+    import time
+    import re
+    from pathlib import Path as P
+
+    # 15a. La description du routage n'appelle JAMAIS le LLM (elle est calculée
+    #      en amont du streaming, sur la boucle).
+    src = (P(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
+    corps = src.split("def _route_detail")[1].split("\ndef ")[0]
+    for interdit in ("_resolve_app_action", "_llm_json", "chat(", "_event_text"):
+        check(f"_route_detail sans {interdit}", interdit in corps, False)
+    check_true("intention lecture", A._intention_app("mes rdv de demain") == "action : lecture")
+    check_true("intention création", A._intention_app("ajoute un rdv demain 14h") == "action : création")
+    check_true("intention envoi", A._intention_app("envoie un mail à Paul") == "action : envoi")
+
+    # 15b. run_agent_stream déporte bien ses appels bloquants dans un thread.
+    core = (P(__file__).resolve().parents[1] / "agent" / "core.py").read_text(encoding="utf-8")
+    check("safe_tool_call jamais direct", re.search(r"^\s+\w* ?=? ?safe_tool_call\(", core, re.M), None)
+    check("search_query jamais direct", re.search(r"^\s+_q = search_query\(", core, re.M), None)
+
+    # 15c. Preuve à l'exécution : pendant qu'un outil bloque 0,4 s, la boucle
+    #      continue de tourner (un tick asyncio parallèle doit avancer).
+    from agent.core import _off
+
+    async def scenario():
+        ticks = [0]
+
+        async def horloge():
+            while True:
+                await asyncio.sleep(0.02)
+                ticks[0] += 1
+
+        t = asyncio.create_task(horloge())
+        await _off(time.sleep, 0.4)          # « recherche web » lente
+        t.cancel()
+        return ticks[0]
+
+    check_true("boucle libre pendant un appel bloquant", asyncio.run(scenario()) >= 5)
+
+
+# ── 16. Aucun appel LLM ne peut durer indéfiniment ───────────────────────────
+def test_delais():
+    """Les SDK OpenAI/Groq attendent 600 s par défaut : sans délai explicite, un seul
+    fournisseur muet suffit à faire « réfléchir » Nova pendant des dizaines de minutes."""
+    import re
+    from pathlib import Path as P
+    import llm.client as C
+
+    src = (P(__file__).resolve().parents[1] / "llm" / "client.py").read_text(encoding="utf-8")
+    # « = OpenAI(… ) » : une vraie construction de client, pas le nom dans un message d'erreur
+    clients = re.findall(r"=\s*((?:OpenAI|Groq)\((?:[^()]|\([^()]*\))*\))", src)
+    check_true("des clients LLM sont bien construits", len(clients) >= 5)
+    sans = [c[:45] for c in clients if "timeout=" not in c]
+    check("tout client LLM a un délai", sans, [])
+    sans_r = [c[:45] for c in clients if "max_retries" not in c]
+    check("tout client LLM borne ses reprises", sans_r, [])
+
+    check_true("délai unitaire raisonnable", 5 <= C.TIMEOUT_LLM <= 120)
+    check_true("délai streaming raisonnable", 5 <= C.TIMEOUT_STREAM <= 180)
+    check_true("budget global borné", 10 <= C.TIMEOUT_CHAINE <= 180)
+    # La chaîne complète ne doit jamais dépasser l'échéance de l'agent de beaucoup,
+    # sinon une seule itération ReAct mangerait tout le temps imparti.
+    from config import config as CFG
+    check_true("budget chaîne ≤ 2× échéance agent", C.TIMEOUT_CHAINE <= 2 * CFG.AGENT_TIMEOUT)
+
+    # La chaîne s'arrête net quand le budget est épuisé (pas d'essai en cascade sans fin).
+    import time
+    appels = []
+
+    def _lent(messages, modele, temperature, niveau=None):
+        appels.append(modele)
+        time.sleep(0.35)
+        raise RuntimeError("fournisseur muet")
+
+    vrai_chaine, vrai_budget = C._providers_disponibles, C.TIMEOUT_CHAINE
+    try:
+        C._providers_disponibles = lambda niveau="equilibre": [(f"faux{i}", _lent, "m") for i in range(20)]
+        C.TIMEOUT_CHAINE = 0.8
+        try:
+            C.chat([{"role": "user", "content": "test"}])
+        except Exception:
+            pass
+    finally:
+        C._providers_disponibles, C.TIMEOUT_CHAINE = vrai_chaine, vrai_budget
+    check_true(f"chaîne coupée net ({len(appels)} essais au lieu de 20)", 1 <= len(appels) <= 5)
+
+    # Un fournisseur qui ne répond JAMAIS ne doit pas figer l'itération de l'agent :
+    # llm_call rend la main avec une erreur claire (c'est le bug « il réfléchit sans fin »).
+    import asyncio
+    import agent.core as AC
+
+    async def jamais():
+        vrai = C.chat
+        C.chat = lambda *a, **k: time.sleep(60) or "trop tard"
+        C.TIMEOUT_CHAINE = -19.5          # → plafond effectif de 0,5 s
+        try:
+            t0 = time.monotonic()
+            try:
+                await AC.llm_call([{"role": "user", "content": "x"}])
+                return "aucune erreur", 0
+            except TimeoutError:
+                return "TimeoutError", time.monotonic() - t0
+        finally:
+            C.chat, C.TIMEOUT_CHAINE = vrai, vrai_budget
+
+    genre, duree = asyncio.run(jamais())
+    check("fournisseur muet → erreur, pas de blocage", genre, "TimeoutError")
+    check_true(f"rendu en {duree:.2f}s", duree < 5)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
-               test_caches, test_slugs, test_modeles, test_requetes, test_securite):
+               test_caches, test_slugs, test_modeles, test_requetes, test_securite,
+               test_non_bloquant, test_delais):
         try:
             fn()
         except Exception as e:

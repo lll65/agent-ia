@@ -11,6 +11,7 @@ est configurée, la requête bascule automatiquement sur Cerebras (même format
 OpenAI que Groq). Si les deux échouent, l'erreur est loggée clairement.
 """
 import logging
+import os
 from config import config
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,39 @@ def _is_rate_limit(exc: Exception) -> bool:
 _MODELES_OK = {}   # fournisseur -> modèle qui a réellement fonctionné (mémorisé)
 _MODELES_KO = {}   # (fournisseur, modèle) -> horodatage du dernier échec
 _KO_TTL = 3600.0   # on réessaie au bout d'une heure (au cas où ce soit passager)
+
+# ⏱️ DÉLAIS EXPLICITES — indispensables.
+# Les SDK OpenAI et Groq attendent 600 s par défaut, avec 2 nouvelles tentatives :
+# un seul fournisseur muet immobilisait Nova ~30 min, et comme la chaîne enchaîne
+# plusieurs fournisseurs, elle « réfléchissait » sans jamais répondre.
+# Ici : on abandonne vite et on passe au fournisseur suivant, qui lui répondra.
+TIMEOUT_LLM = float(os.getenv("LLM_TIMEOUT", "45"))        # réponse complète
+TIMEOUT_STREAM = float(os.getenv("LLM_TIMEOUT_STREAM", "90"))  # streaming (plus long, ça coule)
+TIMEOUT_LISTE = 12.0                                        # découverte des modèles
+TIMEOUT_CHAINE = float(os.getenv("LLM_TIMEOUT_TOTAL", "70"))   # budget de TOUTE la chaîne
+
+
+def _timeout(t: float):
+    """Délai httpx : connexion courte, lecture bornée."""
+    try:
+        import httpx
+        return httpx.Timeout(t, connect=8.0)
+    except Exception:
+        return t
+
+
+def _lister_modeles(client):
+    """Modèles réellement offerts au compte, avec un délai COURT.
+
+    La liste n'est qu'une aide à l'auto-guérison : si le fournisseur traîne, on
+    l'abandonne au bout de quelques secondes plutôt que de faire attendre la réponse.
+    `with_options` n'existe pas sur tous les SDK → repli sur l'appel simple.
+    """
+    try:
+        c = client.with_options(timeout=TIMEOUT_LISTE)
+    except Exception:
+        c = client
+    return c.models.list().data
 
 
 def _est_hs(nom: str, modele: str) -> bool:
@@ -156,8 +190,17 @@ def chat(messages: list, temperature: float = 0.7, num_ctx: int = 4096,
     if not chaine:
         return _ollama_chat(messages, config.LLM_MODEL, temperature, num_ctx)
 
+    # ⏱️ Plafond global de la chaîne : même avec des délais par fournisseur, essayer 6
+    # fournisseurs à la suite pouvait dépasser plusieurs minutes. Passé ce budget, on
+    # arrête d'essayer et on remonte une erreur claire — mieux qu'un silence infini.
+    import time as _t
+    _fin_chaine = _t.monotonic() + TIMEOUT_CHAINE
+
     soucis = []
     for nom, fn, modele in chaine:
+        if _t.monotonic() > _fin_chaine:
+            soucis.append("délai global dépassé — fournisseurs suivants non essayés")
+            break
         try:
             try:      # certains fournisseurs exploitent le niveau pour choisir le modèle
                 out = fn(messages, modele or config.LLM_MODEL, temperature, niveau)
@@ -203,7 +246,8 @@ def chat_stream(messages: list, temperature: float = 0.6, niveau: str = "equilib
         if nom in _BASES and cles.get(nom):
             provider = nom
             model = _MODELES_OK.get(nom) or mod
-            client = OpenAI(api_key=cles[nom], base_url=_BASES[nom])
+            client = OpenAI(api_key=cles[nom], base_url=_BASES[nom],
+                            timeout=_timeout(TIMEOUT_STREAM), max_retries=1)
             break
     try:
         if client is None:
@@ -238,7 +282,7 @@ def _groq_chat(messages: list, model: str, temperature: float) -> str:
     """Groq avec auto-guérison : les modèles sont régulièrement retirés (404).
     On essaie le modèle configuré, des noms connus, puis ceux réellement offerts au compte."""
     from groq import Groq
-    client = Groq(api_key=config.GROQ_API_KEY)
+    client = Groq(api_key=config.GROQ_API_KEY, timeout=_timeout(TIMEOUT_LLM), max_retries=1)
 
     candidats = []
     for m in (_MODELES_OK.get("groq"), model, config.GROQ_MODEL,
@@ -248,7 +292,7 @@ def _groq_chat(messages: list, model: str, temperature: float) -> str:
         if m and m not in candidats:
             candidats.append(m)
     try:                                   # modèles réellement disponibles sur CE compte
-        for mo in client.models.list().data:
+        for mo in _lister_modeles(client):
             mid = getattr(mo, "id", "") or ""
             bas = mid.lower()
             # On exclut ce qui n'est pas un modèle de chat classique.
@@ -324,7 +368,8 @@ def _nvidia_chat(messages: list, model: str, temperature: float, niveau: str = "
     if not config.NVIDIA_API_KEY:
         raise RuntimeError("NVIDIA_API_KEY absente.")
     client = OpenAI(api_key=config.NVIDIA_API_KEY,
-                    base_url="https://integrate.api.nvidia.com/v1")
+                    base_url="https://integrate.api.nvidia.com/v1",
+                    timeout=_timeout(TIMEOUT_LLM), max_retries=1)
 
     candidats = []
     impose = _modele_impose("nvidia")
@@ -335,7 +380,7 @@ def _nvidia_chat(messages: list, model: str, temperature: float, niveau: str = "
     if not impose:
         try:
             dispo = []
-            for mo in client.models.list().data:
+            for mo in _lister_modeles(client):
                 mid = getattr(mo, "id", "") or ""
                 b = mid.lower()
                 # Le catalogue mêle des modèles qui ne savent pas discuter (vidéo, embeddings,
@@ -391,7 +436,8 @@ def _openrouter_chat(messages: list, model: str, temperature: float) -> str:
     if not getattr(config, "OPENROUTER_API_KEY", ""):
         raise RuntimeError("OPENROUTER_API_KEY absente.")
     client = OpenAI(api_key=config.OPENROUTER_API_KEY,
-                    base_url="https://openrouter.ai/api/v1")
+                    base_url="https://openrouter.ai/api/v1",
+                    timeout=_timeout(TIMEOUT_LLM), max_retries=1)
 
     candidats = []
     for m in (_MODELES_OK.get("openrouter"), model, config.OPENROUTER_MODEL,
@@ -430,7 +476,8 @@ def _openrouter_chat(messages: list, model: str, temperature: float) -> str:
 
 def _xai_chat(messages: list, model: str, temperature: float) -> str:
     from openai import OpenAI
-    client = OpenAI(api_key=config.XAI_API_KEY, base_url="https://api.x.ai/v1")
+    client = OpenAI(api_key=config.XAI_API_KEY, base_url="https://api.x.ai/v1",
+                    timeout=_timeout(TIMEOUT_LLM), max_retries=1)
     resp = client.chat.completions.create(
         model=model,
         messages=messages,
@@ -468,9 +515,9 @@ def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> 
                 candidates.append(m)
         try:
             from groq import Groq
-            client = Groq(api_key=config.GROQ_API_KEY)
+            client = Groq(api_key=config.GROQ_API_KEY, timeout=_timeout(TIMEOUT_LLM), max_retries=1)
             try:  # modèles réellement disponibles sur CE compte
-                for mo in client.models.list().data:
+                for mo in _lister_modeles(client):
                     mid = getattr(mo, "id", "") or ""
                     if mid and mid not in candidates and any(
                             k in mid.lower() for k in ("vision", "scout", "maverick", "llava")):
@@ -546,6 +593,7 @@ def _cerebras_chat(messages: list, model: str, temperature: float) -> str:
     client = OpenAI(
         api_key=config.CEREBRAS_API_KEY,
         base_url="https://api.cerebras.ai/v1",
+        timeout=_timeout(TIMEOUT_LLM), max_retries=1,
     )
     # Ordre d'essai : modèle configuré, noms connus, PUIS les modèles réellement
     # accessibles au compte (via /models) → évite les 404 'model_not_found'.
@@ -555,7 +603,7 @@ def _cerebras_chat(messages: list, model: str, temperature: float) -> str:
         if m and m not in candidates:
             candidates.append(m)
     try:
-        for mo in client.models.list().data:
+        for mo in _lister_modeles(client):
             mid = getattr(mo, "id", None)
             if mid and mid not in candidates:
                 candidates.append(mid)

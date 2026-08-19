@@ -1070,6 +1070,24 @@ def _niveau_tache(message: str) -> str:
 
 _NIVEAU_FR = {"rapide": "modèle rapide", "equilibre": "modèle équilibré", "puissant": "modèle puissant"}
 
+# Verbes → intention, sans le moindre appel réseau (affiché en sous-bulle avant le streaming).
+_INTENTIONS = (
+    (("ajoute", "ajouter", "crée", "creer", "créer", "planifie", "programme", "note ", "réserve", "reserve"), "création"),
+    (("supprime", "annule", "efface", "retire"), "suppression"),
+    (("modifie", "déplace", "deplace", "change", "reporte"), "modification"),
+    (("envoie", "envoi", "réponds", "reponds", "écris", "ecris", "partage"), "envoi"),
+    (("cherche", "trouve", "recherche"), "recherche"),
+)
+
+
+def _intention_app(message: str) -> str:
+    """Décrit l'intention (lecture / création / envoi…) par simple analyse lexicale."""
+    m = (message or "").lower()
+    for mots, libelle in _INTENTIONS:
+        if any(k in m for k in mots):
+            return f"action : {libelle}"
+    return "action : lecture"
+
 
 def _route_detail(message: str) -> str:
     """Décrit ce que Nova a RÉELLEMENT décidé pour ce message (affiché en sous-bulles).
@@ -1091,8 +1109,11 @@ def _route_detail(message: str) -> str:
         elif _wants_visual(message):
             bouts.append("génération de visuel")
         else:
-            act, _ = _resolve_app_action(message)
-            bouts.append(f"action : {act.split('_', 1)[-1].lower().replace('_', ' ')}" if act else "action à choisir")
+            # ⚠️ Purement lexical, AUCUN appel réseau. Cette description est calculée
+            # avant le streaming, sur la boucle asyncio : y résoudre l'action Composio
+            # déclenchait une extraction LLM bloquante (Quick Add agenda) qui gelait la
+            # boucle entière → plus aucun octet SSE, Nova « réfléchissait » sans fin.
+            bouts.append(_intention_app(message))
         return " · ".join(bouts)
     if _wants_visual(message):
         return "création d'image · texte à composer"
@@ -1600,37 +1621,44 @@ async def ask_stream(q: str = "", key: str = ""):
         loop = asyncio.get_running_loop()
 
         async def _stream_llm(messages, temp, deadline: float = 150.0, niveau: str = "equilibre"):
-            """Diffuse une réponse LLM token par token (dans un thread, non bloquant).
+            """Diffuse une réponse LLM token par token (dans UN seul thread, non bloquant).
 
-            ⚠️ Chaque attente est BORNÉE : un `get()` bloquant sans délai immobiliserait un
-            thread du pool si le modèle cessait de répondre — et le pool finirait saturé.
+            ⚠️ La version précédente relançait un `run_in_executor` par attente de token :
+            sur une petite instance (pool de 5 threads) plusieurs conversations simultanées
+            saturaient le pool et le thread producteur ne démarrait même plus → Nova
+            « réfléchissait » sans jamais rien renvoyer. Ici le producteur pousse ses tokens
+            dans une file asyncio via `call_soon_threadsafe` : 1 thread par réponse, point.
             """
             from llm.client import chat_stream
-            import queue as _q
-            import time as _t
-            box = _q.Queue()
+            box: asyncio.Queue = asyncio.Queue()
 
             def worker():
+                def push(item):
+                    try:
+                        loop.call_soon_threadsafe(box.put_nowait, item)
+                    except RuntimeError:
+                        pass                     # boucle fermée (client parti) : on abandonne
                 try:
                     for tok in chat_stream(messages, temperature=temp, niveau=niveau):
-                        box.put(("t", tok))
+                        push(("t", tok))
                 except Exception as e:
-                    box.put(("t", f"❌ {str(e)[:120]}"))
+                    push(("t", f"❌ {str(e)[:120]}"))
                 finally:
-                    box.put(("end", None))       # garanti, même en cas d'erreur
+                    push(("end", None))          # garanti, même en cas d'erreur
 
             loop.run_in_executor(None, worker)
-            acc, fin = "", _t.monotonic() + deadline
+            acc = ""
+            fin = loop.time() + deadline
             while True:
-                if _t.monotonic() > fin:
+                reste = fin - loop.time()
+                if reste <= 0:
                     acc += "\n\n⚠️ (réponse interrompue : délai dépassé)"
                     yield "\n\n⚠️ (réponse interrompue : délai dépassé)"
                     break
                 try:
-                    kind, val = await loop.run_in_executor(
-                        None, lambda: box.get(timeout=2.0))
-                except Exception:
-                    continue                     # file vide : on repasse par le contrôle de délai
+                    kind, val = await asyncio.wait_for(box.get(), timeout=reste)
+                except asyncio.TimeoutError:
+                    continue                     # on repasse par le contrôle de délai
                 if kind == "end":
                     break
                 acc += val
@@ -1770,10 +1798,11 @@ async def tts(text: str = "", key: str = ""):
     txt = (text or "").strip()[:900]
     if not txt:
         return JSONResponse({"ok": False, "reason": "empty"}, status_code=400)
+    from agent.core import _off
     if not ek:
         # Pas de clé premium → voix gratuite côté serveur (indispensable sur iPhone, où la
         # synthèse du navigateur est bloquée, surtout en app installée).
-        mp3 = _gtts_mp3(txt)
+        mp3 = await _off(_gtts_mp3, txt)
         if mp3:
             return Response(content=mp3, media_type="audio/mpeg",
                             headers={"Cache-Control": "no-store"})
@@ -1782,7 +1811,10 @@ async def tts(text: str = "", key: str = ""):
     vid = getattr(config, "ELEVENLABS_VOICE_ID", "")
     model = getattr(config, "ELEVENLABS_MODEL", "eleven_multilingual_v2")
     try:
-        r = requests.post(
+        # ⚠️ requests est SYNCHRONE : appelé tel quel, il gèlerait toute la boucle asyncio
+        # (donc le flux SSE en cours) pendant la génération audio. → thread dédié.
+        r = await _off(
+            requests.post,
             f"https://api.elevenlabs.io/v1/text-to-speech/{vid}",
             headers={"xi-api-key": ek, "Content-Type": "application/json", "Accept": "audio/mpeg"},
             json={"text": txt, "model_id": model,
@@ -2160,12 +2192,16 @@ async def make_title(req: TitleReq):
     """Titre court et propre pour une conversation (3-5 mots), généré après le 1er échange."""
     _check_key(req.key or "")
     from llm.client import chat
+    from agent.core import _off
     q = (req.question or "").strip()[:400]
     a = (req.answer or "").strip()[:400]
     if not q:
         raise HTTPException(status_code=400, detail="question requise.")
     try:
-        out = chat([
+        # ⚠️ L'UI demande un titre juste après chaque 1ère réponse. En appelant `chat()`
+        # directement sur la boucle, ce titre figeait le serveur (et donc le streaming
+        # de la conversation suivante) le temps d'un aller-retour modèle.
+        out = await _off(chat, [
             {"role": "system", "content": (
                 "Donne un TITRE de conversation en français : 3 à 5 mots, clair et descriptif, "
                 "première lettre en majuscule, SANS guillemets, SANS ponctuation finale, "
@@ -2214,10 +2250,11 @@ async def apps_list(key: str = ""):
     ck = (getattr(config, "COMPOSIO_API_KEY", "") or "").strip()
     connected, detail = [], ""
     if ck:
+        from agent.core import _off
         h = {"x-api-key": ck, "Content-Type": "application/json"}
         try:
-            r = requests.get("https://backend.composio.dev/api/v3/connected_accounts",
-                             headers=h, params={"limit": 100}, timeout=20)
+            r = await _off(requests.get, "https://backend.composio.dev/api/v3/connected_accounts",
+                           headers=h, params={"limit": 100}, timeout=20)
             if r.status_code == 200:
                 data = r.json()
                 items = data.get("items", data if isinstance(data, list) else []) or []
