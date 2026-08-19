@@ -46,6 +46,8 @@
   .me .bubble{ max-width:82%; background:linear-gradient(135deg,var(--neon),#5b46d6); border:none; border-radius:18px 18px 5px 18px; box-shadow:0 8px 26px rgba(124,92,255,.35); }
   .ai .bubble{ background:var(--glass); border-radius:18px 18px 18px 5px; }
   /* Menu déroulant : raisonnement de Nova */
+  .mdl{ font-size:10.5px; color:var(--dim); opacity:.55; letter-spacing:.04em; padding:1px 4px; }
+  .mdl::before{ content:'⚡ '; }
   details.reason{ font-size:12.5px; }
   details.reason summary{ cursor:pointer; color:var(--dim); list-style:none; padding:3px 4px; user-select:none; display:inline-flex; align-items:center; gap:6px; border-radius:8px; transition:.2s; }
   details.reason summary::-webkit-details-marker{ display:none; }
@@ -487,6 +489,12 @@ function addRow(who,html){ if(hint)hint.remove(); const r=document.createElement
     : '<div class="bubble">'+html+'</div>';
   chat.appendChild(r); chat.scrollTop=chat.scrollHeight; return r.querySelector(".bubble"); }
 /* Ajoute le menu déroulant "Raisonnement" sous une bulle IA à partir de la trace collectée */
+let MODELE_UTILISE="";
+/* Mention discrète du moteur qui a répondu, sous la bulle */
+function attachModel(bubble){ if(!MODELE_UTILISE) return; const col=bubble.parentElement;
+  if(!col || col.querySelector(".mdl")) return;
+  const d=document.createElement("div"); d.className="mdl"; d.textContent=MODELE_UTILISE;
+  col.appendChild(d); MODELE_UTILISE=""; }
 function attachReason(bubble,trace){ if(!trace||!trace.length) return; const col=bubble.parentElement;
   const steps=trace.map(s=>{ const d=_clean(s.detail);
     return '<div class="rstep"><span class="ri">'+s.icon+'</span><span><span class="rl">'+esc(s.label)+'</span>'
@@ -969,7 +977,8 @@ function ask(){
       histPush("ai",answer);
       if(voiceMode){ vSet("Nova répond…", answer.slice(0,240)); speak(answer, ()=>{ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }); }
       else if(TTS) speak(answer); }
-    else if(d.type==="done"){ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false; attachReason(bubble,trace); sndReceive(); setTimeout(refreshUsage,900); }
+    else if(d.type==="model"){ MODELE_UTILISE=d.name||""; }
+    else if(d.type==="done"){ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false; attachReason(bubble,trace); attachModel(bubble); sndReceive(); setTimeout(refreshUsage,900); }
   };
   es.onerror=()=>{ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false;
     if(!answer) bubble.innerHTML="⚠️ Connexion interrompue. Vérifie ta clé (⚙️) et réessaie."; else attachReason(bubble,trace); };

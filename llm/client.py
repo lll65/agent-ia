@@ -25,28 +25,86 @@ def _is_rate_limit(exc: Exception) -> bool:
     return "429" in text or "rate limit" in text or "too many requests" in text or "quota" in text
 
 
-def _providers_disponibles():
+_MODELES_OK = {}   # fournisseur -> modèle qui a réellement fonctionné (mémorisé)
+
+
+# ── ROUTAGE PAR TÂCHE ─────────────────────────────────────────────────────────
+# Trois niveaux : « rapide » (discuter, mise en forme), « equilibre » (par défaut),
+# « puissant » (code, analyse longue, raisonnement).
+# Modèle choisi par fournisseur ET par niveau. Si un modèle n'existe plus,
+# l'auto-guérison de chaque fournisseur prend le relais : le routage n'échoue jamais.
+MODELES = {
+    "nvidia": {"rapide": "meta/llama-3.1-8b-instruct",
+               "equilibre": "meta/llama-3.3-70b-instruct",
+               "puissant": "meta/llama-3.1-405b-instruct"},
+    "groq": {"rapide": "llama-3.1-8b-instant",
+             "equilibre": "llama-3.3-70b-versatile",
+             "puissant": "llama-3.3-70b-versatile"},
+    "gemini": {"rapide": "gemini-2.0-flash",
+               "equilibre": "gemini-2.0-flash",
+               "puissant": "gemini-2.5-pro"},
+    "openrouter": {"rapide": "meta-llama/llama-3.2-3b-instruct:free",
+                   "equilibre": "meta-llama/llama-3.3-70b-instruct:free",
+                   "puissant": "deepseek/deepseek-r1:free"},
+    "cerebras": {"rapide": "llama3.1-8b", "equilibre": "llama-3.3-70b", "puissant": "llama-3.3-70b"},
+}
+
+# Ordre des fournisseurs SELON le niveau (choix expliqué à l'utilisateur) :
+# — rapide    : Groq d'abord, c'est le plus véloce
+# — équilibré : NVIDIA d'abord, quota le plus généreux
+# — puissant  : NVIDIA puis Gemini, ce sont eux qui ont les gros modèles
+ORDRE = {
+    "rapide":    ("groq", "nvidia", "gemini", "openrouter", "cerebras"),
+    "equilibre": ("nvidia", "groq", "gemini", "openrouter", "cerebras"),
+    "puissant":  ("nvidia", "gemini", "openrouter", "groq", "cerebras"),
+}
+
+# Qui a répondu en dernier (par contexte async → sûr même avec plusieurs requêtes)
+import contextvars
+DERNIER = contextvars.ContextVar("dernier_llm", default="")
+
+
+def _modele_impose(nom: str) -> str:
+    """Modèle explicitement choisi par l'utilisateur (ex. NVIDIA_MODEL sur Render).
+    Présent dans l'environnement = volonté explicite → prioritaire sur le routage auto."""
+    import os
+    return (os.environ.get(f"{nom.upper()}_MODEL") or "").strip()
+
+
+def _providers_disponibles(niveau: str = "equilibre"):
     """Chaîne de secours : le fournisseur préféré d'abord, puis TOUS les autres configurés.
     Avant, seuls 2 étaient essayés — si Cerebras passait en payant (402) et Groq atteignait sa
     limite, Nova devenait muette alors qu'une autre clé était peut-être disponible."""
     chaine = []
-
-    def add(nom, cle, fn, modele):
-        if cle and nom not in [c[0] for c in chaine]:
-            chaine.append((nom, fn, modele))
-
-    prefere = (config.LLM_PROVIDER or "").lower()
     tous = {
-        "nvidia":   (getattr(config, "NVIDIA_API_KEY", ""), _nvidia_chat, getattr(config, "NVIDIA_MODEL", "")),
-        "cerebras": (config.CEREBRAS_API_KEY, _cerebras_chat, config.CEREBRAS_MODEL),
-        "groq":     (config.GROQ_API_KEY, _groq_chat, config.GROQ_MODEL),
-        "gemini":   (getattr(config, "GEMINI_API_KEY", ""), _gemini_chat, config.GEMINI_MODEL),
-        "xai":      (getattr(config, "XAI_API_KEY", ""), _xai_chat, getattr(config, "XAI_MODEL", "")),
+        "nvidia":     (getattr(config, "NVIDIA_API_KEY", ""), _nvidia_chat),
+        "groq":       (config.GROQ_API_KEY, _groq_chat),
+        "gemini":     (getattr(config, "GEMINI_API_KEY", ""), _gemini_chat),
+        "openrouter": (getattr(config, "OPENROUTER_API_KEY", ""), _openrouter_chat),
+        "cerebras":   (config.CEREBRAS_API_KEY, _cerebras_chat),
+        "xai":        (getattr(config, "XAI_API_KEY", ""), _xai_chat),
     }
-    if prefere in tous:                       # le préféré passe en tête
-        add(prefere, *tous[prefere])
-    for nom, (cle, fn, mod) in tous.items():
-        add(nom, cle, fn, mod)
+
+    def add(nom):
+        cle_fn = tous.get(nom)
+        if not cle_fn or not cle_fn[0] or nom in [c[0] for c in chaine]:
+            return
+        # Si TU as choisi un modèle précis (variable ..._MODEL définie sur Render),
+        # il l'emporte sur le choix automatique — c'est toi qui décides.
+        force = _modele_impose(nom)
+        modele = force or MODELES.get(nom, {}).get(niveau) or _MODELES_OK.get(nom) or config.LLM_MODEL
+        chaine.append((nom, cle_fn[1], modele))
+
+    # 1) Un fournisseur explicitement imposé par l'utilisateur passe toujours en tête
+    prefere = (config.LLM_PROVIDER or "").lower()
+    if prefere in tous:
+        add(prefere)
+    # 2) Puis l'ordre adapté au niveau de la tâche
+    for nom in ORDRE.get(niveau, ORDRE["equilibre"]):
+        add(nom)
+    # 3) Enfin tout le reste (rien ne doit être oublié)
+    for nom in tous:
+        add(nom)
     return chaine
 
 
@@ -64,9 +122,11 @@ def _explique(nom: str, err: Exception) -> str:
     return f"{nom} : {str(err)[:70]}"
 
 
-def chat(messages: list, temperature: float = 0.7, num_ctx: int = 4096) -> str:
-    """Appel synchrone. Essaie chaque fournisseur configuré jusqu'à ce qu'un réponde."""
-    chaine = _providers_disponibles()
+def chat(messages: list, temperature: float = 0.7, num_ctx: int = 4096,
+         niveau: str = "equilibre") -> str:
+    """Appel synchrone. Choisit le modèle adapté au niveau de la tâche, puis essaie
+    chaque fournisseur jusqu'à ce qu'un réponde (le routage ne peut donc pas faire échouer)."""
+    chaine = _providers_disponibles(niveau)
     if not chaine:
         return _ollama_chat(messages, config.LLM_MODEL, temperature, num_ctx)
 
@@ -77,6 +137,7 @@ def chat(messages: list, temperature: float = 0.7, num_ctx: int = 4096) -> str:
             if out and out.strip():
                 if soucis:
                     logger.warning(f"[LLM] bascule sur {nom} après : {' | '.join(soucis)}")
+                DERNIER.set(f"{nom} · {_MODELES_OK.get(nom) or modele}")
                 return out
             soucis.append(f"{nom} : réponse vide")
         except Exception as e:
@@ -94,26 +155,32 @@ def chat(messages: list, temperature: float = 0.7, num_ctx: int = 4096) -> str:
         "ou aistudio.google.com (Gemini), puis mets-la dans les variables Render.")
 
 
-def chat_stream(messages: list, temperature: float = 0.6):
+_BASES = {"nvidia": "https://integrate.api.nvidia.com/v1",
+          "groq": "https://api.groq.com/openai/v1",
+          "cerebras": "https://api.cerebras.ai/v1",
+          "openrouter": "https://openrouter.ai/api/v1"}
+
+
+def chat_stream(messages: list, temperature: float = 0.6, niveau: str = "equilibre"):
     """Générateur : produit la réponse token par token (vrai streaming).
-    Compatible Groq/Cerebras (API OpenAI, stream=True). Repli non-stream sinon.
-    Yield des morceaux de texte (str)."""
+    Prend le PREMIER fournisseur de la chaîne du niveau qui sait streamer (API OpenAI).
+    Gemini/Ollama ne streament pas ici → repli sur une réponse d'un bloc."""
     from openai import OpenAI
-    provider = config.LLM_PROVIDER
-    model = config.LLM_MODEL
+    cles = {"nvidia": getattr(config, "NVIDIA_API_KEY", ""), "groq": config.GROQ_API_KEY,
+            "cerebras": config.CEREBRAS_API_KEY,
+            "openrouter": getattr(config, "OPENROUTER_API_KEY", "")}
+    provider, model, client = None, config.LLM_MODEL, None
+    for nom, _fn, mod in _providers_disponibles(niveau):
+        if nom in _BASES and cles.get(nom):
+            provider = nom
+            model = _MODELES_OK.get(nom) or mod
+            client = OpenAI(api_key=cles[nom], base_url=_BASES[nom])
+            break
     try:
-        if provider == "nvidia" and getattr(config, "NVIDIA_API_KEY", ""):
-            client = OpenAI(api_key=config.NVIDIA_API_KEY,
-                            base_url="https://integrate.api.nvidia.com/v1")
-            model = _MODELES_OK.get("nvidia") or config.NVIDIA_MODEL
-        elif provider == "cerebras" and config.CEREBRAS_API_KEY:
-            client = OpenAI(api_key=config.CEREBRAS_API_KEY, base_url="https://api.cerebras.ai/v1")
-        elif provider == "groq" or config.GROQ_API_KEY:
-            client = OpenAI(api_key=config.GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
-            model = config.GROQ_MODEL if provider != "groq" else model
-        else:
-            # Provider non-stream (Gemini/Ollama) → on renvoie tout d'un coup
-            yield chat(messages, temperature=temperature); return
+        if client is None:
+            # Aucun fournisseur « streamable » → réponse complète d'un coup
+            yield chat(messages, temperature=temperature, niveau=niveau); return
+        DERNIER.set(f"{provider} · {model}")
         total = 0
         stream = client.chat.completions.create(
             model=model, messages=messages, temperature=temperature, max_tokens=4096, stream=True)
@@ -133,12 +200,9 @@ def chat_stream(messages: list, temperature: float = 0.6):
     except Exception as e:
         logger.warning(f"[chat_stream] échec streaming ({str(e)[:80]}) → repli non-stream")
         try:
-            yield chat(messages, temperature=temperature)
+            yield chat(messages, temperature=temperature, niveau=niveau)
         except Exception as e2:
             yield f"❌ Erreur LLM : {str(e2)[:200]}"
-
-
-_MODELES_OK = {}          # fournisseur -> modèle qui a réellement fonctionné
 
 
 def _groq_chat(messages: list, model: str, temperature: float) -> str:
@@ -246,6 +310,49 @@ def _nvidia_chat(messages: list, model: str, temperature: float) -> str:
                 continue
             raise
     raise RuntimeError(f"NVIDIA : aucun modèle accessible ({derniere})")
+
+
+def _openrouter_chat(messages: list, model: str, temperature: float) -> str:
+    """OpenRouter — une clé, des dizaines de modèles (dont beaucoup de gratuits, suffixe « :free »).
+    API compatible OpenAI. Sert de filet universel quand les autres fournisseurs tombent."""
+    from openai import OpenAI
+    if not getattr(config, "OPENROUTER_API_KEY", ""):
+        raise RuntimeError("OPENROUTER_API_KEY absente.")
+    client = OpenAI(api_key=config.OPENROUTER_API_KEY,
+                    base_url="https://openrouter.ai/api/v1")
+
+    candidats = []
+    for m in (_MODELES_OK.get("openrouter"), model, config.OPENROUTER_MODEL,
+              "meta-llama/llama-3.3-70b-instruct:free",
+              "deepseek/deepseek-chat:free",
+              "qwen/qwen-2.5-72b-instruct:free",
+              "google/gemma-2-9b-it:free",
+              "meta-llama/llama-3.2-3b-instruct:free"):
+        if m and m not in candidats:
+            candidats.append(m)
+
+    derniere = None
+    for m in candidats:
+        try:
+            resp = client.chat.completions.create(
+                model=m, messages=messages, temperature=temperature, max_tokens=4096,
+                extra_headers={"X-Title": "Nova"})
+            _MODELES_OK["openrouter"] = m
+            try:
+                from llm.usage import record
+                record(getattr(getattr(resp, "usage", None), "total_tokens", 0), provider="openrouter")
+            except Exception:
+                pass
+            return resp.choices[0].message.content or ""
+        except Exception as e:
+            derniere = e
+            t = str(e).lower()
+            if any(k in t for k in ("not_found", "404", "400", "no endpoints",
+                                    "unsupported", "invalid_request", "not available")):
+                logger.warning(f"[LLM] OpenRouter : modèle '{m}' inutilisable, essai suivant…")
+                continue
+            raise
+    raise RuntimeError(f"OpenRouter : aucun modèle accessible ({derniere})")
 
 
 def _xai_chat(messages: list, model: str, temperature: float) -> str:

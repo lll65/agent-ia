@@ -1020,6 +1020,41 @@ def _composio_list_actions(slug: str):
     return out
 
 
+# ── NIVEAU DE TÂCHE ───────────────────────────────────────────────────────────
+# Règles DÉTERMINISTES (pas d'appel LLM) : le routage est instantané, gratuit et
+# ne peut pas échouer — condition posée pour qu'il soit fiable.
+_LOURD = ("code", "coder", "programme", "script", "fonction", "algorithme", "débogue", "debug",
+          "corrige le bug", "analyse", "analyser", "compare", "comparer", "explique en détail",
+          "rédige", "redige", "écris un", "ecris un", "dissertation", "rapport", "synthèse",
+          "synthese", "stratégie", "strategie", "plan détaillé", "traduis", "resume ce",
+          "résume ce", "projet", "architecture", "optimise", "refactor")
+_LEGER = ("salut", "bonjour", "merci", "ok", "oui", "non", "ça va", "ca va", "quelle heure",
+          "quel jour", "coucou", "hello", "bye", "à plus", "bonne nuit")
+
+
+def _modele_utilise() -> str:
+    """Quel fournisseur/modèle vient de répondre (affiché discrètement sous la réponse)."""
+    try:
+        from llm.client import DERNIER
+        return DERNIER.get("") or ""
+    except Exception:
+        return ""
+
+
+def _niveau_tache(message: str) -> str:
+    """« rapide » (discuter), « equilibre » (défaut), « puissant » (code, analyse, rédaction)."""
+    m = (message or "").lower().strip()
+    mots = len(m.split())
+    if _is_smalltalk(message) or (mots <= 4 and any(k in m for k in _LEGER)):
+        return "rapide"
+    if any(k in m for k in _LOURD) or mots > 60 or len(m) > 500:
+        return "puissant"
+    return "equilibre"
+
+
+_NIVEAU_FR = {"rapide": "modèle rapide", "equilibre": "modèle équilibré", "puissant": "modèle puissant"}
+
+
 def _route_detail(message: str) -> str:
     """Décrit ce que Nova a RÉELLEMENT décidé pour ce message (affiché en sous-bulles).
     Ce sont de vraies décisions du routeur, vérifiables — pas un habillage."""
@@ -1548,7 +1583,7 @@ async def ask_stream(q: str = "", key: str = ""):
             yield sse({"type": "answer", "text": "Message vide."}); yield sse({"type": "done"}); return
         loop = asyncio.get_running_loop()
 
-        async def _stream_llm(messages, temp, deadline: float = 150.0):
+        async def _stream_llm(messages, temp, deadline: float = 150.0, niveau: str = "equilibre"):
             """Diffuse une réponse LLM token par token (dans un thread, non bloquant).
 
             ⚠️ Chaque attente est BORNÉE : un `get()` bloquant sans délai immobiliserait un
@@ -1561,7 +1596,7 @@ async def ask_stream(q: str = "", key: str = ""):
 
             def worker():
                 try:
-                    for tok in chat_stream(messages, temperature=temp):
+                    for tok in chat_stream(messages, temperature=temp, niveau=niveau):
                         box.put(("t", tok))
                 except Exception as e:
                     box.put(("t", f"❌ {str(e)[:120]}"))
@@ -1591,14 +1626,16 @@ async def ask_stream(q: str = "", key: str = ""):
             _log_activity(message)   # visible immédiatement dans la constellation
             # Le serveur annonce ses VRAIES décisions de routage → sous-bulles authentiques
             # (et non des mots-clés extraits de la question, qui simulaient un raisonnement).
+            _niv = _niveau_tache(message)
             yield sse({"type": "step", "kind": "route", "tool": "analyse",
-                       "text": _route_detail(message)})
+                       "text": _route_detail(message) + " · " + _NIVEAU_FR[_niv]})
             # 1) Chitchat / info personnelle → streamé directement (aucun outil)
             if _is_smalltalk(message):
                 _remember_fact(message)
-                async for tok in _stream_llm(_smalltalk_messages(message), 0.6):
+                async for tok in _stream_llm(_smalltalk_messages(message), 0.6, niveau="rapide"):
                     yield sse({"type": "token", "t": tok})
                 yield sse({"type": "answer", "text": yield_acc[0], "final": True})
+                yield sse({"type": "model", "name": _modele_utilise()})
                 yield sse({"type": "done"}); return
             # 1b) Briefing du matin (agenda + mails + météo + actu)
             if _is_briefing(message):
@@ -1619,9 +1656,10 @@ async def ask_stream(q: str = "", key: str = ""):
                     yield sse({"type": "answer", "text": direct["done_answer"]})
                     yield sse({"type": "done"}); return
                 msgs = _format_app_messages(message, direct["action"], direct["obs"], direct["is_write"])
-                async for tok in _stream_llm(msgs, 0.2):
+                async for tok in _stream_llm(msgs, 0.2, niveau=_niveau_tache(message)):
                     yield sse({"type": "token", "t": tok})
                 yield sse({"type": "answer", "text": yield_acc[0], "final": True})
+                yield sse({"type": "model", "name": _modele_utilise()})
                 yield sse({"type": "done"}); return
             from agent.core import run_agent_stream
             cfg = _build_agent_cfg(message, "Nova")
