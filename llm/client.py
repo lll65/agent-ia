@@ -153,8 +153,12 @@ def _groq_chat(messages: list, model: str, temperature: float) -> str:
         for mo in client.models.list().data:
             mid = getattr(mo, "id", "") or ""
             bas = mid.lower()
+            # On exclut ce qui n'est pas un modèle de chat classique.
+            # « compound » = systèmes agentiques : ils refusent nos paramètres
+            # (« Tool choice is none, but mode… ») et cassaient la conversation.
             if mid and mid not in candidats and not any(
-                    k in bas for k in ("whisper", "tts", "guard", "vision", "embed")):
+                    k in bas for k in ("whisper", "tts", "guard", "vision", "embed",
+                                       "compound", "agent", "rerank", "moderation")):
                 candidats.append(mid)
     except Exception:
         pass
@@ -174,8 +178,12 @@ def _groq_chat(messages: list, model: str, temperature: float) -> str:
         except Exception as e:
             derniere = e
             t = str(e).lower()
-            if any(k in t for k in ("not_found", "does not exist", "404", "decommission", "no longer")):
-                logger.warning(f"[LLM] Groq : modèle '{m}' retiré, essai suivant…")
+            # Modèle retiré (404) OU incompatible avec un chat simple (400) → on tente le suivant.
+            # Sans le cas 400, un seul modèle capricieux faisait échouer tout Groq.
+            if any(k in t for k in ("not_found", "does not exist", "404", "decommission",
+                                    "no longer", "400", "tool choice", "unsupported",
+                                    "invalid_request", "does not support")):
+                logger.warning(f"[LLM] Groq : modèle '{m}' inutilisable ({str(e)[:60]}), essai suivant…")
                 continue
             raise
     raise RuntimeError(f"Groq : aucun modèle texte accessible ({derniere})")
@@ -425,9 +433,28 @@ def _gemini_chat(messages: list, model: str, temperature: float) -> str:
         break
 
     if resp is None or resp.status_code != 200:
-        raise RuntimeError(f"Gemini HTTP {derniere or 'aucun modèle accessible'}")
+        # Un 403 avec une clé valide signifie presque toujours que l'API n'est pas activée
+        # sur le projet Google (ou que la clé est restreinte) : on le dit clairement.
+        d = str(derniere)
+        if d.startswith("403"):
+            cause = "clé restreinte" if "restrict" in d.lower() or "referer" in d.lower() else \
+                    "API « Generative Language » non activée sur le projet Google"
+            raise RuntimeError(
+                f"Gemini refusé (403) — {cause}.\n"
+                "→ Va sur aistudio.google.com, crée la clé depuis « Get API key » en choisissant "
+                "un projet, et vérifie que la clé n'a AUCUNE restriction d'application/site.\n"
+                f"Détail : {d[:220]}")
+        raise RuntimeError(f"Gemini HTTP {d[:260] or 'aucun modèle accessible'}")
 
     data = resp.json()
+    # Consommation Gemini : sans cela, la jauge d'énergie l'ignorait complètement
+    try:
+        from llm.usage import record
+        record(int((data.get("usageMetadata") or {}).get("totalTokenCount", 0) or 0),
+               provider="gemini")
+    except Exception:
+        pass
+
     candidates = data.get("candidates") or []
     if not candidates:
         # Réponse vide possible si bloquée par les filtres de sécurité

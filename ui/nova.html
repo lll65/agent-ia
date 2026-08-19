@@ -1037,10 +1037,10 @@ async function refreshUsage(){ try{ const r=await fetch(ORIGIN+"/agent/usage?key
   [...box.children].forEach((c,i)=>c.classList.toggle("on", i<on));
   document.getElementById("utext").textContent=Math.round(left)+"%";
   el.classList.toggle("mid", left<=40 && left>15); el.classList.toggle("low", left<=15);
-  const cb=d.cerebras||{used:0,limit:0}, gq=d.groq||{used:0,limit:0};
-  el.title="Énergie restante aujourd'hui : "+Math.round(left)+"%\n"
-          +"Cerebras "+fmtK(cb.used)+"/"+fmtK(cb.limit)+" · Groq "+fmtK(gq.used)+"/"+fmtK(gq.limit)
-          +"\n(se recharge chaque jour)";
+  // Détail par fournisseur (Gemini inclus : il manquait alors qu'il sert de secours)
+  const detail=["cerebras","groq","gemini"].filter(k=>d[k])
+    .map(k=>k.charAt(0).toUpperCase()+k.slice(1)+" "+fmtK(d[k].used)+"/"+fmtK(d[k].limit)).join(" · ");
+  el.title="Énergie restante aujourd'hui : "+Math.round(left)+"%\n"+detail+"\n(se recharge chaque jour)";
 }catch(e){ document.getElementById("utext").textContent="—"; } }
 refreshUsage(); setInterval(refreshUsage, 20000);
 
