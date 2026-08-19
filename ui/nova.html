@@ -709,7 +709,7 @@ function graphStart(){ gw.classList.remove("mini"); gw.classList.add("show");
   nodes=[{core:1,a:0,r:1,tr:1,label:"NOVA",icon:"🧠",t:0}]; if(!gAnim) drawGraph(); }
 const MAX_NODES=6;                       // au-delà, le schéma devient illisible
 function hexA2(a){ return "rgba(34,211,238,"+a+")"; }   // cyan des sous-bulles
-function graphAdd(icon,label,detail){
+function graphAdd(icon,label,detail,agent){
   // Une observation ENRICHIT l'étape précédente au lieu de créer un doublon
   // (sinon chaque outil apparaissait deux fois : action + résultat).
   const last=nodes[nodes.length-1];
@@ -720,10 +720,13 @@ function graphAdd(icon,label,detail){
     if(s.length) last.sub=[...(last.sub||[]), ...s].slice(0,3);
     return; }
   if(nodes.length-1>=MAX_NODES){        // on recycle le plus ancien
-    nodes.splice(1,1); nodes.forEach((n,i)=>{ if(i){ n.a=(i-1)*2.399; n.ring=(i-1)%3; } }); }
+    nodes.splice(1,1); nodes.forEach((n,i)=>{ if(i){ n.a=(i-1)*2.399; n.ring=(i-1)%3;
+      if(n.from>0) n.from--; } }); }
   const n=nodes.length-1;
-  // Répartition sur 3 orbites + décalage d'angle → aucun alignement, aucun chevauchement
-  nodes.push({a:n*2.399, ring:n%3, r:0, tr:1, label, icon, t:0, sub:_subs(detail)}); }
+  // Chaînage : chaque étape part de la PRÉCÉDENTE (et non du cœur) → on suit le flux
+  // du raisonnement. lineT anime le trait qui se dessine progressivement.
+  nodes.push({a:n*2.399, ring:n%3, r:0, tr:1, label, icon, t:0, sub:_subs(detail),
+              from:Math.max(0, nodes.length-1), lineT:0, agent:agent||""}); }
 /* Découpe le détail d'une étape en 1-3 sous-bulles courtes (mots-clés lisibles) */
 /* Mots-clés de ta demande → sous-bulles de l'étape « Analyse » */
 function _keywords(msg){ const stop=new Set(["le","la","les","un","une","des","de","du","et","ou","à","a",
@@ -752,7 +755,7 @@ function _subs(detail){ if(!detail) return [];
 /* Nœuds "de phase" : apparaissent DÈS le début (analyse, réflexion, rédaction) pour que le schéma
    soit vivant immédiatement — y compris en simple discussion, où aucun outil n'est appelé. */
 let phaseCount=0;
-function graphPhase(icon,label,detail){ if(phaseCount>=3) return; phaseCount++; graphAdd(icon,label,detail); }
+function graphPhase(icon,label,detail,agent){ if(phaseCount>=3) return; phaseCount++; graphAdd(icon,label,detail,agent); }
 /* Renseigne après coup les sous-bulles d'un nœud déjà affiché (ex. « Analyse ») */
 function graphSetSub(label,detail){ const n=nodes.find(x=>x.label===label);
   if(n){ const s=_subs(detail); if(s.length) n.sub=s; } }
@@ -779,12 +782,30 @@ function drawGraph(){ gx.clearRect(0,0,GW,GH); const core=nodes[0]; if(!core){gA
     ring(GCX,GCY,rr*0.9, 6+i*2, -GT*.16*dir, "rgba(34,211,238,"+(0.10-i*0.015)+")", 1); }
   // Noeuds triés par profondeur (les plus proches devant = 3D)
   const drawn=[];
-  for(let i=1;i<nodes.length;i++){ const nd=nodes[i]; nd.r+=(nd.tr-nd.r)*.07; nd.t++;
+  for(let i=1;i<nodes.length;i++){ const nd=nodes[i];
+    // Le nœud grossit seulement quand le trait l'a atteint
+    if((nd.lineT||0)>0.5) nd.r=Math.min(1, nd.r+0.06); nd.t++;
     const p=nodePos(nd); p.nd=nd; p.idx=i; drawn.push(p); }
   drawn.sort((a,b)=>a.depth-b.depth);
-  for(const p of drawn){ const g=gx.createLinearGradient(GCX,GCY,p.x,p.y);
-    g.addColorStop(0,"rgba(124,92,255,.55)"); g.addColorStop(1,"rgba(34,211,238,.12)");
-    gx.beginPath(); gx.moveTo(GCX,GCY); gx.lineTo(p.x,p.y); gx.strokeStyle=g; gx.lineWidth=1.4; gx.stroke(); }
+  // Liens CHAÎNÉS (étape → étape suivante) qui se DESSINENT progressivement :
+  // on suit le flux du raisonnement au lieu d'une simple étoile autour du cœur.
+  const pos = i => (i<=0 ? {x:GCX,y:GCY} : (drawn.find(d=>d.idx===i) || {x:GCX,y:GCY}));
+  for(const p of drawn){
+    const nd=p.nd;
+    // Progression fondée sur le TEMPS écoulé : identique quel que soit le nombre
+    // d'images par seconde (un écran lent ne fige plus le tracé).
+    if(!nd.t0) nd.t0 = performance.now();
+    nd.lineT = Math.min(1, (performance.now() - nd.t0) / 900);   // 0,9 s de tracé
+    const src = pos(nd.from||0);
+    const ex = src.x + (p.x-src.x)*nd.lineT, ey = src.y + (p.y-src.y)*nd.lineT;
+    const g=gx.createLinearGradient(src.x,src.y,p.x,p.y);
+    g.addColorStop(0,"rgba(124,92,255,.60)"); g.addColorStop(1,"rgba(34,211,238,.35)");
+    gx.beginPath(); gx.moveTo(src.x,src.y); gx.lineTo(ex,ey);
+    gx.strokeStyle=g; gx.lineWidth=1.8; gx.lineCap="round"; gx.stroke();
+    // Point lumineux en tête du trait tant qu'il se dessine → on voit l'information circuler
+    if(nd.lineT<1){ gx.beginPath(); gx.arc(ex,ey,3.4,0,7);
+      gx.fillStyle="rgba(34,211,238,.95)"; gx.shadowBlur=14; gx.shadowColor="#22d3ee";
+      gx.fill(); gx.shadowBlur=0; } }
   for(const p of drawn){ const nd=p.nd, sc=(0.6+p.depth*0.7), R=22*sc*nd.r, al=(0.35+p.depth*0.65);
     ring(p.x,p.y,R+6,4,GT*.6,"rgba(34,211,238,"+(0.3*al)+")",1);
     gx.beginPath(); gx.arc(p.x,p.y,R,0,7); gx.fillStyle="rgba(10,14,30,"+(0.55*al)+")"; gx.strokeStyle="rgba(34,211,238,"+(0.9*al)+")";
@@ -869,7 +890,13 @@ const NODE_FR={search_web:"Recherche web", connected_app:"App connectée", thoug
   obs:"Résultat", create_visual:"Création visuel", analyse:"Analyse",
   googlecalendar:"Agenda", gmail:"Mails", canva:"Canva", linear:"Linear", github:"GitHub",
   googlemaps:"Maps", google_maps:"Maps", googlesheets:"Feuilles", notion:"Notion", slack:"Slack"};
-function nodeLabel(d){ const t=(d.tool||"").toLowerCase();
+/* Les spécialistes de l'escouade : c'est EUX qu'on veut voir travailler */
+const AGENTS_FR={agenda:{n:"Agenda",i:"📅"}, mails:{n:"Mails",i:"📧"}, dev:{n:"Dev",i:"💻"},
+  crea:{n:"Créa",i:"🎨"}, veille:{n:"Veille",i:"🔍"}, projets:{n:"Projets",i:"📋"},
+  fichiers:{n:"Fichiers",i:"📎"}, nova:{n:"Nova",i:"🧠"}};
+function agentInfo(d){ return AGENTS_FR[(d.agent||"").toLowerCase()] || null; }
+function nodeLabel(d){ const a=agentInfo(d); if(a) return a.n;
+  const t=(d.tool||"").toLowerCase();
   if(NODE_FR[t]) return NODE_FR[t];
   for(const k in NODE_FR){ if(t.includes(k)) return NODE_FR[k]; }
   if(d.kind==="thought") return "Réflexion";
@@ -964,7 +991,8 @@ function ask(){
     // Décisions réelles du routeur → sous-bulles du nœud « Analyse »
     if(d.type==="step" && d.kind==="route"){ graphSetSub("Analyse", d.text||"");
       trace.push({icon:"💭", label:"Analyse de ta demande", detail:d.text||""}); return; }
-    if(d.type==="step"){ const ic=iconFor(d.kind,d.tool); graphAdd(ic, nodeLabel(d), d.q||d.text||"");
+    if(d.type==="step"){ const ai=agentInfo(d), ic=ai? ai.i : iconFor(d.kind,d.tool);
+      graphAdd(ic, nodeLabel(d), d.q||d.text||"", d.agent||"");
       trace.push({icon:ic, label:stepLabel(d), detail:(d.q||d.text||"")});
       if(voiceMode) vSet(stepLabel(d),"");
       if(!answer&&!streamed){ bubble.innerHTML=thinkHTML(stepLabel(d), ic); pi=trace.length-1; chat.scrollTop=chat.scrollHeight; } }
