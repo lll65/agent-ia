@@ -2127,21 +2127,32 @@ async def cours_chunk(request: Request):
         raise HTTPException(status_code=502, detail=str(e)[:200])
 
 
+def _vue_cours(s: dict) -> dict:
+    """Ce que l'UI a besoin de connaître d'une session."""
+    return {"id": s["id"], "titre": s["titre"], "etat": s.get("etat", ""),
+            "synthese": s.get("synthese", ""), "fiches": s.get("fiches", []),
+            "trous": s.get("trous", []), "erreurs": s.get("erreurs", []),
+            "mots": len(s.get("transcript", "").split()), "secondes": s.get("secondes", 0)}
+
+
 @router.post("/cours/stop")
 async def cours_stop(req: CoursReq):
-    """Clôt la session et produit la synthèse + les fiches (peut prendre une minute)."""
+    """Lance la synthèse EN TÂCHE DE FOND et rend la main tout de suite.
+
+    Une synthèse peut durer plusieurs minutes quand les modèles gratuits sont saturés :
+    garder la requête ouverte la ferait couper par le navigateur ou le proxy. L'UI suit
+    l'avancement via /cours/detail, et le travail aboutit même si l'onglet est fermé.
+    """
     _check_key(req.key or "")
     from agent import cours
     from agent.core import _off
     try:
-        s = await _off(cours.terminer, req.id or "")
+        s = await _off(cours.lancer_synthese, req.id or "")
     except KeyError:
         raise HTTPException(status_code=404, detail="Session inconnue.")
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e)[:250])
-    return {"id": s["id"], "titre": s["titre"], "synthese": s["synthese"],
-            "fiches": s["fiches"], "trous": s["trous"],
-            "mots": len(s["transcript"].split()), "secondes": s["secondes"]}
+    return _vue_cours(s)
 
 
 @router.get("/cours")

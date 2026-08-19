@@ -12,6 +12,7 @@ OpenAI que Groq). Si les deux échouent, l'erreur est loggée clairement.
 """
 import logging
 import os
+import re
 from config import config
 
 logger = logging.getLogger(__name__)
@@ -223,13 +224,36 @@ def _providers_disponibles(niveau: str = "equilibre"):
     return vivants + morts
 
 
+def _delai_conseille(err: Exception) -> float:
+    """Combien de temps attendre, d'après le fournisseur lui-même.
+
+    Groq répond « Please try again in 7.5s » (ou « in 2m3s ») sur un 429 : autant s'en
+    servir plutôt que de deviner.
+    """
+    t = str(err)
+    # On rend la valeur EXACTE : plafonner ici masquerait l'information. C'est à
+    # l'appelant de décider combien de temps il accepte d'attendre.
+    m = re.search(r"try again in\s+(?:(\d+)m)?\s*([\d.]+)s", t, re.I)
+    if m:
+        return float(m.group(1) or 0) * 60 + float(m.group(2))
+    m = re.search(r"retry[- ]after[\"'\s:]+([\d.]+)", t, re.I)
+    if m:
+        return float(m.group(1))
+    return 0.0
+
+
 def _explique(nom: str, err: Exception) -> str:
     """Message clair pour l'utilisateur selon le type de panne."""
     t = str(err).lower()
-    if "payment_required" in t or "402" in t or "billing" in t:
-        return f"{nom} : offre gratuite épuisée (paiement demandé)"
+    # ⚠️ Le test de limite passe EN PREMIER : le message d'un 429 Groq contient un lien
+    # vers « …/settings/billing », ce qui le faisait annoncer comme « offre gratuite
+    # épuisée (paiement demandé) » — un diagnostic faux qui envoyait chercher une CB
+    # alors qu'il suffisait d'attendre quelques secondes.
     if _is_rate_limit(err):
-        return f"{nom} : limite journalière atteinte"
+        d = _delai_conseille(err)
+        return f"{nom} : limite atteinte" + (f", à réessayer dans {int(d)} s" if d else "")
+    if "payment_required" in t or "402" in t or "insufficient" in t:
+        return f"{nom} : offre gratuite épuisée (paiement demandé)"
     if "401" in t or "invalid api key" in t or "unauthorized" in t:
         return f"{nom} : clé invalide"
     if "not_found" in t or "404" in t:
@@ -237,10 +261,43 @@ def _explique(nom: str, err: Exception) -> str:
     return f"{nom} : {str(err)[:70]}"
 
 
+class ToutSature(RuntimeError):
+    """Tous les fournisseurs sont à leur limite — panne PASSAGÈRE, pas définitive."""
+
+    def __init__(self, message: str, delai: float = 0.0):
+        super().__init__(message)
+        self.delai = delai
+
+
 def chat(messages: list, temperature: float = 0.7, num_ctx: int = 4096,
-         niveau: str = "equilibre") -> str:
+         niveau: str = "equilibre", patience: int = 0) -> str:
     """Appel synchrone. Choisit le modèle adapté au niveau de la tâche, puis essaie
-    chaque fournisseur jusqu'à ce qu'un réponde (le routage ne peut donc pas faire échouer)."""
+    chaque fournisseur jusqu'à ce qu'un réponde (le routage ne peut donc pas faire échouer).
+
+    `patience` : nombre d'attentes supplémentaires autorisées quand TOUS les fournisseurs
+    sont momentanément à leur limite. Réservé aux traitements que personne ne regarde
+    (synthèse d'un cours…) : attendre 20 s y vaut infiniment mieux qu'un échec, alors que
+    dans un chat il faut répondre tout de suite.
+    """
+    import time as _tps
+    for essai in range(max(1, patience + 1)):
+        try:
+            return _une_passe(messages, temperature, num_ctx, niveau)
+        except ToutSature as e:
+            if essai >= patience:
+                raise
+            # Les limites Groq se comptent PAR MINUTE : le délai annoncé (« try again in
+            # 5s ») vaut pour l'instant T, pas après une nouvelle salve. On rallonge donc
+            # à chaque tour, sinon on retombe aussitôt sur la même limite.
+            attente = min(60.0, max(5.0, (e.delai or 15.0) * (essai + 1) + 2.0))
+            logger.warning(f"[LLM] tout est saturé — nouvelle tentative dans {int(attente)} s "
+                           f"({essai + 1}/{patience})")
+            _tps.sleep(attente)
+    raise RuntimeError("Aucun modèle disponible pour le moment.")
+
+
+def _une_passe(messages: list, temperature: float, num_ctx: int, niveau: str) -> str:
+    """Un parcours complet de la chaîne de fournisseurs."""
     chaine = _providers_disponibles(niveau)
     if not chaine:
         return _ollama_chat(messages, config.LLM_MODEL, temperature, num_ctx)
@@ -251,7 +308,7 @@ def chat(messages: list, temperature: float = 0.7, num_ctx: int = 4096,
     import time as _t
     _fin_chaine = _t.monotonic() + TIMEOUT_CHAINE
 
-    soucis = []
+    soucis, satures, delai = [], 0, 0.0
     for i, (nom, fn, modele) in enumerate(chaine):
         restant = _fin_chaine - _t.monotonic()
         # Le PREMIER fournisseur est toujours tenté : ne rien essayer serait pire que
@@ -281,6 +338,9 @@ def chat(messages: list, temperature: float = 0.7, num_ctx: int = 4096,
         except Exception as e:
             soucis.append(_explique(nom, e))
             _marque_fournisseur_hs(nom, e)
+            if _is_rate_limit(e):
+                satures += 1
+                delai = max(delai, _delai_conseille(e))
             logger.warning(f"[LLM] {nom} indisponible → fournisseur suivant. ({str(e)[:90]})")
         finally:
             _BUDGET_APPEL.set(0.0)
@@ -290,6 +350,12 @@ def chat(messages: list, temperature: float = 0.7, num_ctx: int = 4096,
         return _ollama_chat(messages, config.LLM_MODEL, temperature, num_ctx)
     except Exception:
         pass
+    # Tout le monde à sa limite = panne PASSAGÈRE : on le signale à part pour que
+    # l'appelant puisse simplement attendre au lieu de renoncer.
+    if satures and satures >= len([s for s in soucis if "vide" not in s]):
+        raise ToutSature(
+            "Tous les modèles sont à leur limite pour le moment.\n• " + "\n• ".join(soucis),
+            delai)
     raise RuntimeError(
         "Aucun modèle disponible pour le moment.\n• " + "\n• ".join(soucis) +
         "\n\nAjoute ou renouvelle une clé gratuite : console.groq.com (Groq) "
@@ -374,8 +440,8 @@ def _groq_chat(messages: list, model: str, temperature: float) -> str:
     except Exception:
         pass
 
-    derniere = None
-    for m in [c for c in candidats if not _est_hs('nvidia', c)] or candidats:
+    derniere, satures = None, 0
+    for m in [c for c in candidats if not _est_hs('groq', c)] or candidats:
         try:
             resp = client.chat.completions.create(
                 model=m, messages=messages, temperature=temperature, max_tokens=4096)
@@ -396,6 +462,13 @@ def _groq_chat(messages: list, model: str, temperature: float) -> str:
                                     "invalid_request", "does not support")):
                 _marque_hs("groq", m)
                 logger.warning(f"[LLM] Groq : modèle '{m}' inutilisable ({str(e)[:60]}), essai suivant…")
+                continue
+            # Chez Groq le quota est compté PAR MODÈLE : le 70B saturé ne dit RIEN du 8B,
+            # qui dispose de son propre budget. On ne quittait pourtant Groq entièrement,
+            # alors qu'un modèle plus léger aurait répondu tout de suite.
+            if _is_rate_limit(e) and satures < 4:
+                satures += 1
+                logger.warning(f"[LLM] Groq : '{m}' à sa limite, essai d'un modèle plus léger…")
                 continue
             raise
     raise RuntimeError(f"Groq : aucun modèle texte accessible ({derniere})")

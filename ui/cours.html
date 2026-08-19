@@ -441,15 +441,7 @@ $("stop").onclick = async () => {
   let perdues = file.length;
   $("workTxt").innerHTML = "Elle relit toute la transcription, structure le cours puis prépare tes fiches.<br>Compte une petite minute.";
 
-  try{
-    const r = await fetch(ORIGIN + "/agent/cours/stop", { method:"POST",
-      headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ key:KEY, id:SID }) });
-    const d = await r.json();
-    if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
-    afficher(d, perdues);
-  }catch(e){
-    echecSynthese(SID, e);
-  }
+  await synthetiser(SID, perdues);
   window.removeEventListener("beforeunload", avantFermeture);
   charger();
 };
@@ -471,19 +463,50 @@ function echecSynthese(sid, e){
 }
 
 async function relancerSynthese(sid){
-  $("copy").disabled = true; show("work");
-  $("workTxt").innerHTML = "Nouvelle tentative de synthèse…";
+  $("copy").disabled = true;
+  await synthetiser(sid, 0);
+  $("copy").disabled = false;
+}
+
+/* La synthèse tourne côté serveur ; ici on suit son avancement.
+   Fermer l'onglet ne l'interrompt pas : le résultat sera dans « MES COURS ». */
+const ATTENTE_MAX = 8 * 60 * 1000;      // 8 min : large, même modèles saturés
+async function synthetiser(sid, perdues){
+  show("work");
+  $("workTxt").innerHTML = "Elle relit toute la transcription, structure le cours puis prépare tes fiches.";
   try{
     const r = await fetch(ORIGIN + "/agent/cours/stop", { method:"POST",
       headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ key:KEY, id:sid }) });
     const d = await r.json();
     if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
-    afficher(d, 0); charger();
-  }catch(e){
-    echecSynthese(sid, e);
-  }finally{
-    $("copy").disabled = false;
+    if(d.synthese){ afficher(d, perdues); charger(); return; }
+  }catch(e){ echecSynthese(sid, e); return; }
+
+  const debut = Date.now();
+  let echecsSuite = 0;
+  while(Date.now() - debut < ATTENTE_MAX){
+    await new Promise(r => setTimeout(r, 3000));
+    const s = Math.round((Date.now() - debut) / 1000);
+    $("workTxt").innerHTML = `Elle relit toute la transcription, structure le cours puis prépare tes fiches.` +
+      `<br><small>${s} s — les modèles gratuits sont parfois saturés, Nova patiente et réessaie.` +
+      `<br>Tu peux fermer cet onglet : le cours t'attendra dans « MES COURS ».</small>`;
+    try{
+      const d = await (await fetch(ORIGIN + "/agent/cours/detail?id=" + encodeURIComponent(sid) +
+                                   "&key=" + encodeURIComponent(KEY))).json();
+      echecsSuite = 0;
+      if(d.synthese){ afficher({ ...d, id: sid, mots:(d.transcript||"").split(/\s+/).length },
+                               perdues); charger(); return; }
+      if(d.etat === "a_reprendre" || d.etat === "vide"){
+        echecSynthese(sid, (d.erreurs || []).slice(-1)[0] || "La synthèse n'a pas abouti.");
+        charger(); return;
+      }
+    }catch(e){
+      // Coupure réseau passagère : on continue à sonder, le serveur travaille toujours.
+      if(++echecsSuite >= 20){ echecSynthese(sid, "Connexion au serveur perdue."); return; }
+    }
   }
+  echecSynthese(sid, "La synthèse prend plus longtemps que prévu. Elle continue côté serveur : " +
+                     "reviens dans quelques minutes et rouvre le cours depuis « MES COURS ».");
 }
 
 /* ── Affichage du résultat ─────────────────────────────────────────────── */
