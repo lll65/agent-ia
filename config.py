@@ -54,28 +54,33 @@ class Config:
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
     OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
 
-    # Fournisseur préféré : "cerebras" (1M tokens/jour gratuit = 10x Groq) ou "groq".
-    LLM_PREFER = os.getenv("LLM_PREFER", "cerebras")
+    # Fournisseur préféré. « auto » (défaut) = Nova choisit selon la tâche et la disponibilité.
+    # Mettre un nom (nvidia, groq, gemini, openrouter…) force ce fournisseur en tête.
+    LLM_PREFER = os.getenv("LLM_PREFER", "auto")
 
     @property
     def LLM_PROVIDER(self) -> str:
-        # Cerebras d'abord si préféré et dispo (bien plus de tokens/jour gratuits)
-        if self.LLM_PREFER == "cerebras" and self.CEREBRAS_API_KEY:
-            return "cerebras"
+        # « auto » : on ne force rien, le routage par tâche décide (voir llm/client.ORDRE)
+        if self.LLM_PREFER and self.LLM_PREFER != "auto":
+            return self.LLM_PREFER
+        if self.NVIDIA_API_KEY:
+            return "nvidia"
         if self.GROQ_API_KEY:
             return "groq"
-        if self.XAI_API_KEY:
-            return "xai"
-        if self.CEREBRAS_API_KEY:
-            return "cerebras"
         if self.GEMINI_API_KEY:
             return "gemini"
+        if self.OPENROUTER_API_KEY:
+            return "openrouter"
+        if self.CEREBRAS_API_KEY:
+            return "cerebras"
+        if self.XAI_API_KEY:
+            return "xai"
         return "ollama"
 
     @property
     def LLM_MODEL(self) -> str:
-        if self.LLM_PREFER == "cerebras" and self.CEREBRAS_API_KEY:
-            return self.CEREBRAS_MODEL
+        if self.NVIDIA_API_KEY:
+            return self.NVIDIA_MODEL
         if self.GROQ_API_KEY:
             return self.GROQ_MODEL
         if self.XAI_API_KEY:
@@ -103,6 +108,9 @@ class Config:
 
     # Agent
     MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "12"))
+    # Durée maximale d'un raisonnement (secondes). Au-delà, Nova conclut avec ce qu'elle a
+    # trouvé au lieu de faire attendre plusieurs minutes.
+    AGENT_TIMEOUT = int(os.getenv("AGENT_TIMEOUT", "75"))
     MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
     SUMMARY_THRESHOLD = int(os.getenv("SUMMARY_THRESHOLD", "15"))  # résume après N messages
 

@@ -437,7 +437,27 @@ async def run_agent_stream(
         except Exception as e:
             logger.warning(f"[force_search] échec: {e}")
 
+    # ⏱️ Échéance globale : sans elle, l'agent pouvait enchaîner 12 itérations
+    # (recherche + appel modèle à chaque tour) et faire attendre plusieurs MINUTES.
+    import time as _t
+    _fin = _t.monotonic() + float(getattr(config, "AGENT_TIMEOUT", 75))
+
     for iteration in range(config.MAX_ITERATIONS):
+        if _t.monotonic() > _fin:
+            logger.warning(f"[core] échéance atteinte après {iteration} itération(s) → synthèse immédiate")
+            messages.append({"role": "user", "content": (
+                "⏱️ Temps imparti atteint. Donne MAINTENANT ta réponse FINAL avec ce que tu as déjà "
+                "trouvé. Si l'information exacte manque, dis-le franchement et donne le lien le plus "
+                "pertinent des résultats. Ne lance plus aucune recherche.")})
+            try:
+                dernier = await llm_call(messages, temperature=temperature)
+                _a, _p, fin_txt = parse_response(dernier)
+                rep = fin_txt or dernier
+            except Exception:
+                rep = "⏱️ La recherche a pris trop de temps. Reformule ta question ou précise-la."
+            mem.remember(agent_id, "assistant", rep[:350])
+            yield {"type": "final", "answer": rep, "iterations": iteration + 1}
+            return
         try:
             llm_out = await llm_call(messages, temperature=temperature)
         except Exception as e:

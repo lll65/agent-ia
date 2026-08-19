@@ -119,9 +119,11 @@ def _providers_disponibles(niveau: str = "equilibre"):
         modele = force or MODELES.get(nom, {}).get(niveau) or _MODELES_OK.get(nom) or config.LLM_MODEL
         chaine.append((nom, cle_fn[1], modele))
 
-    # 1) Un fournisseur explicitement imposé par l'utilisateur passe toujours en tête
-    prefere = (config.LLM_PROVIDER or "").lower()
-    if prefere in tous:
+    # 1) Fournisseur imposé EXPLICITEMENT (LLM_PREFER=nvidia par ex.) → en tête.
+    #    En mode « auto » on ne force rien : l'ordre par tâche décide (Groq pour le rapide,
+    #    NVIDIA pour le courant et le lourd).
+    prefere = (getattr(config, "LLM_PREFER", "auto") or "auto").lower()
+    if prefere != "auto" and prefere in tous:
         add(prefere)
     # 2) Puis l'ordre adapté au niveau de la tâche
     for nom in ORDRE.get(niveau, ORDRE["equilibre"]):

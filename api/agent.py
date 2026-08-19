@@ -804,6 +804,22 @@ def _toolkit_user_id(slug: str) -> str:
     return uid
 
 
+def _agent_pour_outil(outil: str) -> str:
+    """Quel spécialiste de l'escouade est derrière cet outil (pour l'afficher au travail)."""
+    o = (outil or "").lower()
+    if "search" in o or "web" in o:
+        return "veille"
+    if "visual" in o or "image" in o:
+        return "crea"
+    if "document" in o or "file" in o or "read" in o or "write" in o:
+        return "fichiers"
+    if "exec" in o or "code" in o or "project" in o:
+        return "dev"
+    if "connected" in o:
+        return "nova"
+    return _agent_for_slug(o)
+
+
 def _agent_for_slug(slug: str) -> str:
     """Sous-agent responsable d'une app (pour la constellation)."""
     try:
@@ -1649,9 +1665,11 @@ async def ask_stream(q: str = "", key: str = ""):
             if direct is not None:
                 for st in direct["steps"]:
                     if st["kind"] == "action":
-                        yield sse({"type": "step", "kind": "action", "tool": st["tool"], "q": st.get("label", "")})
+                        yield sse({"type": "step", "kind": "action", "tool": st["tool"],
+                                   "agent": _agent_for_slug(st["tool"]), "q": st.get("label", "")})
                     else:
-                        yield sse({"type": "step", "kind": "obs", "tool": st["tool"], "text": st.get("text", "")})
+                        yield sse({"type": "step", "kind": "obs", "tool": st["tool"],
+                                   "agent": _agent_for_slug(st["tool"]), "text": st.get("text", "")})
                 if direct.get("done_answer") is not None:
                     yield sse({"type": "answer", "text": direct["done_answer"]})
                     yield sse({"type": "done"}); return
@@ -1670,9 +1688,11 @@ async def ask_stream(q: str = "", key: str = ""):
                 elif t == "action":
                     p = step.get("params", {}) or {}
                     q2 = p.get("query") or p.get("command") or ""
-                    yield sse({"type": "step", "kind": "action", "tool": step.get("tool", ""), "q": str(q2)[:80]})
+                    yield sse({"type": "step", "kind": "action", "tool": step.get("tool", ""),
+                               "agent": _agent_pour_outil(step.get("tool", "")), "q": str(q2)[:80]})
                 elif t == "observation":
                     yield sse({"type": "step", "kind": "obs", "tool": step.get("tool", ""),
+                               "agent": _agent_pour_outil(step.get("tool", "")),
                                "text": str(step.get("result", ""))[:140]})
                 elif t == "thought":
                     yield sse({"type": "step", "kind": "thought", "text": str(step.get("text", ""))[:140]})
