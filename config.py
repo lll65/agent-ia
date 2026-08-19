@@ -45,6 +45,10 @@ class Config:
     XAI_MODEL = os.getenv("XAI_MODEL", "grok-beta")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     CEREBRAS_MODEL = os.getenv("CEREBRAS_MODEL", "llama-3.3-70b")
+    # NVIDIA NIM (build.nvidia.com) — offre gratuite généreuse, API compatible OpenAI.
+    # La clé commence par « nvapi- ». Remplace avantageusement Cerebras devenu payant.
+    NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "")
+    NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "meta/llama-3.3-70b-instruct")
 
     # Fournisseur préféré : "cerebras" (1M tokens/jour gratuit = 10x Groq) ou "groq".
     LLM_PREFER = os.getenv("LLM_PREFER", "cerebras")

@@ -37,6 +37,7 @@ def _providers_disponibles():
 
     prefere = (config.LLM_PROVIDER or "").lower()
     tous = {
+        "nvidia":   (getattr(config, "NVIDIA_API_KEY", ""), _nvidia_chat, getattr(config, "NVIDIA_MODEL", "")),
         "cerebras": (config.CEREBRAS_API_KEY, _cerebras_chat, config.CEREBRAS_MODEL),
         "groq":     (config.GROQ_API_KEY, _groq_chat, config.GROQ_MODEL),
         "gemini":   (getattr(config, "GEMINI_API_KEY", ""), _gemini_chat, config.GEMINI_MODEL),
@@ -101,7 +102,11 @@ def chat_stream(messages: list, temperature: float = 0.6):
     provider = config.LLM_PROVIDER
     model = config.LLM_MODEL
     try:
-        if provider == "cerebras" and config.CEREBRAS_API_KEY:
+        if provider == "nvidia" and getattr(config, "NVIDIA_API_KEY", ""):
+            client = OpenAI(api_key=config.NVIDIA_API_KEY,
+                            base_url="https://integrate.api.nvidia.com/v1")
+            model = _MODELES_OK.get("nvidia") or config.NVIDIA_MODEL
+        elif provider == "cerebras" and config.CEREBRAS_API_KEY:
             client = OpenAI(api_key=config.CEREBRAS_API_KEY, base_url="https://api.cerebras.ai/v1")
         elif provider == "groq" or config.GROQ_API_KEY:
             client = OpenAI(api_key=config.GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
@@ -187,6 +192,60 @@ def _groq_chat(messages: list, model: str, temperature: float) -> str:
                 continue
             raise
     raise RuntimeError(f"Groq : aucun modèle texte accessible ({derniere})")
+
+
+def _nvidia_chat(messages: list, model: str, temperature: float) -> str:
+    """NVIDIA NIM (build.nvidia.com) — API compatible OpenAI, offre gratuite généreuse.
+    Auto-guérison : essaie le modèle configuré, des valeurs sûres, puis ceux réellement
+    accessibles au compte (le catalogue évolue souvent)."""
+    from openai import OpenAI
+    if not config.NVIDIA_API_KEY:
+        raise RuntimeError("NVIDIA_API_KEY absente.")
+    client = OpenAI(api_key=config.NVIDIA_API_KEY,
+                    base_url="https://integrate.api.nvidia.com/v1")
+
+    candidats = []
+    for m in (_MODELES_OK.get("nvidia"), model, config.NVIDIA_MODEL,
+              "meta/llama-3.3-70b-instruct",
+              "nvidia/llama-3.3-nemotron-super-49b-v1",
+              "meta/llama-3.1-70b-instruct",
+              "qwen/qwen2.5-72b-instruct",
+              "mistralai/mistral-large-2-instruct",
+              "meta/llama-3.1-8b-instruct"):
+        if m and m not in candidats:
+            candidats.append(m)
+    try:
+        for mo in client.models.list().data:
+            mid = getattr(mo, "id", "") or ""
+            bas = mid.lower()
+            if mid and mid not in candidats and not any(
+                    k in bas for k in ("embed", "rerank", "vision", "ocr", "speech", "tts",
+                                       "riva", "guard", "diffusion", "image", "video")):
+                candidats.append(mid)
+    except Exception:
+        pass
+
+    derniere = None
+    for m in candidats:
+        try:
+            resp = client.chat.completions.create(
+                model=m, messages=messages, temperature=temperature, max_tokens=4096)
+            _MODELES_OK["nvidia"] = m
+            try:
+                from llm.usage import record
+                record(getattr(getattr(resp, "usage", None), "total_tokens", 0), provider="nvidia")
+            except Exception:
+                pass
+            return resp.choices[0].message.content or ""
+        except Exception as e:
+            derniere = e
+            t = str(e).lower()
+            if any(k in t for k in ("not_found", "does not exist", "404", "400",
+                                    "unsupported", "invalid_request", "not available")):
+                logger.warning(f"[LLM] NVIDIA : modèle '{m}' inutilisable, essai suivant…")
+                continue
+            raise
+    raise RuntimeError(f"NVIDIA : aucun modèle accessible ({derniere})")
 
 
 def _xai_chat(messages: list, model: str, temperature: float) -> str:
