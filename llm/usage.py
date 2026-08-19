@@ -14,7 +14,7 @@ from pathlib import Path
 from config import config
 
 _FILE = Path("data/groq_usage.json")
-LIMITS = {"groq": 100_000, "cerebras": 1_000_000, "gemini": 1_000_000}  # tokens/jour indicatifs (palier gratuit)
+LIMITS = {"groq": 100_000, "cerebras": 1_000_000, "gemini": 1_000_000, "nvidia": 1_000_000}  # tokens/jour indicatifs (palier gratuit)
 _lock = threading.Lock()
 _conn = None
 

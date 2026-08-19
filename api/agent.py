@@ -1780,6 +1780,10 @@ async def selftest(key: str = ""):
                 # Google émet DEUX formats : anciennes clés « AIza… » et nouvelles « AQ.… »
                 notes.append("Gemini ✓" if (gm.startswith("AIza") or gm.startswith("AQ."))
                              else f"Gemini ⚠ format inattendu (attendu « AIza… » ou « AQ.… », ici « {gm[:4]}… »)")
+            nv = (getattr(config, "NVIDIA_API_KEY", "") or "").strip()
+            if nv:
+                notes.append("NVIDIA ✓" if nv.startswith("nvapi-")
+                             else f"NVIDIA ⚠ format inattendu (devrait commencer par « nvapi- », ici « {nv[:6]}… »)")
             if not notes:
                 return False, "aucune clé vision (ajoute GROQ_API_KEY ou GEMINI_API_KEY)"
             ok = any("✓" in n for n in notes)
@@ -1900,7 +1904,7 @@ async def usage(key: str = ""):
     Lecture durable (Supabase si configuré), donc fiable après redéploiement."""
     from llm import usage as U
     out, tu, tl = {}, 0, 0
-    for p in ("cerebras", "groq", "gemini"):
+    for p in ("nvidia", "cerebras", "groq", "gemini"):
         try:
             used, limit = U.get_usage(p)
         except Exception:
