@@ -434,6 +434,8 @@ def terminer(sid: str) -> dict:
         if not s.get("transcript", "").strip():
             s["etat"] = "vide"; s["fin"] = time.time(); _ecrire(s)
             raise RuntimeError("aucune parole n'a été transcrite — rien à synthétiser")
+        if s.get("synthese"):                     # déjà fait : on ne refait pas le travail
+            return s
         s["etat"] = "traitement"
         _ecrire(s)
 
@@ -451,13 +453,26 @@ def terminer(sid: str) -> dict:
         blocs.append(s["en_attente"])
     matiere = f" de {s['matiere']}" if s.get("matiere") else ""
 
-    base = _reduire(blocs)
-    synthese = chat([
-        {"role": "system", "content": _SYS_SYNTHESE},
-        {"role": "user", "content": f"Notes du cours{matiere} « {s['titre']} » :\n\n{base}"},
-    ], temperature=0.25, niveau="puissant")
-    synthese = (synthese or "").strip()
+    try:
+        base = _reduire(blocs)
+        synthese = (chat([
+            {"role": "system", "content": _SYS_SYNTHESE},
+            {"role": "user", "content": f"Notes du cours{matiere} « {s['titre']} » :\n\n{base}"},
+        ], temperature=0.25, niveau="puissant") or "").strip()
+    except Exception as e:
+        # ⚠️ On marque « à reprendre », JAMAIS perdu : la transcription reste intacte et
+        # l'utilisateur peut relancer la synthèse quand les modèles répondent à nouveau.
+        with _LOCK:
+            s = _lire(sid)
+            s["etat"] = "a_reprendre"
+            s["erreurs"] = (s.get("erreurs", []) + [str(e)[:200]])[-5:]
+            _ecrire(s)
+        raise
     if not synthese:
+        with _LOCK:
+            s = _lire(sid)
+            s["etat"] = "a_reprendre"
+            _ecrire(s)
         raise RuntimeError("le modèle n'a rien renvoyé pour la synthèse")
 
     fiches = _fiches_depuis(synthese)

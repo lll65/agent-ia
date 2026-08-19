@@ -414,6 +414,63 @@ def test_delais():
         C._providers_disponibles, C.TIMEOUT_CHAINE = vrai_chaine, vrai_budget
     check_true(f"chaîne coupée net ({len(appels)} essais au lieu de 20)", 1 <= len(appels) <= 5)
 
+    # Un fournisseur muet ne doit PAS empêcher les suivants d'être essayés.
+    # Panne réelle : « nvidia : Request timed out. · délai global dépassé — fournisseurs
+    # suivants non essayés », alors que Groq répondait parfaitement.
+    def scenario_panne():
+        essais = []
+
+        def muet(messages, modele, temperature, niveau=None):
+            essais.append("nvidia")
+            time.sleep(min(C._BUDGET_APPEL.get(0.0), 5))
+            raise RuntimeError("Request timed out.")
+
+        def bon(messages, modele, temperature, niveau=None):
+            essais.append("groq"); return "réponse de Groq"
+
+        chaine = [("nvidia", muet, "m"), ("groq", bon, "m"), ("gemini", bon, "m")]
+        C._providers_disponibles = lambda niveau="equilibre": (
+            [c for c in chaine if not C._fournisseur_hs(c[0])] +
+            [c for c in chaine if C._fournisseur_hs(c[0])])
+        return essais
+
+    sauve = (C.TIMEOUT_LLM, C.TIMEOUT_CHAINE, C._KO_FOURNISSEUR_TTL, dict(C._FOURNISSEURS_KO),
+             C._DERNIER_OK["nom"])
+    try:
+        C.TIMEOUT_LLM, C.TIMEOUT_CHAINE = 3.0, 9.0
+        C._FOURNISSEURS_KO.clear(); C._DERNIER_OK["nom"] = ""
+        essais = scenario_panne()
+        t0 = time.monotonic()
+        rep = C.chat([{"role": "user", "content": "x"}])
+        duree = time.monotonic() - t0
+        check("le fournisseur suivant prend le relais", rep, "réponse de Groq")
+        check("les deux ont bien été essayés", essais, ["nvidia", "groq"])
+        check_true(f"un mort ne mange pas tout le budget ({duree:.1f}s < 9s)", duree < 9.0)
+
+        # Disjoncteur : au message suivant, le fournisseur en panne est écarté d'emblée.
+        essais.clear()
+        t0 = time.monotonic()
+        C.chat([{"role": "user", "content": "y"}])
+        check("fournisseur en panne écarté au 2e appel", essais, ["groq"])
+        check_true("2e appel immédiat", time.monotonic() - t0 < 1.0)
+
+        # …mais il retrouve sa chance quand la mise à l'écart expire.
+        C._KO_FOURNISSEUR_TTL = 0.01
+        time.sleep(0.05)
+        essais.clear()
+        C.chat([{"role": "user", "content": "z"}])
+        check_true("seconde chance après expiration", "nvidia" in essais)
+    finally:
+        (C.TIMEOUT_LLM, C.TIMEOUT_CHAINE, C._KO_FOURNISSEUR_TTL) = sauve[:3]
+        C._FOURNISSEURS_KO.clear(); C._FOURNISSEURS_KO.update(sauve[3])
+        C._DERNIER_OK["nom"] = sauve[4]
+        C._providers_disponibles = vrai_chaine
+
+    # Un délai par fournisseur qui dépasserait le budget global rend la chaîne inutile.
+    check_true("délai unitaire compatible avec le budget global",
+               C.TIMEOUT_LLM * 2 <= C.TIMEOUT_CHAINE)
+    check_true("au moins 3 fournisseurs peuvent être essayés", C.MIN_ESSAIS >= 3)
+
     # Un fournisseur qui ne répond JAMAIS ne doit pas figer l'itération de l'agent :
     # llm_call rend la main avec une erreur claire (c'est le bug « il réfléchit sans fin »).
     import asyncio
