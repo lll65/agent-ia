@@ -64,6 +64,13 @@ import contextvars
 DERNIER = contextvars.ContextVar("dernier_llm", default="")
 
 
+def _modele_impose(nom: str) -> str:
+    """Modèle explicitement choisi par l'utilisateur (ex. NVIDIA_MODEL sur Render).
+    Présent dans l'environnement = volonté explicite → prioritaire sur le routage auto."""
+    import os
+    return (os.environ.get(f"{nom.upper()}_MODEL") or "").strip()
+
+
 def _providers_disponibles(niveau: str = "equilibre"):
     """Chaîne de secours : le fournisseur préféré d'abord, puis TOUS les autres configurés.
     Avant, seuls 2 étaient essayés — si Cerebras passait en payant (402) et Groq atteignait sa
@@ -82,7 +89,10 @@ def _providers_disponibles(niveau: str = "equilibre"):
         cle_fn = tous.get(nom)
         if not cle_fn or not cle_fn[0] or nom in [c[0] for c in chaine]:
             return
-        modele = MODELES.get(nom, {}).get(niveau) or _MODELES_OK.get(nom) or config.LLM_MODEL
+        # Si TU as choisi un modèle précis (variable ..._MODEL définie sur Render),
+        # il l'emporte sur le choix automatique — c'est toi qui décides.
+        force = _modele_impose(nom)
+        modele = force or MODELES.get(nom, {}).get(niveau) or _MODELES_OK.get(nom) or config.LLM_MODEL
         chaine.append((nom, cle_fn[1], modele))
 
     # 1) Un fournisseur explicitement imposé par l'utilisateur passe toujours en tête
