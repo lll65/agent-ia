@@ -543,7 +543,7 @@ def test_cours():
         vrai_chat, vrai_transcrire = C.chat, cours.transcrire
         appels = {"n": 0}
 
-        def faux_chat(messages, temperature=0.7, num_ctx=4096, niveau="equilibre"):
+        def faux_chat(messages, temperature=0.7, num_ctx=4096, niveau="equilibre", patience=0):
             appels["n"] += 1
             sys = (messages[0].get("content") or "")
             if "JSON STRICT" in sys:
@@ -788,12 +788,203 @@ def test_requete_web():
     check("balises html retirées", _extrait("<b>Titre</b> et <i>suite</i>."), "Titre et suite.")
 
 
+# ── 20. Saturation des offres gratuites ──────────────────────────────────────
+def test_saturation():
+    """Panne réelle : les 4 fournisseurs en échec, dont « groq : offre gratuite épuisée
+    (paiement demandé) » — alors que Groq était seulement à sa limite du moment."""
+    import time
+    import types
+    import llm.client as C
+
+    # Message d'erreur RÉEL de Groq : il contient un lien « …/settings/billing »
+    ERR = ("Error code: 429 - Rate limit reached for model `llama-3.3-70b-versatile` on "
+           "tokens per minute (TPM): Limit 12000, Used 11800. Please try again in 7.5s. "
+           "Need more? https://console.groq.com/settings/billing")
+
+    # 20a. Diagnostic : une limite passagère ne doit PAS être annoncée comme un
+    #      abonnement à payer — ça envoyait chercher une carte bancaire pour rien.
+    diag = C._explique("groq", RuntimeError(ERR))
+    check_true("limite annoncée comme limite", "limite" in diag.lower())
+    check("pas de faux « paiement demandé »", "paiement" in diag.lower(), False)
+    check("délai lu chez le fournisseur", C._delai_conseille(RuntimeError(ERR)), 7.5)
+    check("délai « 2m30s » compris",
+          C._delai_conseille(RuntimeError("please try again in 2m30s")), 150.0)
+    check("aucun délai annoncé", C._delai_conseille(RuntimeError("boom")), 0.0)
+    # Un vrai défaut de paiement reste bien identifié
+    check_true("402 reste un défaut de paiement",
+               "paiement" in C._explique("cerebras", RuntimeError("402 payment_required")).lower())
+
+    # 20b. Chez Groq le quota est PAR MODÈLE : un 429 sur le 70B doit faire essayer le 8B
+    essayes = []
+
+    class FauxGroq:
+        def __init__(self, **k): pass
+        def with_options(self, **k): return self
+
+        class models:
+            @staticmethod
+            def list(): raise RuntimeError("pas de liste")
+
+        class chat:
+            class completions:
+                @staticmethod
+                def create(model, messages, temperature, max_tokens):
+                    essayes.append(model)
+                    if "70b" in model:
+                        raise RuntimeError(ERR)
+                    R = type("R", (), {})
+                    R.choices = [type("c", (), {"message": type("m", (), {"content": "ok"})()})()]
+                    R.usage = None
+                    return R()
+
+    vrai_mod = sys.modules.get("groq")
+    sys.modules["groq"] = types.ModuleType("groq")
+    sys.modules["groq"].Groq = FauxGroq
+    sauve_ok, sauve_ko = dict(C._MODELES_OK), dict(C._MODELES_KO)
+    try:
+        C._MODELES_OK.pop("groq", None); C._MODELES_KO.clear()
+        rep = C._groq_chat([{"role": "user", "content": "x"}], "llama-3.3-70b-versatile", 0.2)
+        check("modèle saturé → modèle plus léger", rep, "ok")
+        check_true(f"deux modèles essayés ({essayes})", len(essayes) >= 2)
+        check_true("le 70B a bien été tenté en premier", "70b" in essayes[0])
+    finally:
+        if vrai_mod is not None:
+            sys.modules["groq"] = vrai_mod
+        else:
+            sys.modules.pop("groq", None)
+        C._MODELES_OK.clear(); C._MODELES_OK.update(sauve_ok)
+        C._MODELES_KO.clear(); C._MODELES_KO.update(sauve_ko)
+
+    # 20c. Tout saturé = panne PASSAGÈRE, distincte d'une panne définitive
+    vrai_chaine = C._providers_disponibles
+    sauve = (dict(C._FOURNISSEURS_KO), C._DERNIER_OK["nom"])
+    try:
+        C._FOURNISSEURS_KO.clear(); C._DERNIER_OK["nom"] = ""
+        C._providers_disponibles = lambda niveau="equilibre": [
+            ("groq", lambda *a, **k: (_ for _ in ()).throw(RuntimeError(ERR)), "m")]
+        try:
+            C.chat([{"role": "user", "content": "x"}])
+            check("saturation signalée à part", "aucune exception", "ToutSature")
+        except C.ToutSature as e:
+            check("saturation signalée à part", type(e).__name__, "ToutSature")
+            check("le délai remonte à l'appelant", e.delai, 7.5)
+        except Exception as e:
+            check("saturation signalée à part", type(e).__name__, "ToutSature")
+
+        # Une panne DÉFINITIVE ne doit pas être confondue avec une saturation
+        C._FOURNISSEURS_KO.clear()
+        C._providers_disponibles = lambda niveau="equilibre": [
+            ("groq", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("401 invalid api key")), "m")]
+        try:
+            C.chat([{"role": "user", "content": "x"}])
+            check("panne définitive non confondue", "aucune exception", "RuntimeError")
+        except C.ToutSature:
+            check("panne définitive non confondue", "ToutSature", "RuntimeError simple")
+        except Exception:
+            OK.append(("panne définitive non confondue", True, True))
+
+        # 20d. Avec de la patience, Nova attend que la limite se libère au lieu d'échouer
+        debut = time.monotonic()
+
+        def sature_20s(*a, **k):
+            if time.monotonic() - debut < 0.6:      # « limite » qui se libère avec le temps
+                raise RuntimeError("429 rate limit. Please try again in 0.2s")
+            return "réponse enfin obtenue"
+
+        C._FOURNISSEURS_KO.clear()
+        C._providers_disponibles = lambda niveau="equilibre": [("groq", sature_20s, "m")]
+        check("patience → succès", C.chat([{"role": "user", "content": "x"}], patience=4),
+              "réponse enfin obtenue")
+    finally:
+        C._providers_disponibles = vrai_chaine
+        C._FOURNISSEURS_KO.clear(); C._FOURNISSEURS_KO.update(sauve[0])
+        C._DERNIER_OK["nom"] = sauve[1]
+
+    # 20e. L'attente s'allonge à chaque tour : les limites Groq se comptent par MINUTE,
+    #      réessayer trois fois après 5 s retomberait sur la même limite.
+    from agent import cours
+    check_true("le mode cours est patient", cours.PATIENCE >= 2)
+
+
+# ── 21. La synthèse d'un cours ne bloque pas la requête HTTP ─────────────────
+def test_synthese_fond():
+    """Une synthèse peut durer plusieurs minutes (modèles saturés) : garder la requête
+    ouverte la ferait couper par le navigateur, et le cours semblerait perdu."""
+    import shutil
+    import time
+    from pathlib import Path as P
+    from agent import cours
+    import llm.client as C
+
+    vrai_dir, vrai_t = cours._DIR, cours.transcrire
+    cours._DIR = P("data/_test_fond")
+    shutil.rmtree(cours._DIR, ignore_errors=True)
+    vrai_chat = C.chat
+    try:
+        cours.transcrire = lambda a, n="t.webm": "l'effet Doppler décale la fréquence perçue"
+        depart = [0.0]
+
+        def lent(messages, temperature=0.7, num_ctx=4096, niveau="equilibre", patience=0):
+            time.sleep(0.4)                       # la synthèse prend du temps
+            if "JSON STRICT" in (messages[0].get("content") or ""):
+                return '{"fiches":[{"q":"Doppler ?","r":"Décalage.","theme":"Ondes"}]}'
+            return "## En bref\nCours sur l'effet Doppler."
+
+        C.chat = lent
+        s = cours.demarrer("effet doppler", "physique chimie")
+        cours.ajouter_tranche(s["id"], b"audio", 60.0)
+
+        t0 = time.monotonic()
+        vue = cours.lancer_synthese(s["id"])
+        rendu = time.monotonic() - t0
+        check_true(f"la main est rendue tout de suite ({rendu:.2f}s)", rendu < 0.3)
+        check("état « traitement » pendant le travail", vue["etat"], "traitement")
+
+        # Relancer pendant que ça tourne ne doit pas lancer un second travail
+        cours.lancer_synthese(s["id"])
+        check("pas de synthèse en double", len([t for t in cours._TRAVAUX.values() if t.is_alive()]), 1)
+
+        for _ in range(60):                        # l'UI interroge l'état
+            time.sleep(0.2)
+            if cours._lire(s["id"]).get("synthese"):
+                break
+        fin = cours._lire(s["id"])
+        check("synthèse aboutie en tâche de fond", fin["etat"], "termine")
+        check_true("contenu produit", "Doppler" in fin["synthese"])
+        check("fiches produites", len(fin["fiches"]), 1)
+
+        # Rappeler après coup rend le résultat sans refaire le travail
+        check("relance idempotente", cours.lancer_synthese(s["id"])["synthese"], fin["synthese"])
+
+        # Si la condensation a échoué (modèles saturés), la transcription arrive en UN
+        # seul bloc géant : il doit être découpé, pas tronqué — sinon la fin du cours
+        # disparaît en silence.
+        vus = []
+
+        def fusion(messages, temperature=0.7, num_ctx=4096, niveau="equilibre", patience=0):
+            vus.append(messages[1]["content"])
+            return messages[1]["content"][:800]
+
+        C.chat = fusion
+        gros = " ".join(f"phrase{i} contenu du cours" for i in range(4000))   # ≈ 100 000 car.
+        res = cours._reduire([gros])
+        check_true(f"bloc géant découpé ({len(vus)} morceaux)", len(vus) > 1)
+        check_true("le début du cours est traité", any("phrase0 " in v for v in vus))
+        check_true("la FIN du cours est traitée aussi", any("phrase3999" in v for v in vus))
+        check_true("résultat dans le budget", len(res) <= cours.BUDGET_FINAL)
+    finally:
+        C.chat = vrai_chat
+        cours.transcrire = vrai_t
+        shutil.rmtree(cours._DIR, ignore_errors=True)
+        cours._DIR = vrai_dir
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
                test_caches, test_slugs, test_modeles, test_requetes, test_securite,
                test_non_bloquant, test_delais, test_cours, test_trouvailles,
-               test_requete_web):
+               test_requete_web, test_saturation, test_synthese_fond):
         try:
             fn()
         except Exception as e:

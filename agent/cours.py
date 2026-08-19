@@ -16,6 +16,7 @@ configuré) et exportable en Markdown.
 """
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -40,6 +41,9 @@ SEUIL_CONDENSE = 7000        # caractères
 # Budget d'entrée pour la synthèse finale : au-delà, on condense les condensés (map-reduce).
 BUDGET_FINAL = 12000         # caractères
 DUREE_MAX = 4 * 3600         # garde-fou : une session ne peut pas durer plus de 4 h
+# Personne ne regarde l'écran pendant une synthèse : si tous les modèles gratuits sont
+# momentanément à leur limite, mieux vaut attendre qu'ils se libèrent que d'échouer.
+PATIENCE = int(os.getenv("COURS_PATIENCE", "3"))
 
 
 # ── Persistance ───────────────────────────────────────────────────────────────
@@ -325,7 +329,7 @@ def _condenser(sid: str) -> None:
         notes = chat([
             {"role": "system", "content": _SYS_CONDENSE},
             {"role": "user", "content": f"Transcription à mettre en notes :\n\n{brut[:14000]}"},
-        ], temperature=0.2, niveau="equilibre")
+        ], temperature=0.2, niveau="equilibre", patience=PATIENCE)
     except Exception:
         with _LOCK:                         # échec : on remet le texte en file, rien n'est perdu
             s = _lire(sid)
@@ -346,7 +350,22 @@ def _reduire(blocs: list) -> str:
     synthèse serait tronquée — donc inutilisable pour réviser.
     """
     from llm.client import chat
-    textes = [b for b in blocs if b and b.strip()]
+    # ⚠️ Un bloc unique trop gros doit être DÉCOUPÉ, pas tronqué. Si la condensation au fil
+    # de l'eau a échoué (modèles saturés), on se retrouve avec la transcription entière en
+    # un seul morceau : la boucle ci-dessous ne s'exécutait pas (« len(textes) > 1 » faux)
+    # et la fin du cours partait silencieusement à la poubelle.
+    taille_max = max(1000, BUDGET_FINAL // 2)
+    textes = []
+    for b in blocs:
+        if not b or not b.strip():
+            continue
+        if len(b) <= taille_max:
+            textes.append(b)
+            continue
+        for i in range(0, len(b), taille_max):      # découpe sur des mots entiers
+            bout = b[i:i + taille_max]
+            textes.append(bout)
+        logger.info(f"[cours] bloc de {len(b)} car. découpé en morceaux (condensation manquante)")
     garde = 0
     while sum(len(t) for t in textes) > BUDGET_FINAL and len(textes) > 1 and garde < 4:
         garde += 1
@@ -366,7 +385,7 @@ def _reduire(blocs: list) -> str:
                         "pédagogique : définitions, formules, chiffres, dates, exemples. "
                         "Supprime uniquement les redites. N'invente rien. Markdown."},
                     {"role": "user", "content": morceau[:14000]},
-                ], temperature=0.2, niveau="equilibre") or morceau)
+                ], temperature=0.2, niveau="equilibre", patience=PATIENCE) or morceau)
             except Exception:
                 textes.append(morceau[:BUDGET_FINAL // 2])   # repli : on tronque plutôt qu'échouer
     return "\n\n".join(textes)[:BUDGET_FINAL]
@@ -406,7 +425,7 @@ def _fiches_depuis(cours: str) -> list:
         brut = chat([
             {"role": "system", "content": _SYS_FICHES},
             {"role": "user", "content": cours[:12000]},
-        ], temperature=0.3, niveau="puissant") or ""
+        ], temperature=0.3, niveau="equilibre", patience=PATIENCE) or ""
     except Exception as e:
         logger.warning(f"[cours] fiches indisponibles : {str(e)[:120]}")
         return []
@@ -424,6 +443,45 @@ def _fiches_depuis(cours: str) -> list:
         if q and r:
             out.append({"q": q[:300], "r": r[:600], "theme": str(f.get("theme") or "").strip()[:40]})
     return out
+
+
+_TRAVAUX = {}          # sid -> thread de synthèse en cours
+
+
+def lancer_synthese(sid: str) -> dict:
+    """Démarre la synthèse EN TÂCHE DE FOND et rend la main immédiatement.
+
+    Une synthèse peut prendre plusieurs minutes quand les modèles gratuits sont saturés
+    (on les attend plutôt que d'échouer). Garder la requête HTTP ouverte tout ce temps la
+    ferait couper par le navigateur ou le proxy — et le cours serait perdu alors que le
+    travail était en cours. Ici l'UI interroge l'état, et la synthèse aboutit même si
+    l'onglet est fermé.
+    """
+    with _LOCK:
+        s = _lire(sid)                                  # lève KeyError si inconnue
+        if s.get("synthese"):
+            return s
+        if not s.get("transcript", "").strip():
+            s["etat"] = "vide"; s["fin"] = time.time(); _ecrire(s)
+            raise RuntimeError("aucune parole n'a été transcrite — rien à synthétiser")
+        deja = _TRAVAUX.get(sid)
+        if deja and deja.is_alive():
+            return s                                    # déjà en route : on ne double pas
+        s["etat"] = "traitement"
+        s["fin"] = s.get("fin") or time.time()
+        _ecrire(s)
+
+    def travail():
+        try:
+            terminer(sid)
+        except Exception as e:
+            logger.warning(f"[cours] synthèse en fond échouée : {str(e)[:150]}")
+
+    th = threading.Thread(target=travail, name=f"cours-{sid[:8]}", daemon=True)
+    _TRAVAUX[sid] = th
+    th.start()
+    with _LOCK:
+        return _lire(sid)
 
 
 def terminer(sid: str) -> dict:
@@ -458,7 +516,7 @@ def terminer(sid: str) -> dict:
         synthese = (chat([
             {"role": "system", "content": _SYS_SYNTHESE},
             {"role": "user", "content": f"Notes du cours{matiere} « {s['titre']} » :\n\n{base}"},
-        ], temperature=0.25, niveau="puissant") or "").strip()
+        ], temperature=0.25, niveau="equilibre", patience=PATIENCE) or "").strip()
     except Exception as e:
         # ⚠️ On marque « à reprendre », JAMAIS perdu : la transcription reste intacte et
         # l'utilisateur peut relancer la synthèse quand les modèles répondent à nouveau.
