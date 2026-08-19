@@ -414,6 +414,7 @@
     <div class="sbfoot">
       <button class="sbf" onclick="openAuto()">🌙 Automatisations</button>
       <button class="sbf" onclick="location.href='/nova/brain'">🌌 Escouade</button>
+      <button class="sbf" onclick="location.href='/nova/cours'">🎓 Mode Cours</button>
       <button class="sbf" onclick="openMemory()">🧠 Mémoire</button>
       <button class="sbf" id="soundBtn" onclick="toggleSound()">🔉 Sons</button>
       <!-- Réveil, mot-clé, voix… se pilotent aussi à la voix : « réveille mon téléphone », « active le mot-clé » -->
@@ -915,6 +916,8 @@ const UI_COMMANDS=[
     run:()=>{ openMemory(); return "🧠 Voici ce que je retiens sur toi."; } },
   { re:/(ouvre|montre|affiche|voir).*(escouade|constellation|cerveau|brain|agents?)/,
     run:()=>{ setTimeout(()=>location.href="/nova/brain",700); return "🌌 J'ouvre la constellation."; } },
+  { re:/(ouvre|lance|d(é|e)marre|active).*(mode cours|enregistre[rz]? (le |mon )?cours|prise de notes?)|(é|e)coute mon cours/,
+    run:()=>{ setTimeout(()=>location.href="/nova/cours",700); return "🎓 J'ouvre le mode cours."; } },
   { re:/(ouvre|montre|affiche|voir).*(conversations?|historique)/,
     run:()=>{ toggleSidebar(); return "💬 Voici tes conversations."; } },
   { re:/(coupe|d(é|e)sactive|arr(ê|e)te).*(son|sons|bruit)/,

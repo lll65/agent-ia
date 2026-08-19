@@ -1,0 +1,526 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Nova · Mode Cours</title>
+<link rel="manifest" href="/nova/manifest.webmanifest">
+<style>
+  :root{ --bg:#060610; --glass:rgba(255,255,255,.06); --stroke:rgba(255,255,255,.12);
+         --neon:#7c5cff; --neon2:#22d3ee; --pink:#ec4899; --ok:#34d399; --warn:#fbbf24;
+         --txt:#e9e9f5; --dim:#9aa0b5; }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ height:100%; }
+  body{ font-family:'Inter',system-ui,sans-serif; color:var(--txt); background:var(--bg); }
+  #aurora{ position:fixed; inset:0; z-index:0; overflow:hidden; filter:blur(80px); opacity:.35; transition:opacity 1s; }
+  #aurora .b{ position:absolute; border-radius:50%; mix-blend-mode:screen; }
+  #aurora .b1{ width:60vw; height:60vw; left:-14vw; top:-18vh; background:radial-gradient(circle,#7c5cff,transparent 68%); animation:f1 24s ease-in-out infinite; }
+  #aurora .b2{ width:50vw; height:50vw; right:-10vw; top:4vh; background:radial-gradient(circle,#22d3ee,transparent 68%); animation:f2 28s ease-in-out infinite; }
+  @keyframes f1{ 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(7vw,6vh) scale(1.14)} }
+  @keyframes f2{ 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(-6vw,5vh) scale(.9)} }
+  body.rec #aurora{ opacity:.5; }
+
+  .app{ position:relative; z-index:2; max-width:840px; margin:0 auto; padding:18px 16px 60px; }
+  header{ display:flex; align-items:center; justify-content:space-between; gap:10px; padding-bottom:18px; }
+  .logo{ font-weight:800; font-size:22px; letter-spacing:.3em;
+         background:linear-gradient(90deg,var(--neon),var(--neon2)); -webkit-background-clip:text;
+         background-clip:text; color:transparent; }
+  .logo small{ display:block; letter-spacing:.16em; font-size:10px; color:var(--dim); font-weight:600; }
+  a.back{ color:var(--dim); text-decoration:none; font-size:13px; border:1px solid var(--stroke);
+          background:var(--glass); padding:8px 13px; border-radius:11px; transition:.2s; }
+  a.back:hover{ border-color:var(--neon); color:var(--txt); }
+
+  .card{ background:var(--glass); border:1px solid var(--stroke); border-radius:18px; padding:20px; margin-bottom:16px; }
+  label{ display:block; font-size:12px; color:var(--dim); margin:0 0 6px; font-weight:600; letter-spacing:.04em; }
+  input{ width:100%; background:rgba(0,0,0,.28); border:1px solid var(--stroke); color:var(--txt);
+         border-radius:12px; padding:12px 14px; font-size:15px; font-family:inherit; outline:none; transition:.2s; }
+  input:focus{ border-color:var(--neon); box-shadow:0 0 16px rgba(124,92,255,.28); }
+  .duo{ display:flex; gap:12px; } .duo>div{ flex:1; }
+
+  button{ font-family:inherit; cursor:pointer; border-radius:14px; transition:.2s; border:1px solid var(--stroke);
+          background:var(--glass); color:var(--txt); font-size:14px; padding:12px 18px; }
+  button:hover:not(:disabled){ border-color:var(--neon); }
+  button:disabled{ opacity:.4; cursor:not-allowed; }
+  .big{ width:100%; padding:17px; font-size:16px; font-weight:700; letter-spacing:.02em; margin-top:16px;
+        background:linear-gradient(90deg,rgba(124,92,255,.9),rgba(34,211,238,.8)); border:none; color:#080812; }
+  .big.stop{ background:linear-gradient(90deg,#ef4444,#ec4899); color:#fff; }
+
+  /* ── Écran d'enregistrement ── */
+  .live{ text-align:center; padding:26px 20px; }
+  .pulse{ width:118px; height:118px; margin:0 auto 20px; border-radius:50%; position:relative;
+          background:radial-gradient(circle,rgba(236,72,153,.5),transparent 65%); }
+  .pulse::before,.pulse::after{ content:''; position:absolute; inset:0; border-radius:50%;
+          border:2px solid rgba(236,72,153,.65); animation:ring 2.6s ease-out infinite; }
+  .pulse::after{ animation-delay:1.3s; }
+  @keyframes ring{ 0%{transform:scale(.55); opacity:1} 100%{transform:scale(1.5); opacity:0} }
+  .dot{ position:absolute; left:50%; top:50%; width:15px; height:15px; margin:-7.5px 0 0 -7.5px;
+        border-radius:50%; background:#ef4444; box-shadow:0 0 22px #ef4444; }
+  body.paused .pulse::before, body.paused .pulse::after{ animation-play-state:paused; }
+  body.paused .dot{ background:var(--warn); box-shadow:0 0 22px var(--warn); }
+  .chrono{ font-size:46px; font-weight:800; font-variant-numeric:tabular-nums; letter-spacing:.02em; }
+  .sub{ color:var(--dim); font-size:13.5px; margin-top:8px; line-height:1.6; }
+  /* Niveau sonore : la preuve visuelle que le micro capte VRAIMENT du son */
+  .vu{ height:7px; background:rgba(255,255,255,.08); border-radius:5px; overflow:hidden; margin:18px auto 4px; max-width:320px; }
+  .vu i{ display:block; height:100%; width:0%; border-radius:5px;
+         background:linear-gradient(90deg,var(--ok),var(--neon2)); transition:width .1s linear; }
+  .stats{ display:flex; justify-content:center; gap:22px; margin-top:18px; flex-wrap:wrap; }
+  .stat{ text-align:center; } .stat b{ display:block; font-size:19px; } .stat span{ font-size:11px; color:var(--dim); }
+  .apercu{ margin-top:18px; font-size:13px; color:var(--dim); font-style:italic; min-height:20px;
+           line-height:1.5; opacity:.9; }
+  .warn{ margin-top:16px; padding:11px 14px; border-radius:12px; font-size:13px; line-height:1.5;
+         background:rgba(251,191,36,.12); border:1px solid rgba(251,191,36,.35); color:#fde68a; }
+  .warn.bad{ background:rgba(239,68,68,.12); border-color:rgba(239,68,68,.4); color:#fecaca; }
+
+  /* ── Résultat ── */
+  .md{ line-height:1.72; font-size:15px; }
+  .md h2{ font-size:19px; margin:22px 0 10px; color:var(--neon2); }
+  .md h3{ font-size:16px; margin:18px 0 8px; }
+  .md p{ margin:9px 0; } .md ul,.md ol{ margin:9px 0 9px 22px; } .md li{ margin:5px 0; }
+  .md code{ background:#05050c; border:1px solid var(--stroke); border-radius:6px; padding:2px 6px;
+            font-family:ui-monospace,monospace; font-size:13px; }
+  .md pre{ background:#05050c; border:1px solid var(--stroke); border-radius:10px; padding:12px;
+           overflow-x:auto; margin:10px 0; } .md pre code{ border:none; padding:0; }
+  .md strong{ color:#fff; }
+  .fiche{ background:rgba(0,0,0,.24); border:1px solid var(--stroke); border-radius:14px;
+          padding:15px 17px; margin-bottom:10px; cursor:pointer; transition:.2s; }
+  .fiche:hover{ border-color:var(--neon); }
+  .fiche .q{ font-weight:650; font-size:14.5px; }
+  .fiche .th{ font-size:10.5px; color:var(--neon2); text-transform:uppercase; letter-spacing:.09em; margin-bottom:6px; }
+  .fiche .r{ display:none; margin-top:11px; padding-top:11px; border-top:1px solid var(--stroke);
+             color:var(--dim); font-size:14px; line-height:1.6; }
+  .fiche.open .r{ display:block; }
+  .row{ display:flex; gap:10px; flex-wrap:wrap; margin-top:16px; }
+  .row button{ flex:1; min-width:130px; }
+
+  .hist{ font-size:13.5px; }
+  .hist a{ display:flex; justify-content:space-between; gap:10px; align-items:center; color:var(--txt);
+           text-decoration:none; padding:11px 13px; border-radius:11px; border:1px solid transparent; transition:.2s; }
+  .hist a:hover{ background:rgba(255,255,255,.05); border-color:var(--stroke); }
+  .hist small{ color:var(--dim); font-size:11.5px; white-space:nowrap; }
+  .muted{ color:var(--dim); font-size:13px; line-height:1.6; }
+  .hide{ display:none !important; }
+  @media(max-width:560px){ .duo{ flex-direction:column; } .chrono{ font-size:38px; } }
+</style>
+
+<div id="aurora"><div class="b b1"></div><div class="b b2"></div></div>
+
+<div class="app">
+  <header>
+    <div class="logo">NOVA<small>MODE COURS</small></div>
+    <a class="back" href="/nova">← Retour</a>
+  </header>
+
+  <!-- 1. Préparation -->
+  <section id="setup" class="card">
+    <div class="duo">
+      <div>
+        <label>Intitulé du cours</label>
+        <input id="titre" placeholder="Ex. Les intégrales" autocomplete="off">
+      </div>
+      <div>
+        <label>Matière</label>
+        <input id="matiere" placeholder="Ex. Mathématiques" autocomplete="off">
+      </div>
+    </div>
+    <button class="big" id="go">🎙️ Commencer à écouter</button>
+    <div id="setupWarn" class="warn hide"></div>
+    <p class="muted" style="margin-top:14px">
+      Nova transcrit au fil de l'eau et <b>efface l'audio aussitôt</b> — seul le texte est gardé.
+      À la fin, elle te rend la synthèse du cours et tes fiches de révision.
+      Laisse cet onglet ouvert : l'écran peut s'éteindre, l'enregistrement continue.
+    </p>
+  </section>
+
+  <!-- 2. En cours -->
+  <section id="live" class="card live hide">
+    <div class="pulse"><div class="dot"></div></div>
+    <div class="chrono" id="chrono">00:00:00</div>
+    <div class="sub" id="etat">Nova écoute…</div>
+    <div class="vu"><i id="vu"></i></div>
+    <div class="sub" style="font-size:11px" id="vuTxt">niveau du micro</div>
+    <div class="stats">
+      <div class="stat"><b id="sMots">0</b><span>MOTS</span></div>
+      <div class="stat"><b id="sSeg">0</b><span>TRANCHES</span></div>
+      <div class="stat"><b id="sFile">0</b><span>EN ATTENTE</span></div>
+    </div>
+    <div class="apercu" id="apercu"></div>
+    <div id="liveWarn" class="warn hide"></div>
+    <div class="row">
+      <button id="pause">⏸️ Pause</button>
+      <button class="big stop" id="stop" style="margin-top:0">⏹️ Terminer et synthétiser</button>
+    </div>
+  </section>
+
+  <!-- 3. Traitement -->
+  <section id="work" class="card live hide">
+    <div class="pulse"><div class="dot" style="background:var(--neon2); box-shadow:0 0 22px var(--neon2)"></div></div>
+    <div class="chrono" style="font-size:24px">Nova rédige ton cours…</div>
+    <div class="sub" id="workTxt">Elle relit toute la transcription, structure le cours puis prépare tes fiches.<br>Compte une petite minute.</div>
+  </section>
+
+  <!-- 4. Résultat -->
+  <section id="out" class="hide">
+    <div class="card">
+      <h2 id="outTitre" style="font-size:21px; margin-bottom:6px"></h2>
+      <div class="muted" id="outMeta"></div>
+      <div id="outWarn" class="warn hide"></div>
+      <div class="row">
+        <button id="dl">⬇️ Télécharger (.md)</button>
+        <button id="copy">📋 Copier</button>
+        <button id="again">🎙️ Nouveau cours</button>
+      </div>
+    </div>
+    <div class="card"><div class="md" id="synth"></div></div>
+    <div class="card hide" id="fichesCard">
+      <h2 style="font-size:19px; margin-bottom:4px">Fiches de révision</h2>
+      <p class="muted" style="margin-bottom:14px">Clique une question pour révéler la réponse.</p>
+      <div id="fiches"></div>
+    </div>
+  </section>
+
+  <!-- 5. Historique -->
+  <section class="card hist" id="histCard">
+    <h2 style="font-size:15px; margin-bottom:10px; color:var(--dim); letter-spacing:.06em">MES COURS</h2>
+    <div id="hist"><p class="muted">Aucun cours enregistré pour l'instant.</p></div>
+  </section>
+</div>
+
+<script>
+const ORIGIN = location.origin;
+const KEY = localStorage.getItem("nova_key") || "";
+const $ = id => document.getElementById(id);
+
+/* ══════════════════════════════════════════════════════════════════════════
+   CONTRAINTE CENTRALE : ne JAMAIS perdre un mot pendant 2 h.
+
+   1. Le flux micro est ouvert UNE seule fois et ne se referme jamais.
+   2. On recycle l'enregistreur toutes les 60 s pour obtenir des fichiers
+      audio complets et décodables. Le suivant DÉMARRE AVANT que le courant
+      ne s'arrête : les tranches se recouvrent, aucun mot ne tombe dans le
+      trou. Le serveur retire ensuite les mots transcrits deux fois.
+   3. Toute tranche non transmise reste dans une file et est réessayée
+      indéfiniment (réseau coupé, wifi de l'amphi qui saute…). L'écoute ne
+      s'arrête jamais à cause du réseau.
+   ══════════════════════════════════════════════════════════════════════════ */
+const TRANCHE_MS = 60000;   // durée d'une tranche
+const RECOUVR_MS = 400;     // recouvrement entre deux tranches
+const MAX_FILE   = 240;     // tranches en attente max (≈ 4 h) avant de prévenir
+
+let SID = null, stream = null, recA = null, timerRec = null, tick = null;
+let t0 = 0, ecoule = 0, enPause = false, fini = false;
+let file = [], envoiActif = false, echecs = 0, dur = 0;   // dur = échecs de transcription d'affilée
+let ac = null, analyser = null, vuRaf = null, wakeLock = null;
+let dernierSon = 0, silencePrevenu = false;
+
+/* ── Utilitaires ─────────────────────────────────────────────────────────── */
+function hhmmss(s){ s=Math.max(0,Math.floor(s));
+  return [Math.floor(s/3600),Math.floor(s/60)%60,s%60].map(v=>String(v).padStart(2,"0")).join(":"); }
+function show(id){ ["setup","live","work","out"].forEach(x=>$(x).classList.toggle("hide", x!==id)); }
+function warn(el, txt, grave){ const e=$(el);
+  if(!txt){ e.classList.add("hide"); return; }
+  e.innerHTML = txt; e.classList.remove("hide"); e.classList.toggle("bad", !!grave); }
+
+/* Markdown minimal — pas de dépendance externe (la page doit marcher hors ligne) */
+function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function md(src){
+  const blocs=[]; let s=esc(src||"");
+  s=s.replace(/```(\w*)\n([\s\S]*?)```/g,(m,l,c)=>{ blocs.push(c); return `@@BLOC${blocs.length-1}@@`; });
+  s=s.replace(/^###\s+(.+)$/gm,"<h3>$1</h3>").replace(/^##\s+(.+)$/gm,"<h2>$1</h2>")
+     .replace(/^#\s+(.+)$/gm,"<h2>$1</h2>")
+     .replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>").replace(/`([^`]+)`/g,"<code>$1</code>");
+  const out=[]; let liste=null;
+  for(const ligne of s.split("\n")){
+    const li=ligne.match(/^\s*[-*]\s+(.+)$/), no=ligne.match(/^\s*\d+[.)]\s+(.+)$/);
+    if(li||no){ const t=li?"ul":"ol"; if(liste!==t){ if(liste) out.push(`</${liste}>`); out.push(`<${t}>`); liste=t; }
+      out.push(`<li>${(li||no)[1]}</li>`); continue; }
+    if(liste){ out.push(`</${liste}>`); liste=null; }
+    // Un bloc de code ne doit pas finir enveloppé dans un <p> (HTML invalide)
+    if(/^<h[23]>/.test(ligne) || /^@@BLOC\d+@@$/.test(ligne.trim())) out.push(ligne.trim());
+    else if(ligne.trim()) out.push(`<p>${ligne}</p>`);
+  }
+  if(liste) out.push(`</${liste}>`);
+  return out.join("").replace(/@@BLOC(\d+)@@/g,(m,i)=>`<pre><code>${blocs[+i]}</code></pre>`);
+}
+
+/* ── File d'envoi : increvable ───────────────────────────────────────────── */
+async function pousser(){
+  if(envoiActif || !file.length) return;
+  envoiActif = true;
+  while(file.length){
+    const t = file[0];
+    try{
+      const fd = new FormData();
+      fd.append("key", KEY); fd.append("id", SID);
+      fd.append("secondes", String(t.sec));
+      fd.append("file", t.blob, "tranche." + t.ext);
+      const r = await fetch(ORIGIN + "/agent/cours/chunk", { method:"POST", body:fd });
+      if(!r.ok){
+        // 502 = le serveur a bien reçu mais Whisper a refusé. Si ça se répète, ce n'est
+        // pas le réseau : inutile de laisser l'élève enregistrer 2 h dans le vide.
+        let det = ""; try{ det = (await r.json()).detail || ""; }catch(e){}
+        if(r.status === 502) dur++;
+        if(dur >= 3){
+          warn("liveWarn", `❌ La transcription échoue de façon répétée.<br>` +
+               `<small>${esc(det).slice(0,180)}</small><br>` +
+               `<b>Arrête l'enregistrement</b> : Nova ne pourra rien transcrire tant que ce ` +
+               `problème dure.`, true);
+          file.shift();                       // inutile de garder une tranche irrécupérable
+          continue;
+        }
+        throw new Error("HTTP " + r.status);
+      }
+      const d = await r.json();
+      file.shift(); echecs = 0; dur = 0;
+      $("sMots").textContent = d.mots || 0;
+      $("sSeg").textContent  = d.segments || 0;
+      if(d.apercu) $("apercu").textContent = "…" + d.apercu;
+      warn("liveWarn", "");
+    }catch(e){
+      echecs++;
+      // On NE JETTE PAS la tranche : elle repart au prochain tour.
+      warn("liveWarn", `📡 Connexion instable — ${file.length} tranche(s) en attente, ` +
+           `Nova réessaie toute seule. <b>L'enregistrement continue.</b>`);
+      break;
+    }finally{
+      $("sFile").textContent = file.length;
+    }
+  }
+  envoiActif = false;
+  if(file.length && !fini) setTimeout(pousser, Math.min(30000, 2000 * Math.pow(2, Math.min(echecs,4))));
+}
+
+/* ── Enregistreur : recyclé toutes les 60 s, avec recouvrement ───────────── */
+function typeAudio(){
+  for(const t of ["audio/webm;codecs=opus","audio/webm","audio/mp4","audio/ogg;codecs=opus"])
+    if(window.MediaRecorder && MediaRecorder.isTypeSupported(t)) return t;
+  return "";
+}
+function extDe(t){ return t.includes("mp4") ? "m4a" : t.includes("ogg") ? "ogg" : "webm"; }
+
+function nouvelEnregistreur(){
+  const mime = typeAudio();
+  const mr = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 32000 } : undefined);
+  const morceaux = []; const debut = Date.now();
+  mr.ondataavailable = e => { if(e.data && e.data.size) morceaux.push(e.data); };
+  mr.onstop = () => {
+    if(!morceaux.length) return;
+    const blob = new Blob(morceaux, { type: mime || "audio/webm" });
+    if(blob.size < 1200) return;                    // quasi vide : inutile de l'envoyer
+    if(file.length >= MAX_FILE){ file.shift(); }    // garde-fou mémoire, jamais atteint en pratique
+    file.push({ blob, ext: extDe(mime), sec: (Date.now() - debut) / 1000 });
+    $("sFile").textContent = file.length;
+    pousser();
+  };
+  mr.onerror = () => { warn("liveWarn", "⚠️ Le micro a hoqueté — Nova relance l'enregistreur.", false); relancer(); };
+  mr.start();
+  return mr;
+}
+function relancer(){
+  // Démarre le SUIVANT avant d'arrêter le courant → recouvrement, aucun mot perdu.
+  if(fini || enPause) return;
+  const ancien = recA;
+  recA = nouvelEnregistreur();
+  setTimeout(() => { try{ ancien && ancien.state !== "inactive" && ancien.stop(); }catch(e){} }, RECOUVR_MS);
+}
+
+/* ── Niveau sonore : la preuve que ça capte vraiment ─────────────────────── */
+function demarrerVu(){
+  try{
+    ac = new (window.AudioContext || window.webkitAudioContext)();
+    const src = ac.createMediaStreamSource(stream);
+    analyser = ac.createAnalyser(); analyser.fftSize = 512; src.connect(analyser);
+    const buf = new Uint8Array(analyser.frequencyBinCount);
+    dernierSon = Date.now();
+    (function boucle(){
+      vuRaf = requestAnimationFrame(boucle);
+      analyser.getByteFrequencyData(buf);
+      let s = 0; for(const v of buf) s += v;
+      const niv = Math.min(100, (s / buf.length) * 2.6);
+      $("vu").style.width = niv + "%";
+      if(niv > 6){ dernierSon = Date.now(); if(silencePrevenu){ silencePrevenu=false; warn("liveWarn",""); } }
+      else if(!enPause && !silencePrevenu && Date.now() - dernierSon > 120000){
+        silencePrevenu = true;
+        warn("liveWarn", "🔇 Aucun son depuis 2 minutes. Vérifie que le bon micro est " +
+             "sélectionné et que rien ne le bloque.", true);
+      }
+    })();
+  }catch(e){}
+}
+
+/* ── Veille de l'écran ──────────────────────────────────────────────────── */
+async function garderEveille(){
+  try{ if("wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen"); }catch(e){}
+}
+document.addEventListener("visibilitychange", () => {
+  if(document.visibilityState === "visible" && !fini && !enPause) garderEveille();
+});
+
+/* ── Démarrage ──────────────────────────────────────────────────────────── */
+$("go").onclick = async () => {
+  if(!KEY){ warn("setupWarn", "🔑 Clé absente. Ouvre <a href='/nova' style='color:inherit'>Nova</a> " +
+                 "et saisis ta clé une fois, puis reviens ici.", true); return; }
+  if(!navigator.mediaDevices || !window.MediaRecorder){
+    warn("setupWarn", "❌ Ce navigateur ne sait pas enregistrer. Utilise Chrome, Edge ou Firefox.", true); return; }
+  $("go").disabled = true; warn("setupWarn", "");
+  try{
+    const d = await (await fetch(ORIGIN + "/agent/cours/dispo?key=" + encodeURIComponent(KEY))).json();
+    if(!d.ok){ warn("setupWarn", "❌ " + d.raison, true); $("go").disabled = false; return; }
+  }catch(e){ warn("setupWarn", "❌ Serveur injoignable.", true); $("go").disabled = false; return; }
+
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({ audio:{
+      echoCancellation:false,           // un cours n'est pas un appel : on ne veut aucun filtrage
+      noiseSuppression:false,           // qui pourrait couper la voix lointaine du prof
+      autoGainControl:true, channelCount:1 } });
+  }catch(e){
+    warn("setupWarn", "🎤 Micro refusé. Autorise-le dans la barre d'adresse, puis réessaie.", true);
+    $("go").disabled = false; return;
+  }
+  try{
+    const r = await fetch(ORIGIN + "/agent/cours/start", { method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ key:KEY, titre:$("titre").value, matiere:$("matiere").value }) });
+    if(!r.ok) throw new Error(await r.text());
+    SID = (await r.json()).id;
+  }catch(e){
+    warn("setupWarn", "❌ Impossible d'ouvrir la session : " + String(e).slice(0,120), true);
+    stream.getTracks().forEach(t=>t.stop()); $("go").disabled = false; return;
+  }
+
+  fini = false; enPause = false; ecoule = 0; file = []; echecs = 0; dur = 0;
+  t0 = Date.now(); document.body.classList.add("rec");
+  show("live"); demarrerVu(); garderEveille();
+  recA = nouvelEnregistreur();
+  timerRec = setInterval(relancer, TRANCHE_MS);
+  tick = setInterval(() => {
+    if(!enPause) ecoule = (Date.now() - t0) / 1000;
+    $("chrono").textContent = hhmmss(ecoule);
+  }, 500);
+  window.addEventListener("beforeunload", avantFermeture);
+};
+
+function avantFermeture(e){
+  if(!fini && SID){ e.preventDefault(); e.returnValue =
+    "Le cours est en cours d'enregistrement. Si tu fermes, la synthèse ne sera pas générée."; }
+}
+
+/* ── Pause ──────────────────────────────────────────────────────────────── */
+$("pause").onclick = () => {
+  enPause = !enPause;
+  document.body.classList.toggle("paused", enPause);
+  $("pause").textContent = enPause ? "▶️ Reprendre" : "⏸️ Pause";
+  $("etat").textContent = enPause ? "En pause — Nova n'écoute plus." : "Nova écoute…";
+  if(enPause){
+    clearInterval(timerRec);
+    try{ recA && recA.state !== "inactive" && recA.stop(); }catch(e){}
+    recA = null;
+  }else{
+    t0 = Date.now() - ecoule * 1000; dernierSon = Date.now(); silencePrevenu = false; warn("liveWarn","");
+    recA = nouvelEnregistreur();
+    timerRec = setInterval(relancer, TRANCHE_MS);
+  }
+};
+
+/* ── Fin : on vide la file AVANT de synthétiser ─────────────────────────── */
+$("stop").onclick = async () => {
+  if(!SID || fini) return;
+  $("stop").disabled = true; $("pause").disabled = true;
+  fini = true; clearInterval(timerRec); clearInterval(tick);
+  document.body.classList.remove("rec","paused");
+  if(vuRaf) cancelAnimationFrame(vuRaf);
+  try{ recA && recA.state !== "inactive" && recA.stop(); }catch(e){}
+  await new Promise(r => setTimeout(r, 500));          // laisse tomber la dernière tranche
+  try{ stream.getTracks().forEach(t => t.stop()); }catch(e){}
+  try{ if(wakeLock){ wakeLock.release(); wakeLock = null; } }catch(e){}
+  try{ if(ac) ac.close(); }catch(e){}
+
+  show("work");
+  // Toutes les tranches doivent être remontées, sinon la fin du cours manquerait.
+  for(let essai = 0; file.length && essai < 40; essai++){
+    $("workTxt").innerHTML = `Envoi des dernières tranches… <b>${file.length}</b> restante(s).`;
+    envoiActif = false; await pousser();
+    if(file.length) await new Promise(r => setTimeout(r, 2500));
+  }
+  let perdues = file.length;
+  $("workTxt").innerHTML = "Elle relit toute la transcription, structure le cours puis prépare tes fiches.<br>Compte une petite minute.";
+
+  try{
+    const r = await fetch(ORIGIN + "/agent/cours/stop", { method:"POST",
+      headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ key:KEY, id:SID }) });
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
+    afficher(d, perdues);
+  }catch(e){
+    show("out");
+    $("outTitre").textContent = "Synthèse impossible";
+    $("outMeta").textContent = "";
+    warn("outWarn", "❌ " + String(e).slice(0,220) +
+      "<br><br>Ta transcription n'est pas perdue : récupère-la avec le bouton ci-dessous.", true);
+    $("synth").innerHTML = "";
+    $("dl").onclick = () => telecharger(SID);
+  }
+  window.removeEventListener("beforeunload", avantFermeture);
+  charger();
+};
+
+/* ── Affichage du résultat ─────────────────────────────────────────────── */
+function afficher(d, perdues){
+  show("out");
+  $("outTitre").textContent = d.titre || "Cours";
+  $("outMeta").textContent = `${Math.round((d.secondes||0)/60)} min · ${d.mots||0} mots · ` +
+                             `${(d.fiches||[]).length} fiches`;
+  const manques = (d.trous||[]).length + (perdues||0);
+  warn("outWarn", manques ? `⚠️ ${manques} tranche(s) n'ont pas pu être transcrites : ` +
+       `il peut manquer quelques passages.` : "");
+  $("synth").innerHTML = md(d.synthese || "");
+  const F = d.fiches || [];
+  $("fichesCard").classList.toggle("hide", !F.length);
+  $("fiches").innerHTML = F.map(f =>
+    `<div class="fiche">${f.theme ? `<div class="th">${esc(f.theme)}</div>` : ""}` +
+    `<div class="q">${esc(f.q)}</div><div class="r">${esc(f.r)}</div></div>`).join("");
+  [...document.querySelectorAll(".fiche")].forEach(el =>
+    el.onclick = () => el.classList.toggle("open"));
+  const sid = d.id || SID;
+  $("dl").onclick = () => telecharger(sid);
+  $("copy").onclick = async () => {
+    try{ await navigator.clipboard.writeText(d.synthese || ""); $("copy").textContent = "✅ Copié"; }
+    catch(e){ $("copy").textContent = "❌ Échec"; }
+    setTimeout(() => $("copy").textContent = "📋 Copier", 1800);
+  };
+}
+function telecharger(sid){
+  window.location = ORIGIN + "/agent/cours/export?id=" + encodeURIComponent(sid) +
+                    "&key=" + encodeURIComponent(KEY);
+}
+$("again").onclick = () => { SID = null; show("setup"); $("go").disabled = false;
+  $("titre").value = ""; $("matiere").value = ""; window.scrollTo(0,0); };
+
+/* ── Historique ────────────────────────────────────────────────────────── */
+async function charger(){
+  if(!KEY) return;
+  try{
+    const d = await (await fetch(ORIGIN + "/agent/cours?key=" + encodeURIComponent(KEY))).json();
+    const S = d.sessions || [];
+    if(!S.length){ $("hist").innerHTML = "<p class='muted'>Aucun cours enregistré pour l'instant.</p>"; return; }
+    $("hist").innerHTML = S.map(s => {
+      const dt = new Date(s.debut * 1000);
+      const etat = s.a_synthese ? "✅" : (s.etat === "en_cours" ? "🎙️" : "⚠️");
+      return `<a href="#" data-id="${s.id}"><span>${etat} ${esc(s.titre)}` +
+             `${s.matiere ? ` <small>· ${esc(s.matiere)}</small>` : ""}</span>` +
+             `<small>${dt.toLocaleDateString("fr-FR")} · ${Math.round(s.secondes/60)} min</small></a>`;
+    }).join("");
+    [...$("hist").querySelectorAll("a")].forEach(a => a.onclick = async ev => {
+      ev.preventDefault(); await ouvrir(a.dataset.id); });
+  }catch(e){}
+}
+async function ouvrir(id){
+  try{
+    const d = await (await fetch(ORIGIN + "/agent/cours/detail?id=" + encodeURIComponent(id) +
+                                 "&key=" + encodeURIComponent(KEY))).json();
+    if(!d.synthese){ alert("Ce cours n'a pas de synthèse (il a été interrompu)."); return; }
+    afficher({ id, titre:d.titre, synthese:d.synthese, fiches:d.fiches, trous:d.trous,
+               secondes:d.secondes, mots:(d.transcript||"").split(/\s+/).length }, 0);
+    window.scrollTo(0,0);
+  }catch(e){}
+}
+charger();
+if(!KEY) warn("setupWarn", "🔑 Clé absente. Ouvre <a href='/nova' style='color:inherit'>Nova</a> " +
+              "et saisis ta clé une fois, puis reviens ici.", true);
+</script>

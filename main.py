@@ -186,6 +186,13 @@ def nova_brain():
     return FileResponse(str(Path(__file__).parent / "ui" / "brain.html"), headers=_NOCACHE)
 
 
+@app.get("/nova/cours", include_in_schema=False)
+def nova_cours():
+    """Mode Cours : Nova écoute un cours entier et en tire une synthèse + des fiches."""
+    from fastapi.responses import FileResponse
+    return FileResponse(str(Path(__file__).parent / "ui" / "cours.html"), headers=_NOCACHE)
+
+
 @app.get("/nova/manifest.webmanifest", include_in_schema=False)
 def nova_manifest():
     """Manifest PWA : rend Nova installable sur le téléphone (icône plein écran)."""
