@@ -17,6 +17,9 @@ data/telegram_chats.json
 data/groq_usage.json
 data/watcher_state.json
 data/sessions/
+# Cours enregistres : transcriptions de cours = donnees personnelles, jamais versionnees
+data/cours/
+data/uploads/
 
 # Sorties générées
 output/

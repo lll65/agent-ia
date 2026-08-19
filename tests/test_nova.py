@@ -438,11 +438,147 @@ def test_delais():
     check_true(f"rendu en {duree:.2f}s", duree < 5)
 
 
+# ── 17. Mode Cours ────────────────────────────────────────────────────────────
+def test_cours():
+    """Un cours de 2 h ne se rejoue pas : chaque brique doit être juste du premier coup."""
+    import shutil
+    from pathlib import Path as P
+    from agent import cours
+
+    # Bac à sable : on ne touche pas aux vraies sessions
+    vrai_dir = cours._DIR
+    cours._DIR = P("data/_test_cours")
+    shutil.rmtree(cours._DIR, ignore_errors=True)
+    try:
+        # 17a. Recollage des tranches : le recouvrement volontaire ne doit pas laisser de doublon
+        check("recollage simple",
+              cours.recoller("le prof a dit que la dérivée", "la dérivée de x carré est deux x"),
+              "de x carré est deux x")
+        check("aucun recouvrement", cours.recoller("bonjour à tous", "ouvrez vos cahiers"),
+              "ouvrez vos cahiers")
+        check("tranche vide", cours.recoller("texte", ""), "")
+        check("première tranche", cours.recoller("", "premier mot"), "premier mot")
+        # Un seul mot commun est fortuit (« et », « de »…) : on ne coupe pas.
+        check("un mot commun ne coupe pas", cours.recoller("il parle de", "de toute façon"),
+              "de toute façon")
+        # Ponctuation et majuscules ne doivent pas empêcher de reconnaître le doublon
+        check("recollage malgré la ponctuation",
+              cours.recoller("c'est très important !", "Très important, retenez bien ça"),
+              "retenez bien ça")
+        # Whisper redit parfois TOUTE une phrase de contexte : la fenêtre doit l'absorber.
+        # Une fenêtre trop courte laissait passer 23 doublons sur une simulation de 2 h.
+        longue = ("nous voyons le théorème des valeurs intermédiaires et retenez bien "
+                  "que le résultat vaut quarante-deux unités")
+        check("recollage d'une phrase entière répétée",
+              cours.recoller("blabla " + longue, longue + " puis on enchaîne"),
+              "puis on enchaîne")
+
+        # 17b. Identifiant de session : aucune traversée de dossier possible
+        for mauvais in ("../../etc/passwd", "..", "a/../../b", "'; DROP TABLE"):
+            try:
+                s = cours._sid_sur(mauvais)
+                check_true(f"sid assaini: {mauvais}", "/" not in s and "." not in s)
+            except ValueError:
+                check_true(f"sid rejeté: {mauvais}", True)
+
+        # 17c. Cycle de vie complet, sans réseau (LLM et Whisper simulés)
+        import llm.client as C
+        vrai_chat, vrai_transcrire = C.chat, cours.transcrire
+        appels = {"n": 0}
+
+        def faux_chat(messages, temperature=0.7, num_ctx=4096, niveau="equilibre"):
+            appels["n"] += 1
+            sys = (messages[0].get("content") or "")
+            if "JSON STRICT" in sys:
+                return '{"fiches":[{"q":"Quelle est la dérivée de x² ?","r":"2x.","theme":"Dérivées"}]}'
+            return "## En bref\nCours sur les dérivées.\n\n## Le cours\n### Définition\nLa **dérivée**."
+
+        cours.transcrire = lambda audio, nom="x.webm": "la dérivée de x carré vaut deux x"
+        C.chat = faux_chat
+        try:
+            s = cours.demarrer("Les dérivées", "Maths")
+            sid = s["id"]
+            for _ in range(3):
+                cours.ajouter_tranche(sid, b"audio-factice", 60.0)
+            etat = cours._lire(sid)
+            check("3 tranches enregistrées", etat["segments"], 3)
+            check_true("doublons retirés par le recollage",
+                       etat["transcript"].count("dérivée de x carré") == 1)
+            check("audio jamais écrit sur le disque",
+                  [p.name for p in cours._DIR.glob("*") if p.suffix not in (".json", ".tmp")], [])
+
+            fin = cours.terminer(sid)
+            check_true("synthèse produite", "En bref" in fin["synthese"])
+            check("fiches produites", len(fin["fiches"]), 1)
+            check("session terminée", fin["etat"], "termine")
+
+            md = cours.markdown(sid)
+            for attendu in ("# Les dérivées", "Maths", "Fiches de révision", "dérivée de x²"):
+                check_true(f"export contient « {attendu} »", attendu in md)
+
+            check("session listée", [x["id"] for x in cours.lister()], [sid])
+            check_true("suppression", cours.supprimer(sid) and not cours.lister())
+
+            # 17d. Une tranche illisible ne doit PAS interrompre le cours : trou signalé, écoute continue
+            s2 = cours.demarrer("Cours cassé")
+            cours.transcrire = lambda audio, nom="x.webm": (_ for _ in ()).throw(RuntimeError("whisper HS"))
+            try:
+                cours.ajouter_tranche(s2["id"], b"zz", 60.0)
+            except Exception:
+                pass
+            e2 = cours._lire(s2["id"])
+            check("trou enregistré", len(e2["trous"]), 1)
+            check("session toujours en cours", e2["etat"], "en_cours")
+            cours.transcrire = lambda audio, nom="x.webm": "on reprend le cours ici"
+            cours.ajouter_tranche(s2["id"], b"zz", 60.0)
+            check_true("l'écoute a repris après l'échec",
+                       "on reprend le cours" in cours._lire(s2["id"])["transcript"])
+            cours.supprimer(s2["id"])
+        finally:
+            C.chat, cours.transcrire = vrai_chat, vrai_transcrire
+
+        # 17e. Garde-fou clé : on doit refuser AVANT d'enregistrer 2 h, pas après.
+        vrai_t, vrai_dispo = cours.transcrire, cours.transcription_dispo
+        try:
+            cours.transcription_dispo = lambda: True
+            cours._VERIF.update(t=0.0, res=None)
+            cours.transcrire = lambda a, n="t.wav": (_ for _ in ()).throw(
+                RuntimeError("Error code: 401 - Invalid API Key"))
+            ok, msg = cours.verifier_transcription()
+            check("clé refusée → départ bloqué", ok, False)
+            check_true("message explicite sur la clé", "clé" in msg.lower())
+
+            cours._VERIF.update(t=0.0, res=None)
+            cours.transcrire = lambda a, n="t.wav": (_ for _ in ()).throw(
+                RuntimeError("Error code: 429 rate limit reached"))
+            ok, msg = cours.verifier_transcription()
+            check("quota atteint → départ bloqué", ok, False)
+            check_true("message explicite sur le quota", "quota" in msg.lower())
+
+            cours._VERIF.update(t=0.0, res=None)
+            recu = {}
+            cours.transcrire = lambda a, n="t.wav": recu.update(taille=len(a), nom=n) or ""
+            check("Whisper répond → départ autorisé", cours.verifier_transcription(), (True, ""))
+            check_true("le bip de test est un vrai WAV", 2000 < recu["taille"] < 60000)
+            check("le bip est envoyé en .wav", recu["nom"], "test.wav")
+        finally:
+            cours.transcrire, cours.transcription_dispo = vrai_t, vrai_dispo
+            cours._VERIF.update(t=0.0, res=None)
+
+        # 17f. La condensation ne se déclenche qu'au-delà du seuil, et le budget final est borné
+        check_true("seuil de condensation raisonnable", 2000 <= cours.SEUIL_CONDENSE <= 20000)
+        check_true("budget final borné", 4000 <= cours.BUDGET_FINAL <= 30000)
+        check_true("durée max bornée", 3600 <= cours.DUREE_MAX <= 8 * 3600)
+    finally:
+        shutil.rmtree(cours._DIR, ignore_errors=True)
+        cours._DIR = vrai_dir
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
                test_caches, test_slugs, test_modeles, test_requetes, test_securite,
-               test_non_bloquant, test_delais):
+               test_non_bloquant, test_delais, test_cours):
         try:
             fn()
         except Exception as e:

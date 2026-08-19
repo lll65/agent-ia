@@ -2063,6 +2063,132 @@ async def upload(request: Request):
     return {"answer": answer, "file": safe}
 
 
+# ═══ MODE COURS ═══════════════════════════════════════════════════════════════
+# Nova écoute un cours entier, transcrit au fil de l'eau (Whisper/Groq), efface
+# l'audio aussitôt, et rend à la fin une synthèse + des fiches de révision.
+# Tout est exécuté dans un thread : une transcription ne doit jamais figer le serveur.
+
+class CoursReq(BaseModel):
+    key: Optional[str] = None
+    titre: Optional[str] = None
+    matiere: Optional[str] = None
+    id: Optional[str] = None
+
+
+@router.get("/cours/dispo")
+async def cours_dispo(key: str = ""):
+    """Vraie vérification de bout en bout AVANT d'enregistrer 2 h pour rien : Nova envoie
+    un bip de 0,4 s à Whisper et n'autorise le départ que s'il répond."""
+    _check_key(key)
+    from agent import cours
+    from agent.core import _off
+    ok, raison = await _off(cours.verifier_transcription)
+    return {"ok": ok, "raison": raison}
+
+
+@router.post("/cours/start")
+async def cours_start(req: CoursReq):
+    _check_key(req.key or "")
+    from agent import cours
+    from agent.core import _off
+    if not cours.transcription_dispo():
+        raise HTTPException(status_code=503, detail="Transcription indisponible : GROQ_API_KEY absente.")
+    s = await _off(cours.demarrer, req.titre or "", req.matiere or "")
+    return {"id": s["id"], "titre": s["titre"]}
+
+
+@router.post("/cours/chunk")
+async def cours_chunk(request: Request):
+    """Une tranche d'audio (multipart : id, key, file, secondes). L'audio n'est jamais stocké."""
+    from agent import cours
+    from agent.core import _off
+    form = await request.form()
+    _check_key(str(form.get("key") or ""))
+    sid = str(form.get("id") or "")
+    up = form.get("file")
+    if up is None or not hasattr(up, "read"):
+        raise HTTPException(status_code=400, detail="Aucune tranche audio reçue.")
+    try:
+        secondes = float(form.get("secondes") or 0)
+    except ValueError:
+        secondes = 0.0
+    data = await up.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Tranche vide.")
+    if len(data) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Tranche trop volumineuse (max 25 Mo).")
+    nom = str(getattr(up, "filename", "") or "tranche.webm")[:60]
+    try:
+        return await _off(cours.ajouter_tranche, sid, data, secondes, nom)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session inconnue.")
+    except Exception as e:
+        # 502 = « réessaie » : le navigateur remet la tranche en file, aucun mot n'est perdu.
+        raise HTTPException(status_code=502, detail=str(e)[:200])
+
+
+@router.post("/cours/stop")
+async def cours_stop(req: CoursReq):
+    """Clôt la session et produit la synthèse + les fiches (peut prendre une minute)."""
+    _check_key(req.key or "")
+    from agent import cours
+    from agent.core import _off
+    try:
+        s = await _off(cours.terminer, req.id or "")
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session inconnue.")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)[:250])
+    return {"id": s["id"], "titre": s["titre"], "synthese": s["synthese"],
+            "fiches": s["fiches"], "trous": s["trous"],
+            "mots": len(s["transcript"].split()), "secondes": s["secondes"]}
+
+
+@router.get("/cours")
+async def cours_liste(key: str = ""):
+    _check_key(key)
+    from agent import cours
+    from agent.core import _off
+    return {"sessions": await _off(cours.lister)}
+
+
+@router.get("/cours/detail")
+async def cours_detail(id: str = "", key: str = ""):
+    _check_key(key)
+    from agent import cours
+    from agent.core import _off
+    try:
+        s = await _off(cours._lire, id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Session inconnue.")
+    return {k: v for k, v in s.items() if k not in ("en_attente", "condenses")}
+
+
+@router.get("/cours/export")
+async def cours_export(id: str = "", key: str = ""):
+    """Le cours en Markdown — à garder chez toi : le disque du serveur est effacé aux redémarrages."""
+    _check_key(key)
+    from fastapi.responses import Response
+    from agent import cours
+    from agent.core import _off
+    try:
+        md = await _off(cours.markdown, id)
+        s = await _off(cours._lire, id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Session inconnue.")
+    nom = re.sub(r"[^A-Za-z0-9À-ÿ _-]", "", s.get("titre", "cours"))[:60].strip() or "cours"
+    return Response(content=md, media_type="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{nom}.md"'})
+
+
+@router.delete("/cours")
+async def cours_supprimer(id: str = "", key: str = ""):
+    _check_key(key)
+    from agent import cours
+    from agent.core import _off
+    return {"ok": await _off(cours.supprimer, id)}
+
+
 class AutoReq(BaseModel):
     key: Optional[str] = None
     titre: Optional[str] = None
