@@ -732,11 +732,68 @@ def test_trouvailles():
     check_true("synthèse de secours courte", 10 <= AC._SYNTHESE_TIMEOUT <= 40)
 
 
+# ── 19. Qualité de la requête de recherche ───────────────────────────────────
+def test_requete_web():
+    """« Résume l'actu tech du jour » cherché tel quel ramenait un PODCAST intitulé
+    « L'Actu Tech — chaque jour Patrick résume… » au lieu de l'actualité."""
+    from datetime import datetime
+    import agent.core as AC
+    from agent.core import requete_simple, veut_actualite
+
+    auj = datetime.now()
+    date = AC._JOURS_COURT(auj)
+
+    # Les verbes de commande ne doivent jamais partir au moteur de recherche
+    for phrase in ("Résume l'actu tech du jour", "donne moi les news tech",
+                   "explique moi la photosynthèse", "dis-moi la météo à Pau"):
+        q = requete_simple(phrase).lower()
+        for verbe in ("résume", "resume", "donne", "explique", "dis"):
+            check(f"« {verbe} » retiré de « {phrase[:22]}… »", verbe in q.split(), False)
+
+    # Une demande d'actualité DOIT être datée, sinon le moteur ramène du générique
+    check("actu du jour datée", requete_simple("Résume l'actu tech du jour"),
+          f"actualité tech {date}")
+    check("prix du jour daté", requete_simple("prix du bitcoin aujourd hui"),
+          f"prix bitcoin {date}")
+    check("récent → année", requete_simple("donne moi les news tech"), f"news tech {auj.year}")
+    # …et une question intemporelle ne doit PAS l'être
+    check("question intemporelle non datée", requete_simple("explique moi la photosynthèse"),
+          "photosynthèse")
+    check_true("date absente d'une question intemporelle",
+               str(auj.year) not in requete_simple("qui a gagné la coupe du monde 1998"))
+
+    # Élisions et tournures ne laissent pas de résidu
+    check_true("élision retirée", not requete_simple("Résume l'actu du jour").startswith("l'"))
+    check_true("« quoi de neuf » sans résidu",
+               "neuf" not in requete_simple("quoi de neuf sur l'IA").lower())
+    check("apostrophe typographique gérée",
+          requete_simple("l’actu du jour"), f"actualité {date}")
+    check_true("« aujourd hui » sans apostrophe reconnu", veut_actualite("prix du bitcoin aujourd hui"))
+    # Les noms propres gardent leur casse
+    check("noms propres préservés", requete_simple("rentrée UPPA Pau licence eco gestion"),
+          "rentrée UPPA Pau licence eco gestion")
+    check("entrée vide", requete_simple(""), "")
+
+    # Intention actualité → recherche dans les actualités
+    check_true("actu détectée", veut_actualite("résume l'actu du jour"))
+    check("cours non pris pour de l'actu", veut_actualite("explique la photosynthèse"), False)
+
+    # Les résultats gonflés (même paragraphe répété) sont dégonflés
+    from plugins.builtin.web_search import _extrait
+    bloc = "L'Actu Tech c'est chaque jour une info importante. Mes podcasts hebdo. " * 3
+    court = _extrait(bloc)
+    check("répétition supprimée", court.count("Mes podcasts hebdo"), 1)
+    check_true("extrait borné", len(court) <= 300)
+    check("extrait vide géré", _extrait(""), "")
+    check("balises html retirées", _extrait("<b>Titre</b> et <i>suite</i>."), "Titre et suite.")
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
                test_caches, test_slugs, test_modeles, test_requetes, test_securite,
-               test_non_bloquant, test_delais, test_cours, test_trouvailles):
+               test_non_bloquant, test_delais, test_cours, test_trouvailles,
+               test_requete_web):
         try:
             fn()
         except Exception as e:
