@@ -156,9 +156,11 @@ async def run_one(item: dict) -> str:
     if config.TELEGRAM_TOKEN and getattr(config, "TELEGRAM_CHAT_ID", ""):
         try:
             import requests
-            requests.post(f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}/sendMessage",
-                          json={"chat_id": config.TELEGRAM_CHAT_ID,
-                                "text": f"⚡ {item['titre']}\n\n{answer[:3500]}"}, timeout=20)
+            from agent.core import _off
+            await _off(requests.post,
+                       f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}/sendMessage",
+                       json={"chat_id": config.TELEGRAM_CHAT_ID,
+                             "text": f"⚡ {item['titre']}\n\n{answer[:3500]}"}, timeout=20)
         except Exception:
             pass
     logger.info(f"[automations] '{item['titre']}' exécutée.")

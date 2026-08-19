@@ -61,6 +61,14 @@ async def lifespan(app: FastAPI):
     init_db()
     logger.info("Base de données initialisée.")
 
+    # ⚙️ Pool de threads dédié aux appels BLOQUANTS (LLM, recherche web, Composio, mémoire).
+    # Par défaut Python en alloue min(32, CPU+4) → 5 seulement sur une petite instance Render :
+    # deux conversations simultanées suffisaient à saturer le pool et Nova restait bloquée sur
+    # « réflexion » sans jamais répondre.
+    import concurrent.futures
+    asyncio.get_running_loop().set_default_executor(
+        concurrent.futures.ThreadPoolExecutor(max_workers=32, thread_name_prefix="nova"))
+
     # Démarrage superviseur
     from orchestrator import get_registry
     from orchestrator.supervisor import Supervisor

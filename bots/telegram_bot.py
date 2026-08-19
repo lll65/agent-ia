@@ -56,11 +56,14 @@ async def run_telegram_bot():
 
     async def _fast_reply(text: str, user_id: str) -> str:
         from llm.client import chat
+        from agent.core import _off
         history = _HISTORIES.get(user_id, [])
         msgs = [{"role": "system", "content": _FAST_SYS}]
         msgs.extend(history[-8:])
         msgs.append({"role": "user", "content": text})
-        answer = chat(msgs, temperature=0.7)
+        # ⚠️ `chat()` est bloquant : appelé directement, il gelait la boucle partagée avec
+        # le serveur web (un message Telegram suspendait le streaming de Nova).
+        answer = await _off(chat, msgs, temperature=0.7)
         # Sauvegarde de l'historique
         history.append({"role": "user",      "content": text})
         history.append({"role": "assistant",  "content": answer})

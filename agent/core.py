@@ -93,9 +93,41 @@ def build_system(agent_config: dict, plugins: dict) -> str:
 
 
 async def llm_call(messages: list, model: str = None, temperature: float = 0.7) -> str:
-    from llm.client import chat
+    """Appel modèle NON bloquant et BORNÉ dans le temps.
+
+    Dernier filet de sécurité : même si un SDK ignorait son propre délai, l'itération
+    ReAct rend la main au lieu de laisser Nova « réfléchir » indéfiniment. Le thread
+    parti en arrière-plan finira par expirer tout seul (délais côté llm/client.py).
+    """
+    from llm.client import chat, TIMEOUT_CHAINE
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, lambda: chat(messages, temperature=temperature))
+    fut = loop.run_in_executor(None, lambda: chat(messages, temperature=temperature))
+    try:
+        return await asyncio.wait_for(fut, timeout=TIMEOUT_CHAINE + 20.0)
+    except asyncio.TimeoutError:
+        raise TimeoutError(
+            f"aucun modèle n'a répondu en {int(TIMEOUT_CHAINE + 20)} s") from None
+
+
+async def _off(fn, *args, **kwargs):
+    """Exécute une fonction BLOQUANTE dans un thread.
+
+    ⚠️ Sans ça, un appel réseau synchrone (recherche web, outil Composio, mémoire
+    vectorielle, reformulation LLM) lancé depuis une coroutine gèle TOUTE la boucle
+    asyncio : plus aucun octet SSE n'est envoyé et l'utilisateur voit Nova
+    « réfléchir » indéfiniment sans jamais recevoir de réponse.
+    """
+    import functools
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, functools.partial(fn, *args, **kwargs))
+
+
+async def _remember_safe(mem, agent_id: str, texte: str) -> None:
+    """Mémorise la réponse sans jamais bloquer ni faire échouer le flux."""
+    try:
+        await _off(mem.remember, agent_id, "assistant", texte)
+    except Exception as e:
+        logger.warning(f"mem.remember ignoré: {e}")
 
 
 def _temperature_for_role(agent_config: dict) -> float:
@@ -194,7 +226,7 @@ async def run_agent(
         pass
 
     try:
-        context = mem.build_context(agent_id, task, recent_limit=6)
+        context = await _off(mem.build_context, agent_id, task, recent_limit=6)
     except Exception as e:
         logger.warning(f"build_context ignoré: {e}")
         context = ""
@@ -214,7 +246,7 @@ async def run_agent(
         )
     messages.append({"role": "user", "content": task_msg})
     try:
-        mem.remember(agent_id, "user", task)
+        await _off(mem.remember, agent_id, "user", task)
     except Exception as e:
         logger.warning(f"mem.remember ignoré: {e}")
 
@@ -227,8 +259,8 @@ async def run_agent(
     # Forçage déterministe de search_web sur les questions factuelles (idem run_agent_stream)
     if agent_config.get("force_search") and "search_web" in required_tools:
         try:
-            _q = search_query(task)
-            obs = safe_tool_call(loader, "search_web", {"query": _q, "mode": "web"})
+            _q = await _off(search_query, task)
+            obs = await _off(safe_tool_call, loader, "search_web", {"query": _q, "mode": "web"})
             steps.append({"type": "action", "tool": "search_web", "params": {"query": _q}})
             steps.append({"type": "observation", "tool": "search_web", "result": obs[:400]})
             messages.append({"role": "assistant",
@@ -241,8 +273,25 @@ async def run_agent(
             logger.warning(f"[force_search] échec: {e}")
     MAX_STUB_RETRIES = 2
 
+    # ⏱️ Même échéance que run_agent_stream : on ne fait jamais patienter plusieurs minutes.
+    import time as _t
+    _fin = _t.monotonic() + float(getattr(config, "AGENT_TIMEOUT", 75))
+
     iteration = 0
     while iteration < config.MAX_ITERATIONS:
+        if _t.monotonic() > _fin:
+            logger.warning(f"[core] échéance atteinte après {iteration} itération(s) → synthèse immédiate")
+            messages.append({"role": "user", "content": (
+                "⏱️ Temps imparti atteint. Donne MAINTENANT ta réponse FINAL avec ce que tu as déjà "
+                "trouvé. Si l'information exacte manque, dis-le franchement. Ne lance plus aucune recherche.")})
+            try:
+                dernier = await llm_call(messages, temperature=temperature)
+                _a, _p, fin_txt = parse_response(dernier)
+                rep = fin_txt or dernier
+            except Exception:
+                rep = "⏱️ La recherche a pris trop de temps. Reformule ta question ou précise-la."
+            await _remember_safe(mem, agent_id, rep[:350])
+            return {"answer": rep, "steps": steps, "iterations": iteration + 1}
         try:
             llm_out = await llm_call(messages, temperature=temperature)
         except Exception as e:
@@ -273,11 +322,11 @@ async def run_agent(
 
         if final:
             steps.append(step)
-            mem.remember(agent_id, "assistant", final[:350])
+            await _remember_safe(mem, agent_id, final[:350])
             return {"answer": final, "steps": steps, "iterations": iteration + 1}
 
         if action:
-            observation = safe_tool_call(loader, action, params or {})
+            observation = await _off(safe_tool_call, loader, action, params or {})
             health_monitor.record(action, "Erreur" not in observation)
             tool_calls_made += 1
             step["action"] = action
@@ -292,13 +341,13 @@ async def run_agent(
             )})
         else:
             steps.append(step)
-            mem.remember(agent_id, "assistant", llm_out)
+            await _remember_safe(mem, agent_id, llm_out)
             return {"answer": llm_out, "steps": steps, "iterations": iteration + 1}
 
         iteration += 1
 
     last = steps[-1].get("llm_output", "Limite d'itérations atteinte.") if steps else "Limite d'itérations atteinte."
-    mem.remember(agent_id, "assistant", last)
+    await _remember_safe(mem, agent_id, last)
     return {"answer": last, "steps": steps, "iterations": config.MAX_ITERATIONS}
 
 
@@ -379,13 +428,13 @@ async def run_agent_stream(
     system = build_system(agent_config, loader.list_all())
     temperature = _temperature_for_role(agent_config)
 
-    if mem.should_summarize(agent_id):
-        recent = mem.recall_recent(agent_id, limit=config.SUMMARY_THRESHOLD)
-        try:
+    try:
+        if await _off(mem.should_summarize, agent_id):
+            recent = await _off(mem.recall_recent, agent_id, limit=config.SUMMARY_THRESHOLD)
             summary = await summarize_messages(recent)
-            mem.cache_summary(agent_id, summary)
-        except Exception:
-            pass
+            await _off(mem.cache_summary, agent_id, summary)
+    except Exception:
+        pass
 
     try:
         from agent.self_improve import get_improvement_context
@@ -396,7 +445,11 @@ async def run_agent_stream(
     except Exception:
         pass
 
-    context  = mem.build_context(agent_id, task, recent_limit=6)
+    try:
+        context = await _off(mem.build_context, agent_id, task, recent_limit=6)
+    except Exception as e:
+        logger.warning(f"build_context ignoré: {e}")
+        context = ""
     messages = [{"role": "system", "content": system}]
     if context:
         messages.append({"role": "assistant", "content": f"[Contexte mémoriel]\n{context}"})
@@ -409,11 +462,19 @@ async def run_agent_stream(
             f"réelles avant de répondre. Outil suggéré : {required_tools[0]}]"
         )
     messages.append({"role": "user", "content": task_msg})
-    mem.remember(agent_id, "user", task)
+    try:
+        await _off(mem.remember, agent_id, "user", task)
+    except Exception as e:
+        logger.warning(f"mem.remember ignoré: {e}")
 
     tool_calls_made = 0
     stub_retries    = 0
     needs_tools     = bool(agent_config.get("force_search"))
+
+    # ⏱️ Échéance globale, armée AVANT la recherche forcée : sinon une recherche lente
+    # consommait déjà plusieurs minutes avant même que le chrono ne démarre.
+    import time as _t
+    _fin = _t.monotonic() + float(getattr(config, "AGENT_TIMEOUT", 75))
 
     # ── FORÇAGE DÉTERMINISTE DE search_web pour les questions factuelles ──────
     # On exécute une VRAIE recherche DuckDuckGo AVANT le 1er appel LLM et on injecte
@@ -421,9 +482,9 @@ async def run_agent_stream(
     # il ne peut plus halluciner ni exécuter un script Python à la place.
     if agent_config.get("force_search") and "search_web" in required_tools:
         try:
-            _q = search_query(task)
-            obs = safe_tool_call(loader, "search_web", {"query": _q, "mode": "web"})
+            _q = await _off(search_query, task)
             yield {"type": "action", "tool": "search_web", "params": {"query": _q}, "iteration": 0}
+            obs = await _off(safe_tool_call, loader, "search_web", {"query": _q, "mode": "web"})
             yield {"type": "observation", "tool": "search_web", "result": obs[:400], "iteration": 0}
             messages.append({"role": "assistant",
                              "content": f'THOUGHT: recherche web pour données réelles\nACTION: search_web\nPARAMS: {{"query": "{task[:120]}"}}'})
@@ -436,11 +497,6 @@ async def run_agent_stream(
             tool_calls_made += 1
         except Exception as e:
             logger.warning(f"[force_search] échec: {e}")
-
-    # ⏱️ Échéance globale : sans elle, l'agent pouvait enchaîner 12 itérations
-    # (recherche + appel modèle à chaque tour) et faire attendre plusieurs MINUTES.
-    import time as _t
-    _fin = _t.monotonic() + float(getattr(config, "AGENT_TIMEOUT", 75))
 
     for iteration in range(config.MAX_ITERATIONS):
         if _t.monotonic() > _fin:
@@ -455,7 +511,7 @@ async def run_agent_stream(
                 rep = fin_txt or dernier
             except Exception:
                 rep = "⏱️ La recherche a pris trop de temps. Reformule ta question ou précise-la."
-            mem.remember(agent_id, "assistant", rep[:350])
+            await _remember_safe(mem, agent_id, rep[:350])
             yield {"type": "final", "answer": rep, "iterations": iteration + 1}
             return
         try:
@@ -484,13 +540,13 @@ async def run_agent_stream(
             yield {"type": "thought", "text": thought, "iteration": iteration + 1}
 
         if final:
-            mem.remember(agent_id, "assistant", final[:350])
+            await _remember_safe(mem, agent_id, final[:350])
             yield {"type": "final", "answer": final, "iterations": iteration + 1}
             return
 
         if action:
             yield {"type": "action", "tool": action, "params": params or {}, "iteration": iteration + 1}
-            observation = safe_tool_call(loader, action, params or {})
+            observation = await _off(safe_tool_call, loader, action, params or {})
             health_monitor.record(action, "Erreur" not in observation)
             tool_calls_made += 1
             yield {"type": "observation", "tool": action, "result": observation[:400], "iteration": iteration + 1}
@@ -500,10 +556,10 @@ async def run_agent_stream(
                 "Continue. Si tu as toutes les données, donne ta réponse FINAL:"
             )})
         else:
-            mem.remember(agent_id, "assistant", llm_out)
+            await _remember_safe(mem, agent_id, llm_out)
             yield {"type": "final", "answer": llm_out, "iterations": iteration + 1}
             return
 
     last = f"⚠️ Limite de {config.MAX_ITERATIONS} itérations atteinte."
-    mem.remember(agent_id, "assistant", last)
+    await _remember_safe(mem, agent_id, last)
     yield {"type": "final", "answer": last, "iterations": config.MAX_ITERATIONS}
