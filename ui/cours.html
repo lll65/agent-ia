@@ -448,21 +448,48 @@ $("stop").onclick = async () => {
     if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
     afficher(d, perdues);
   }catch(e){
-    show("out");
-    $("outTitre").textContent = "Synthèse impossible";
-    $("outMeta").textContent = "";
-    warn("outWarn", "❌ " + String(e).slice(0,220) +
-      "<br><br>Ta transcription n'est pas perdue : récupère-la avec le bouton ci-dessous.", true);
-    $("synth").innerHTML = "";
-    $("dl").onclick = () => telecharger(SID);
+    echecSynthese(SID, e);
   }
   window.removeEventListener("beforeunload", avantFermeture);
   charger();
 };
 
+/* ── Échec de la synthèse : le cours n'est JAMAIS perdu ────────────────── */
+function echecSynthese(sid, e){
+  show("out");
+  $("outTitre").textContent = "Synthèse à reprendre";
+  $("outMeta").textContent = "Ta transcription est intacte et enregistrée.";
+  warn("outWarn", "❌ " + esc(String(e)).slice(0,300) +
+    "<br><br>Le cours <b>n'est pas perdu</b>. Réessaie la synthèse (les modèles gratuits " +
+    "sont parfois saturés), ou télécharge la transcription tout de suite.", true);
+  $("synth").innerHTML = "";
+  $("synth").closest(".card").classList.add("hide");
+  $("fichesCard").classList.add("hide");
+  $("dl").onclick = () => telecharger(sid);
+  $("copy").textContent = "🔄 Réessayer la synthèse";
+  $("copy").onclick = () => relancerSynthese(sid);
+}
+
+async function relancerSynthese(sid){
+  $("copy").disabled = true; show("work");
+  $("workTxt").innerHTML = "Nouvelle tentative de synthèse…";
+  try{
+    const r = await fetch(ORIGIN + "/agent/cours/stop", { method:"POST",
+      headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ key:KEY, id:sid }) });
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
+    afficher(d, 0); charger();
+  }catch(e){
+    echecSynthese(sid, e);
+  }finally{
+    $("copy").disabled = false;
+  }
+}
+
 /* ── Affichage du résultat ─────────────────────────────────────────────── */
 function afficher(d, perdues){
   show("out");
+  $("synth").closest(".card").classList.remove("hide");
   $("outTitre").textContent = d.titre || "Cours";
   $("outMeta").textContent = `${Math.round((d.secondes||0)/60)} min · ${d.mots||0} mots · ` +
                              `${(d.fiches||[]).length} fiches`;
@@ -479,6 +506,7 @@ function afficher(d, perdues){
     el.onclick = () => el.classList.toggle("open"));
   const sid = d.id || SID;
   $("dl").onclick = () => telecharger(sid);
+  $("copy").textContent = "📋 Copier";
   $("copy").onclick = async () => {
     try{ await navigator.clipboard.writeText(d.synthese || ""); $("copy").textContent = "✅ Copié"; }
     catch(e){ $("copy").textContent = "❌ Échec"; }
@@ -514,7 +542,12 @@ async function ouvrir(id){
   try{
     const d = await (await fetch(ORIGIN + "/agent/cours/detail?id=" + encodeURIComponent(id) +
                                  "&key=" + encodeURIComponent(KEY))).json();
-    if(!d.synthese){ alert("Ce cours n'a pas de synthèse (il a été interrompu)."); return; }
+    if(!d.synthese){
+      // Transcription présente mais synthèse absente : on propose de la relancer.
+      if((d.transcript || "").trim()){ echecSynthese(id, "La synthèse n'a pas abouti la première fois."); }
+      else{ alert("Ce cours ne contient aucune parole transcrite."); }
+      window.scrollTo(0,0); return;
+    }
     afficher({ id, titre:d.titre, synthese:d.synthese, fiches:d.fiches, trous:d.trous,
                secondes:d.secondes, mots:(d.transcript||"").split(/\s+/).length }, 0);
     window.scrollTo(0,0);

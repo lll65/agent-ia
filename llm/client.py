@@ -35,19 +35,60 @@ _KO_TTL = 3600.0   # on réessaie au bout d'une heure (au cas où ce soit passag
 # un seul fournisseur muet immobilisait Nova ~30 min, et comme la chaîne enchaîne
 # plusieurs fournisseurs, elle « réfléchissait » sans jamais répondre.
 # Ici : on abandonne vite et on passe au fournisseur suivant, qui lui répondra.
-TIMEOUT_LLM = float(os.getenv("LLM_TIMEOUT", "45"))        # réponse complète
-TIMEOUT_STREAM = float(os.getenv("LLM_TIMEOUT_STREAM", "90"))  # streaming (plus long, ça coule)
-TIMEOUT_LISTE = 12.0                                        # découverte des modèles
+# ⚠️ TIMEOUT_LLM doit rester PETIT devant TIMEOUT_CHAINE, sinon un seul fournisseur muet
+# consomme tout le budget et les suivants ne sont jamais essayés — exactement ce que la
+# chaîne de secours est censée empêcher (constaté : « nvidia : Request timed out. · délai
+# global dépassé — fournisseurs suivants non essayés », alors que Groq marchait).
+TIMEOUT_LLM = float(os.getenv("LLM_TIMEOUT", "22"))        # réponse complète, PAR fournisseur
+TIMEOUT_STREAM = float(os.getenv("LLM_TIMEOUT_STREAM", "60"))  # streaming (plus long, ça coule)
+TIMEOUT_LISTE = 8.0                                         # découverte des modèles
 TIMEOUT_CHAINE = float(os.getenv("LLM_TIMEOUT_TOTAL", "70"))   # budget de TOUTE la chaîne
+MIN_ESSAIS = 3          # nombre de fournisseurs qui doivent pouvoir être essayés
+
+# Budget restant pour l'appel en cours : chaque client s'y adapte, personne ne déborde.
+_BUDGET_APPEL = None    # défini plus bas (après l'import de contextvars)
+
+
+def _plancher() -> float:
+    """En dessous, un appel n'a aucune chance d'aboutir — mais ce seuil ne doit jamais
+    contredire un TIMEOUT_LLM volontairement plus court (tests, réglage serré)."""
+    return min(6.0, TIMEOUT_LLM)
 
 
 def _timeout(t: float):
-    """Délai httpx : connexion courte, lecture bornée."""
+    """Délai httpx : connexion courte, lecture bornée par le budget restant."""
+    reste = _BUDGET_APPEL.get(0.0) if _BUDGET_APPEL is not None else 0.0
+    if reste > 0:
+        t = min(reste, max(_plancher(), min(t, reste)))
     try:
         import httpx
-        return httpx.Timeout(t, connect=8.0)
+        return httpx.Timeout(t, connect=min(6.0, t))
     except Exception:
         return t
+
+
+# ── Disjoncteur par fournisseur ───────────────────────────────────────────────
+# Une clé morte (NVIDIA non vérifiée, Gemini sans API activée…) coûtait son délai plein
+# à CHAQUE message. On la met de côté quelques minutes après un échec franc.
+_FOURNISSEURS_KO = {}
+_KO_FOURNISSEUR_TTL = float(os.getenv("LLM_PANNE_TTL", "600"))
+
+
+def _fournisseur_hs(nom: str) -> bool:
+    import time
+    t = _FOURNISSEURS_KO.get(nom)
+    return bool(t and (time.monotonic() - t) < _KO_FOURNISSEUR_TTL)
+
+
+def _marque_fournisseur_hs(nom: str, err: Exception) -> None:
+    """Écarte temporairement un fournisseur en panne FRANCHE (pas un simple 404 de modèle)."""
+    import time
+    t = str(err).lower()
+    franc = any(k in t for k in ("timed out", "timeout", "connection", "401", "unauthorized",
+                                 "invalid api key", "402", "payment", "403", "forbidden"))
+    if franc:
+        _FOURNISSEURS_KO[nom] = time.monotonic()
+        logger.warning(f"[LLM] {nom} écarté {int(_KO_FOURNISSEUR_TTL / 60)} min (panne franche).")
 
 
 def _lister_modeles(client):
@@ -120,6 +161,10 @@ ORDRE = {
 # Qui a répondu en dernier (par contexte async → sûr même avec plusieurs requêtes)
 import contextvars
 DERNIER = contextvars.ContextVar("dernier_llm", default="")
+_BUDGET_APPEL = contextvars.ContextVar("budget_appel_llm", default=0.0)
+# Dernier fournisseur qui a RÉELLEMENT répondu : on le remet en tête, c'est le seul
+# dont on ait la preuve qu'il fonctionne maintenant.
+_DERNIER_OK = {"nom": ""}
 
 
 def _modele_impose(nom: str) -> str:
@@ -159,13 +204,23 @@ def _providers_disponibles(niveau: str = "equilibre"):
     prefere = (getattr(config, "LLM_PREFER", "auto") or "auto").lower()
     if prefere != "auto" and prefere in tous:
         add(prefere)
-    # 2) Puis l'ordre adapté au niveau de la tâche
+    # 2) Celui qui a RÉPONDU en dernier passe devant : c'est le seul dont on ait la preuve
+    #    qu'il marche à cet instant. Sans ça, chaque message repayait le délai plein du
+    #    fournisseur en panne placé en tête par le routage théorique.
+    elif _DERNIER_OK["nom"] and not _fournisseur_hs(_DERNIER_OK["nom"]):
+        add(_DERNIER_OK["nom"])
+    # 3) Puis l'ordre adapté au niveau de la tâche
     for nom in ORDRE.get(niveau, ORDRE["equilibre"]):
         add(nom)
-    # 3) Enfin tout le reste (rien ne doit être oublié)
+    # 4) Enfin tout le reste (rien ne doit être oublié)
     for nom in tous:
         add(nom)
-    return chaine
+
+    # 5) Les fournisseurs en panne récente partent en fin de liste plutôt qu'à la poubelle :
+    #    si TOUS sont marqués HS, il faut quand même en tenter un.
+    vivants = [c for c in chaine if not _fournisseur_hs(c[0])]
+    morts = [c for c in chaine if _fournisseur_hs(c[0])]
+    return vivants + morts
 
 
 def _explique(nom: str, err: Exception) -> str:
@@ -197,10 +252,19 @@ def chat(messages: list, temperature: float = 0.7, num_ctx: int = 4096,
     _fin_chaine = _t.monotonic() + TIMEOUT_CHAINE
 
     soucis = []
-    for nom, fn, modele in chaine:
-        if _t.monotonic() > _fin_chaine:
+    for i, (nom, fn, modele) in enumerate(chaine):
+        restant = _fin_chaine - _t.monotonic()
+        # Le PREMIER fournisseur est toujours tenté : ne rien essayer serait pire que
+        # d'essayer une fois de trop.
+        if i > 0 and restant < _plancher():
             soucis.append("délai global dépassé — fournisseurs suivants non essayés")
             break
+        # ⏱️ Chaque fournisseur ne reçoit qu'une PART du temps restant, calculée pour qu'au
+        # moins MIN_ESSAIS d'entre eux puissent être tentés. C'est ce partage qui manquait :
+        # le premier prenait tout et les suivants n'avaient jamais leur chance.
+        a_venir = max(1, min(len(chaine) - i, MIN_ESSAIS))
+        part = min(TIMEOUT_LLM, restant / a_venir)
+        _BUDGET_APPEL.set(min(restant, max(_plancher(), part)))
         try:
             try:      # certains fournisseurs exploitent le niveau pour choisir le modèle
                 out = fn(messages, modele or config.LLM_MODEL, temperature, niveau)
@@ -210,11 +274,16 @@ def chat(messages: list, temperature: float = 0.7, num_ctx: int = 4096,
                 if soucis:
                     logger.warning(f"[LLM] bascule sur {nom} après : {' | '.join(soucis)}")
                 DERNIER.set(f"{nom} · {_MODELES_OK.get(nom) or modele}")
+                _DERNIER_OK["nom"] = nom
+                _FOURNISSEURS_KO.pop(nom, None)      # il remarche : on lève la sanction
                 return out
             soucis.append(f"{nom} : réponse vide")
         except Exception as e:
             soucis.append(_explique(nom, e))
+            _marque_fournisseur_hs(nom, e)
             logger.warning(f"[LLM] {nom} indisponible → fournisseur suivant. ({str(e)[:90]})")
+        finally:
+            _BUDGET_APPEL.set(0.0)
 
     # Dernier recours : Ollama local (souvent absent en ligne)
     try:
@@ -247,7 +316,7 @@ def chat_stream(messages: list, temperature: float = 0.6, niveau: str = "equilib
             provider = nom
             model = _MODELES_OK.get(nom) or mod
             client = OpenAI(api_key=cles[nom], base_url=_BASES[nom],
-                            timeout=_timeout(TIMEOUT_STREAM), max_retries=1)
+                            timeout=_timeout(TIMEOUT_STREAM), max_retries=0)
             break
     try:
         if client is None:
@@ -282,7 +351,7 @@ def _groq_chat(messages: list, model: str, temperature: float) -> str:
     """Groq avec auto-guérison : les modèles sont régulièrement retirés (404).
     On essaie le modèle configuré, des noms connus, puis ceux réellement offerts au compte."""
     from groq import Groq
-    client = Groq(api_key=config.GROQ_API_KEY, timeout=_timeout(TIMEOUT_LLM), max_retries=1)
+    client = Groq(api_key=config.GROQ_API_KEY, timeout=_timeout(TIMEOUT_LLM), max_retries=0)
 
     candidats = []
     for m in (_MODELES_OK.get("groq"), model, config.GROQ_MODEL,
@@ -369,7 +438,7 @@ def _nvidia_chat(messages: list, model: str, temperature: float, niveau: str = "
         raise RuntimeError("NVIDIA_API_KEY absente.")
     client = OpenAI(api_key=config.NVIDIA_API_KEY,
                     base_url="https://integrate.api.nvidia.com/v1",
-                    timeout=_timeout(TIMEOUT_LLM), max_retries=1)
+                    timeout=_timeout(TIMEOUT_LLM), max_retries=0)
 
     candidats = []
     impose = _modele_impose("nvidia")
@@ -437,7 +506,7 @@ def _openrouter_chat(messages: list, model: str, temperature: float) -> str:
         raise RuntimeError("OPENROUTER_API_KEY absente.")
     client = OpenAI(api_key=config.OPENROUTER_API_KEY,
                     base_url="https://openrouter.ai/api/v1",
-                    timeout=_timeout(TIMEOUT_LLM), max_retries=1)
+                    timeout=_timeout(TIMEOUT_LLM), max_retries=0)
 
     candidats = []
     for m in (_MODELES_OK.get("openrouter"), model, config.OPENROUTER_MODEL,
@@ -477,7 +546,7 @@ def _openrouter_chat(messages: list, model: str, temperature: float) -> str:
 def _xai_chat(messages: list, model: str, temperature: float) -> str:
     from openai import OpenAI
     client = OpenAI(api_key=config.XAI_API_KEY, base_url="https://api.x.ai/v1",
-                    timeout=_timeout(TIMEOUT_LLM), max_retries=1)
+                    timeout=_timeout(TIMEOUT_LLM), max_retries=0)
     resp = client.chat.completions.create(
         model=model,
         messages=messages,
@@ -515,7 +584,7 @@ def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> 
                 candidates.append(m)
         try:
             from groq import Groq
-            client = Groq(api_key=config.GROQ_API_KEY, timeout=_timeout(TIMEOUT_LLM), max_retries=1)
+            client = Groq(api_key=config.GROQ_API_KEY, timeout=_timeout(TIMEOUT_LLM), max_retries=0)
             try:  # modèles réellement disponibles sur CE compte
                 for mo in _lister_modeles(client):
                     mid = getattr(mo, "id", "") or ""
@@ -593,7 +662,7 @@ def _cerebras_chat(messages: list, model: str, temperature: float) -> str:
     client = OpenAI(
         api_key=config.CEREBRAS_API_KEY,
         base_url="https://api.cerebras.ai/v1",
-        timeout=_timeout(TIMEOUT_LLM), max_retries=1,
+        timeout=_timeout(TIMEOUT_LLM), max_retries=0,
     )
     # Ordre d'essai : modèle configuré, noms connus, PUIS les modèles réellement
     # accessibles au compte (via /models) → évite les 404 'model_not_found'.
