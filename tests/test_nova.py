@@ -574,11 +574,112 @@ def test_cours():
         cours._DIR = vrai_dir
 
 
+# ── 18. Ne jamais jeter ce qui a été trouvé ──────────────────────────────────
+def test_trouvailles():
+    """Cas réel : Nova trouve Le Monde, dépasse le délai, et répondait « reformule
+    ta question » en jetant des résultats pourtant valides."""
+    import asyncio
+    import agent.core as AC
+
+    RES = ("🔎 **Résultats web : actu tech** (6)\n\n**1. Actualités du jour - Le Monde**\n"
+           "_lemonde.fr_\n🔗 https://lemonde.fr/tech")
+
+    # 18a. Le repli rend les sources réelles, sans doublon ni excuse sèche
+    r = AC._repli_observations([RES, RES])
+    check_true("le repli cite la source réelle", "lemonde.fr" in r)
+    check("le repli ne répète pas deux fois la même trouvaille", r.count("Le Monde"), 1)
+    check("aucun repli sans trouvaille", AC._repli_observations([]), "")
+    check("un échec d'outil n'est pas une trouvaille",
+          AC._repli_observations(["[Self-heal] Outil 'search_web' a échoué"]), "")
+    check("un moteur muet n'est pas une trouvaille",
+          AC._repli_observations(["⚠️ Aucun résultat exploitable pour « x »"]), "")
+    # La consigne interne injectée par le plafond ne doit pas fuiter à l'écran
+    check_true("la consigne système ne fuit pas",
+               "[SYSTÈME]" not in AC._repli_observations([RES + "\n\n[SYSTÈME] N'en lance plus"]))
+
+    # 18b. Le protocole ReAct ne doit JAMAIS s'afficher dans le chat
+    check("action brute rejetée",
+          AC._texte_lisible('THOUGHT: je cherche\nACTION: search_web\nPARAMS: {"query": "x"}'), "")
+    check("préfixes retirés", AC._texte_lisible("FINAL: Voici la réponse."), "Voici la réponse.")
+    check("prose normale intacte", AC._texte_lisible("Voici la réponse."), "Voici la réponse.")
+
+    # 18c. Deux formulations équivalentes = une seule recherche
+    check("clés équivalentes",
+          AC._cle_requete("actu tech du jour !") == AC._cle_requete("Actu, TECH jour"), True)
+    check_true("clés distinctes si sujet différent",
+               AC._cle_requete("actu tech") != AC._cle_requete("actu sport"))
+
+    # 18d. Bout en bout : requête identique relancée → aucun second appel réseau,
+    #      et au-delà du plafond la recherche est refusée.
+    appels = []
+
+    def outil(loader, nom, params, fallback="", echeance=0.0):
+        appels.append(params.get("query", ""))
+        return RES
+
+    tours = {"n": 0}
+
+    async def faux_llm(messages, model=None, temperature=0.7, timeout=0.0):
+        tours["n"] += 1
+        if tours["n"] <= 4:      # le modèle s'obstine à relancer des recherches
+            return ('THOUGHT: je cherche\nACTION: search_web\n'
+                    'PARAMS: {"query": "actu tech du jour"}')
+        return "FINAL: Voici l'actualité tech."
+
+    # safe_tool_call est importé DANS la fonction : c'est le module source qu'il faut remplacer
+    import agent.self_heal as SH
+    vrais = (SH.safe_tool_call, AC.llm_call, AC.search_query)
+    try:
+        SH.safe_tool_call = outil
+        AC.llm_call = faux_llm
+        AC.search_query = lambda t: "actu tech du jour"
+
+        async def run():
+            cfg = {"name": "Nova", "tools": ["search_web"], "force_search": True,
+                   "system_prompt": "test"}
+            out = []
+            async for step in AC.run_agent_stream("actu tech ?", cfg, "test_trouv"):
+                out.append(step)
+            return out
+
+        etapes = asyncio.run(run())
+        finale = [e for e in etapes if e["type"] == "final"]
+        check("une seule recherche réseau malgré les relances", len(appels), 1)
+        check_true("réponse finale rendue", finale and finale[0]["answer"])
+        check_true("le protocole ne fuit pas dans la réponse",
+                   "ACTION:" not in (finale[0]["answer"] if finale else ""))
+    finally:
+        SH.safe_tool_call, AC.llm_call, AC.search_query = vrais
+
+    # 18e. safe_tool_call cesse de retenter une fois l'échéance passée
+    import time
+    from agent.self_heal import safe_tool_call as vrai_stc
+
+    class LoaderKO:
+        def run(self, nom, params):
+            essais.append(1)
+            raise RuntimeError("réseau lent")
+
+    essais = []
+    vrai_stc(LoaderKO(), "search_web", {}, "", time.monotonic() - 1)
+    check("échéance dépassée → une seule tentative", len(essais), 1)
+    essais = []
+    vrai_stc(LoaderKO(), "search_web", {}, "", time.monotonic() + 60)
+    check("échéance lointaine → 3 tentatives", len(essais), 3)
+
+    # 18f. Une recherche web est bornée dans le temps
+    from plugins.builtin import web_search as WS
+    check_true("budget de recherche borné", 8 <= WS.BUDGET_RECHERCHE <= 40)
+    check_true("délai par hôte court", 3 <= WS.TIMEOUT_HOTE <= 12)
+    check_true("plafond de recherches bas", 1 <= AC.MAX_RECHERCHES <= 4)
+    check_true("synthèse de secours courte", 10 <= AC._SYNTHESE_TIMEOUT <= 40)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
                test_caches, test_slugs, test_modeles, test_requetes, test_securite,
-               test_non_bloquant, test_delais, test_cours):
+               test_non_bloquant, test_delais, test_cours, test_trouvailles):
         try:
             fn()
         except Exception as e:

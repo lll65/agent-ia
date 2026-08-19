@@ -56,10 +56,17 @@ def with_retry(
     return decorator
 
 
-def safe_tool_call(plugin_loader, tool_name: str, params: dict, fallback: str = "") -> str:
+def safe_tool_call(plugin_loader, tool_name: str, params: dict, fallback: str = "",
+                   echeance: float = 0.0) -> str:
     """
     Exécute un outil avec retry + fallback si tout échoue.
+
+    `echeance` (temps monotone) borne les nouvelles tentatives. Une recherche web peut
+    coûter 30 s ; la rejouer trois fois dévorait à elle seule tout le temps imparti à
+    l'agent, qui rendait ensuite une excuse au lieu d'une réponse. Passé l'échéance, on
+    s'arrête après la tentative en cours.
     """
+    import time
     last_error = None
     for attempt in range(1, 4):
         try:
@@ -73,8 +80,11 @@ def safe_tool_call(plugin_loader, tool_name: str, params: dict, fallback: str = 
         except Exception as e:
             last_error = str(e)
             logger.warning(f"Tool '{tool_name}' tentative {attempt} échouée: {e}")
+        if echeance and time.monotonic() >= echeance:
+            logger.warning(f"Tool '{tool_name}' : échéance atteinte, on ne retente pas.")
+            break
 
-    msg = f"[Self-heal] Outil '{tool_name}' a échoué {3} fois. Dernière erreur: {last_error}"
+    msg = f"[Self-heal] Outil '{tool_name}' a échoué {attempt} fois. Dernière erreur: {last_error}"
     logger.error(msg)
     return fallback or msg
 

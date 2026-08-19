@@ -5,6 +5,7 @@ import json
 import re
 import logging
 import asyncio
+import time as _tm
 from config import config
 
 logger = logging.getLogger(__name__)
@@ -92,21 +93,25 @@ def build_system(agent_config: dict, plugins: dict) -> str:
     )
 
 
-async def llm_call(messages: list, model: str = None, temperature: float = 0.7) -> str:
+async def llm_call(messages: list, model: str = None, temperature: float = 0.7,
+                   timeout: float = 0.0) -> str:
     """Appel modèle NON bloquant et BORNÉ dans le temps.
 
     Dernier filet de sécurité : même si un SDK ignorait son propre délai, l'itération
     ReAct rend la main au lieu de laisser Nova « réfléchir » indéfiniment. Le thread
     parti en arrière-plan finira par expirer tout seul (délais côté llm/client.py).
+
+    `timeout` permet de resserrer le délai quand on est DÉJÀ en retard (synthèse de
+    dernière minute) : rallonger l'attente à ce moment-là ne ferait qu'aggraver le retard.
     """
     from llm.client import chat, TIMEOUT_CHAINE
     loop = asyncio.get_running_loop()
+    limite = timeout if timeout > 0 else TIMEOUT_CHAINE + 20.0
     fut = loop.run_in_executor(None, lambda: chat(messages, temperature=temperature))
     try:
-        return await asyncio.wait_for(fut, timeout=TIMEOUT_CHAINE + 20.0)
+        return await asyncio.wait_for(fut, timeout=limite)
     except asyncio.TimeoutError:
-        raise TimeoutError(
-            f"aucun modèle n'a répondu en {int(TIMEOUT_CHAINE + 20)} s") from None
+        raise TimeoutError(f"aucun modèle n'a répondu en {int(limite)} s") from None
 
 
 async def _off(fn, *args, **kwargs):
@@ -120,6 +125,65 @@ async def _off(fn, *args, **kwargs):
     import functools
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, functools.partial(fn, *args, **kwargs))
+
+
+# Délai de la synthèse de dernière minute. Court par construction : on a déjà dépassé
+# l'échéance, rallonger l'attente ne ferait qu'aggraver le retard côté utilisateur.
+_SYNTHESE_TIMEOUT = 25.0
+
+
+def _cle_requete(q: str) -> str:
+    """Empreinte d'une requête de recherche, pour reconnaître deux demandes équivalentes.
+
+    « actu tech du jour » et « Actu tech jour ! » donnent la même clé → la seconde
+    recherche réutilise le résultat de la première au lieu de repayer le réseau.
+    """
+    mots = sorted(set(re.sub(r"[^\wÀ-ÿ\s]", " ", (q or "").lower()).split()))
+    return " ".join(m for m in mots if len(m) > 2)
+
+
+# Au-delà, on force la conclusion : le modèle relançait des recherches en boucle et
+# consommait tout le temps imparti sans jamais rédiger.
+MAX_RECHERCHES = 2
+
+
+def _texte_lisible(sortie: str) -> str:
+    """Ne montre à l'utilisateur que de la prose — jamais le protocole interne.
+
+    Quand l'échéance tombait alors que le modèle réclamait encore un outil, sa réponse
+    (« THOUGHT: … ACTION: search_web … ») était affichée telle quelle dans le chat.
+    """
+    t = (sortie or "").strip()
+    if re.search(r"^\s*(ACTION|PARAMS)\s*:", t, re.M | re.I):
+        return ""                                   # le modèle boucle encore : inutilisable
+    t = re.sub(r"^\s*(THOUGHT|FINAL)\s*:\s*", "", t, flags=re.M | re.I).strip()
+    return t
+
+
+def _repli_observations(observations: list, task: str = "") -> str:
+    """Réponse de secours bâtie sur ce que les outils ont RÉELLEMENT rapporté.
+
+    Sans ça, un dépassement de délai effaçait des résultats de recherche pourtant valides
+    et n'affichait qu'une excuse : Nova avait trouvé Le Monde, Frandroid… et répondait
+    « reformule ta question ». Ici on rend les trouvailles telles quelles, en disant
+    honnêtement que la mise en forme n'a pas pu être faite.
+    """
+    utiles, vues = [], set()
+    for o in observations:
+        if not o or not o.strip() or o.startswith(("[Self-heal]", "⚠️ Aucun résultat")):
+            continue
+        # Deux recherches proches ramènent souvent les MÊMES pages : ne pas les répéter.
+        empreinte = re.sub(r"\s+", " ", o)[:400]
+        if empreinte in vues:
+            continue
+        vues.add(empreinte)
+        utiles.append(o.split("\n\n[SYSTÈME]")[0].strip())
+    if not utiles:
+        return ""
+    corps = "\n\n".join(utiles[-2:])[:2600]
+    return ("⏱️ Je n'ai pas eu le temps de rédiger la synthèse, mais **voici ce que j'ai "
+            "trouvé** — les sources sont réelles et vérifiables :\n\n" + corps +
+            "\n\n_Redemande-moi de résumer ces résultats si tu veux une synthèse rédigée._")
 
 
 async def _remember_safe(mem, agent_id: str, texte: str) -> None:
@@ -257,10 +321,14 @@ async def run_agent(
     needs_tools = bool(agent_config.get("force_search"))
 
     # Forçage déterministe de search_web sur les questions factuelles (idem run_agent_stream)
+    observations, deja_cherche = [], {}
+    _fin_pre = _tm.monotonic() + float(getattr(config, "AGENT_TIMEOUT", 75))
     if agent_config.get("force_search") and "search_web" in required_tools:
         try:
             _q = await _off(search_query, task)
-            obs = await _off(safe_tool_call, loader, "search_web", {"query": _q, "mode": "web"})
+            obs = await _off(safe_tool_call, loader, "search_web", {"query": _q, "mode": "web"}, "", _fin_pre)
+            observations.append(obs)
+            deja_cherche[_cle_requete(_q)] = obs
             steps.append({"type": "action", "tool": "search_web", "params": {"query": _q}})
             steps.append({"type": "observation", "tool": "search_web", "result": obs[:400]})
             messages.append({"role": "assistant",
@@ -273,23 +341,28 @@ async def run_agent(
             logger.warning(f"[force_search] échec: {e}")
     MAX_STUB_RETRIES = 2
 
-    # ⏱️ Même échéance que run_agent_stream : on ne fait jamais patienter plusieurs minutes.
-    import time as _t
-    _fin = _t.monotonic() + float(getattr(config, "AGENT_TIMEOUT", 75))
+    # ⏱️ Même échéance que run_agent_stream, armée AVANT la recherche forcée.
+    _fin = _fin_pre
 
     iteration = 0
     while iteration < config.MAX_ITERATIONS:
-        if _t.monotonic() > _fin:
+        if _tm.monotonic() > _fin:
             logger.warning(f"[core] échéance atteinte après {iteration} itération(s) → synthèse immédiate")
             messages.append({"role": "user", "content": (
                 "⏱️ Temps imparti atteint. Donne MAINTENANT ta réponse FINAL avec ce que tu as déjà "
                 "trouvé. Si l'information exacte manque, dis-le franchement. Ne lance plus aucune recherche.")})
             try:
-                dernier = await llm_call(messages, temperature=temperature)
+                dernier = await llm_call(messages, temperature=temperature, timeout=_SYNTHESE_TIMEOUT)
                 _a, _p, fin_txt = parse_response(dernier)
-                rep = fin_txt or dernier
-            except Exception:
-                rep = "⏱️ La recherche a pris trop de temps. Reformule ta question ou précise-la."
+                # Si le modèle réclame ENCORE un outil, sa sortie n'est pas une réponse :
+                # on la jette au profit des trouvailles réelles.
+                rep = (fin_txt or "").strip() if fin_txt else _texte_lisible(dernier)
+            except Exception as e:
+                logger.warning(f"[core] synthèse de dernière minute impossible : {str(e)[:120]}")
+                rep = ""
+            rep = rep or _repli_observations(observations, task) or (
+                "⏱️ La recherche a pris trop de temps et n'a rien rapporté d'exploitable. "
+                "Reformule ta question ou précise-la.")
             await _remember_safe(mem, agent_id, rep[:350])
             return {"answer": rep, "steps": steps, "iterations": iteration + 1}
         try:
@@ -326,7 +399,23 @@ async def run_agent(
             return {"answer": final, "steps": steps, "iterations": iteration + 1}
 
         if action:
-            observation = await _off(safe_tool_call, loader, action, params or {})
+            cle = _cle_requete((params or {}).get("query", "")) if action == "search_web" else ""
+            if cle and cle in deja_cherche:
+                observation = deja_cherche[cle]
+                logger.info("[core] recherche identique déjà faite → résultat réutilisé")
+            elif cle and len(deja_cherche) >= MAX_RECHERCHES:
+                # Le modèle relançait des recherches jusqu'à épuiser le temps imparti sans
+                # jamais rédiger. On lui rend ce qu'il a déjà et on lui coupe l'échappatoire.
+                observation = ("\n\n".join(deja_cherche.values())[:1200] +
+                               "\n\n[SYSTÈME] Tu as déjà lancé "
+                               f"{len(deja_cherche)} recherches. N'en lance plus AUCUNE : "
+                               "réponds MAINTENANT avec FINAL: à partir de ces résultats.")
+                logger.info("[core] plafond de recherches atteint → conclusion forcée")
+            else:
+                observation = await _off(safe_tool_call, loader, action, params or {}, "", _fin)
+                if cle:
+                    deja_cherche[cle] = observation
+            observations.append(observation)
             health_monitor.record(action, "Erreur" not in observation)
             tool_calls_made += 1
             step["action"] = action
@@ -341,12 +430,15 @@ async def run_agent(
             )})
         else:
             steps.append(step)
-            await _remember_safe(mem, agent_id, llm_out)
-            return {"answer": llm_out, "steps": steps, "iterations": iteration + 1}
+            propre = _texte_lisible(llm_out) or _repli_observations(observations, task) or llm_out
+            await _remember_safe(mem, agent_id, propre)
+            return {"answer": propre, "steps": steps, "iterations": iteration + 1}
 
         iteration += 1
 
-    last = steps[-1].get("llm_output", "Limite d'itérations atteinte.") if steps else "Limite d'itérations atteinte."
+    last = _repli_observations(observations, task) or (
+        steps[-1].get("llm_output", "Limite d'itérations atteinte.") if steps
+        else "Limite d'itérations atteinte.")
     await _remember_safe(mem, agent_id, last)
     return {"answer": last, "steps": steps, "iterations": config.MAX_ITERATIONS}
 
@@ -473,18 +565,23 @@ async def run_agent_stream(
 
     # ⏱️ Échéance globale, armée AVANT la recherche forcée : sinon une recherche lente
     # consommait déjà plusieurs minutes avant même que le chrono ne démarre.
-    import time as _t
-    _fin = _t.monotonic() + float(getattr(config, "AGENT_TIMEOUT", 75))
+    _fin = _tm.monotonic() + float(getattr(config, "AGENT_TIMEOUT", 75))
 
     # ── FORÇAGE DÉTERMINISTE DE search_web pour les questions factuelles ──────
     # On exécute une VRAIE recherche DuckDuckGo AVANT le 1er appel LLM et on injecte
     # l'observation → le modèle répond sur des données réelles (avec vraies sources),
     # il ne peut plus halluciner ni exécuter un script Python à la place.
+    # Tout ce que les outils rapportent : sert de réponse de secours si le temps manque
+    # pour rédiger. Ces données sont réelles — les jeter serait absurde.
+    observations, deja_cherche = [], {}
+
     if agent_config.get("force_search") and "search_web" in required_tools:
         try:
             _q = await _off(search_query, task)
             yield {"type": "action", "tool": "search_web", "params": {"query": _q}, "iteration": 0}
-            obs = await _off(safe_tool_call, loader, "search_web", {"query": _q, "mode": "web"})
+            obs = await _off(safe_tool_call, loader, "search_web", {"query": _q, "mode": "web"}, "", _fin)
+            observations.append(obs)
+            deja_cherche[_cle_requete(_q)] = obs
             yield {"type": "observation", "tool": "search_web", "result": obs[:400], "iteration": 0}
             messages.append({"role": "assistant",
                              "content": f'THOUGHT: recherche web pour données réelles\nACTION: search_web\nPARAMS: {{"query": "{task[:120]}"}}'})
@@ -499,18 +596,26 @@ async def run_agent_stream(
             logger.warning(f"[force_search] échec: {e}")
 
     for iteration in range(config.MAX_ITERATIONS):
-        if _t.monotonic() > _fin:
+        if _tm.monotonic() > _fin:
             logger.warning(f"[core] échéance atteinte après {iteration} itération(s) → synthèse immédiate")
             messages.append({"role": "user", "content": (
                 "⏱️ Temps imparti atteint. Donne MAINTENANT ta réponse FINAL avec ce que tu as déjà "
                 "trouvé. Si l'information exacte manque, dis-le franchement et donne le lien le plus "
                 "pertinent des résultats. Ne lance plus aucune recherche.")})
+            rep = ""
             try:
-                dernier = await llm_call(messages, temperature=temperature)
+                # Délai resserré : on est DÉJÀ en retard, attendre encore 90 s serait pire.
+                dernier = await llm_call(messages, temperature=temperature, timeout=_SYNTHESE_TIMEOUT)
                 _a, _p, fin_txt = parse_response(dernier)
-                rep = fin_txt or dernier
-            except Exception:
-                rep = "⏱️ La recherche a pris trop de temps. Reformule ta question ou précise-la."
+                # Si le modèle réclame ENCORE un outil, sa sortie n'est pas une réponse :
+                # on la jette au profit des trouvailles réelles.
+                rep = (fin_txt or "").strip() if fin_txt else _texte_lisible(dernier)
+            except Exception as e:
+                logger.warning(f"[core] synthèse de dernière minute impossible : {str(e)[:120]}")
+            # Le modèle n'a rien donné → on rend quand même les trouvailles réelles.
+            rep = rep or _repli_observations(observations, task) or (
+                "⏱️ La recherche a pris trop de temps et n'a rien rapporté d'exploitable. "
+                "Reformule ta question ou précise-la.")
             await _remember_safe(mem, agent_id, rep[:350])
             yield {"type": "final", "answer": rep, "iterations": iteration + 1}
             return
@@ -546,7 +651,26 @@ async def run_agent_stream(
 
         if action:
             yield {"type": "action", "tool": action, "params": params or {}, "iteration": iteration + 1}
-            observation = await _off(safe_tool_call, loader, action, params or {})
+            # Recherche déjà faite dans ce tour ? On rend le résultat mémorisé au lieu de
+            # repayer 30 s de réseau. Le modèle relançait la MÊME requête qu'au forçage,
+            # ce qui consommait à lui seul la moitié du temps imparti.
+            cle = _cle_requete((params or {}).get("query", "")) if action == "search_web" else ""
+            if cle and cle in deja_cherche:
+                observation = deja_cherche[cle]
+                logger.info("[core] recherche identique déjà faite → résultat réutilisé")
+            elif cle and len(deja_cherche) >= MAX_RECHERCHES:
+                # Le modèle relançait des recherches jusqu'à épuiser le temps imparti sans
+                # jamais rédiger. On lui rend ce qu'il a déjà et on lui coupe l'échappatoire.
+                observation = ("\n\n".join(deja_cherche.values())[:1200] +
+                               "\n\n[SYSTÈME] Tu as déjà lancé "
+                               f"{len(deja_cherche)} recherches. N'en lance plus AUCUNE : "
+                               "réponds MAINTENANT avec FINAL: à partir de ces résultats.")
+                logger.info("[core] plafond de recherches atteint → conclusion forcée")
+            else:
+                observation = await _off(safe_tool_call, loader, action, params or {}, "", _fin)
+                if cle:
+                    deja_cherche[cle] = observation
+            observations.append(observation)
             health_monitor.record(action, "Erreur" not in observation)
             tool_calls_made += 1
             yield {"type": "observation", "tool": action, "result": observation[:400], "iteration": iteration + 1}
@@ -556,10 +680,13 @@ async def run_agent_stream(
                 "Continue. Si tu as toutes les données, donne ta réponse FINAL:"
             )})
         else:
-            await _remember_safe(mem, agent_id, llm_out)
-            yield {"type": "final", "answer": llm_out, "iterations": iteration + 1}
+            propre = _texte_lisible(llm_out) or _repli_observations(observations, task) or llm_out
+            await _remember_safe(mem, agent_id, propre)
+            yield {"type": "final", "answer": propre, "iterations": iteration + 1}
             return
 
-    last = f"⚠️ Limite de {config.MAX_ITERATIONS} itérations atteinte."
+    # Plafond d'itérations : là encore, on rend les trouvailles plutôt qu'un message vide.
+    last = _repli_observations(observations, task) or \
+        f"⚠️ Limite de {config.MAX_ITERATIONS} itérations atteinte."
     await _remember_safe(mem, agent_id, last)
     yield {"type": "final", "answer": last, "iterations": config.MAX_ITERATIONS}

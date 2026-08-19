@@ -6,7 +6,9 @@ La librairie `duckduckgo_search` renvoie souvent des résultats hors-sujet
 DuckDuckGo directement (fiable, région FR), avec la librairie en repli.
 """
 import html as _html
+import os
 import re
+import time
 from urllib.parse import unquote
 
 from plugins.base import Plugin
@@ -27,15 +29,26 @@ def _strip(s: str) -> str:
     return _html.unescape(re.sub(r"<[^>]+>", "", s or "")).strip()
 
 
-def _ddg_html(query: str, max_results: int, region: str = "fr-fr") -> list[dict]:
+# ⏱️ Budget d'UNE recherche. Les délais s'empilaient (Tavily 20 s + deux hôtes
+# DuckDuckGo à 15 s + la librairie), et l'agent rejouait le tout : une seule question
+# pouvait engloutir tout le temps imparti et finir sur « la recherche a pris trop de
+# temps » alors que des résultats étaient déjà là.
+BUDGET_RECHERCHE = float(os.getenv("SEARCH_BUDGET", "22"))
+TIMEOUT_HOTE = 8
+
+
+def _ddg_html(query: str, max_results: int, region: str = "fr-fr",
+              fin: float = 0.0) -> list[dict]:
     """Interroge l'endpoint HTML DuckDuckGo (pas d'API key, résultats fiables)."""
     import requests
     out: list[dict] = []
     for host in ("https://html.duckduckgo.com/html/", "https://lite.duckduckgo.com/lite/"):
+        if fin and time.monotonic() >= fin:
+            break
         try:
             r = requests.post(host, data={"q": query, "kl": region},
                               headers={"User-Agent": _UA, "Referer": "https://duckduckgo.com/"},
-                              timeout=15)
+                              timeout=TIMEOUT_HOTE)
             if r.status_code != 200:
                 continue
             txt = r.text
@@ -73,7 +86,7 @@ def _tavily(query: str, max_results: int) -> list[dict]:
         r = requests.post("https://api.tavily.com/search",
                           json={"api_key": key, "query": query, "max_results": max_results,
                                 "search_depth": "basic"},
-                          timeout=20)
+                          timeout=12)
         if r.status_code != 200:
             return []
         data = r.json().get("results", [])
@@ -112,10 +125,13 @@ class WebSearchPlugin(Plugin):
             return "Aucune requête fournie."
 
         # 1) Tavily si clé (fiable depuis un serveur). 2) HTML DuckDuckGo. 3) librairie.
+        # Chaque repli n'est tenté que s'il reste du temps : mieux vaut rendre les
+        # résultats d'un moteur que d'épuiser le budget à en interroger trois.
+        fin = time.monotonic() + BUDGET_RECHERCHE
         results = _tavily(query, max_results)
-        if not results and mode != "news":
-            results = _ddg_html(query, max_results)
-        if not results:
+        if not results and mode != "news" and time.monotonic() < fin:
+            results = _ddg_html(query, max_results, fin=fin)
+        if not results and time.monotonic() < fin:
             results = _ddg_lib(query, max_results, mode)
 
         if not results:
