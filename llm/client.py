@@ -133,7 +133,10 @@ def chat(messages: list, temperature: float = 0.7, num_ctx: int = 4096,
     soucis = []
     for nom, fn, modele in chaine:
         try:
-            out = fn(messages, modele or config.LLM_MODEL, temperature)
+            try:      # certains fournisseurs exploitent le niveau pour choisir le modèle
+                out = fn(messages, modele or config.LLM_MODEL, temperature, niveau)
+            except TypeError:
+                out = fn(messages, modele or config.LLM_MODEL, temperature)
             if out and out.strip():
                 if soucis:
                     logger.warning(f"[LLM] bascule sur {nom} après : {' | '.join(soucis)}")
@@ -258,10 +261,32 @@ def _groq_chat(messages: list, model: str, temperature: float) -> str:
     raise RuntimeError(f"Groq : aucun modèle texte accessible ({derniere})")
 
 
-def _nvidia_chat(messages: list, model: str, temperature: float) -> str:
+def _score_niveau(mid: str, niveau: str) -> int:
+    """Note un modèle selon le niveau voulu, d'après son NOM.
+    Permet d'exploiter tout le catalogue réel du compte (GLM, Nemotron, DeepSeek…)
+    au lieu d'une liste figée qui devient périmée."""
+    b = mid.lower()
+    petit = any(k in b for k in ("lightning", "mini", "small", "nano", "flash", "instant",
+                                 "-3b", "-4b", "-7b", "-8b", "-9b", "12b"))
+    gros = any(k in b for k in ("ultra", "-pro", "max", "405b", "550b", "480b", "253b",
+                                "235b", "-r1", "reasoning", "thinking"))
+    # Sans indice de taille dans le nom (ex. « glm-5.2 »), on suppose un modèle polyvalent
+    moyen = any(k in b for k in ("30b", "49b", "70b", "72b", "120b", "instruct", "chat")) \
+        or not (petit or gros)
+    # Familles reconnues pour leur qualité générale
+    bonus = 3 if any(k in b for k in ("glm", "nemotron", "deepseek")) else \
+        (2 if any(k in b for k in ("llama", "qwen", "mistral")) else 0)
+    if niveau == "rapide":
+        return (6 if petit else 0) + (2 if moyen else 0) - (4 if gros else 0) + bonus
+    if niveau == "puissant":
+        return (6 if gros else 0) + (2 if moyen else 0) - (4 if petit else 0) + bonus
+    return (5 if moyen else 0) + (1 if petit else 0) + bonus
+
+
+def _nvidia_chat(messages: list, model: str, temperature: float, niveau: str = "equilibre") -> str:
     """NVIDIA NIM (build.nvidia.com) — API compatible OpenAI, offre gratuite généreuse.
-    Auto-guérison : essaie le modèle configuré, des valeurs sûres, puis ceux réellement
-    accessibles au compte (le catalogue évolue souvent)."""
+    La clé donne accès à TOUT le catalogue : on liste les modèles réellement disponibles
+    et on prend le mieux adapté au niveau de la tâche."""
     from openai import OpenAI
     if not config.NVIDIA_API_KEY:
         raise RuntimeError("NVIDIA_API_KEY absente.")
@@ -269,25 +294,30 @@ def _nvidia_chat(messages: list, model: str, temperature: float) -> str:
                     base_url="https://integrate.api.nvidia.com/v1")
 
     candidats = []
-    for m in (_MODELES_OK.get("nvidia"), model, config.NVIDIA_MODEL,
-              "meta/llama-3.3-70b-instruct",
-              "nvidia/llama-3.3-nemotron-super-49b-v1",
-              "meta/llama-3.1-70b-instruct",
-              "qwen/qwen2.5-72b-instruct",
-              "mistralai/mistral-large-2-instruct",
-              "meta/llama-3.1-8b-instruct"):
+    impose = _modele_impose("nvidia")
+    for m in (impose, _MODELES_OK.get("nvidia") if not impose else None, model if not impose else None):
         if m and m not in candidats:
             candidats.append(m)
-    try:
-        for mo in client.models.list().data:
-            mid = getattr(mo, "id", "") or ""
-            bas = mid.lower()
-            if mid and mid not in candidats and not any(
-                    k in bas for k in ("embed", "rerank", "vision", "ocr", "speech", "tts",
-                                       "riva", "guard", "diffusion", "image", "video")):
-                candidats.append(mid)
-    except Exception:
-        pass
+    # Catalogue réel du compte, classé par adéquation au niveau
+    if not impose:
+        try:
+            dispo = []
+            for mo in client.models.list().data:
+                mid = getattr(mo, "id", "") or ""
+                b = mid.lower()
+                if mid and not any(k in b for k in ("embed", "rerank", "ocr", "speech", "tts",
+                                                    "riva", "guard", "diffusion", "image", "video",
+                                                    "vila", "clip", "parakeet")):
+                    dispo.append(mid)
+            dispo.sort(key=lambda x: -_score_niveau(x, niveau))
+            for mid in dispo:
+                if mid not in candidats:
+                    candidats.append(mid)
+        except Exception:
+            pass
+        for m in ("meta/llama-3.3-70b-instruct", "meta/llama-3.1-8b-instruct"):   # ultime secours
+            if m not in candidats:
+                candidats.append(m)
 
     derniere = None
     for m in candidats:
