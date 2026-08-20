@@ -1969,6 +1969,108 @@ async def selftest(key: str = ""):
     return await loop.run_in_executor(None, run)
 
 
+def _diag_un_llm(nom: str) -> dict:
+    """Teste UN fournisseur pour de vrai : format de clé, appel minimal, latence, erreur exacte."""
+    import time as _t
+    from llm.client import (MODELES, _fournisseur_hs, _MODELES_OK, _BUDGET_APPEL,
+                            _providers_disponibles)
+    # Préfixes attendus : une clé collée de travers (nom de modèle, espace en trop…) est
+    # la panne la plus fréquente, et la plus invisible.
+    prefixes = {"nvidia": "nvapi-", "groq": "gsk_", "openrouter": "sk-or-",
+                "gemini": ("AIza", "AQ."), "cerebras": "csk-", "xai": "xai-"}
+    cle = (getattr(config, f"{nom.upper()}_API_KEY", "") or "").strip()
+    d = {"fournisseur": nom, "cle_presente": bool(cle), "ok": False,
+         "modele": "", "latence_s": None, "erreur": "", "conseil": ""}
+    if not cle:
+        d["conseil"] = "aucune clé configurée sur Render"
+        return d
+    d["cle_apercu"] = cle[:6] + "…" + cle[-4:] if len(cle) > 12 else "trop courte"
+    att = prefixes.get(nom)
+    if att and not cle.startswith(att):
+        d["conseil"] = (f"la clé ne commence pas par « {att if isinstance(att, str) else ' ou '.join(att)} » "
+                        "— vérifie que tu as bien collé la CLÉ et pas autre chose")
+    if cle != cle.strip() or " " in cle:
+        d["conseil"] = "la clé contient un espace — recolle-la sans espace ni retour à la ligne"
+    d["ecarte_pour_le_moment"] = _fournisseur_hs(nom)
+
+    fn = dict((n, f) for n, f, _m in _providers_disponibles("equilibre")).get(nom)
+    if fn is None:
+        d["erreur"] = "fournisseur non pris en charge"
+        return d
+    modele = MODELES.get(nom, {}).get("equilibre") or config.LLM_MODEL
+    t0 = _t.monotonic()
+    jeton = _BUDGET_APPEL.set(45.0)          # test large : on veut MESURER, pas juger vite
+    try:
+        out = fn([{"role": "user", "content": "Réponds juste : ok"}], modele, 0.0, "equilibre")
+        d.update(ok=bool(out and out.strip()), modele=_MODELES_OK.get(nom) or modele,
+                 reponse=(out or "")[:60])
+    except TypeError:
+        try:
+            out = fn([{"role": "user", "content": "Réponds juste : ok"}], modele, 0.0)
+            d.update(ok=bool(out and out.strip()), modele=_MODELES_OK.get(nom) or modele,
+                     reponse=(out or "")[:60])
+        except Exception as e:
+            d["erreur"] = str(e)[:300]
+    except Exception as e:
+        d["erreur"] = str(e)[:300]
+    finally:
+        _BUDGET_APPEL.reset(jeton)
+    d["latence_s"] = round(_t.monotonic() - t0, 1)
+    # Le seuil qui compte n'est pas un chiffre arbitraire : c'est le délai réellement
+    # appliqué en usage normal. Au-delà, ce fournisseur sera abandonné même s'il marche.
+    from llm.client import TIMEOUT_LLM as _TL
+    if d["ok"] and d["latence_s"] > _TL:
+        d["conseil"] = (f"répond mais LENTEMENT ({d['latence_s']} s) — c'est plus que "
+                        f"LLM_TIMEOUT ({_TL} s), donc il est abandonné en usage normal. "
+                        "Augmente LLM_TIMEOUT sur Render si tu veux l'utiliser.")
+    elif not d["ok"] and not d["conseil"]:
+        e = d["erreur"].lower()
+        if "401" in e or "unauthorized" in e or "invalid" in e:
+            d["conseil"] = "clé refusée — régénère-la"
+        elif "403" in e:
+            d["conseil"] = "accès refusé — l'API n'est peut-être pas activée pour ce compte"
+        elif "429" in e or "rate" in e:
+            d["conseil"] = "limite atteinte pour le moment — ça se débloque tout seul"
+        elif "timed out" in e or "timeout" in e:
+            d["conseil"] = (f"n'a pas répondu en {d['latence_s']} s — service lent ou injoignable "
+                            "depuis Render")
+        elif "402" in e or "payment" in e:
+            d["conseil"] = "offre gratuite épuisée sur ce compte"
+    return d
+
+
+@router.get("/diag/llm")
+async def diag_llm(key: str = ""):
+    """Teste CHAQUE fournisseur séparément et dit ce qui cloche, précisément.
+
+    Ouvre /agent/diag/llm?key=TA_CLE — plus besoin de deviner quelle clé pose problème.
+    Les fournisseurs sont testés EN PARALLÈLE : le diagnostic complet prend le temps du
+    plus lent, pas la somme.
+    """
+    _check_key(key)
+    from llm.client import _providers_disponibles, TIMEOUT_LLM, TIMEOUT_CHAINE
+    noms = [n for n, _f, _m in _providers_disponibles("equilibre")]
+    loop = asyncio.get_running_loop()
+    res = await asyncio.gather(*[loop.run_in_executor(None, _diag_un_llm, n) for n in noms])
+
+    ok = [r for r in res if r["ok"]]
+    lents = [r for r in ok if (r["latence_s"] or 0) > TIMEOUT_LLM]
+    if not noms:
+        resume = "Aucune clé de modèle n'est configurée sur Render."
+    elif not ok:
+        resume = ("❌ Aucun fournisseur ne répond. Détail par fournisseur ci-dessous — "
+                  "regarde le champ « conseil ».")
+    else:
+        resume = (f"✅ {len(ok)} fournisseur(s) sur {len(noms)} répondent : "
+                  + ", ".join(f"{r['fournisseur']} ({r['latence_s']} s)" for r in ok))
+        if lents:
+            resume += (f" — ⚠️ {', '.join(r['fournisseur'] for r in lents)} dépasse(nt) "
+                       f"LLM_TIMEOUT ({TIMEOUT_LLM} s) et sera(ont) abandonné(s) en usage normal.")
+    return {"resume": resume,
+            "reglages": {"LLM_TIMEOUT": TIMEOUT_LLM, "LLM_TIMEOUT_TOTAL": TIMEOUT_CHAINE},
+            "fournisseurs": res}
+
+
 @router.get("/diag/composio")
 async def diag_composio(key: str = ""):
     """Auto-test Composio : appelle l'API et renvoie la réponse BRUTE (pour diagnostic).
