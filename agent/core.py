@@ -160,7 +160,24 @@ def _texte_lisible(sortie: str) -> str:
     return t
 
 
-def _repli_observations(observations: list, task: str = "") -> str:
+def _erreur_lisible(e: Exception) -> str:
+    """Dernier recours : dire ce qui se passe et QUOI FAIRE, sans jargon technique."""
+    t = str(e)
+    if "limite" in t.lower() or "rate" in t.lower() or "429" in t:
+        return ("⏳ Tous mes modèles gratuits sont à leur limite en ce moment. "
+                "Réessaie dans une minute — ça se débloque tout seul.")
+    manque = []
+    for nom, cle, ou in (("Groq", "GROQ_API_KEY", "console.groq.com"),
+                         ("Gemini", "GEMINI_API_KEY", "aistudio.google.com")):
+        if cle.lower().split("_")[0] in t.lower():
+            manque.append(f"**{nom}** ({ou})")
+    aide = " ou ".join(manque) if manque else "**Groq** (console.groq.com)"
+    return ("🔌 Je n'ai plus aucun modèle disponible pour rédiger une réponse.\n\n"
+            f"Le plus simple : régénère une clé gratuite {aide} et mets-la dans les "
+            "variables Render.\n\n_Détail technique :_\n```\n" + t[:400] + "\n```")
+
+
+def _repli_observations(observations: list, task: str = "", raison: str = "delai") -> str:
     """Réponse de secours bâtie sur ce que les outils ont RÉELLEMENT rapporté.
 
     Sans ça, un dépassement de délai effaçait des résultats de recherche pourtant valides
@@ -181,9 +198,17 @@ def _repli_observations(observations: list, task: str = "") -> str:
     if not utiles:
         return ""
     corps = "\n\n".join(utiles[-2:])[:2600]
-    return ("⏱️ Je n'ai pas eu le temps de rédiger la synthèse, mais **voici ce que j'ai "
-            "trouvé** — les sources sont réelles et vérifiables :\n\n" + corps +
-            "\n\n_Redemande-moi de résumer ces résultats si tu veux une synthèse rédigée._")
+    # Le motif compte : « pas eu le temps » et « plus aucun modèle » n'appellent pas la
+    # même réaction de ta part.
+    entete = ("⏱️ Je n'ai pas eu le temps de rédiger la synthèse, mais **voici ce que j'ai "
+              "trouvé** — les sources sont réelles et vérifiables :"
+              if raison == "delai" else
+              "🔌 Aucun modèle n'est disponible pour rédiger, mais **la recherche a marché** — "
+              "voici ce que j'ai trouvé, sources à l'appui :")
+    pied = ("\n\n_Redemande-moi de résumer ces résultats si tu veux une synthèse rédigée._"
+            if raison == "delai" else
+            "\n\n_Réessaie dans un moment : dès qu'un modèle répond, je te rédige la synthèse._")
+    return entete + "\n\n" + corps + pied
 
 
 async def _remember_safe(mem, agent_id: str, texte: str) -> None:
@@ -370,9 +395,14 @@ async def run_agent(
         try:
             llm_out = await llm_call(messages, temperature=temperature)
         except Exception as e:
-            err = f"LLM indisponible: {e}"
-            logger.error(err)
-            return {"answer": err, "steps": steps, "iterations": iteration, "error": str(e)}
+            secours = _repli_observations(observations, task, "sans_modele")
+            if secours:
+                logger.warning(f"[core] aucun modèle → on rend les trouvailles ({str(e)[:90]})")
+                await _remember_safe(mem, agent_id, secours[:350])
+                return {"answer": secours, "steps": steps, "iterations": iteration}
+            logger.error(f"LLM indisponible: {e}")
+            return {"answer": _erreur_lisible(e), "steps": steps,
+                    "iterations": iteration, "error": str(e)}
 
         step = {"iteration": iteration + 1, "llm_output": llm_out}
         action, params, final = parse_response(llm_out)
@@ -706,7 +736,16 @@ async def run_agent_stream(
         try:
             llm_out = await llm_call(messages, temperature=temperature)
         except Exception as e:
-            yield {"type": "final", "answer": f"❌ LLM indisponible: {e}", "iterations": iteration}
+            # ⚠️ Le filet de secours manquait ICI. Les outils avaient rapporté de VRAIES
+            # données (articles, sources, liens) et Nova affichait quand même une erreur
+            # brute. Aucun modèle ne répond ? On rend au moins ce qu'on a trouvé.
+            secours = _repli_observations(observations, task, "sans_modele")
+            if secours:
+                logger.warning(f"[core] aucun modèle → on rend les trouvailles ({str(e)[:90]})")
+                await _remember_safe(mem, agent_id, secours[:350])
+                yield {"type": "final", "answer": secours, "iterations": iteration}
+                return
+            yield {"type": "final", "answer": _erreur_lisible(e), "iterations": iteration}
             return
 
         thought = _extract_thought(llm_out)

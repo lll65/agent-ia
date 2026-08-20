@@ -339,9 +339,13 @@ def test_non_bloquant():
     corps = src.split("def _route_detail")[1].split("\ndef ")[0]
     for interdit in ("_resolve_app_action", "_llm_json", "chat(", "_event_text"):
         check(f"_route_detail sans {interdit}", interdit in corps, False)
-    check_true("intention lecture", A._intention_app("mes rdv de demain") == "action : lecture")
-    check_true("intention création", A._intention_app("ajoute un rdv demain 14h") == "action : création")
-    check_true("intention envoi", A._intention_app("envoie un mail à Paul") == "action : envoi")
+    # Les sous-bulles sont écrites POUR L'UTILISATEUR : pas de jargon, pas de « action : … »
+    for phrase, attendu in (("mes rdv de demain", "regarder"),
+                            ("ajoute un rdv demain 14h", "ajouter"),
+                            ("envoie un mail à Paul", "envoyer")):
+        dit = A._intention_app(phrase)
+        check_true(f"intention « {attendu} »", attendu in dit)
+        check(f"pas de jargon dans « {dit} »", dit.startswith("action"), False)
 
     # 15b. run_agent_stream déporte bien ses appels bloquants dans un thread.
     core = (P(__file__).resolve().parents[1] / "agent" / "core.py").read_text(encoding="utf-8")
@@ -979,12 +983,95 @@ def test_synthese_fond():
         cours._DIR = vrai_dir
 
 
+# ── 22. Aucun modèle disponible : rendre quand même les trouvailles ──────────
+def test_sans_modele():
+    """Cas réel : les 4 fournisseurs morts, mais la recherche avait ramené dcod.ch.
+    Nova affichait « ❌ LLM indisponible: … » et jetait l'article."""
+    import asyncio
+    import agent.core as AC
+    import agent.self_heal as SH
+
+    RES = ("🔎 **Résultats web : actualité technologie 19 août 2026** (6)\n\n"
+           "**1. Menaces & IA : 15 dérives et avancées clés du 19 août 2026**\n_dcod.ch_\n"
+           "🔗 https://dcod.ch/2026/08/19/menaces-ia")
+    PANNE = RuntimeError("Aucun modèle disponible pour le moment.\n"
+                         "• groq : offre gratuite épuisée (paiement demandé)\n"
+                         "• nvidia : Request timed out.")
+
+    async def llm_mort(messages, model=None, temperature=0.7, timeout=0.0):
+        raise PANNE
+
+    vrais = (SH.safe_tool_call, AC.llm_call, AC.search_query)
+    try:
+        SH.safe_tool_call = lambda l, n, p, f="", e=0.0: RES
+        AC.llm_call = llm_mort
+        AC.search_query = lambda t: "actualité technologie 19 août 2026"
+
+        async def run():
+            cfg = {"name": "Nova", "tools": ["search_web"], "force_search": True,
+                   "system_prompt": "test"}
+            out = []
+            async for step in AC.run_agent_stream("actu tech du jour ?", cfg, "test_sm"):
+                out.append(step)
+            return out
+
+        finale = [e for e in asyncio.run(run()) if e["type"] == "final"]
+        rep = finale[0]["answer"] if finale else ""
+        check_true("l'article trouvé est rendu", "dcod.ch" in rep)
+        check_true("le lien est conservé", "https://dcod.ch" in rep)
+        check("aucune erreur technique affichée", "LLM indisponible" in rep, False)
+        check("pas de liste de fournisseurs en panne", "offre gratuite épuisée" in rep, False)
+        check_true("le motif est le bon (pas « pas eu le temps »)",
+                   "Aucun modèle n'est disponible" in rep)
+
+        # …mais si RIEN n'a été trouvé, le message doit rester utile et actionnable
+        SH.safe_tool_call = lambda l, n, p, f="", e=0.0: "⚠️ Aucun résultat exploitable pour « x »"
+        finale = [e for e in asyncio.run(run()) if e["type"] == "final"]
+        rep2 = finale[0]["answer"] if finale else ""
+        check_true("message actionnable", "clé" in rep2.lower() or "réessaie" in rep2.lower())
+        check("pas de trace brute en tête", rep2.startswith("❌ LLM indisponible"), False)
+    finally:
+        SH.safe_tool_call, AC.llm_call, AC.search_query = vrais
+
+    # Le message d'erreur ultime doit dire QUOI FAIRE
+    check_true("limite → « réessaie »",
+               "réessaie" in AC._erreur_lisible(RuntimeError("429 rate limit")).lower())
+    check_true("panne de clé → où en régénérer une",
+               "groq.com" in AC._erreur_lisible(RuntimeError("groq : clé invalide")).lower())
+
+
+# ── 23. Les décisions s'affichent une par une, en français ───────────────────
+def test_bulles_live():
+    """« la même bulle qui s'ouvre d'un coup avec des mots incompréhensibles » :
+    trois étiquettes de jargon envoyées en un seul message."""
+    bulles = A._route_bulles("Résume l'actu tech du jour")
+    check_true("plusieurs décisions distinctes", len(bulles) >= 2)
+    for b in bulles:
+        check(f"pas de jargon : « {b} »",
+              any(j in b.lower() for j in ("requise", "factuelle", "action :", "toolkit",
+                                           "slug", "niveau", "routage")), False)
+        check_true(f"phrase courte : « {b} »", len(b) <= 44)
+    check_true("l'intention de recherche est dite simplement",
+               any("cherch" in b for b in bulles))
+    # Le niveau de modèle aussi doit être compréhensible
+    for niv, texte in A._NIVEAU_BULLE.items():
+        check(f"niveau « {niv} » sans jargon", "modèle équilibré" in texte, False)
+    # Chaque type de demande a ses propres bulles, jamais les mêmes partout
+    distinctes = {" ".join(A._route_bulles(m)) for m in
+                  ("salut", "mon agenda demain", "explique la photosynthèse",
+                   "résume l'actu du jour", "fais-moi un visuel")}
+    check_true(f"bulles adaptées à la demande ({len(distinctes)} variantes)", len(distinctes) >= 4)
+    # Robustesse
+    check_true("message vide géré", isinstance(A._route_bulles(""), list))
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
                test_caches, test_slugs, test_modeles, test_requetes, test_securite,
                test_non_bloquant, test_delais, test_cours, test_trouvailles,
-               test_requete_web, test_saturation, test_synthese_fond):
+               test_requete_web, test_saturation, test_synthese_fond,
+               test_sans_modele, test_bulles_live):
         try:
             fn()
         except Exception as e:

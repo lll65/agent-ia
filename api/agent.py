@@ -1072,59 +1072,79 @@ _NIVEAU_FR = {"rapide": "modèle rapide", "equilibre": "modèle équilibré", "p
 
 # Verbes → intention, sans le moindre appel réseau (affiché en sous-bulle avant le streaming).
 _INTENTIONS = (
-    (("ajoute", "ajouter", "crée", "creer", "créer", "planifie", "programme", "note ", "réserve", "reserve"), "création"),
-    (("supprime", "annule", "efface", "retire"), "suppression"),
-    (("modifie", "déplace", "deplace", "change", "reporte"), "modification"),
-    (("envoie", "envoi", "réponds", "reponds", "écris", "ecris", "partage"), "envoi"),
-    (("cherche", "trouve", "recherche"), "recherche"),
+    (("ajoute", "ajouter", "crée", "creer", "créer", "planifie", "programme", "note ", "réserve", "reserve"),
+     "tu veux ajouter quelque chose"),
+    (("supprime", "annule", "efface", "retire"), "tu veux supprimer"),
+    (("modifie", "déplace", "deplace", "change", "reporte"), "tu veux modifier"),
+    (("envoie", "envoi", "réponds", "reponds", "écris", "ecris", "partage"), "tu veux envoyer"),
+    (("cherche", "trouve", "recherche"), "tu veux chercher dedans"),
 )
 
 
 def _intention_app(message: str) -> str:
-    """Décrit l'intention (lecture / création / envoi…) par simple analyse lexicale."""
+    """Décrit l'intention en français clair, par simple analyse lexicale."""
     m = (message or "").lower()
     for mots, libelle in _INTENTIONS:
         if any(k in m for k in mots):
-            return f"action : {libelle}"
-    return "action : lecture"
+            return libelle
+    return "je vais aller regarder"
+
+
+# Nom lisible des applications connectées (« googlecalendar » ne parle à personne).
+_APP_FR = {"googlecalendar": "ton agenda", "gmail": "tes mails", "googlemaps": "Maps",
+           "googledrive": "ton Drive", "googledocs": "Docs", "googlesheets": "Sheets",
+           "notion": "Notion", "slack": "Slack", "github": "GitHub", "linear": "Linear",
+           "canva": "Canva", "youtube": "YouTube", "spotify": "Spotify", "trello": "Trello",
+           "discord": "Discord", "twitter": "X", "linkedin": "LinkedIn"}
+
+_NIVEAU_BULLE = {"rapide": "je réponds vite",
+                 "equilibre": "mon modèle habituel",
+                 "puissant": "je sors mon modèle le plus costaud"}
+
+
+def _route_bulles(message: str) -> list:
+    """Ce que Nova a RÉELLEMENT décidé, en français clair : une phrase par décision.
+
+    Ces phrases s'affichent UNE PAR UNE pendant qu'elle travaille. Elles disaient avant
+    « question factuelle · recherche web requise · modèle équilibré » — du jargon, envoyé
+    d'un seul bloc. Ce sont les mêmes décisions, dites comme à un humain.
+    """
+    if _is_smalltalk(message):
+        b = ["tu me parles simplement"]
+        if _is_personal_fact(message):
+            b.append("je note ça sur toi")
+        b.append("pas besoin d'outil")
+        return b
+    if _is_briefing(message):
+        return ["tu veux ton briefing", "je regarde agenda, mails, météo et actu"]
+    slug = _detect_toolkit(message)
+    if slug:
+        b = [f"ça concerne {_APP_FR.get(slug, slug)}"]
+        if _is_capability_question(message):
+            b.append("tu me demandes ce que je sais faire")
+        elif _wants_visual(message):
+            b.append("tu veux une image")
+        else:
+            # ⚠️ Purement lexical, AUCUN appel réseau : cette description est calculée
+            # avant le streaming, sur la boucle asyncio.
+            b.append(_intention_app(message))
+        return b
+    if _wants_visual(message):
+        return ["tu veux une image", "je prépare le texte à écrire dessus"]
+    b = []
+    if _finance_intent(message):
+        b.append("sujet finance")
+    if any(h in message.lower() for h in _FACTUAL_HINTS):
+        b.append("il me faut des infos à jour")
+        b.append("je vais chercher sur le web")
+    else:
+        b.append("je réfléchis avec ce que je sais déjà")
+    return b
 
 
 def _route_detail(message: str) -> str:
-    """Décrit ce que Nova a RÉELLEMENT décidé pour ce message (affiché en sous-bulles).
-    Ce sont de vraies décisions du routeur, vérifiables — pas un habillage."""
-    bouts = []
-    if _is_smalltalk(message):
-        bouts.append("conversation")
-        if _is_personal_fact(message):
-            bouts.append("info à retenir")
-        bouts.append("sans outil")
-        return " · ".join(bouts)
-    if _is_briefing(message):
-        return "briefing · agenda + mails + météo + actu"
-    slug = _detect_toolkit(message)
-    if slug:
-        bouts.append(f"app : {slug}")
-        if _is_capability_question(message):
-            bouts.append("question sur ses capacités")
-        elif _wants_visual(message):
-            bouts.append("génération de visuel")
-        else:
-            # ⚠️ Purement lexical, AUCUN appel réseau. Cette description est calculée
-            # avant le streaming, sur la boucle asyncio : y résoudre l'action Composio
-            # déclenchait une extraction LLM bloquante (Quick Add agenda) qui gelait la
-            # boucle entière → plus aucun octet SSE, Nova « réfléchissait » sans fin.
-            bouts.append(_intention_app(message))
-        return " · ".join(bouts)
-    if _wants_visual(message):
-        return "création d'image · texte à composer"
-    if _finance_intent(message):
-        bouts.append("finance")
-    if any(h in message.lower() for h in _FACTUAL_HINTS):
-        bouts.append("question factuelle")
-        bouts.append("recherche web requise")
-    else:
-        bouts.append("raisonnement")
-    return " · ".join(bouts) or "analyse de la demande"
+    """Les mêmes décisions d'un seul tenant (journal, diagnostics, chemins non streamés)."""
+    return " · ".join(_route_bulles(message)) or "j'analyse ta demande"
 
 
 def _log_activity(message: str) -> None:
@@ -1670,9 +1690,13 @@ async def ask_stream(q: str = "", key: str = ""):
             _log_activity(message)   # visible immédiatement dans la constellation
             # Le serveur annonce ses VRAIES décisions de routage → sous-bulles authentiques
             # (et non des mots-clés extraits de la question, qui simulaient un raisonnement).
+            # Les décisions arrivent UNE PAR UNE, en français clair. Elles partaient
+            # auparavant d'un seul bloc, en jargon (« question factuelle · recherche web
+            # requise · modèle équilibré ») : illisible, et sans aucune sensation de direct.
             _niv = _niveau_tache(message)
-            yield sse({"type": "step", "kind": "route", "tool": "analyse",
-                       "text": _route_detail(message) + " · " + _NIVEAU_FR[_niv]})
+            for _b in _route_bulles(message) + [_NIVEAU_BULLE[_niv]]:
+                yield sse({"type": "step", "kind": "route", "tool": "analyse", "text": _b})
+                await asyncio.sleep(0.3)      # le temps de les lire défiler
             # 1) Chitchat / info personnelle → streamé directement (aucun outil)
             if _is_smalltalk(message):
                 _remember_fact(message)
