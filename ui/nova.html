@@ -739,17 +739,29 @@ function _keywords(msg){ const stop=new Set(["le","la","les","un","une","des","d
   "que","qui","quoi","avec","fait","fais","peux","veux","stp","the"]);
   return (msg||"").toLowerCase().replace(/[^\wàâçéèêëîïôûùüÿœ\s-]/g," ").split(/\s+/)
     .filter(w=>w.length>2 && !stop.has(w)).slice(0,3).join(" · "); }
+/* Pictogrammes de tête à retirer.
+   ⚠️ PIÈGE : sans le drapeau « u », une classe [🔎🔍📧📅…] est une liste d'unités UTF-16,
+   pas de caractères. 📰 partage sa première moitié avec 🔎/📧/📅 : le regex arrachait
+   cette moitié et laissait l'autre orpheline, affichée « � ». Vu en production sur
+   « 📰 Actualité tech ». On cible donc TOUT pictogramme, par propriété Unicode. */
+const _PICTOS = (() => {
+  try { return new RegExp("^[\\p{Extended_Pictographic}\\uFE0F\\s]*", "u"); }
+  catch(e) { return /^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\uFE0F\s]*/u; }
+})();
 /* Détail d'étape lisible : sans pictogrammes ni Markdown, coupé sur un mot entier */
 function _clean(d){ if(!d) return "";
-  return _cut(String(d).replace(/^[🔎🔍📧📅✅❌⚠️\s]*/,"").replace(/\*\*(.+?)\*\*/g,"$1")
+  return _cut(String(d).replace(_PICTOS,"").replace(/\*\*(.+?)\*\*/g,"$1")
     .replace(/^R[ée]sultats? web\s*:?\s*/i,"").replace(/\s+/g," ").trim(), 130); }
 /* Coupe proprement, à la fin d'un mot */
-function _cut(s,n){ s=String(s||"").trim(); if(s.length<=n) return s;
-  const c=s.slice(0,n), i=c.lastIndexOf(" ");
+function _cut(s,n){ s=String(s||"").trim();
+  // [...s] découpe par POINTS DE CODE : s.slice() pouvait couper un emoji en deux
+  // et produire un « � » en fin de texte.
+  const t=[...s]; if(t.length<=n) return s;
+  const c=t.slice(0,n).join(""), i=c.lastIndexOf(" ");
   return (i>n*0.5? c.slice(0,i) : c).trim()+"…"; }
 function _subs(detail){ if(!detail) return [];
   let d=String(detail)
-    .replace(/^[🔎🔍📧📅✅❌⚠️\s]*/,"")                    // pictogrammes de tête
+    .replace(_PICTOS,"")                                  // pictogrammes de tête
     .replace(/\*\*(.+?)\*\*/g,"$1")                        // gras Markdown
     // « Résultats web : <requête déjà affichée> (6) 1. Vrai titre » → on garde le vrai titre
     .replace(/^R[ée]sultats? web\s*:?[^(]*\(\d+\)\s*\d*\.?\s*/i,"")
