@@ -154,6 +154,20 @@ class WebSearchPlugin(Plugin):
         # Chaque repli n'est tenté que s'il reste du temps : mieux vaut rendre les
         # résultats d'un moteur que d'épuiser le budget à en interroger trois.
         fin = time.monotonic() + BUDGET_RECHERCHE
+
+        # ── Actualité : les flux RSS des médias AVANT tout moteur ──────────────
+        # Un moteur interroge le web par mots-clés ; il remonte donc les pages qui
+        # contiennent « actualité technologie <date> » — souvent des communiqués. Les
+        # flux des médias sont datés, triés par fraîcheur et forcément sur le sujet.
+        if mode == "news":
+            try:
+                from plugins.builtin.actu_rss import recuperer, formater, theme_de
+                arts = recuperer(query, max_results, fin)
+                if arts:
+                    return formater(arts, theme_de(query))
+            except Exception as e:
+                pass    # média injoignable : on retombe sur les moteurs, jamais d'échec
+
         results = _tavily(query, max_results, mode)
         if not results and time.monotonic() < fin:
             # Même en mode actualité : l'endpoint HTML reste le repli le plus fiable

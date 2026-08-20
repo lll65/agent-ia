@@ -1145,13 +1145,82 @@ def test_diagnostic():
         C._FOURNISSEURS_KO.clear()
 
 
+# ── 25. Qualité de l'actualité ───────────────────────────────────────────────
+def test_actualite():
+    """Cas réel : « résume l'actu tech du jour » rendait « Wel-Bloom Bio-Tech présentera
+    des jelly fonctionnels » et « Ashtead Technology a publié une mise à jour de
+    trading » — des communiqués financiers, pas de l'actu tech."""
+    from datetime import datetime, timedelta, timezone
+    from plugins.builtin import actu_rss as R
+
+    maintenant = datetime.now(timezone.utc)
+    recent = (maintenant - timedelta(hours=3)).strftime("%a, %d %b %Y %H:%M:%S +0000")
+    vieux = (maintenant - timedelta(days=9)).strftime("%a, %d %b %Y %H:%M:%S +0000")
+
+    rss = ('<?xml version="1.0"?><rss version="2.0"><channel>'
+           '<item><title>Apple devoile son casque</title><link>https://f.fr/a</link>'
+           '<description>&lt;p&gt;Presentation &lt;b&gt;a Cupertino&lt;/b&gt;.&lt;/p&gt;</description>'
+           f'<pubDate>{recent}</pubDate></item>'
+           '<item><title>Article de la semaine derniere</title><link>https://f.fr/v</link>'
+           f'<pubDate>{vieux}</pubDate></item>'
+           '</channel></rss>').encode()
+    atom = ('<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">'
+            '<entry><title>Apple dévoile son casque</title>'
+            '<link href="https://n.fr/b"/><summary>La meme depeche.</summary>'
+            f'<published>{(maintenant - timedelta(hours=2)).isoformat()}</published></entry>'
+            '</feed>').encode()
+
+    a = R.lire_flux(rss, "Frandroid")
+    b = R.lire_flux(atom, "Numerama")
+    check("RSS 2.0 lu", len(a), 2)
+    check("Atom lu", len(b), 1)
+    check("lien Atom (attribut href)", b[0]["lien"], "https://n.fr/b")
+    check("balises HTML retirées du résumé", a[0]["resume"], "Presentation a Cupertino.")
+    check_true("dates comprises", a[0]["date"] and a[1]["date"] < a[0]["date"])
+    # La même dépêche reprise ailleurs, avec ou sans accent, ne sort qu'une fois
+    check("dépêche dédoublonnée malgré l'accent",
+          R._cle_titre("Apple devoile son casque"), R._cle_titre("Apple DÉVOILE son casque"))
+    check_true("titres différents = clés différentes",
+               R._cle_titre("Apple devoile") != R._cle_titre("Google devoile"))
+    # Un flux cassé vaut zéro article, jamais une exception
+    check("flux illisible ignoré", R.lire_flux(b"<pas du xml", "X"), [])
+    check("flux vide ignoré", R.lire_flux(b"", "X"), [])
+
+    # La question détermine les médias interrogés
+    for q, attendu in (("résume l'actu tech du jour", "tech"), ("actu du jour", "general"),
+                       ("actualité sport", "sport"), ("quoi de neuf en économie", "economie"),
+                       ("les news sur l'espace", "science")):
+        check(f"thème de « {q[:26]} »", R.theme_de(q), attendu)
+    check_true("chaque thème a plusieurs médias",
+               all(len(v) >= 2 for v in R.FLUX.values()))
+    check_true("fraîcheur bornée", 12 <= R.FRAICHEUR_H <= 96)
+
+    # Mise en forme : source et date visibles, sinon impossible de juger la fraîcheur
+    rendu = R.formater(a[:1], "tech")
+    check_true("source citée", "Frandroid" in rendu)
+    check_true("date citée", "/" in rendu and "h" in rendu)
+    check_true("lien cliquable", "https://f.fr/a" in rendu)
+    check("aucun article → aucun rendu", R.formater([]), "")
+
+    # ── La date littérale ne doit PLUS polluer une requête d'actualité ──
+    import llm.client as C
+    from agent.core import requete_simple
+    auj = datetime.now()
+    q_actu = requete_simple("Résume l'actu tech du jour", pour_actu=True)
+    check("actu : pas de date littérale", str(auj.year) in q_actu, False)
+    check("actu : sujet conservé", q_actu, "actualité tech")
+    # …mais elle reste utile pour une recherche web classique
+    check_true("web : date conservée",
+               str(auj.year) in requete_simple("prix du bitcoin aujourd hui"))
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
                test_caches, test_slugs, test_modeles, test_requetes, test_securite,
                test_non_bloquant, test_delais, test_cours, test_trouvailles,
                test_requete_web, test_saturation, test_synthese_fond,
-               test_sans_modele, test_bulles_live, test_diagnostic):
+               test_sans_modele, test_bulles_live, test_diagnostic, test_actualite):
         try:
             fn()
         except Exception as e:
