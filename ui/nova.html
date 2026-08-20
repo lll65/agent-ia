@@ -482,6 +482,9 @@ function fmt(s){
   t=t.replace(/!\[[^\]]*\]\(([^)]+)\)/g, (m,u)=>'<a href="'+u+'" target="_blank" class="imgw"><img src="'+u+'" alt="visuel"></a>');
   t=t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');   // liens markdown
   return t.replace(/\*\*(.+?)\*\*/g,"<b>$1</b>")
+          // _italique_ : les sources des recherches sont notées ainsi (« _lemonde.fr_ »)
+          // et s'affichaient avec leurs tirets bas.
+          .replace(/(^|[\s(>])_([^_\n]{1,80})_(?=$|[\s.,;:!?)<])/g,"$1<i>$2</i>")
           .replace(/(?<!["'=(])(https?:\/\/[^\s<]+)/g,'<a href="$1" target="_blank">$1</a>')
           .replace(/\n/g,"<br>"); }
 function addRow(who,html){ if(hint)hint.remove(); const r=document.createElement("div"); r.className="row "+(who==="me"?"me":"ai");
@@ -760,6 +763,12 @@ function graphPhase(icon,label,detail,agent){ if(phaseCount>=3) return; phaseCou
 /* Renseigne après coup les sous-bulles d'un nœud déjà affiché (ex. « Analyse ») */
 function graphSetSub(label,detail){ const n=nodes.find(x=>x.label===label);
   if(n){ const s=_subs(detail); if(s.length) n.sub=s; } }
+/* AJOUTE une sous-bulle (les décisions arrivent une par une, pas d'un bloc) */
+function graphAddSub(label,detail){ const n=nodes.find(x=>x.label===label);
+  if(!n||!detail) return;
+  const t=_cut(String(detail).replace(/\s+/g," ").trim(), 30);
+  if(!t || (n.sub||[]).includes(t)) return;
+  n.sub=[...(n.sub||[]), t].slice(-4); }
 /* arcs de cercle segmentés (look HUD/tech) */
 function ring(cx,cy,rad,seg,off,col,w){ gx.strokeStyle=col; gx.lineWidth=w;
   for(let k=0;k<seg;k++){ const a0=off+k*(6.283/seg), a1=a0+(6.283/seg)*.6;
@@ -992,8 +1001,17 @@ function ask(){
   const es=new EventSource(url);
   es.onmessage=(e)=>{ let d; try{ d=JSON.parse(e.data);}catch{ return; }
     // Décisions réelles du routeur → sous-bulles du nœud « Analyse »
-    if(d.type==="step" && d.kind==="route"){ graphSetSub("Analyse", d.text||"");
-      trace.push({icon:"💭", label:"Analyse de ta demande", detail:d.text||""}); return; }
+    if(d.type==="step" && d.kind==="route"){ graphAddSub("Analyse", d.text||"");
+      // Une seule ligne de trace « Analyse », qu'on complète à chaque décision reçue
+      const der=trace[trace.length-1];
+      if(der && der.label==="Analyse de ta demande"){
+        der.detail=(der.detail?der.detail+" · ":"")+(d.text||"");
+      }else{
+        trace.push({icon:"💭", label:"Analyse de ta demande", detail:d.text||""});
+      }
+      if(!answer&&!streamed){ bubble.innerHTML=thinkHTML("Analyse de ta demande","💭");
+        pi=trace.length-1; chat.scrollTop=chat.scrollHeight; }
+      return; }
     if(d.type==="step"){ const ai=agentInfo(d), ic=ai? ai.i : iconFor(d.kind,d.tool);
       graphAdd(ic, nodeLabel(d), d.q||d.text||"", d.agent||"");
       trace.push({icon:ic, label:stepLabel(d), detail:(d.q||d.text||"")});
