@@ -767,7 +767,9 @@ function graphSetSub(label,detail){ const n=nodes.find(x=>x.label===label);
 /* AJOUTE une sous-bulle (les décisions arrivent une par une, pas d'un bloc) */
 function graphAddSub(label,detail){ const n=nodes.find(x=>x.label===label);
   if(!n||!detail) return;
-  const t=_cut(String(detail).replace(/\s+/g," ").trim(), 30);
+  // 30 caractères coupaient « je réfléchis avec ce que je… » en plein milieu : les
+  // phrases de raisonnement doivent être lisibles en entier.
+  const t=_cut(String(detail).replace(/\s+/g," ").trim(), 44);
   if(!t || (n.sub||[]).includes(t)) return;
   n.sub=[...(n.sub||[]), t].slice(-4); }
 /* arcs de cercle segmentés (look HUD/tech) */
