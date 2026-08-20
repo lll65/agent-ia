@@ -511,7 +511,7 @@ def search_query(task: str) -> str:
             return q
     except Exception as e:
         logger.warning(f"[search_query] reformulation ignorée: {e}")
-    return requete_simple(t)
+    return requete_simple(t, pour_actu=veut_actualite(t))
 
 
 # Verbes de COMMANDE : ils décrivent ce que Nova doit faire, pas ce qu'il faut chercher.
@@ -562,7 +562,7 @@ def veut_actualite(task: str) -> bool:
     return any(k in m for k in _MOTS_DU_JOUR) or any(k in m for k in _MOTS_RECENT)
 
 
-def requete_simple(task: str) -> str:
+def requete_simple(task: str, pour_actu: bool = False) -> str:
     """Requête de recherche construite SANS modèle — donc toujours disponible.
 
     Le repli précédent se contentait de retirer quelques mots vides : « Résume l'actu tech
@@ -592,6 +592,12 @@ def requete_simple(task: str) -> str:
         if len(mots) >= 8:
             break
     q = " ".join(mots).strip()
+    # ⚠️ La date n'est ajoutée QUE pour une recherche web classique. En mode actualité
+    # elle est contre-productive : le moteur remonte alors les pages qui CONTIENNENT
+    # « 20 août 2026 » — communiqués de presse, « trading updates » — au lieu des
+    # articles du jour, que les flux et moteurs d'actu trient déjà par fraîcheur.
+    if pour_actu:
+        return q[:120] or t[:120]
     if any(k in bas for k in _MOTS_DU_JOUR) or "du jour" in bas:
         q = f"{q} {_JOURS_COURT(auj)}".strip()          # « 19 août 2026 »
     elif any(k in bas for k in _MOTS_RECENT):
