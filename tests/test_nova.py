@@ -1285,6 +1285,75 @@ def test_apps_actions():
                AC._repli_observations(["🔎 **Résultats web** (3)\n\n**1. Titre**\n_source.fr_"]))
 
 
+# ── 27. L'actu demandée est bien celle qu'on rend ────────────────────────────
+def test_actu_pertinence():
+    """Cas réel : « résume l'actu TECH » a ramené les Houthis et des affaires
+    judiciaires, et la requête contenait encore « 20 août 2026 »."""
+    from datetime import datetime
+    import agent.core as AC
+    import llm.client as C
+    from plugins.builtin import actu_rss as R
+
+    # 27a. Une demande tech n'interroge QUE des médias tech
+    for q, attendu in (("actualité tech", "tech"), ("actu du jour", "general"),
+                       ("actualité sport", "sport")):
+        t = R.theme_de(q)
+        check(f"thème de « {q} »", t, attendu)
+        noms = [n for n, _u in R.FLUX[t]]
+        check_true(f"médias de « {q} » : {', '.join(noms[:3])}", len(noms) >= 2)
+    # Aucun média généraliste ne doit polluer une demande thématique
+    generalistes = {n for n, _u in R.FLUX["general"]}
+    for theme in ("tech", "science", "economie"):
+        melange = generalistes & {n for n, _u in R.FLUX[theme]}
+        check(f"aucun généraliste dans « {theme} »", melange, set())
+
+    # 27b. La date ne doit JAMAIS survivre dans une requête d'actualité,
+    #      quel que soit le chemin emprunté.
+    auj = datetime.now()
+    date_jour = AC._JOURS_COURT(auj)
+    vrai_chat = C.chat
+    try:
+        for nom, sortie in (("le modèle obéit", "actualité tech"),
+                            ("le modèle remet la date", f"actualité tech {date_jour}"),
+                            ("le modèle remet l'année", f"actu tech {auj.year}")):
+            C.chat = lambda *a, **k: sortie
+            q = AC.search_query("Résume l'actu tech du jour")
+            check(f"{nom} → requête sans date", str(auj.year) in q, False)
+            check_true(f"{nom} → sujet gardé", "tech" in q.lower())
+        # Modèle injoignable : le repli lexical est déjà propre
+        C.chat = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("hors ligne"))
+        q = AC.search_query("Résume l'actu tech du jour")
+        check("modèle absent → requête sans date", str(auj.year) in q, False)
+        # …mais une question NON actu garde sa date, qui l'aide vraiment
+        C.chat = lambda *a, **k: f"prix bitcoin {date_jour}"
+        check_true("question web → date conservée",
+                   str(auj.year) in AC.search_query("prix du bitcoin"))
+    finally:
+        C.chat = vrai_chat
+
+    # 27c. Un thème dont tous les médias sont muets retombe sur l'actualité générale,
+    #      mais JAMAIS en mélange avec les articles du thème.
+    vrai_get = None
+    try:
+        import requests
+        vrai_get = requests.get
+        appeles = []
+
+        def faux_get(url, **kw):
+            appeles.append(url)
+            raise RuntimeError("injoignable")
+
+        requests.get = faux_get
+        R.recuperer("actualité tech", 5, 0)
+        tech_urls = {u for _n, u in R.FLUX["tech"]}
+        gen_urls = {u for _n, u in R.FLUX["general"]}
+        check_true("les médias tech ont été essayés", tech_urls & set(appeles))
+        check_true("repli sur le généraliste seulement après", gen_urls & set(appeles))
+    finally:
+        if vrai_get:
+            requests.get = vrai_get
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -1292,7 +1361,7 @@ if __name__ == "__main__":
                test_non_bloquant, test_delais, test_cours, test_trouvailles,
                test_requete_web, test_saturation, test_synthese_fond,
                test_sans_modele, test_bulles_live, test_diagnostic, test_actualite,
-               test_apps_actions):
+               test_apps_actions, test_actu_pertinence):
         try:
             fn()
         except Exception as e:

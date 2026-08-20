@@ -490,6 +490,18 @@ def search_query(task: str) -> str:
     # ⚠️ Le modèle ignore la date du jour et met l'année de son entraînement (« 2024 »).
     # On la lui donne explicitement, sinon les recherches d'actualité sont périmées.
     auj = datetime.now()
+    actu = veut_actualite(t)
+    # ⚠️ En mode actualité, la date est CONTRE-PRODUCTIVE : le moteur remonte alors les
+    # pages qui contiennent « 20 août 2026 » (communiqués, trading updates) au lieu des
+    # articles du jour, que les flux et moteurs d'actu trient déjà par fraîcheur.
+    # La consigne donnée au modèle doit donc changer selon le cas — sinon il rajoute la
+    # date lui-même et le garde-fou de requete_simple() est contourné.
+    regle_date = (
+        "• N'ajoute NI date NI année : la fraîcheur est déjà gérée par le moteur d'actualité.\n"
+        if actu else
+        f"• Actualité DU JOUR (« aujourd'hui », « du jour », « ce matin ») → ajoute la date "
+        f"précise « {_JOURS_COURT(auj)} » pour ne pas ramener des articles vieux de plusieurs mois.\n"
+        f"• Autre information récente → ajoute simplement « {auj.year} ».\n")
     try:
         out = chat([
             {"role": "system", "content": (
@@ -497,9 +509,7 @@ def search_query(task: str) -> str:
                 "Transforme la demande en une REQUÊTE de moteur de recherche efficace.\n"
                 "RÈGLES : 3 à 8 mots-clés, pas de question, pas de mots vides (le, la, pour, quand…), "
                 "garde les noms propres et sigles.\n"
-                f"• Actualité DU JOUR (« aujourd'hui », « du jour », « ce matin ») → ajoute la date "
-                f"précise « {_JOURS_COURT(auj)} » pour ne pas ramener des articles vieux de plusieurs mois.\n"
-                f"• Autre information récente → ajoute simplement « {auj.year} ».\n"
+                + regle_date +
                 "• JAMAIS une année passée. Réponds UNIQUEMENT par la requête, sans guillemets.")},
             {"role": "user", "content": t[:300]},
         ], temperature=0.2) or ""
@@ -509,6 +519,11 @@ def search_query(task: str) -> str:
         for vieille in range(2020, auj.year):
             if str(vieille) in q and str(vieille) not in t:
                 q = q.replace(str(vieille), str(auj.year))
+        if actu:
+            # Le modèle désobéit parfois : on retire la date quoi qu'il arrive.
+            q = re.sub(r"\b\d{1,2}\s+(?:" + "|".join(_MOIS) + r")\s+\d{4}\b", "", q, flags=re.I)
+            q = re.sub(r"\b(?:20\d{2})\b", "", q)
+            q = re.sub(r"\s{2,}", " ", q).strip(" ,-—")
         if 3 <= len(q) <= 120:
             return q
     except Exception as e:

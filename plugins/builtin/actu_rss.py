@@ -165,7 +165,11 @@ def recuperer(question: str, maxi: int = 8, fin: float = 0.0) -> list:
     import requests
 
     theme = theme_de(question)
-    sources = FLUX.get(theme, []) + ([] if theme == "general" else FLUX["general"][:1])
+    # ⚠️ On n'interroge QUE les médias du thème demandé. Ajouter un flux généraliste
+    # « au cas où » paraissait prudent, mais il publie en continu : au tri par date ses
+    # articles politiques évinçaient tous les articles tech. Constaté en production —
+    # « résume l'actu tech » ramenait les Houthis et des affaires judiciaires.
+    sources = FLUX.get(theme) or FLUX["general"]
 
     def un(src):
         nom, url = src
@@ -180,11 +184,22 @@ def recuperer(question: str, maxi: int = 8, fin: float = 0.0) -> list:
             logger.info(f"[actu] {nom} injoignable : {type(e).__name__}")
             return []
 
-    articles = []
-    # En parallèle : le temps total est celui du flux le plus lent, pas la somme.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(sources) or 1)) as ex:
-        for lot in ex.map(un, sources):
-            articles.extend(lot)
+    def lire_tout(liste):
+        if not liste:
+            return []
+        got = []
+        # En parallèle : le temps total est celui du flux le plus lent, pas la somme.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(6, len(liste)))) as ex:
+            for lot in ex.map(un, liste):
+                got.extend(lot)
+        return got
+
+    articles = lire_tout(sources)
+    # Aucun média du thème n'a répondu (panne, blocage) : mieux vaut l'actualité générale
+    # que rien du tout. Mais seulement EN DERNIER RECOURS, jamais en mélange.
+    if not articles and theme != "general":
+        logger.info(f"[actu] aucun média « {theme} » joignable → repli sur l'actualité générale")
+        articles = lire_tout(FLUX["general"])
 
     limite = datetime.now(timezone.utc) - timedelta(hours=FRAICHEUR_H)
     frais = [a for a in articles if a["date"] and a["date"] >= limite]
