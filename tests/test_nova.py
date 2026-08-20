@@ -4,6 +4,7 @@ Suite de tests Nova — vérifie les chemins critiques SANS réseau ni clés.
 But : attraper les régressions avant le déploiement (routage, extraction, gestion d'erreur,
 robustesse aux valeurs vides/None). Lancer avec :  python tests/test_nova.py
 """
+import json
 import sys
 import types
 from pathlib import Path
@@ -439,7 +440,7 @@ def test_delais():
         return essais
 
     sauve = (C.TIMEOUT_LLM, C.TIMEOUT_CHAINE, C._KO_FOURNISSEUR_TTL, dict(C._FOURNISSEURS_KO),
-             C._DERNIER_OK["nom"])
+             C._DERNIER_OK["nom"], C._KO_LENT_TTL)
     try:
         C.TIMEOUT_LLM, C.TIMEOUT_CHAINE = 3.0, 9.0
         C._FOURNISSEURS_KO.clear(); C._DERNIER_OK["nom"] = ""
@@ -459,7 +460,11 @@ def test_delais():
         check_true("2e appel immédiat", time.monotonic() - t0 < 1.0)
 
         # …mais il retrouve sa chance quand la mise à l'écart expire.
-        C._KO_FOURNISSEUR_TTL = 0.01
+        # Un simple dépassement de délai a sa PROPRE durée, bien plus courte qu'une
+        # panne franche : un fournisseur lent n'est pas un fournisseur mort.
+        check_true("sanction « lent » plus courte que « panne franche »",
+                   C._KO_LENT_TTL < C._KO_FOURNISSEUR_TTL)
+        C._KO_FOURNISSEUR_TTL = C._KO_LENT_TTL = 0.01
         time.sleep(0.05)
         essais.clear()
         C.chat([{"role": "user", "content": "z"}])
@@ -467,7 +472,7 @@ def test_delais():
     finally:
         (C.TIMEOUT_LLM, C.TIMEOUT_CHAINE, C._KO_FOURNISSEUR_TTL) = sauve[:3]
         C._FOURNISSEURS_KO.clear(); C._FOURNISSEURS_KO.update(sauve[3])
-        C._DERNIER_OK["nom"] = sauve[4]
+        C._DERNIER_OK["nom"], C._KO_LENT_TTL = sauve[4], sauve[5]
         C._providers_disponibles = vrai_chaine
 
     # Un délai par fournisseur qui dépasserait le budget global rend la chaîne inutile.
@@ -1065,13 +1070,88 @@ def test_bulles_live():
     check_true("message vide géré", isinstance(A._route_bulles(""), list))
 
 
+# ── 24. Diagnostic des modèles ───────────────────────────────────────────────
+def test_diagnostic():
+    """Quand Nova dit « aucun modèle disponible », il faut savoir LAQUELLE des clés
+    pose problème — sans avoir à deviner ni à lire les logs Render."""
+    import time
+    import llm.client as C
+    from config import config as CFG
+
+    sauve = {n: getattr(CFG, f"{n.upper()}_API_KEY", "") for n in
+             ("nvidia", "groq", "gemini", "openrouter", "cerebras", "xai")}
+    vraie_chaine = C._providers_disponibles
+    vrai_to = C.TIMEOUT_LLM
+    try:
+        CFG.NVIDIA_API_KEY = "nvapi-cle-valide-mais-lente-xxxxxxxx"
+        CFG.GROQ_API_KEY = "gsk_cle_qui_marche_xxxxxxxxxxxxxxxxx"
+        CFG.GEMINI_API_KEY = "AIzaCleApiNonActivee_xxxxxxxxxxxx"
+        CFG.OPENROUTER_API_KEY = "meta-llama/llama-3.3-70b"     # nom de modèle collé par erreur
+        CFG.CEREBRAS_API_KEY = CFG.XAI_API_KEY = ""
+        C.TIMEOUT_LLM = 0.5
+
+        def lent(m, mo, t, n=None):
+            time.sleep(0.8); return "ok"
+
+        def bon(m, mo, t, n=None):
+            return "ok"
+
+        def g403(m, mo, t, n=None):
+            raise RuntimeError("403 Forbidden — Generative Language API has not been used")
+
+        def o401(m, mo, t, n=None):
+            raise RuntimeError("Error code: 401 - No auth credentials found")
+
+        C._providers_disponibles = lambda niveau="equilibre": [
+            ("nvidia", lent, "m"), ("groq", bon, "m"),
+            ("gemini", g403, "m"), ("openrouter", o401, "m")]
+        C._FOURNISSEURS_KO.clear()
+
+        d = {r["fournisseur"]: r for r in (A._diag_un_llm(n) for n in
+                                           ("nvidia", "groq", "gemini", "openrouter"))}
+
+        # Un fournisseur LENT mais fonctionnel doit être reconnu comme tel, pas « en panne »
+        check("fournisseur lent : marche quand même", d["nvidia"]["ok"], True)
+        check_true("lenteur signalée", "LENTEMENT" in d["nvidia"]["conseil"])
+        check_true("le seuil cité est le vrai délai appliqué",
+                   str(C.TIMEOUT_LLM) in d["nvidia"]["conseil"])
+        # Un fournisseur sain n'inquiète pas inutilement
+        check("fournisseur sain : rien à signaler", d["groq"]["conseil"], "")
+        check("fournisseur sain : ok", d["groq"]["ok"], True)
+        # Les pannes sont expliquées, pas juste constatées
+        check_true("403 → API non activée", "activ" in d["gemini"]["conseil"])
+        check_true("clé mal collée détectée AVANT l'appel",
+                   "sk-or-" in d["openrouter"]["conseil"])
+        # Une clé absente n'est pas une panne
+        CFG.NVIDIA_API_KEY = ""
+        vide = A._diag_un_llm("nvidia")
+        check("clé absente ≠ panne", vide["cle_presente"], False)
+        check_true("dit qu'il n'y a pas de clé", "clé" in vide["conseil"])
+
+        # 🔒 Une clé ne doit JAMAIS ressortir en entier d'un diagnostic
+        CFG.GROQ_API_KEY = "gsk_secret_a_ne_pas_divulguer_123456789"
+        r = A._diag_un_llm("groq")
+        check("clé jamais exposée en entier", CFG.GROQ_API_KEY in json.dumps(r), False)
+        check_true("aperçu court", len(r.get("cle_apercu", "")) <= 15)
+
+        # Un espace collé par erreur est la panne la plus invisible
+        CFG.GROQ_API_KEY = "gsk_cle avec espace"
+        check_true("espace dans la clé signalé", "espace" in A._diag_un_llm("groq")["conseil"])
+    finally:
+        for n, v in sauve.items():
+            setattr(CFG, f"{n.upper()}_API_KEY", v)
+        C._providers_disponibles = vraie_chaine
+        C.TIMEOUT_LLM = vrai_to
+        C._FOURNISSEURS_KO.clear()
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
                test_caches, test_slugs, test_modeles, test_requetes, test_securite,
                test_non_bloquant, test_delais, test_cours, test_trouvailles,
                test_requete_web, test_saturation, test_synthese_fond,
-               test_sans_modele, test_bulles_live):
+               test_sans_modele, test_bulles_live, test_diagnostic):
         try:
             fn()
         except Exception as e:

@@ -76,20 +76,35 @@ _KO_FOURNISSEUR_TTL = float(os.getenv("LLM_PANNE_TTL", "600"))
 
 
 def _fournisseur_hs(nom: str) -> bool:
+    """Ce fournisseur est-il encore sous sanction ? La durée dépend de la gravité."""
     import time
-    t = _FOURNISSEURS_KO.get(nom)
-    return bool(t and (time.monotonic() - t) < _KO_FOURNISSEUR_TTL)
+    v = _FOURNISSEURS_KO.get(nom)
+    if not v:
+        return False
+    quand, genre = v
+    ttl = _KO_FOURNISSEUR_TTL if genre == "mort" else _KO_LENT_TTL
+    return (time.monotonic() - quand) < ttl
+
+
+# Un fournisseur LENT n'est pas un fournisseur MORT : le bannir dix minutes pour un
+# simple dépassement de délai prive Nova d'un service qui marche (NIM NVIDIA met parfois
+# plus de 20 s à démarrer sur les gros modèles). Sanction courte, et il revient vite.
+_KO_LENT_TTL = float(os.getenv("LLM_LENT_TTL", "120"))
 
 
 def _marque_fournisseur_hs(nom: str, err: Exception) -> None:
-    """Écarte temporairement un fournisseur en panne FRANCHE (pas un simple 404 de modèle)."""
+    """Écarte temporairement un fournisseur défaillant. La durée dépend de la GRAVITÉ."""
     import time
     t = str(err).lower()
-    franc = any(k in t for k in ("timed out", "timeout", "connection", "401", "unauthorized",
-                                 "invalid api key", "402", "payment", "403", "forbidden"))
-    if franc:
-        _FOURNISSEURS_KO[nom] = time.monotonic()
-        logger.warning(f"[LLM] {nom} écarté {int(_KO_FOURNISSEUR_TTL / 60)} min (panne franche).")
+    mort = any(k in t for k in ("401", "unauthorized", "invalid api key", "402", "payment",
+                                "403", "forbidden", "connection error", "name or service"))
+    lent = any(k in t for k in ("timed out", "timeout", "read timeout"))
+    if mort or lent:
+        genre = "mort" if mort else "lent"
+        _FOURNISSEURS_KO[nom] = (time.monotonic(), genre)
+        duree = _KO_FOURNISSEUR_TTL if mort else _KO_LENT_TTL
+        logger.warning(f"[LLM] {nom} écarté {int(duree)} s "
+                       f"({'panne franche' if mort else 'trop lent'}).")
 
 
 def _lister_modeles(client):

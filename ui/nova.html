@@ -416,6 +416,7 @@
       <button class="sbf" onclick="location.href='/nova/brain'">🌌 Escouade</button>
       <button class="sbf" onclick="location.href='/nova/cours'">🎓 Mode Cours</button>
       <button class="sbf" onclick="openMemory()">🧠 Mémoire</button>
+      <button class="sbf" onclick="diagLLM()">🩺 Diagnostic</button>
       <button class="sbf" id="soundBtn" onclick="toggleSound()">🔉 Sons</button>
       <!-- Réveil, mot-clé, voix… se pilotent aussi à la voix : « réveille mon téléphone », « active le mot-clé » -->
       <button class="sbf wide" id="wakeBtn" onclick="toggleWake()" title="Dire « Nova » ouvre le mode vocal">✨ Mot-clé « Nova »</button>
@@ -1215,6 +1216,32 @@ function toggleVoiceMode(){ if(!KEY){ openCfg(); return; }
   document.getElementById("voiceBtn").classList.toggle("on",voiceMode);
   if(voiceMode){ primeTTS(); ac(); sndOpen(); graphStart(); gResize(); vSet("Je t'écoute…",""); startListen(); }
   else { stopListen(); speechSynthesis.cancel(); document.body.classList.remove("thinking"); graphEnd(); if(wakeOn) setTimeout(startWake,700); }
+}
+
+/* ═══ DIAGNOSTIC DES MODÈLES ═══
+   Teste chaque fournisseur séparément et dit ce qui cloche — au lieu de deviner
+   quelle clé pose problème quand Nova répond « aucun modèle disponible ». */
+async function diagLLM(){
+  if(!KEY){ openCfg(); return; }
+  closeSidebar();
+  const b=addRow("ai","🩺 Je teste chaque fournisseur, un instant…");
+  try{
+    const d=await (await fetch(ORIGIN+"/agent/diag/llm?key="+encodeURIComponent(KEY))).json();
+    let h="<b>🩺 Diagnostic des modèles</b><br><br>"+esc(d.resume||"")+"<br><br>";
+    for(const f of (d.fournisseurs||[])){
+      const p=f.ok?"✅":(f.cle_presente?"❌":"⚪");
+      h+=p+" <b>"+esc(f.fournisseur)+"</b>";
+      if(f.latence_s!=null) h+=" <span style='opacity:.6'>· "+f.latence_s+" s</span>";
+      if(f.modele) h+=" <span style='opacity:.6'>· "+esc(f.modele)+"</span>";
+      if(f.conseil) h+="<br><span style='opacity:.75;font-size:13px'>↳ "+esc(f.conseil)+"</span>";
+      else if(f.erreur) h+="<br><span style='opacity:.6;font-size:12px'>↳ "+esc(f.erreur.slice(0,140))+"</span>";
+      h+="<br>";
+    }
+    h+="<br><span style='opacity:.6;font-size:12px'>Délai appliqué : "
+      +(d.reglages&&d.reglages.LLM_TIMEOUT)+" s par fournisseur.</span>";
+    b.innerHTML=h;
+  }catch(e){ b.innerHTML="❌ Diagnostic impossible : "+esc(String(e).slice(0,160)); }
+  chat.scrollTop=chat.scrollHeight;
 }
 
 /* ═══ MOT-CLÉ « NOVA » (mains-libres, tant que la page est ouverte) ═══ */
