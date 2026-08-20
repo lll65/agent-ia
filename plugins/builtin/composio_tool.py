@@ -8,16 +8,62 @@ Utilise l'API HTTP Composio directement (pas de dépendance en plus → ne casse
 déploiement). Essaie l'API v3 puis v2. Sans COMPOSIO_API_KEY : outil inactif (message clair).
 """
 import json
+import re
 from plugins.base import Plugin
 
 _BASE = "https://backend.composio.dev"
 
-# Actions courantes (pour guider le modèle)
+# Repli si Composio est injoignable. La VRAIE liste est découverte en direct :
+# une liste figée devenait fausse dès que l'utilisateur connectait une nouvelle app
+# (constaté avec Google Sheets — Nova répondait « donne-moi la commande » à quelqu'un
+# qui venait justement de connecter l'app pour ne plus avoir à la connaître).
 _COMMON = (
     "GMAIL_FETCH_EMAILS (lire mails), GMAIL_SEND_EMAIL, "
     "GOOGLECALENDAR_EVENTS_LIST (agenda), GOOGLECALENDAR_CREATE_EVENT, "
     "GOOGLECALENDAR_QUICK_ADD, SLACK_SEND_MESSAGE, NOTION_CREATE_PAGE"
 )
+
+
+def catalogue(indice: str = "", max_apps: int = 6, max_actions: int = 12) -> str:
+    """Actions RÉELLEMENT disponibles sur les apps que l'utilisateur a connectées.
+
+    C'est la réponse à « pourquoi il n'a pas les commandes lui-même ? » : dès qu'une app
+    est connectée, ses actions sont découvertes chez Composio et données au modèle. Rien
+    n'est codé en dur, donc rien ne devient périmé.
+    """
+    try:
+        from api.agent import _connected_accounts, _composio_list_actions
+    except Exception:
+        return _COMMON
+    try:
+        apps = sorted({s for s, _u, _st in _connected_accounts() if s})
+    except Exception:
+        return _COMMON
+    if not apps:
+        return ("aucune app n'est connectée pour l'instant — connecte-la sur composio.dev, "
+                "ses actions seront disponibles immédiatement")
+    # L'app évoquée dans la demande passe en premier : c'est celle qui intéresse.
+    # L'app évoquée passe devant. On compare sans espaces ni tirets bas, et on tolère
+    # le singulier : l'utilisateur écrit « google sheet », le slug est « googlesheets ».
+    ind = re.sub(r"[^a-z0-9]", "", (indice or "").lower())
+
+    def _evoquee(app: str) -> bool:
+        nu = re.sub(r"[^a-z0-9]", "", app.lower())
+        return bool(nu) and (nu in ind or (len(nu) > 4 and nu[:-1] in ind))
+
+    apps.sort(key=lambda a: (not _evoquee(a), a))
+    blocs = []
+    for app in apps[:max_apps]:
+        try:
+            actes = _composio_list_actions(app)
+        except Exception:
+            actes = []
+        if not actes:
+            continue
+        noms = ", ".join(a["name"] for a in actes[:max_actions])
+        reste = len(actes) - max_actions
+        blocs.append(f"• {app} : {noms}" + (f" (+{reste} autres)" if reste > 0 else ""))
+    return "\n".join(blocs) or _COMMON
 
 
 def _to_dict(arguments):
@@ -58,7 +104,14 @@ class ComposioPlugin(Plugin):
             return ("⚠️ Composio non configuré. Crée un compte gratuit sur composio.dev, "
                     "connecte tes apps (Gmail, Agenda…), et mets COMPOSIO_API_KEY dans les variables Render.")
         if not command:
-            return f"⚠️ Précise 'command'. Ex : {_COMMON}"
+            # On ne renvoie plus une liste figée : on va CHERCHER les actions réelles des
+            # apps connectées. Le modèle peut alors relancer avec le bon nom tout seul.
+            indice = " ".join(str(v) for v in kw.values() if isinstance(v, str))
+            return ("⚠️ Il manque le nom de l'action ('command'). Voici les actions "
+                    "réellement disponibles sur tes apps connectées :\n"
+                    + catalogue(indice) +
+                    "\n\nRelance connected_app avec la bonne action, par exemple :\n"
+                    'PARAMS: {"command": "GOOGLESHEETS_BATCH_GET", "arguments": {}}')
         action = command
 
         import requests
@@ -94,6 +147,12 @@ class ComposioPlugin(Plugin):
                 return (f"❌ Clé API Composio refusée (type {kind}, variable COMPOSIO_API_KEY). "
                         "Prends une clé de PROJET « ak_ » en accès complet sur la plateforme développeurs, "
                         "colle-la sans espace puis redéploie.")
+            # 404 / nom inconnu : le modèle a inventé une action. On lui donne la VRAIE
+            # liste plutôt que de lui demander de deviner une deuxième fois.
+            if r.status_code == 404 or "not found" in tl or "notfound" in tl:
+                return (f"❌ L'action « {action} » n'existe pas. Actions réellement "
+                        f"disponibles sur tes apps connectées :\n{catalogue(action)}\n"
+                        "Relance connected_app avec l'un de ces noms exacts.")
             return (f"❌ Action Composio '{action}' échouée (HTTP {r.status_code}).\n{r.text[:220]}\n"
                     "Vérifie que l'app est connectée sur composio.dev et que le nom d'action est exact.")
         except Exception as e:

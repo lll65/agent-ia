@@ -187,7 +187,9 @@ def _repli_observations(observations: list, task: str = "", raison: str = "delai
     """
     utiles, vues = [], set()
     for o in observations:
-        if not o or not o.strip() or o.startswith(("[Self-heal]", "⚠️ Aucun résultat")):
+        # Un message d'ERREUR ou de mode d'emploi n'est pas une trouvaille : il s'affichait
+        # sous « voici ce que j'ai trouvé, sources à l'appui », ce qui était absurde.
+        if not o or not o.strip() or o.lstrip().startswith(("[Self-heal]", "⚠️", "❌", "🔑")):
             continue
         # Deux recherches proches ramènent souvent les MÊMES pages : ne pas les répéter.
         empreinte = re.sub(r"\s+", " ", o)[:400]

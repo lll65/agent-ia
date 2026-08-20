@@ -193,12 +193,26 @@ _TOOLKIT_ORDER = ("linear", "canva", "notion", "slack", "github", "figma", "goog
                   "googlecalendar", "gmail")
 
 
+def _mots_cles_souples(k: str) -> tuple:
+    """Le mot-clé, plus ses variantes singulier/pluriel.
+
+    « google sheets » figurait dans la liste, mais l'utilisateur écrit « google sheet » :
+    l'app n'était alors pas reconnue du tout, et Nova cherchait sur le web au lieu
+    d'ouvrir le tableur. Même piège pour docs/doc, mails/mail, events/event.
+    """
+    k = k.strip()
+    if not k:
+        return ()
+    return (k, k[:-1]) if k.endswith("s") and len(k) > 3 else (k, k + "s")
+
+
 def _detect_toolkit(message: str):
     """Renvoie le slug de l'app concernée par le message, ou None."""
-    m = message.lower()
+    m = (message or "").lower()
     for slug in _TOOLKIT_ORDER:
-        if any(k in m for k in _TOOLKITS.get(slug, ())):
-            return slug
+        for k in _TOOLKITS.get(slug, ()):
+            if any(v and v in m for v in _mots_cles_souples(k)):
+                return slug
     return None
 
 
@@ -242,10 +256,22 @@ def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
                    "épargne ou placements — l'utilisateur ne l'a pas demandé.")
     if app and "connected_app" in tools:
         tools.remove("connected_app"); tools.insert(0, "connected_app")
-        system += (" Pour l'agenda, le calendrier, les mails, Slack ou Notion, utilise TOUJOURS l'outil "
-                   "connected_app (Composio) — ne cherche JAMAIS ces infos sur le web. "
+        system += (" Pour l'agenda, le calendrier, les mails, les fichiers, Slack ou Notion, utilise "
+                   "TOUJOURS l'outil connected_app (Composio) — ne cherche JAMAIS ces infos sur le web. "
                    'Exemple agenda : connected_app command="GOOGLECALENDAR_EVENTS_LIST". '
                    'Exemple mails : connected_app command="GMAIL_FETCH_EMAILS".')
+        # Les actions RÉELLES des apps connectées, découvertes chez Composio et mises en
+        # cache. Sans ça, le modèle devait deviner un nom d'action, se tromper, puis
+        # demander à l'utilisateur de la lui fournir — alors qu'il venait de connecter
+        # l'app précisément pour ne plus avoir à la connaître.
+        try:
+            from plugins.builtin.composio_tool import catalogue
+            dispo = catalogue(message)
+            if dispo:
+                system += ("\nACTIONS DISPONIBLES sur SES apps connectées (utilise ces noms "
+                           "EXACTS, n'en invente aucun) :\n" + dispo[:1400])
+        except Exception:
+            pass
     elif factual and "search_web" in tools:
         tools.remove("search_web"); tools.insert(0, "search_web")
     if factual:

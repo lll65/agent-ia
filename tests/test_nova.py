@@ -1214,13 +1214,85 @@ def test_actualite():
                str(auj.year) in requete_simple("prix du bitcoin aujourd hui"))
 
 
+# ── 26. Les apps connectées débloquent leurs actions toutes seules ───────────
+def test_apps_actions():
+    """Cas réel : Google Sheets connecté, et Nova répondait « donne-moi la commande
+    d'intégration » — à quelqu'un qui venait de connecter l'app POUR ne plus avoir à
+    la connaître. La liste des actions était figée en dur dans le code."""
+    from config import config as CFG
+    from plugins.builtin import composio_tool as CT
+
+    # 26a. Singulier / pluriel : « google sheet » doit être reconnu comme « googlesheets »
+    for phrase, attendu in (("tu peux lire mes fichier google sheet", "googlesheets"),
+                            ("trouve un fichier pea dans mes sheets", "googlesheets"),
+                            ("ouvre mon google doc", "googledocs"),
+                            ("regarde mon mail", "gmail"),
+                            ("mon agenda demain", "googlecalendar")):
+        check(f"app détectée dans « {phrase[:30]} »", A._detect_toolkit(phrase), attendu)
+    check("aucune app quand il n'y en a pas", A._detect_toolkit("j'ai 17 ans"), None)
+    check_true("variantes générées", "sheet" in A._mots_cles_souples("sheets"))
+    check_true("variante inverse aussi", "docs" in A._mots_cles_souples("doc"))
+
+    # 26b. Les actions sont DÉCOUVERTES, jamais codées en dur
+    vrais = (A._connected_accounts, A._composio_list_actions, CFG.COMPOSIO_API_KEY)
+    try:
+        CFG.COMPOSIO_API_KEY = "ak_test"
+        A._connected_accounts = lambda: [("googlesheets", "u", "ACTIVE"),
+                                         ("gmail", "u", "ACTIVE")]
+        catalogue_par_app = {
+            "googlesheets": ["GOOGLESHEETS_BATCH_GET", "GOOGLESHEETS_BATCH_UPDATE"],
+            "gmail": ["GMAIL_FETCH_EMAILS"],
+        }
+        A._composio_list_actions = lambda s: [{"name": n} for n in catalogue_par_app.get(s, [])]
+
+        cat = CT.catalogue("tu peux lire mes fichier google sheet")
+        check_true("action réelle de Sheets présente", "GOOGLESHEETS_BATCH_GET" in cat)
+        check_true("les autres apps connectées aussi", "GMAIL_FETCH_EMAILS" in cat)
+        check_true("l'app évoquée passe en premier", cat.strip().startswith("• googlesheets"))
+        # Le nom exact ne doit jamais être inventé : il vient de Composio
+        check("aucune action inventée", "GOOGLESHEETS_LIRE" in cat, False)
+
+        # Commande oubliée → on donne les vraies actions, pas les 7 codées en dur
+        aide = CT.ComposioPlugin().run()
+        check_true("aide = vraies actions", "GOOGLESHEETS_BATCH_GET" in aide)
+
+        # Une app fraîchement connectée apparaît sans toucher au code
+        A._connected_accounts = lambda: [("notion", "u", "ACTIVE")]
+        catalogue_par_app["notion"] = ["NOTION_CREATE_PAGE", "NOTION_SEARCH"]
+        cat2 = CT.catalogue("ajoute une page notion")
+        check_true("nouvelle app prise en compte immédiatement", "NOTION_SEARCH" in cat2)
+
+        # Aucune app connectée : on le dit, on ne ment pas avec une liste d'exemples
+        A._connected_accounts = lambda: []
+        vide = CT.catalogue("mes sheets")
+        check_true("aucune app → message honnête", "aucune app" in vide.lower())
+
+        # Composio injoignable : repli, jamais d'exception
+        A._connected_accounts = lambda: (_ for _ in ()).throw(RuntimeError("réseau"))
+        check_true("Composio injoignable → repli", bool(CT.catalogue("x")))
+    finally:
+        A._connected_accounts, A._composio_list_actions = vrais[0], vrais[1]
+        CFG.COMPOSIO_API_KEY = vrais[2]
+
+    # 26c. Un message d'erreur d'outil n'est PAS une trouvaille à afficher
+    import agent.core as AC
+    for faux in ("⚠️ Précise 'command'. Ex : GMAIL_FETCH_EMAILS",
+                 "❌ Action Composio échouée (HTTP 404)",
+                 "🔑 Ta clé Composio est VALIDE mais n'a pas la permission"):
+        check(f"pas une trouvaille : « {faux[:26]} »", AC._repli_observations([faux]), "")
+    # …mais un vrai résultat en est une
+    check_true("un vrai résultat reste une trouvaille",
+               AC._repli_observations(["🔎 **Résultats web** (3)\n\n**1. Titre**\n_source.fr_"]))
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
                test_caches, test_slugs, test_modeles, test_requetes, test_securite,
                test_non_bloquant, test_delais, test_cours, test_trouvailles,
                test_requete_web, test_saturation, test_synthese_fond,
-               test_sans_modele, test_bulles_live, test_diagnostic, test_actualite):
+               test_sans_modele, test_bulles_live, test_diagnostic, test_actualite,
+               test_apps_actions):
         try:
             fn()
         except Exception as e:
