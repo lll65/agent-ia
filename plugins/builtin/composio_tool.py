@@ -24,7 +24,7 @@ _COMMON = (
 )
 
 
-def catalogue(indice: str = "", max_apps: int = 6, max_actions: int = 12) -> str:
+def catalogue(indice: str = "", budget: int = 1800, max_actions: int = 12) -> str:
     """Actions RÉELLEMENT disponibles sur les apps que l'utilisateur a connectées.
 
     C'est la réponse à « pourquoi il n'a pas les commandes lui-même ? » : dès qu'une app
@@ -52,18 +52,40 @@ def catalogue(indice: str = "", max_apps: int = 6, max_actions: int = 12) -> str
         return bool(nu) and (nu in ind or (len(nu) > 4 and nu[:-1] in ind))
 
     apps.sort(key=lambda a: (not _evoquee(a), a))
-    blocs = []
-    for app in apps[:max_apps]:
+
+    # ⚠️ AUCUNE app connectée ne doit disparaître de cette liste. Auparavant deux coupes
+    # s'additionnaient — un plafond de 6 apps, puis une troncature brutale du texte — et
+    # le modèle ne voyait que les premières. Il répondait alors, en toute bonne foi,
+    # « je n'ai pas accès à Notion » à quelqu'un dont Notion ÉTAIT connecté.
+    # Ici le budget est RÉPARTI : on raccourcit la liste d'actions de chacune, jamais
+    # la liste des apps elle-même.
+    catalogues = []
+    for app in apps:
         try:
-            actes = _composio_list_actions(app)
+            actes = [a["name"] for a in (_composio_list_actions(app) or [])]
         except Exception:
             actes = []
-        if not actes:
-            continue
-        noms = ", ".join(a["name"] for a in actes[:max_actions])
-        reste = len(actes) - max_actions
-        blocs.append(f"• {app} : {noms}" + (f" (+{reste} autres)" if reste > 0 else ""))
-    return "\n".join(blocs) or _COMMON
+        if actes:
+            catalogues.append((app, actes))
+    if not catalogues:
+        return _COMMON
+
+    # L'app évoquée dans la demande reçoit une part plus large : c'est celle qui sert.
+    parts = {app: (3 if _evoquee(app) else 1) for app, _ in catalogues}
+    total = sum(parts.values())
+    blocs = []
+    for app, actes in catalogues:
+        part = max(120, int(budget * parts[app] / total))
+        gardes, taille = [], 0
+        for nom in actes[:max_actions]:
+            if gardes and taille + len(nom) + 2 > part:
+                break
+            gardes.append(nom)
+            taille += len(nom) + 2
+        reste = len(actes) - len(gardes)
+        blocs.append(f"• {app} : {', '.join(gardes)}"
+                     + (f" (+{reste} autres — demande-les si besoin)" if reste > 0 else ""))
+    return "\n".join(blocs)
 
 
 def _to_dict(arguments):
