@@ -232,8 +232,92 @@ def _detect_toolkit(message: str):
     return None
 
 
+# ── CONTINUITÉ DE CONVERSATION ───────────────────────────────────────────────
+# « tu peux faire quoi avec Notion ? » puis « vas-y crée un doc » : la seconde phrase ne
+# nomme plus l'app. Pire, « doc » la faisait partir vers Google Docs. Nova retient donc
+# l'app dont on vient de parler, et un mot GÉNÉRIQUE ne l'emporte jamais sur ce contexte.
+_MOTS_GENERIQUES = {
+    "doc", "docs", "document", "documents", "page", "pages", "tableau", "tableaux",
+    "tableur", "fichier", "fichiers", "board", "note", "notes", "liste", "listes",
+    "projet", "projets", "musique", "playlist", "carte", "cartes", "message", "messages",
+    "tâche", "tache", "tâches", "taches", "ticket", "tickets", "design", "designs",
+}
+_APP_RECENTE = {}          # profil -> (slug, horodatage)
+_APP_TTL = 900.0           # 15 min : au-delà, on ne suppose plus rien
+
+
+def _retenir_app(slug: str, profil: str = None) -> None:
+    """Mémorise l'app dont on vient de parler, pour comprendre la phrase suivante."""
+    import time as _t
+    if slug:
+        _APP_RECENTE[profil or _PROFILE_ID] = (slug, _t.monotonic())
+
+
+def _app_recente(profil: str = None) -> str:
+    import time as _t
+    v = _APP_RECENTE.get(profil or _PROFILE_ID)
+    if not v:
+        return ""
+    slug, quand = v
+    return slug if (_t.monotonic() - quand) < _APP_TTL else ""
+
+
+def _app_nommee(message: str) -> str:
+    """L'app EXPLICITEMENT nommée dans le message, en ignorant les mots passe-partout.
+
+    ⚠️ Il faut parcourir TOUT le message : « crée un doc dans Google Docs » contient
+    d'abord « doc » (générique) puis « google docs » (explicite). S'arrêter au premier
+    mot trouvé faisait gagner le générique, et le contexte l'emportait à tort.
+    """
+    m = (message or "").lower()
+    for slug in _TOOLKIT_ORDER:
+        for k in _TOOLKITS.get(slug, ()):
+            for v in _mots_cles_souples(k):
+                if (v and v.lower() not in _MOTS_GENERIQUES
+                        and re.search(r"(?<![\wÀ-ÿ])" + re.escape(v) + r"(?![\wÀ-ÿ])", m)):
+                    return slug
+    return ""
+
+
+def app_courante(message: str, profil: str = None) -> str:
+    """L'app concernée, en tenant compte de ce dont on vient de parler.
+
+    Règles, dans cet ordre :
+    1. Une app NOMMÉE dans le message gagne toujours (« crée un doc dans Notion »).
+    2. Sinon, si on vient de parler d'une app et que la phrase demande une ACTION,
+       c'est de cette app qu'il s'agit (« vas-y crée un doc » après Notion).
+    3. Sinon, la détection habituelle.
+    """
+    nommee = _app_nommee(message)
+    if nommee:
+        _retenir_app(nommee, profil)
+        return nommee
+    direct = _detect_toolkit(message)
+    recente = _app_recente(profil)
+    if recente and _suite_de_conversation(message):
+        return recente
+    if direct:
+        _retenir_app(direct, profil)
+    return direct
+
+
+_VERBES_SUITE = ("vas-y", "vas y", "vasy", "fais", "fais-le", "crée", "cree", "créer",
+                 "ajoute", "ajouter", "écris", "ecris", "supprime", "modifie", "envoie",
+                 "liste", "montre", "affiche", "ouvre", "cherche", "trouve", "consulte",
+                 "lis", "mets", "alors", "du coup", "ok", "d'accord")
+
+
+def _suite_de_conversation(message: str) -> bool:
+    """La phrase enchaîne-t-elle sur ce qui vient d'être dit ?"""
+    m = (message or "").lower()
+    if len(m.split()) > 18:            # une longue demande se suffit à elle-même
+        return False
+    return any(re.search(r"(?<![\wÀ-ÿ])" + re.escape(v) + r"(?![\wÀ-ÿ])", m)
+               for v in _VERBES_SUITE)
+
+
 def _app_intent(message: str) -> bool:
-    return _detect_toolkit(message) is not None
+    return app_courante(message) is not None
 
 
 # Outils finance : RETIRÉS de la boîte à outils sauf demande explicite de finance.
@@ -762,7 +846,7 @@ def _direct_app_prepare(message: str):
     action, args = _resolve_app_action(message)
     if not action:
         # Autre app connectée (Linear, Canva, Notion, Slack…) → routeur générique
-        slug = _detect_toolkit(message)
+        slug = app_courante(message)      # tient compte de l'app dont on vient de parler
         if slug and slug not in ("googlecalendar", "gmail"):
             g = _generic_app_flow(message, slug)
             _remember_user(message)   # pour comprendre un suivi vague au tour suivant
@@ -829,7 +913,7 @@ def _direct_app_run(message: str):
         return {"steps": cx["steps"], "answer": cx["done_answer"], "ok": True}
     action, args = _resolve_app_action(message)
     if not action:
-        slug = _detect_toolkit(message)
+        slug = app_courante(message)      # tient compte de l'app dont on vient de parler
         if slug and slug not in ("googlecalendar", "gmail"):
             g = _generic_app_flow(message, slug)
             _remember_user(message)   # pour comprendre un suivi vague au tour suivant
@@ -1465,7 +1549,7 @@ def _route_bulles(message: str) -> list:
         return b
     if _is_briefing(message):
         return ["tu veux ton briefing", "je regarde agenda, mails, météo et actu"]
-    slug = _detect_toolkit(message)
+    slug = app_courante(message)
     if slug:
         b = [f"ça concerne {_APP_FR.get(slug, slug)}"]
         if _is_capability_question(message):
@@ -1624,7 +1708,13 @@ def _plain_capabilities(slug: str, actions: list) -> str:
 
 
 def _capability_answer(slug: str) -> str:
-    """Réponse conversationnelle à « as-tu accès à X ? » — basée sur l'état RÉEL."""
+    """Réponse conversationnelle à « as-tu accès à X ? » — basée sur l'état RÉEL.
+
+    Poser la question installe le CONTEXTE : « tu peux faire quoi avec Notion ? » puis
+    « vas-y crée un doc » doit rester dans Notion. Sans ça, la phrase suivante repartait
+    de zéro — et « doc » l'envoyait même vers Google Docs.
+    """
+    _retenir_app(slug)
     nice = slug.capitalize()
     # ⚠️ Comparaison NORMALISÉE : Composio écrit « google_maps » là où nous écrivons
     # « googlemaps ». Sans ça, Nova répondait « Googlemaps n'est pas connecté » alors que

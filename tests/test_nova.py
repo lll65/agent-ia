@@ -1896,6 +1896,62 @@ def test_calendrier_exact():
     check_true("calendrier joint pour l'agenda", "CALENDRIER EXACT" in msgs[1]["content"])
 
 
+# ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_continuite_app():
+    """« tu peux faire quoi avec Notion ? » puis, 20 secondes après, « vas-y crée un
+    doc » : Nova repartait de zéro — et « doc » l'envoyait même vers Google Docs."""
+    try:
+        A._APP_RECENTE.clear()
+
+        # 37a. Le scénario exact signalé
+        check("la question nomme Notion", A.app_courante("tu peux faire quoi avec notion"), "notion")
+        A._capability_answer("notion")          # ce que Nova fait réellement à ce tour
+        check("la suite reste dans Notion", A.app_courante("vas-y crée un doc alors"), "notion")
+        check("« crée une page » aussi", A.app_courante("crée une page"), "notion")
+
+        # 37b. Une app NOMMÉE l'emporte toujours sur le contexte
+        A._APP_RECENTE.clear(); A._retenir_app("notion")
+        for phrase, attendu in (("crée un doc dans google docs", "googledocs"),
+                                ("mon agenda demain", "googlecalendar"),
+                                ("envoie un mail à Paul", "gmail"),
+                                ("crée un ticket linear", "linear")):
+            A._retenir_app("notion")
+            check(f"« {phrase[:30]}… » → {attendu}", A.app_courante(phrase), attendu)
+
+        # 37c. Une phrase sans rapport ne récupère PAS le contexte
+        for phrase in ("quelle heure est-il", "résume l'actu du jour",
+                       "explique-moi la photosynthèse", "j'ai 17 ans"):
+            A._APP_RECENTE.clear(); A._retenir_app("notion")
+            check(f"« {phrase[:28]}… » sans app", A.app_courante(phrase), None)
+
+        # 37d. Sans contexte récent, rien n'est supposé
+        A._APP_RECENTE.clear()
+        check("« crée une page » seule", A.app_courante("crée une page"), None)
+
+        # 37e. Le contexte s'oublie au bout d'un moment
+        A._APP_RECENTE.clear(); A._retenir_app("notion")
+        A._APP_RECENTE[A._PROFILE_ID] = ("notion", A._APP_RECENTE[A._PROFILE_ID][1] - 10_000)
+        # Le contexte expiré ne doit plus peser : on retombe sur la détection normale
+        # (« doc » seul désigne Google Docs, ce qui est un choix défendable sans contexte).
+        apres = A.app_courante("vas-y crée un doc")
+        check("un contexte trop vieux n'impose plus Notion", apres == "notion", False)
+        check("retour à la détection habituelle", apres, "googledocs")
+
+        # 37f. Une longue demande se suffit à elle-même
+        A._APP_RECENTE.clear(); A._retenir_app("notion")
+        longue = ("crée pour moi un tableau récapitulatif complet avec toutes les colonnes "
+                  "nécessaires pour suivre mes dépenses mensuelles de cette année")
+        check("une longue demande n'hérite pas du contexte", A.app_courante(longue), None)
+
+        # 37g. Un mot générique ne désigne jamais une app à lui seul
+        for mot in ("doc", "page", "tableau", "fichier", "note", "projet", "ticket"):
+            check_true(f"« {mot} » est un mot passe-partout", mot in A._MOTS_GENERIQUES)
+        check("« doc » seul ne nomme aucune app", A._app_nommee("crée un doc"), "")
+        check("« google docs » nomme bien l'app", A._app_nommee("dans google docs"), "googledocs")
+    finally:
+        A._APP_RECENTE.clear()
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -1906,7 +1962,8 @@ if __name__ == "__main__":
                test_apps_actions, test_actu_pertinence, test_audit_actu,
                test_raisonnement_cache, test_slug_connecte,
                test_modele_annonce, test_affichage_actu, test_enchainement_fichier,
-               test_fournisseur_et_routage, test_garde_fou, test_calendrier_exact):
+               test_fournisseur_et_routage, test_garde_fou, test_calendrier_exact,
+               test_continuite_app):
         try:
             fn()
         except Exception as e:
