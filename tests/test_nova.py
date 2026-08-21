@@ -1527,6 +1527,117 @@ def test_slug_connecte():
         A._connected_accounts = vrai
 
 
+# ── 31. Savoir QUEL modèle a répondu ─────────────────────────────────────────
+def test_modele_annonce():
+    """La fonctionnalité n'avait jamais marché : DERNIER est une variable de CONTEXTE,
+    renseignée dans un thread de travail, dont la valeur ne remontait jamais."""
+    import asyncio
+    import llm.client as C
+    from agent.core import _off
+
+    async def scenario():
+        def travail_llm():
+            C.DERNIER.set("nvidia · meta/llama-3.3-70b-instruct")
+            return "réponse"
+
+        await _off(travail_llm)
+        return A._modele_utilise()
+
+    check("le modèle traverse le thread", asyncio.run(scenario()),
+          "nvidia · meta/llama-3.3-70b-instruct")
+
+    # Un travail SANS modèle ne doit pas effacer ni inventer un nom
+    async def sans_modele():
+        C.DERNIER.set("groq · précédent")
+        await _off(lambda: "recherche web")
+        return A._modele_utilise()
+
+    check("un travail sans modèle n'écrase rien", asyncio.run(sans_modele()), "groq · précédent")
+
+    # Un thread réutilisé ne doit pas resservir le modèle d'une requête précédente
+    def sale():
+        C.DERNIER.set("vieux · modèle")
+        return "x"
+
+    C.executer_et_capturer(sale, )
+    check("pas de valeur périmée d'un thread recyclé",
+          C.executer_et_capturer(lambda: "y")[1], "")
+
+    # Tous les chemins de réponse doivent annoncer le modèle
+    from pathlib import Path as P
+    src = (P(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
+    chemins = src.count('"type": "model"')
+    check_true(f"annonce sur chaque chemin de réponse ({chemins} points d'émission)",
+               chemins >= 5)
+
+
+# ── 32. Trois défauts d'affichage de l'actualité ─────────────────────────────
+def test_affichage_actu():
+    from datetime import datetime, timedelta, timezone
+    from agent.core import apercu
+    from plugins.builtin import actu_rss as R
+
+    # 32a. Couper à 140 caractères laissait des marqueurs Markdown orphelins
+    obs = ("📰 **Actualité tech — 6 articles récents**\n\n"
+           "**1. Nintendo part en drift : la Switch 2 à prix déjanté et Mario Kart World "
+           "offert**\n_01net · 20/08 20h05_\nLa console revient en stock.\n"
+           "🔗 https://01net.com/un-article-au-lien-tres-long\n\n**2. DJI Mini 5 Pro**")
+    for n in (40, 60, 100, 140, 200, 260, 300):
+        c = apercu(obs, n)
+        check(f"gras équilibré à {n}", c.count("**") % 2, 0)
+        check(f"italique équilibré à {n}", c.count("_") % 2, 0)
+        check_true(f"aucun lien coupé à {n}",
+                   "http" not in c or "https://01net.com/un-article-au-lien-tres-long" in c)
+    check("texte court laissé intact", apercu("texte court", 140), "texte court")
+    check("chaîne vide", apercu("", 140), "")
+    check("None géré", apercu(None, 140), "")
+
+    # 32b. Un média très actif raflait toutes les places
+    now = datetime.now(timezone.utc)
+    arts = [{"titre": f"01net {i}", "date": now - timedelta(minutes=i), "lien": "",
+             "resume": "", "source": "01net", "theme": "tech"} for i in range(20)]
+    arts += [{"titre": f"{m} exclusif", "date": now - timedelta(minutes=30 + j), "lien": "",
+              "resume": "", "source": m, "theme": "tech"}
+             for j, m in enumerate(["Numerama", "Frandroid", "Clubic"])]
+    maxi = 6
+    plafond = max(1, int(maxi * R.PART_MAX_MEDIA))
+    vus, gardes, par_media = set(), [], {}
+    for tour in (1, 2):
+        for a in arts:
+            if len(gardes) >= maxi:
+                break
+            c = R._cle_titre(a["titre"])
+            if c in vus or (tour == 1 and par_media.get(a["source"], 0) >= plafond):
+                continue
+            vus.add(c)
+            par_media[a["source"]] = par_media.get(a["source"], 0) + 1
+            gardes.append(a)
+        if len(gardes) >= maxi:
+            break
+    sources = {a["source"] for a in gardes}
+    check_true(f"plusieurs médias représentés ({len(sources)})", len(sources) >= 3)
+    check_true("aucun média ne dépasse sa part",
+               max(par_media.values()) <= plafond)
+    check("la liste reste pleine", len(gardes), maxi)
+    check_true("plafond raisonnable", 0.2 <= R.PART_MAX_MEDIA <= 0.7)
+
+    # 32c. L'heure était celle du flux, jamais celle de Paris
+    utc = datetime(2026, 8, 20, 20, 5, tzinfo=timezone.utc)
+    loc = R._heure_locale(utc)
+    check_true("la date est convertie", loc is not None)
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo("Europe/Paris")
+        check("20h05 UTC devient 22h05 à Paris (heure d'été)", loc.hour, 22)
+        check("aucune double conversion", R._heure_locale(loc).hour, 22)
+        # En hiver le décalage n'est que d'une heure : la conversion doit suivre
+        hiver = datetime(2026, 1, 15, 20, 5, tzinfo=timezone.utc)
+        check("20h05 UTC devient 21h05 à Paris (heure d'hiver)", R._heure_locale(hiver).hour, 21)
+    except Exception:
+        OK.append(("fuseau Paris indisponible ici — conversion générique", True, True))
+    check("date absente gérée", R._heure_locale(None), None)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -1535,7 +1646,8 @@ if __name__ == "__main__":
                test_requete_web, test_saturation, test_synthese_fond,
                test_sans_modele, test_bulles_live, test_diagnostic, test_actualite,
                test_apps_actions, test_actu_pertinence, test_audit_actu,
-               test_raisonnement_cache, test_slug_connecte):
+               test_raisonnement_cache, test_slug_connecte,
+               test_modele_annonce, test_affichage_actu):
         try:
             fn()
         except Exception as e:

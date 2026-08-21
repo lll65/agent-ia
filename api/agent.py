@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 
-from agent.core import run_agent
+from agent.core import run_agent, apercu
 from memory import get_memory
 from plugins import get_loader
 from config import config
@@ -1682,6 +1682,8 @@ async def ask_stream(q: str = "", key: str = ""):
             box: asyncio.Queue = asyncio.Queue()
 
             def worker():
+                from llm.client import DERNIER as _D
+                _D.set("")
                 def push(item):
                     try:
                         loop.call_soon_threadsafe(box.put_nowait, item)
@@ -1693,6 +1695,9 @@ async def ask_stream(q: str = "", key: str = ""):
                 except Exception as e:
                     push(("t", f"❌ {str(e)[:120]}"))
                 finally:
+                    # Le nom du modèle est renseigné DANS ce thread : sans ce passage de
+                    # relais, il ne remonte jamais à la coroutine et l'UI reste muette.
+                    push(("modele", _D.get("")))
                     push(("end", None))          # garanti, même en cas d'erreur
 
             loop.run_in_executor(None, worker)
@@ -1712,6 +1717,11 @@ async def ask_stream(q: str = "", key: str = ""):
                     kind, val = await asyncio.wait_for(box.get(), timeout=reste)
                 except asyncio.TimeoutError:
                     continue                     # on repasse par le contrôle de délai
+                if kind == "modele":
+                    if val:
+                        from llm.client import DERNIER as _D
+                        _D.set(val)
+                    continue
                 if kind == "end":
                     reste = filtre.reste()
                     if reste:
@@ -1748,8 +1758,9 @@ async def ask_stream(q: str = "", key: str = ""):
             if _is_briefing(message):
                 yield sse({"type": "step", "kind": "action", "tool": "connected_app", "q": "briefing du matin"})
                 from agent.briefing import build_briefing
-                txt = await loop.run_in_executor(None, build_briefing)
+                txt = await _off(build_briefing)
                 yield sse({"type": "answer", "text": txt})
+                yield sse({"type": "model", "name": _modele_utilise()})
                 yield sse({"type": "done"}); return
             # 2) Agenda / mails → chemin déterministe (aucune invention), réponse streamée
             direct = await loop.run_in_executor(None, _direct_app_prepare, message)
@@ -1760,9 +1771,10 @@ async def ask_stream(q: str = "", key: str = ""):
                                    "agent": _agent_for_slug(st["tool"]), "q": st.get("label", "")})
                     else:
                         yield sse({"type": "step", "kind": "obs", "tool": st["tool"],
-                                   "agent": _agent_for_slug(st["tool"]), "text": st.get("text", "")})
+                                   "agent": _agent_for_slug(st["tool"]), "text": apercu(st.get("text", ""), 140)})
                 if direct.get("done_answer") is not None:
                     yield sse({"type": "answer", "text": direct["done_answer"]})
+                    yield sse({"type": "model", "name": _modele_utilise()})
                     yield sse({"type": "done"}); return
                 msgs = _format_app_messages(message, direct["action"], direct["obs"], direct["is_write"])
                 async for tok in _stream_llm(msgs, 0.2, niveau=_niveau_tache(message)):
@@ -1776,6 +1788,7 @@ async def ask_stream(q: str = "", key: str = ""):
                 t = step.get("type")
                 if t == "final":
                     yield sse({"type": "answer", "text": step.get("answer", "")})
+                    yield sse({"type": "model", "name": _modele_utilise()})
                 elif t == "action":
                     p = step.get("params", {}) or {}
                     q2 = p.get("query") or p.get("command") or ""
@@ -1784,9 +1797,10 @@ async def ask_stream(q: str = "", key: str = ""):
                 elif t == "observation":
                     yield sse({"type": "step", "kind": "obs", "tool": step.get("tool", ""),
                                "agent": _agent_pour_outil(step.get("tool", "")),
-                               "text": str(step.get("result", ""))[:140]})
+                               "text": apercu(str(step.get("result", "")), 140)})
                 elif t == "thought":
-                    yield sse({"type": "step", "kind": "thought", "text": str(step.get("text", ""))[:140]})
+                    yield sse({"type": "step", "kind": "thought",
+                               "text": apercu(str(step.get("text", "")), 140)})
             yield sse({"type": "done"})
         except Exception as e:
             yield sse({"type": "answer", "text": f"❌ Erreur : {type(e).__name__}: {str(e)[:300]}"})

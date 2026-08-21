@@ -104,14 +104,18 @@ async def llm_call(messages: list, model: str = None, temperature: float = 0.7,
     `timeout` permet de resserrer le délai quand on est DÉJÀ en retard (synthèse de
     dernière minute) : rallonger l'attente à ce moment-là ne ferait qu'aggraver le retard.
     """
-    from llm.client import chat, TIMEOUT_CHAINE
+    from llm.client import chat, TIMEOUT_CHAINE, DERNIER, executer_et_capturer
     loop = asyncio.get_running_loop()
     limite = timeout if timeout > 0 else TIMEOUT_CHAINE + 20.0
-    fut = loop.run_in_executor(None, lambda: chat(messages, temperature=temperature))
+    fut = loop.run_in_executor(
+        None, lambda: executer_et_capturer(chat, messages, temperature=temperature))
     try:
-        return await asyncio.wait_for(fut, timeout=limite)
+        sortie, modele = await asyncio.wait_for(fut, timeout=limite)
     except asyncio.TimeoutError:
         raise TimeoutError(f"aucun modèle n'a répondu en {int(limite)} s") from None
+    if modele:                      # pour que l'UI puisse dire QUI a répondu
+        DERNIER.set(modele)
+    return sortie
 
 
 async def _off(fn, *args, **kwargs):
@@ -123,8 +127,13 @@ async def _off(fn, *args, **kwargs):
     « réfléchir » indéfiniment sans jamais recevoir de réponse.
     """
     import functools
+    from llm.client import DERNIER, executer_et_capturer
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, functools.partial(fn, *args, **kwargs))
+    res, modele = await loop.run_in_executor(
+        None, functools.partial(executer_et_capturer, fn, *args, **kwargs))
+    if modele:                      # le travail a appelé un modèle : on ramène son nom ici
+        DERNIER.set(modele)
+    return res
 
 
 # Délai de la synthèse de dernière minute. Court par construction : on a déjà dépassé
@@ -145,6 +154,33 @@ def _cle_requete(q: str) -> str:
 # Au-delà, on force la conclusion : le modèle relançait des recherches en boucle et
 # consommait tout le temps imparti sans jamais rédiger.
 MAX_RECHERCHES = 2
+
+
+def apercu(texte: str, n: int = 140) -> str:
+    """Extrait court destiné à l'AFFICHAGE, qui ne casse rien en chemin.
+
+    Couper bêtement à N caractères laissait des marqueurs Markdown orphelins — «  _01net
+    · 20 » ouvrait une italique jamais refermée — et tranchait les liens en deux
+    (« https://01 »). On coupe donc sur une frontière de mot, on jette un lien entamé,
+    et on rééquilibre les marqueurs.
+    """
+    t = (texte or "").strip()
+    if len(t) <= n:
+        return t
+    coupe = t[:n]
+    # Reculer jusqu'à la fin d'un mot (sauf si ça ampute plus de la moitié)
+    i = max(coupe.rfind(" "), coupe.rfind("\n"))
+    if i > n * 0.5:
+        coupe = coupe[:i]
+    # Un lien entamé ne mène nulle part : on le retire entièrement
+    coupe = re.sub(r"\s*https?://\S*$", "", coupe)
+    # Marqueurs restés ouverts : on les referme proprement plutôt que de les laisser
+    for marque in ("```", "**", "`", "_"):
+        if coupe.count(marque) % 2:
+            j = coupe.rfind(marque)
+            # Court fragment après le marqueur → on jette ; sinon on referme
+            coupe = coupe[:j].rstrip() if len(coupe) - j <= 3 else coupe + marque
+    return coupe.rstrip() + "…"
 
 
 def _params_outil(action: str, params: dict) -> dict:
@@ -452,7 +488,7 @@ async def run_agent(
             observations.append(obs)
             deja_cherche[_cle_requete(_q)] = obs
             steps.append({"type": "action", "tool": "search_web", "params": {"query": _q}})
-            steps.append({"type": "observation", "tool": "search_web", "result": obs[:400]})
+            steps.append({"type": "observation", "tool": "search_web", "result": apercu(obs, 400)})
             messages.append({"role": "assistant", "content":
                 "ACTION: search_web\nPARAMS: " + json.dumps({"query": _q}, ensure_ascii=False)})
             messages.append({"role": "user", "content": (
@@ -813,7 +849,7 @@ async def run_agent_stream(
                              {"query": _q, "mode": _mode}, "", _fin)
             observations.append(obs)
             deja_cherche[_cle_requete(_q)] = obs
-            yield {"type": "observation", "tool": "search_web", "result": obs[:400], "iteration": 0}
+            yield {"type": "observation", "tool": "search_web", "result": apercu(obs, 400), "iteration": 0}
             messages.append({"role": "assistant", "content":
                 "THOUGHT: recherche web pour données réelles\nACTION: search_web\n"
                 "PARAMS: " + json.dumps({"query": _q, "mode": _mode}, ensure_ascii=False)})
@@ -915,7 +951,7 @@ async def run_agent_stream(
             observations.append(observation)
             health_monitor.record(action, "Erreur" not in observation)
             tool_calls_made += 1
-            yield {"type": "observation", "tool": action, "result": observation[:400], "iteration": iteration + 1}
+            yield {"type": "observation", "tool": action, "result": apercu(observation, 400), "iteration": iteration + 1}
             messages.append({"role": "assistant", "content": llm_out})
             messages.append({"role": "user", "content": (
                 f"OBSERVATION [{action}]: {observation[:1200]}\n\n"
