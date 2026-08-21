@@ -57,7 +57,7 @@ def build_briefing() -> str:
     ml = safe_tool_call(loader, "connected_app", {"command": "GMAIL_FETCH_EMAILS",
         "arguments": json.dumps({"maxResults": 8, "query": "in:inbox is:unread"})})
     weather = weather_line()
-    news = safe_tool_call(loader, "search_web", {"query": "principales actualités du jour France", "mode": "web"})
+    news = safe_tool_call(loader, "search_web", {"query": "principales actualités du jour France", "mode": "news"})
 
     sys = ("Tu es Nova. Rédige un BRIEFING DU MATIN chaleureux et concis en français, à partir "
            "UNIQUEMENT des données réelles fournies. Structure claire :\n"

@@ -147,6 +147,22 @@ def _cle_requete(q: str) -> str:
 MAX_RECHERCHES = 2
 
 
+def _params_outil(action: str, params: dict) -> dict:
+    """Complète les paramètres d'un outil que le modèle n'a pas su renseigner.
+
+    ⚠️ Le modèle ne connaît QUE la description des plugins, jamais leurs paramètres :
+    il ne peut donc pas fournir « mode ». Résultat, seule la recherche FORCÉE partait en
+    mode actualité ; celles qu'il lançait ensuite repartaient en mode web et sautaient
+    entièrement les flux RSS — d'où des communiqués de presse rendus comme actualité.
+    On ne force le mode actualité que si SA requête est elle-même une demande d'actu :
+    une relance ciblée (« prix Nintendo Switch 2 ») doit rester une recherche web.
+    """
+    p = dict(params or {})
+    if action == "search_web" and "mode" not in p and veut_actualite(str(p.get("query", ""))):
+        p["mode"] = "news"
+    return p
+
+
 def _texte_lisible(sortie: str) -> str:
     """Ne montre à l'utilisateur que de la prose — jamais le protocole interne.
 
@@ -360,8 +376,8 @@ async def run_agent(
             deja_cherche[_cle_requete(_q)] = obs
             steps.append({"type": "action", "tool": "search_web", "params": {"query": _q}})
             steps.append({"type": "observation", "tool": "search_web", "result": obs[:400]})
-            messages.append({"role": "assistant",
-                             "content": f'ACTION: search_web\nPARAMS: {{"query": "{task[:120]}"}}'})
+            messages.append({"role": "assistant", "content":
+                "ACTION: search_web\nPARAMS: " + json.dumps({"query": _q}, ensure_ascii=False)})
             messages.append({"role": "user", "content": (
                 f"OBSERVATION [search_web]: {obs[:1400]}\n\n"
                 "Utilise UNIQUEMENT ces résultats réels pour répondre, en citant leurs sources.")})
@@ -446,7 +462,8 @@ async def run_agent(
                                "réponds MAINTENANT avec FINAL: à partir de ces résultats.")
                 logger.info("[core] plafond de recherches atteint → conclusion forcée")
             else:
-                observation = await _off(safe_tool_call, loader, action, params or {}, "", _fin)
+                observation = await _off(safe_tool_call, loader, action,
+                                         _params_outil(action, params), "", _fin)
                 if cle:
                     deja_cherche[cle] = observation
             observations.append(observation)
@@ -720,8 +737,9 @@ async def run_agent_stream(
             observations.append(obs)
             deja_cherche[_cle_requete(_q)] = obs
             yield {"type": "observation", "tool": "search_web", "result": obs[:400], "iteration": 0}
-            messages.append({"role": "assistant",
-                             "content": f'THOUGHT: recherche web pour données réelles\nACTION: search_web\nPARAMS: {{"query": "{task[:120]}"}}'})
+            messages.append({"role": "assistant", "content":
+                "THOUGHT: recherche web pour données réelles\nACTION: search_web\n"
+                "PARAMS: " + json.dumps({"query": _q, "mode": _mode}, ensure_ascii=False)})
             messages.append({"role": "user", "content": (
                 f"OBSERVATION [search_web]: {obs[:1400]}\n\n"
                 "Utilise UNIQUEMENT ces résultats réels pour répondre, en citant leurs sources. "
@@ -813,7 +831,8 @@ async def run_agent_stream(
                                "réponds MAINTENANT avec FINAL: à partir de ces résultats.")
                 logger.info("[core] plafond de recherches atteint → conclusion forcée")
             else:
-                observation = await _off(safe_tool_call, loader, action, params or {}, "", _fin)
+                observation = await _off(safe_tool_call, loader, action,
+                                         _params_outil(action, params), "", _fin)
                 if cle:
                     deja_cherche[cle] = observation
             observations.append(observation)
