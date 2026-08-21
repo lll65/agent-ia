@@ -94,7 +94,7 @@ def build_system(agent_config: dict, plugins: dict) -> str:
 
 
 async def llm_call(messages: list, model: str = None, temperature: float = 0.7,
-                   timeout: float = 0.0) -> str:
+                   timeout: float = 0.0, impose: str = "") -> str:
     """Appel modèle NON bloquant et BORNÉ dans le temps.
 
     Dernier filet de sécurité : même si un SDK ignorait son propre délai, l'itération
@@ -108,7 +108,8 @@ async def llm_call(messages: list, model: str = None, temperature: float = 0.7,
     loop = asyncio.get_running_loop()
     limite = timeout if timeout > 0 else TIMEOUT_CHAINE + 20.0
     fut = loop.run_in_executor(
-        None, lambda: executer_et_capturer(chat, messages, temperature=temperature))
+        None, lambda: executer_et_capturer(chat, messages, temperature=temperature,
+                                           impose=impose))
     try:
         sortie, modele = await asyncio.wait_for(fut, timeout=limite)
     except asyncio.TimeoutError:
@@ -510,7 +511,8 @@ async def run_agent(
                 "⏱️ Temps imparti atteint. Donne MAINTENANT ta réponse FINAL avec ce que tu as déjà "
                 "trouvé. Si l'information exacte manque, dis-le franchement. Ne lance plus aucune recherche.")})
             try:
-                dernier = await llm_call(messages, temperature=temperature, timeout=_SYNTHESE_TIMEOUT)
+                dernier = await llm_call(messages, temperature=temperature, timeout=_SYNTHESE_TIMEOUT,
+                                        impose=agent_config.get('fournisseur', ''))
                 _a, _p, fin_txt = parse_response(dernier)
                 # Si le modèle réclame ENCORE un outil, sa sortie n'est pas une réponse :
                 # on la jette au profit des trouvailles réelles.
@@ -524,7 +526,8 @@ async def run_agent(
             await _remember_safe(mem, agent_id, rep[:350])
             return {"answer": rep, "steps": steps, "iterations": iteration + 1}
         try:
-            llm_out = await llm_call(messages, temperature=temperature)
+            llm_out = await llm_call(messages, temperature=temperature,
+                                     impose=agent_config.get('fournisseur', ''))
         except Exception as e:
             secours = _repli_observations(observations, task, "sans_modele")
             if secours:
@@ -873,7 +876,8 @@ async def run_agent_stream(
             rep = ""
             try:
                 # Délai resserré : on est DÉJÀ en retard, attendre encore 90 s serait pire.
-                dernier = await llm_call(messages, temperature=temperature, timeout=_SYNTHESE_TIMEOUT)
+                dernier = await llm_call(messages, temperature=temperature, timeout=_SYNTHESE_TIMEOUT,
+                                        impose=agent_config.get('fournisseur', ''))
                 _a, _p, fin_txt = parse_response(dernier)
                 # Si le modèle réclame ENCORE un outil, sa sortie n'est pas une réponse :
                 # on la jette au profit des trouvailles réelles.
@@ -888,7 +892,8 @@ async def run_agent_stream(
             yield {"type": "final", "answer": rep, "iterations": iteration + 1}
             return
         try:
-            llm_out = await llm_call(messages, temperature=temperature)
+            llm_out = await llm_call(messages, temperature=temperature,
+                                     impose=agent_config.get('fournisseur', ''))
         except Exception as e:
             # ⚠️ Le filet de secours manquait ICI. Les outils avaient rapporté de VRAIES
             # données (articles, sources, liens) et Nova affichait quand même une erreur

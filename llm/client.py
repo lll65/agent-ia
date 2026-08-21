@@ -204,7 +204,32 @@ def _modele_impose(nom: str) -> str:
     return (os.environ.get(f"{nom.upper()}_MODEL") or "").strip()
 
 
-def _providers_disponibles(niveau: str = "equilibre"):
+# L'utilisateur peut EXIGER un fournisseur : « réponds avec l'api nvidia », « utilise groq ».
+_NOMS_FOURNISSEURS = {
+    "nvidia": ("nvidia", "nim"), "groq": ("groq",), "gemini": ("gemini", "google ai"),
+    "openrouter": ("openrouter", "open router"), "cerebras": ("cerebras",),
+    "xai": ("xai", "grok"),
+}
+
+
+def fournisseur_demande(message: str) -> str:
+    """Le fournisseur explicitement réclamé dans le message, sinon "".
+
+    « je veux une réponse avec l'api nvidia » doit être honoré : c'est une consigne
+    claire, pas une préférence à deviner.
+    """
+    m = (message or "").lower()
+    if not any(v in m for v in ("api", "modèle", "modele", "utilise", "avec ", "via ",
+                                "par ", "réponds", "reponds")):
+        return ""
+    for nom, alias in _NOMS_FOURNISSEURS.items():
+        for a in alias:
+            if re.search(r"(?<![\w])" + re.escape(a) + r"(?![\w])", m):
+                return nom
+    return ""
+
+
+def _providers_disponibles(niveau: str = "equilibre", impose: str = ""):
     """Chaîne de secours : le fournisseur préféré d'abord, puis TOUS les autres configurés.
     Avant, seuls 2 étaient essayés — si Cerebras passait en payant (402) et Groq atteignait sa
     limite, Nova devenait muette alors qu'une autre clé était peut-être disponible."""
@@ -228,6 +253,9 @@ def _providers_disponibles(niveau: str = "equilibre"):
         modele = force or MODELES.get(nom, {}).get(niveau) or _MODELES_OK.get(nom) or config.LLM_MODEL
         chaine.append((nom, cle_fn[1], modele))
 
+    # 0) Fournisseur RÉCLAMÉ par l'utilisateur dans son message → il passe avant tout.
+    if impose and impose in tous and tous[impose][0]:
+        add(impose)
     # 1) Fournisseur imposé EXPLICITEMENT (LLM_PREFER=nvidia par ex.) → en tête.
     #    En mode « auto » on ne force rien : l'ordre par tâche décide (Groq pour le rapide,
     #    NVIDIA pour le courant et le lourd).
@@ -299,7 +327,7 @@ class ToutSature(RuntimeError):
 
 
 def chat(messages: list, temperature: float = 0.7, num_ctx: int = 4096,
-         niveau: str = "equilibre", patience: int = 0) -> str:
+         niveau: str = "equilibre", patience: int = 0, impose: str = "") -> str:
     """Appel synchrone. Choisit le modèle adapté au niveau de la tâche, puis essaie
     chaque fournisseur jusqu'à ce qu'un réponde (le routage ne peut donc pas faire échouer).
 
@@ -311,7 +339,7 @@ def chat(messages: list, temperature: float = 0.7, num_ctx: int = 4096,
     import time as _tps
     for essai in range(max(1, patience + 1)):
         try:
-            return _une_passe(messages, temperature, num_ctx, niveau)
+            return _une_passe(messages, temperature, num_ctx, niveau, impose)
         except ToutSature as e:
             if essai >= patience:
                 raise
@@ -325,9 +353,10 @@ def chat(messages: list, temperature: float = 0.7, num_ctx: int = 4096,
     raise RuntimeError("Aucun modèle disponible pour le moment.")
 
 
-def _une_passe(messages: list, temperature: float, num_ctx: int, niveau: str) -> str:
+def _une_passe(messages: list, temperature: float, num_ctx: int, niveau: str,
+               impose: str = "") -> str:
     """Un parcours complet de la chaîne de fournisseurs."""
-    chaine = _providers_disponibles(niveau)
+    chaine = _providers_disponibles(niveau, impose)
     if not chaine:
         return _ollama_chat(messages, config.LLM_MODEL, temperature, num_ctx)
 
@@ -397,7 +426,8 @@ _BASES = {"nvidia": "https://integrate.api.nvidia.com/v1",
           "openrouter": "https://openrouter.ai/api/v1"}
 
 
-def chat_stream(messages: list, temperature: float = 0.6, niveau: str = "equilibre"):
+def chat_stream(messages: list, temperature: float = 0.6, niveau: str = "equilibre",
+                impose: str = ""):
     """Générateur : produit la réponse token par token (vrai streaming).
     Prend le PREMIER fournisseur de la chaîne du niveau qui sait streamer (API OpenAI).
     Gemini/Ollama ne streament pas ici → repli sur une réponse d'un bloc."""
@@ -406,7 +436,7 @@ def chat_stream(messages: list, temperature: float = 0.6, niveau: str = "equilib
             "cerebras": config.CEREBRAS_API_KEY,
             "openrouter": getattr(config, "OPENROUTER_API_KEY", "")}
     provider, model, client = None, config.LLM_MODEL, None
-    for nom, _fn, mod in _providers_disponibles(niveau):
+    for nom, _fn, mod in _providers_disponibles(niveau, impose):
         if nom in _BASES and cles.get(nom):
             provider = nom
             model = _MODELES_OK.get(nom) or mod
@@ -416,7 +446,7 @@ def chat_stream(messages: list, temperature: float = 0.6, niveau: str = "equilib
     try:
         if client is None:
             # Aucun fournisseur « streamable » → réponse complète d'un coup
-            yield chat(messages, temperature=temperature, niveau=niveau); return
+            yield chat(messages, temperature=temperature, niveau=niveau, impose=impose); return
         DERNIER.set(f"{provider} · {model}")
         total = 0
         stream = client.chat.completions.create(
@@ -437,7 +467,7 @@ def chat_stream(messages: list, temperature: float = 0.6, niveau: str = "equilib
     except Exception as e:
         logger.warning(f"[chat_stream] échec streaming ({str(e)[:80]}) → repli non-stream")
         try:
-            yield chat(messages, temperature=temperature, niveau=niveau)
+            yield chat(messages, temperature=temperature, niveau=niveau, impose=impose)
         except Exception as e2:
             yield f"❌ Erreur LLM : {str(e2)[:200]}"
 

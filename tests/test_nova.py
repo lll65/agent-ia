@@ -409,7 +409,7 @@ def test_delais():
 
     vrai_chaine, vrai_budget = C._providers_disponibles, C.TIMEOUT_CHAINE
     try:
-        C._providers_disponibles = lambda niveau="equilibre": [(f"faux{i}", _lent, "m") for i in range(20)]
+        C._providers_disponibles = lambda niveau="equilibre", impose="": [(f"faux{i}", _lent, "m") for i in range(20)]
         C.TIMEOUT_CHAINE = 0.8
         try:
             C.chat([{"role": "user", "content": "test"}])
@@ -434,7 +434,7 @@ def test_delais():
             essais.append("groq"); return "réponse de Groq"
 
         chaine = [("nvidia", muet, "m"), ("groq", bon, "m"), ("gemini", bon, "m")]
-        C._providers_disponibles = lambda niveau="equilibre": (
+        C._providers_disponibles = lambda niveau="equilibre", impose="": (
             [c for c in chaine if not C._fournisseur_hs(c[0])] +
             [c for c in chaine if C._fournisseur_hs(c[0])])
         return essais
@@ -685,7 +685,7 @@ def test_trouvailles():
 
     tours = {"n": 0}
 
-    async def faux_llm(messages, model=None, temperature=0.7, timeout=0.0):
+    async def faux_llm(messages, model=None, temperature=0.7, timeout=0.0, impose=""):
         tours["n"] += 1
         if tours["n"] <= 4:      # le modèle s'obstine à relancer des recherches
             return ('THOUGHT: je cherche\nACTION: search_web\n'
@@ -869,7 +869,7 @@ def test_saturation():
     sauve = (dict(C._FOURNISSEURS_KO), C._DERNIER_OK["nom"])
     try:
         C._FOURNISSEURS_KO.clear(); C._DERNIER_OK["nom"] = ""
-        C._providers_disponibles = lambda niveau="equilibre": [
+        C._providers_disponibles = lambda niveau="equilibre", impose="": [
             ("groq", lambda *a, **k: (_ for _ in ()).throw(RuntimeError(ERR)), "m")]
         try:
             C.chat([{"role": "user", "content": "x"}])
@@ -882,7 +882,7 @@ def test_saturation():
 
         # Une panne DÉFINITIVE ne doit pas être confondue avec une saturation
         C._FOURNISSEURS_KO.clear()
-        C._providers_disponibles = lambda niveau="equilibre": [
+        C._providers_disponibles = lambda niveau="equilibre", impose="": [
             ("groq", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("401 invalid api key")), "m")]
         try:
             C.chat([{"role": "user", "content": "x"}])
@@ -901,7 +901,7 @@ def test_saturation():
             return "réponse enfin obtenue"
 
         C._FOURNISSEURS_KO.clear()
-        C._providers_disponibles = lambda niveau="equilibre": [("groq", sature_20s, "m")]
+        C._providers_disponibles = lambda niveau="equilibre", impose="": [("groq", sature_20s, "m")]
         check("patience → succès", C.chat([{"role": "user", "content": "x"}], patience=4),
               "réponse enfin obtenue")
     finally:
@@ -1003,7 +1003,7 @@ def test_sans_modele():
                          "• groq : offre gratuite épuisée (paiement demandé)\n"
                          "• nvidia : Request timed out.")
 
-    async def llm_mort(messages, model=None, temperature=0.7, timeout=0.0):
+    async def llm_mort(messages, model=None, temperature=0.7, timeout=0.0, impose=""):
         raise PANNE
 
     vrais = (SH.safe_tool_call, AC.llm_call, AC.search_query)
@@ -1102,7 +1102,7 @@ def test_diagnostic():
         def o401(m, mo, t, n=None):
             raise RuntimeError("Error code: 401 - No auth credentials found")
 
-        C._providers_disponibles = lambda niveau="equilibre": [
+        C._providers_disponibles = lambda niveau="equilibre", impose="": [
             ("nvidia", lent, "m"), ("groq", bon, "m"),
             ("gemini", g403, "m"), ("openrouter", o401, "m")]
         C._FOURNISSEURS_KO.clear()
@@ -1388,7 +1388,7 @@ def test_audit_actu():
         vus.append(params)
         return "🔎 **Résultats web : x** (1)\n\n**1. Titre**\n_ex.fr_"
 
-    async def llm_fin(messages, model=None, temperature=0.7, timeout=0.0):
+    async def llm_fin(messages, model=None, temperature=0.7, timeout=0.0, impose=""):
         return "FINAL: ok"
 
     vrais = (SH.safe_tool_call, AC.llm_call, AC.search_query)
@@ -1725,6 +1725,70 @@ def test_enchainement_fichier():
     check("aucun verbe d'action → aucune supposition", A._action_par_defaut("bonjour", ACTIONS), "")
 
 
+# ── 34. Choisir son fournisseur, et ne plus confondre « réponse » avec « repo »
+def test_fournisseur_et_routage():
+    """« je veux une réponse avec l'api nvidia » partait vers GitHub : « repo » se
+    trouvait dans « ré-po-nse »."""
+    import llm.client as C
+
+    # 34a. Le faux positif « repo » dans « réponse », « répondre »…
+    for phrase in ("je veux une réponse avec l'api nvidia", "utilise groq pour répondre",
+                   "réponds-moi vite", "quelle est ta réponse ?"):
+        check(f"« {phrase[:34]}… » n'est pas GitHub", A._detect_toolkit(phrase), None)
+    # …sans casser les vraies demandes GitHub
+    for phrase, attendu in (("crée un dépôt github", "github"), ("mon repo github", "github"),
+                            ("liste mes commits", "github")):
+        check(f"« {phrase} » reste GitHub", A._detect_toolkit(phrase), attendu)
+
+    # 34b. « quand suis-je libre » consulte l'agenda : la bulle doit le dire
+    for phrase in ("quand suis-je libre cette semaine ?", "mes disponibilités demain",
+                   "trouve-moi un créneau jeudi"):
+        check(f"« {phrase[:30]}… » → agenda", A._detect_toolkit(phrase), "googlecalendar")
+        bulles = " ".join(A._route_bulles(phrase))
+        check(f"la bulle ne parle plus de web pour « {phrase[:22]}… »",
+              "chercher sur le web" in bulles, False)
+        check_true("la bulle annonce l'agenda", "agenda" in bulles)
+
+    # 34c. Le fournisseur réclamé est reconnu — et seulement quand c'est une consigne
+    for phrase, attendu in (("je veux une réponse avec l'api nvidia", "nvidia"),
+                            ("utilise groq pour répondre", "groq"),
+                            ("réponds avec gemini", "gemini"),
+                            ("avec openrouter stp", "openrouter")):
+        check(f"fournisseur réclamé : « {phrase[:30]}… »", C.fournisseur_demande(phrase), attendu)
+    for phrase in ("résume l'actu du jour", "parle-moi de nvidia et de ses GPU",
+                   "les actions Gemini en bourse"):
+        check(f"simple sujet, pas une consigne : « {phrase[:30]}… »",
+              C.fournisseur_demande(phrase), "")
+
+    # 34d. Le fournisseur réclamé passe RÉELLEMENT en tête de la chaîne
+    from config import config as CFG
+    sauve = (CFG.NVIDIA_API_KEY, CFG.GROQ_API_KEY, CFG.GEMINI_API_KEY,
+             dict(C._FOURNISSEURS_KO), C._DERNIER_OK["nom"])
+    try:
+        CFG.NVIDIA_API_KEY, CFG.GROQ_API_KEY, CFG.GEMINI_API_KEY = "nvapi-x", "gsk_x", "AIza-x"
+        C._FOURNISSEURS_KO.clear()
+        C._DERNIER_OK["nom"] = ""
+        ordre = [n for n, _f, _m in C._providers_disponibles("equilibre", "gemini")]
+        check("le fournisseur réclamé est essayé en premier", ordre[0], "gemini")
+        check_true("les autres restent en secours", len(ordre) >= 2)
+        # Sans consigne, le routage par tâche reprend la main
+        libre = [n for n, _f, _m in C._providers_disponibles("equilibre", "")]
+        check("sans consigne, routage normal", libre[0], "nvidia")
+        # Un fournisseur réclamé mais SANS clé ne casse pas la chaîne
+        sans = [n for n, _f, _m in C._providers_disponibles("equilibre", "cerebras")]
+        check_true("fournisseur sans clé ignoré proprement", sans and "cerebras" not in sans)
+    finally:
+        (CFG.NVIDIA_API_KEY, CFG.GROQ_API_KEY, CFG.GEMINI_API_KEY) = sauve[:3]
+        C._FOURNISSEURS_KO.clear(); C._FOURNISSEURS_KO.update(sauve[3])
+        C._DERNIER_OK["nom"] = sauve[4]
+
+    # 34e. La consigne voyage bien jusqu'à l'agent
+    cfg = A._build_agent_cfg("je veux une réponse avec l'api nvidia sur l'actu", "Nova")
+    check("la consigne atteint la config de l'agent", cfg.get("fournisseur"), "nvidia")
+    check("aucune consigne = champ vide",
+          A._build_agent_cfg("résume l'actu du jour", "Nova").get("fournisseur"), "")
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -1734,7 +1798,8 @@ if __name__ == "__main__":
                test_sans_modele, test_bulles_live, test_diagnostic, test_actualite,
                test_apps_actions, test_actu_pertinence, test_audit_actu,
                test_raisonnement_cache, test_slug_connecte,
-               test_modele_annonce, test_affichage_actu, test_enchainement_fichier):
+               test_modele_annonce, test_affichage_actu, test_enchainement_fichier,
+               test_fournisseur_et_routage):
         try:
             fn()
         except Exception as e:

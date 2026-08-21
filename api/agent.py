@@ -154,7 +154,12 @@ def _smalltalk_reply(message: str) -> str:
 # Nova découvre ensuite TOUTE seule les actions disponibles via l'API Composio.
 _TOOLKITS = {
     "googlecalendar": ("agenda", "calendrier", "calendar", "rendez-vous", "rendez vous", "rdv",
-                       "planning", "événement", "evenement", "réunion", "reunion", "meeting"),
+                       "planning", "événement", "evenement", "réunion", "reunion", "meeting",
+                       # « quand suis-je libre » consulte bel et bien l'agenda : sans ces
+                       # mots, la bulle annonçait « je vais chercher sur le web » alors que
+                       # Nova ouvrait le calendrier. L'explication mentait sur son travail.
+                       "libre", "disponible", "disponibilités", "disponibilites", "créneau",
+                       "creneau", "créneaux", "creneaux"),
     "gmail":          ("mail", "mails", "email", "e-mail", "gmail", "boîte mail", "boite mail",
                        "inbox", "messagerie", "courriel"),
     "linear":         ("linear", "ticket", "tickets", "issue", "issues", "bug tracker",
@@ -211,12 +216,19 @@ def _mots_cles_souples(k: str) -> tuple:
 
 
 def _detect_toolkit(message: str):
-    """Renvoie le slug de l'app concernée par le message, ou None."""
+    """Renvoie le slug de l'app concernée par le message, ou None.
+
+    ⚠️ Comparaison par MOTS ENTIERS. En sous-chaîne, « repo » se retrouvait dans
+    « ré**po**nse » : « je veux une réponse avec l'api nvidia » partait vers GitHub, et
+    « utilise groq pour ré**po**ndre » aussi. Même famille de piège que « ia » dans
+    « mafia » — une comparaison lâche finit toujours par attraper un mot innocent.
+    """
     m = (message or "").lower()
     for slug in _TOOLKIT_ORDER:
         for k in _TOOLKITS.get(slug, ()):
-            if any(v and v in m for v in _mots_cles_souples(k)):
-                return slug
+            for v in _mots_cles_souples(k):
+                if v and re.search(r"(?<![\wÀ-ÿ])" + re.escape(v) + r"(?![\wÀ-ÿ])", m):
+                    return slug
     return None
 
 
@@ -307,8 +319,12 @@ def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
     except Exception:
         pass
     system += _profile_ctx()          # personnalisation à partir des faits retenus
+    from llm.client import fournisseur_demande
     return {"id": _PROFILE_ID, "name": name, "system_prompt": system,
-            "tools": tools, "force_search": factual, "model": config.LLM_MODEL}
+            "tools": tools, "force_search": factual, "model": config.LLM_MODEL,
+            # « je veux une réponse avec l'api nvidia » est une consigne, pas une préférence :
+            # le fournisseur réclamé passe en tête de la chaîne.
+            "fournisseur": fournisseur_demande(message)}
 
 
 # ── CHEMIN DÉTERMINISTE ANTI-HALLUCINATION (agenda / mails) ────────────────────
@@ -1847,6 +1863,9 @@ async def ask_stream(q: str = "", key: str = ""):
             yield sse({"type": "answer", "text": "Message vide."}); yield sse({"type": "done"}); return
         loop = asyncio.get_running_loop()
 
+        from llm.client import fournisseur_demande
+        _impose = fournisseur_demande(message)
+
         async def _stream_llm(messages, temp, deadline: float = 150.0, niveau: str = "equilibre"):
             """Diffuse une réponse LLM token par token (dans UN seul thread, non bloquant).
 
@@ -1868,7 +1887,8 @@ async def ask_stream(q: str = "", key: str = ""):
                     except RuntimeError:
                         pass                     # boucle fermée (client parti) : on abandonne
                 try:
-                    for tok in chat_stream(messages, temperature=temp, niveau=niveau):
+                    for tok in chat_stream(messages, temperature=temp, niveau=niveau,
+                                           impose=_impose):
                         push(("t", tok))
                 except Exception as e:
                     push(("t", f"❌ {str(e)[:120]}"))
