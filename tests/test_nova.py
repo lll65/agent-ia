@@ -1638,6 +1638,93 @@ def test_affichage_actu():
     check("date absente gérée", R._heure_locale(None), None)
 
 
+# ── 33. Trouver un fichier par son nom, puis l'ouvrir ────────────────────────
+def test_enchainement_fichier():
+    """Nova écrivait « YOUR_SPREADSHEET_ID » et Composio répondait « Failed to open
+    spreadsheet with ID YOUR_SPREADSHEET_ID » : elle ne savait pas CHERCHER d'abord."""
+    FICHIERS = [{"id": "1AAAaaaBBBcccDDDeeeFFFgggHHHiiiJJJkkkLLL", "name": "Budget vacances 2026"},
+                {"id": "1ZZZzzzYYYxxxWWWvvvUUUtttSSSrrrQQQpppOOO", "name": "Suivi_PEA_Lohan_Pere"},
+                {"id": "1MMMmmmNNNoooPPPqqqRRRsssTTTuuuVVVwwwXXX", "name": "Notes de cours"}]
+    ACTIONS = [{"name": "GOOGLESHEETS_BATCH_GET", "desc": ""},
+               {"name": "GOOGLESHEETS_SEARCH_SPREADSHEETS", "desc": ""},
+               {"name": "GOOGLESHEETS_CREATE_SPREADSHEET", "desc": ""},
+               {"name": "GOOGLESHEETS_DELETE_SHEET", "desc": ""},
+               {"name": "GOOGLESHEETS_UPDATE_VALUES", "desc": ""}]
+
+    # 33a. Un identifiant inventé est reconnu comme tel ; un vrai ne l'est pas
+    for faux in ("YOUR_SPREADSHEET_ID", "<spreadsheet_id>", "spreadsheet_id", "",
+                 "...", "xxx", None, "{{id}}"):
+        check_true(f"bouchon détecté : {faux!r}", A._est_bouchon(faux))
+    for vrai in ("1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms",
+                 "1ZZZzzzYYYxxxWWWvvvUUUtttSSSrrrQQQpppOOO"):
+        check(f"vrai identifiant accepté : {vrai[:12]}…", A._est_bouchon(vrai), False)
+
+    # 33b. Le nom du fichier est extrait de la demande
+    check("nom explicite", A._mots_cles_fichier("consulte le fichier Suivi_PEA_Lohan_Pere"),
+          "Suivi_PEA_Lohan_Pere")
+    check("nom entre guillemets", A._mots_cles_fichier("ouvre « Budget 2026 » stp"), "Budget 2026")
+
+    # 33c. L'enchaînement complet : chercher puis ouvrir le BON document
+    appels = []
+
+    def faux_tool(action, args=None, **kw):
+        appels.append((action, dict(args or {})))
+        if "SEARCH" in action.upper() or "LIST" in action.upper():
+            return "✅ résultat :\n" + json.dumps({"data": {"files": FICHIERS}})
+        return "✅ résultat : {}"
+
+    vrai_tool = A._tool
+    try:
+        A._tool = faux_tool
+        for demande, attendu in (("consulte le fichier Suivi_PEA_Lohan_Pere", "Suivi_PEA_Lohan_Pere"),
+                                 ("trouve le tableur qui parle de mon pea", "Suivi_PEA_Lohan_Pere"),
+                                 ("ouvre Budget vacances 2026", "Budget vacances 2026")):
+            appels.clear()
+            args, etapes = A._resoudre_identifiants(
+                "googlesheets", "GOOGLESHEETS_BATCH_GET",
+                {"spreadsheet_id": "YOUR_SPREADSHEET_ID"}, demande, ACTIONS)
+            nom = next((f["name"] for f in FICHIERS if f["id"] == args["spreadsheet_id"]), "")
+            check(f"« {demande[:30]}… » → bon fichier", nom, attendu)
+            check_true("la recherche est visible dans le raisonnement",
+                       any(e["kind"] == "action" for e in etapes))
+
+        # Un VRAI identifiant ne doit déclencher aucune recherche inutile
+        appels.clear()
+        vrai = {"spreadsheet_id": "1AAAaaaBBBcccDDDeeeFFFgggHHHiiiJJJkkkLLL"}
+        args, etapes = A._resoudre_identifiants("googlesheets", "GOOGLESHEETS_BATCH_GET",
+                                                dict(vrai), "lis ce fichier", ACTIONS)
+        check("aucune recherche inutile", len(appels), 0)
+        check("identifiant conservé", args, vrai)
+
+        # Une app sans action de recherche ne doit rien casser
+        args, etapes = A._resoudre_identifiants("x", "X_GET", {"file_id": "YOUR_FILE_ID"},
+                                                "lis", [{"name": "X_GET", "desc": ""}])
+        check("app sans recherche : inchangé", args["file_id"], "YOUR_FILE_ID")
+        check("app sans recherche : aucune étape", etapes, [])
+
+        # Aucun document trouvé : on le dit, on n'invente pas
+        A._tool = lambda a, args=None, **k: "✅ résultat :\n" + json.dumps({"data": {"files": []}})
+        args, etapes = A._resoudre_identifiants("googlesheets", "GOOGLESHEETS_BATCH_GET",
+                                                {"spreadsheet_id": "<id>"}, "ouvre Inexistant", ACTIONS)
+        check_true("absence de résultat annoncée",
+                   any("aucun document" in (e.get("text") or "") for e in etapes))
+    finally:
+        A._tool = vrai_tool
+
+    # 33d. « le fichier X » doit viser une app de fichiers, pas le vide
+    check("« fichier » routé", A._detect_toolkit("consulte le fichier Suivi_PEA"), "googledrive")
+    check("« tableur » routé", A._detect_toolkit("trouve le tableur de mon pea"), "googlesheets")
+
+    # 33e. Sans modèle disponible, l'action se devine au VERBE
+    for demande, attendu in (("consulte le fichier PEA", "GOOGLESHEETS_BATCH_GET"),
+                             ("crée un nouveau tableur", "GOOGLESHEETS_CREATE_SPREADSHEET"),
+                             ("supprime cette feuille", "GOOGLESHEETS_DELETE_SHEET"),
+                             ("modifie la cellule A1", "GOOGLESHEETS_UPDATE_VALUES"),
+                             ("trouve le tableur PEA", "GOOGLESHEETS_SEARCH_SPREADSHEETS")):
+        check(f"repli sans modèle : « {demande} »", A._action_par_defaut(demande, ACTIONS), attendu)
+    check("aucun verbe d'action → aucune supposition", A._action_par_defaut("bonjour", ACTIONS), "")
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -1647,7 +1734,7 @@ if __name__ == "__main__":
                test_sans_modele, test_bulles_live, test_diagnostic, test_actualite,
                test_apps_actions, test_actu_pertinence, test_audit_actu,
                test_raisonnement_cache, test_slug_connecte,
-               test_modele_annonce, test_affichage_actu):
+               test_modele_annonce, test_affichage_actu, test_enchainement_fichier):
         try:
             fn()
         except Exception as e:

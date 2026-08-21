@@ -1,5 +1,7 @@
 import asyncio
 import hmac
+import json
+import logging
 import re
 
 from fastapi import APIRouter, HTTPException, Request
@@ -10,6 +12,8 @@ from agent.core import run_agent, apercu
 from memory import get_memory
 from plugins import get_loader
 from config import config
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -160,7 +164,7 @@ _TOOLKITS = {
     "notion":         ("notion", "page notion", "base notion", "wiki"),
     "slack":          ("slack", "message slack", "canal slack", "channel"),
     "github":         ("github", "dépôt", "depot", "repo", "pull request", "commit"),
-    "googledrive":    ("drive", "google drive", "mes fichiers", "document drive"),
+    "googledrive":    ("drive", "google drive", "mes fichiers", "fichier", "document drive"),
     "googlesheets":   ("sheets", "google sheets", "tableur", "feuille de calcul"),
     "googledocs":     ("docs", "google docs", "document texte"),
     "trello":         ("trello", "board", "tableau trello"),
@@ -1018,6 +1022,175 @@ def _build_args(action: str, spec: dict, message: str, ctx: str = "", error: str
     return args if isinstance(args, dict) else {}
 
 
+# ── Résolution automatique des identifiants ──────────────────────────────────
+# Le modèle ne CONNAÎT pas l'identifiant interne d'un fichier : il invente donc un
+# bouchon (« YOUR_SPREADSHEET_ID »), et Composio répond une erreur incompréhensible.
+# Nova doit d'abord CHERCHER le fichier, puis l'ouvrir. C'est le maillon qui manquait.
+_BOUCHONS = re.compile(
+    r"^(your[_\s-]?|the[_\s-]?|mon[_\s-]?|le[_\s-]?|<|\[|\{)?"
+    r"(spreadsheet|sheet|file|document|folder|doc|drive|calendar|table|base|page)?"
+    r"[_\s-]?(id|identifiant|name|nom)?[>\]\}]?$", re.I)
+# Champs qui désignent un identifiant de document à résoudre
+_CHAMPS_ID = ("spreadsheet_id", "spreadsheetid", "file_id", "fileid", "document_id",
+              "documentid", "folder_id", "folderid", "page_id", "pageid", "database_id")
+
+
+def _est_bouchon(v) -> bool:
+    """Cette valeur est-elle un identifiant inventé plutôt qu'un vrai ?"""
+    if v is None:
+        return True
+    t = str(v).strip()
+    if not t or t in ("...", "…", "xxx", "XXX", "abc123"):
+        return True
+    if t.startswith("<") or t.startswith("{{") or t.startswith("["):
+        return True
+    # Un vrai identifiant Google fait ~40 caractères mêlant lettres, chiffres, - et _
+    if len(t) >= 20 and re.fullmatch(r"[A-Za-z0-9_\-]+", t):
+        return False
+    return bool(_BOUCHONS.match(t.replace(" ", "_")))
+
+
+def _action_de_recherche(slug: str, actions: list) -> str:
+    """L'action de la même app qui sait CHERCHER un document par son nom."""
+    noms = [a["name"] for a in actions]
+    for motif in ("SEARCH_SPREADSHEET", "SEARCH_FILE", "SEARCH", "FIND", "LIST_FILE",
+                  "LIST_SPREADSHEET", "LIST"):
+        for n in noms:
+            if motif in n.upper() and "DELETE" not in n.upper():
+                return n
+    return ""
+
+
+def _mots_cles_fichier(message: str) -> str:
+    """Ce que l'utilisateur a nommé : « le fichier Suivi_PEA_Lohan_Pere » → « Suivi_PEA »."""
+    m = message or ""
+    # Un nom de fichier explicite (majuscules, underscores, extension) prime
+    for motif in (r"[«\"']([^»\"']{3,60})[»\"']", r"\b([A-Za-zÀ-ÿ0-9]+(?:[_-][A-Za-zÀ-ÿ0-9]+){1,6})\b"):
+        g = re.search(motif, m)
+        if g:
+            return g.group(1).strip()
+    from agent.core import requete_simple
+    return requete_simple(m)[:60]
+
+
+def _identifiants_trouves(brut: str) -> list:
+    """Extrait [(identifiant, nom)] d'une réponse de recherche Composio."""
+    out = []
+    m = re.search(r"\{.*\}", brut or "", re.S)
+    if not m:
+        return out
+    try:
+        data = json.loads(m.group(0))
+    except Exception as e:
+        # On TRACE : un « except » muet ici avait masqué un NameError pendant tout un test.
+        logger.warning(f"[apps] réponse de recherche illisible : {str(e)[:100]}")
+        return out
+
+    def parcours(o):
+        if isinstance(o, dict):
+            ident = next((o[k] for k in ("id", "spreadsheetId", "fileId", "documentId")
+                          if isinstance(o.get(k), str)), "")
+            nom = next((o[k] for k in ("name", "title", "spreadsheetTitle", "filename")
+                        if isinstance(o.get(k), str)), "")
+            if ident and len(str(ident)) >= 10:
+                out.append((str(ident), str(nom)))
+            for v in o.values():
+                parcours(v)
+        elif isinstance(o, list):
+            for v in o:
+                parcours(v)
+
+    parcours(data)
+    return out
+
+
+def _meilleur_document(candidats: list, recherche: str) -> tuple:
+    """Le document dont le nom colle le mieux à ce que l'utilisateur a demandé."""
+    if not candidats:
+        return ("", "")
+    def norme(t):
+        import unicodedata
+        t = unicodedata.normalize("NFD", (t or "").lower())
+        return re.sub(r"[^a-z0-9]", "", "".join(c for c in t if unicodedata.category(c) != "Mn"))
+    cible = norme(recherche)
+    mots = [norme(w) for w in re.split(r"[\s_-]+", recherche or "") if len(w) > 2]
+    meilleur, score_max = candidats[0], -1
+    for ident, nom in candidats:
+        n = norme(nom)
+        score = 0
+        if cible and cible in n:
+            score += 100
+        score += sum(10 for w in mots if w and w in n)
+        if score > score_max:
+            meilleur, score_max = (ident, nom), score
+    return meilleur
+
+
+# Verbe employé → famille d'action, pour se passer du modèle quand il est indisponible.
+_VERBES_ACTION = (
+    (("crée", "cree", "créer", "ajoute", "ajouter", "nouveau", "nouvelle", "génère"),
+     ("CREATE", "ADD", "INSERT", "QUICK_ADD")),
+    (("supprime", "efface", "retire", "annule"), ("DELETE", "REMOVE", "TRASH")),
+    (("modifie", "change", "renomme", "mets à jour", "met à jour"), ("UPDATE", "PATCH", "EDIT")),
+    (("envoie", "envoi", "partage", "réponds"), ("SEND", "SHARE", "REPLY")),
+    (("cherche", "trouve", "recherche"), ("SEARCH", "FIND", "QUERY")),
+    (("consulte", "lis", "lire", "ouvre", "affiche", "montre", "liste", "regarde", "voir"),
+     ("GET", "LIST", "FETCH", "READ", "BATCH_GET", "SEARCH")),
+)
+
+
+def _action_par_defaut(message: str, actions: list) -> str:
+    """Devine l'action d'après le VERBE, sans aucun appel de modèle.
+
+    Quand tous les modèles gratuits sont saturés, Nova répondait « dis-m'en un peu plus »
+    avec la liste de ses capacités — alors que « consulte le fichier X » désigne sans
+    ambiguïté une action de lecture. Ce repli déterministe est toujours disponible.
+    """
+    m = (message or "").lower()
+    noms = [a["name"] for a in actions]
+    for verbes, familles in _VERBES_ACTION:
+        if not any(v in m for v in verbes):
+            continue
+        for fam in familles:
+            for n in noms:
+                if fam in n.upper():
+                    return n
+    return ""
+
+
+def _resoudre_identifiants(slug: str, action: str, args: dict, message: str, actions: list):
+    """Remplace un identifiant INVENTÉ par le vrai, en cherchant le document d'abord.
+
+    Le modèle ne peut pas connaître l'identifiant interne d'un fichier : il écrivait donc
+    « YOUR_SPREADSHEET_ID » et Composio répondait « Failed to open spreadsheet with ID
+    YOUR_SPREADSHEET_ID » — incompréhensible pour l'utilisateur, et sans issue.
+    Nova cherche maintenant le fichier par son nom, prend le meilleur résultat, et ouvre
+    le bon. C'est l'enchaînement « chercher puis lire » qui lui manquait.
+    """
+    etapes = []
+    a_resoudre = [k for k, v in (args or {}).items()
+                  if k.lower().replace("-", "_") in _CHAMPS_ID and _est_bouchon(v)]
+    if not a_resoudre:
+        return args, etapes
+    recherche = _action_de_recherche(slug, actions)
+    if not recherche:
+        return args, etapes
+    quoi = _mots_cles_fichier(message)
+    etapes.append({"kind": "action", "tool": slug, "label": f"{recherche} · « {quoi} »"})
+    brut = _tool(recherche, {"query": quoi} if "SEARCH" in recherche.upper() else {})
+    candidats = _identifiants_trouves(str(brut))
+    if not candidats:
+        etapes.append({"kind": "obs", "tool": slug, "text": f"aucun document trouvé pour « {quoi} »"})
+        return args, etapes
+    ident, nom = _meilleur_document(candidats, quoi)
+    etapes.append({"kind": "obs", "tool": slug,
+                   "text": f"trouvé : {nom or ident} ({len(candidats)} document(s) examiné(s))"})
+    for k in a_resoudre:
+        args[k] = ident
+    logger.info(f"[apps] identifiant résolu pour {action} : « {nom} » → {ident[:12]}…")
+    return args, etapes
+
+
 def _composio_list_actions(slug: str):
     """Liste les actions Composio disponibles pour une app (mise en cache).
     Renvoie [{'name':..., 'desc':...}] — permet à Nova de gérer n'importe quelle app."""
@@ -1392,6 +1565,8 @@ def _generic_app_flow(message: str, slug: str):
         near = [n for n in valid if action in n or n in action]
         action = near[0] if near else ""
     if not action:
+        action = _action_par_defaut(message, actions)
+    if not action:
         return {"steps": steps, "done_answer": (
             f"Dis-m'en un peu plus sur ce que tu veux faire avec **{slug.capitalize()}** 🙂\n\n"
             f"Voici ce que je peux y faire :\n{_friendly_actions(actions)}\n\n{_examples_for(slug)}")}
@@ -1406,6 +1581,9 @@ def _generic_app_flow(message: str, slug: str):
     known = _known_args(action, message)      # formes vérifiées à la main (filet de sécurité)
     if known:
         args = {**args, **known}
+    # ── ENCHAÎNEMENT : d'abord TROUVER le document, ensuite l'ouvrir ──────────
+    args, etapes_id = _resoudre_identifiants(slug, action, args, message, actions)
+    steps.extend(etapes_id)
     steps[0]["label"] = action
     obs = _tool(action, args)
     steps.append({"kind": "obs", "tool": slug, "text": str(obs)[:180]})
