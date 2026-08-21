@@ -1304,8 +1304,11 @@ def _plain_capabilities(slug: str, actions: list) -> str:
 def _capability_answer(slug: str) -> str:
     """Réponse conversationnelle à « as-tu accès à X ? » — basée sur l'état RÉEL."""
     nice = slug.capitalize()
-    connected = {s for s, _u, _st in _connected_accounts() if s}
-    if slug not in connected:
+    # ⚠️ Comparaison NORMALISÉE : Composio écrit « google_maps » là où nous écrivons
+    # « googlemaps ». Sans ça, Nova répondait « Googlemaps n'est pas connecté » alors que
+    # le compte l'était bel et bien — un mensonge à l'utilisateur.
+    connected = {_norm_slug(s) for s, _u, _st in _connected_accounts() if s}
+    if _norm_slug(slug) not in connected:
         link, _ = _composio_connect_link(slug)
         reco = (f"\n\n👉 **Connecte-le en un clic :**\n{link}" if link else
                 f"\n\nConnecte-le sur Composio → **Toolkits → {nice}**.")
@@ -1693,6 +1696,10 @@ async def ask_stream(q: str = "", key: str = ""):
                     push(("end", None))          # garanti, même en cas d'erreur
 
             loop.run_in_executor(None, worker)
+            # Les modèles raisonneurs streament leur brouillon <think> : il ne doit jamais
+            # atteindre l'écran (vu en production : « <think> L'utilisateur demande… »).
+            from agent.core import FiltreRaisonnement
+            filtre = FiltreRaisonnement()
             acc = ""
             fin = loop.time() + deadline
             while True:
@@ -1706,9 +1713,15 @@ async def ask_stream(q: str = "", key: str = ""):
                 except asyncio.TimeoutError:
                     continue                     # on repasse par le contrôle de délai
                 if kind == "end":
+                    reste = filtre.reste()
+                    if reste:
+                        acc += reste
+                        yield reste
                     break
-                acc += val
-                yield val
+                propre = filtre(val)
+                if propre:
+                    acc += propre
+                    yield propre
             yield_acc[0] = acc
 
         yield_acc = [""]
@@ -2512,16 +2525,17 @@ async def activity(key: str = ""):
     from agent.squad import snapshot
     snap = snapshot()
     try:
-        connected = {s for s, _u, _st in _connected_accounts() if s}
+        # Même normalisation qu'ailleurs : « google_maps » et « googlemaps » sont la même app.
+        connected = {_norm_slug(s): s for s, _u, _st in _connected_accounts() if s}
     except Exception:
-        connected = set()
+        connected = {}
     assigned = set()
     for a in snap["squad"]:
-        a["connected"] = [x for x in (a.get("apps") or []) if x in connected]
-        assigned.update(a.get("apps") or [])
+        a["connected"] = [x for x in (a.get("apps") or []) if _norm_slug(x) in connected]
+        assigned.update(_norm_slug(x) for x in (a.get("apps") or []))
     # Toute app connectée mais non rattachée (ex. tu viens de brancher Notion/Spotify)
     # apparaît automatiquement — d'abord auprès du spécialiste connu, sinon dans « Autres ».
-    extra = sorted(connected - assigned)
+    extra = sorted(connected[n] for n in (set(connected) - assigned))
     if extra:
         snap["squad"].append({
             "id": "autres", "name": "Autres apps", "icon": "🧩", "color": "#94a3b8",

@@ -163,13 +163,86 @@ def _params_outil(action: str, params: dict) -> dict:
     return p
 
 
+# Les modèles « raisonneurs » (DeepSeek-R1, Qwen, GLM, Nemotron… nombreux chez NVIDIA)
+# écrivent leur brouillon dans un bloc <think>. C'est leur cuisine interne, pas la réponse.
+_RE_THINK = re.compile(
+    r"<\s*(think|thinking|reasoning|scratchpad|antthinking)\s*>.*?<\s*/\s*\1\s*>",
+    re.S | re.I)
+_RE_THINK_OUVERT = re.compile(r"<\s*(think|thinking|reasoning|scratchpad)\s*>.*$", re.S | re.I)
+
+
+def sans_raisonnement(sortie: str) -> str:
+    """Retire le brouillon interne des modèles raisonneurs.
+
+    Constaté en production : Nova affichait « <think> L'utilisateur demande un résumé…
+    Je vais synthétiser cela en quelques phrases </think> » AVANT sa réponse. C'est le
+    monologue interne du modèle — illisible, et il révèle la mécanique au lieu du résultat.
+    """
+    t = (sortie or "")
+    t = _RE_THINK.sub("", t)
+    # Bloc ouvert jamais refermé (réponse coupée en cours de route) : on jette la fin,
+    # sinon l'utilisateur voit un brouillon tronqué.
+    if re.search(r"<\s*(think|thinking|reasoning|scratchpad)\s*>", t, re.I):
+        t = _RE_THINK_OUVERT.sub("", t)
+    return t.strip()
+
+
+class FiltreRaisonnement:
+    """Retire le brouillon <think> AU FIL DU FLUX, sans jamais afficher un demi-tag.
+
+    En streaming on ne peut pas attendre la fin pour nettoyer : chaque token part à
+    l'écran. Ce filtre retient le texte qui pourrait être le début d'une balise, et
+    n'émet rien tant qu'on est à l'intérieur du brouillon.
+    """
+    OUVRE = re.compile(r"<\s*(think|thinking|reasoning|scratchpad)\s*>", re.I)
+    FERME = re.compile(r"<\s*/\s*(think|thinking|reasoning|scratchpad)\s*>", re.I)
+    _SUSPECT = re.compile(r"<[^>]*$")           # balise peut-être coupée en deux tokens
+
+    def __init__(self):
+        self.tampon = ""
+        self.dedans = False
+
+    def __call__(self, morceau: str) -> str:
+        self.tampon += morceau or ""
+        sortie = []
+        while True:
+            if self.dedans:
+                m = self.FERME.search(self.tampon)
+                if not m:
+                    # On reste dans le brouillon : on garde juste de quoi voir la fermeture.
+                    self.tampon = self.tampon[-40:]
+                    return "".join(sortie)
+                self.tampon = self.tampon[m.end():]
+                self.dedans = False
+                continue
+            m = self.OUVRE.search(self.tampon)
+            if m:
+                sortie.append(self.tampon[:m.start()])
+                self.tampon = self.tampon[m.end():]
+                self.dedans = True
+                continue
+            # Rien d'ouvert : on émet tout, sauf une balise possiblement coupée.
+            garde = self._SUSPECT.search(self.tampon)
+            coupe = garde.start() if garde else len(self.tampon)
+            sortie.append(self.tampon[:coupe])
+            self.tampon = self.tampon[coupe:]
+            return "".join(sortie)
+
+    def reste(self) -> str:
+        """Ce qui n'a pas encore été émis à la fin du flux."""
+        if self.dedans:
+            return ""                            # brouillon jamais refermé : on le jette
+        r, self.tampon = self.tampon, ""
+        return r
+
+
 def _texte_lisible(sortie: str) -> str:
     """Ne montre à l'utilisateur que de la prose — jamais le protocole interne.
 
     Quand l'échéance tombait alors que le modèle réclamait encore un outil, sa réponse
     (« THOUGHT: … ACTION: search_web … ») était affichée telle quelle dans le chat.
     """
-    t = (sortie or "").strip()
+    t = sans_raisonnement(sortie)
     if re.search(r"^\s*(ACTION|PARAMS)\s*:", t, re.M | re.I):
         return ""                                   # le modèle boucle encore : inutilisable
     t = re.sub(r"^\s*(THOUGHT|FINAL)\s*:\s*", "", t, flags=re.M | re.I).strip()
@@ -249,6 +322,10 @@ def _temperature_for_role(agent_config: dict) -> float:
 
 def parse_response(text: str) -> tuple:
     """Extrait (action, params, final) depuis la réponse LLM."""
+    # ⚠️ Le brouillon <think> est retiré AVANT toute analyse : un « ACTION: search_web »
+    # écrit dans le monologue interne du modèle (« je pourrais chercher sur le web… »)
+    # déclencherait sinon un vrai appel d'outil qu'il n'a jamais demandé.
+    text = sans_raisonnement(text)
     # FINAL
     final_m = re.search(r"FINAL:\s*(.+)", text, re.DOTALL | re.IGNORECASE)
     if final_m:
