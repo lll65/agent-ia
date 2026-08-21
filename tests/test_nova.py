@@ -1789,6 +1789,113 @@ def test_fournisseur_et_routage():
           A._build_agent_cfg("résume l'actu du jour", "Nova").get("fournisseur"), "")
 
 
+# ── 35. Rien d'irréversible sans ton accord ──────────────────────────────────
+def test_garde_fou():
+    """« tu te rends compte s'il fait ça avec mes mails ! » — une demande ambiguë avait
+    suffi à déclencher une création non voulue. Sur un envoi, ce serait sans retour."""
+    # 35a. Classification : lire est sûr, envoyer/supprimer ne l'est pas
+    for action, irrev in (("GMAIL_SEND_EMAIL", True), ("GMAIL_FETCH_EMAILS", False),
+                          ("GMAIL_REPLY_TO_THREAD", True), ("GOOGLECALENDAR_DELETE_EVENT", True),
+                          ("GOOGLECALENDAR_EVENTS_LIST", False), ("SLACK_SEND_MESSAGE", True),
+                          ("GOOGLEDRIVE_TRASH_FILE", True), ("LINEAR_DELETE_ISSUE", True),
+                          ("GOOGLESHEETS_BATCH_GET", False), ("NOTION_CREATE_NOTION_PAGE", False)):
+        check(f"{action} irréversible={irrev}", A._est_irreversible(action), irrev)
+
+    executions = []
+    vrais = (A._tool, A._resolve_app_action, A._complex_app_flow)
+    try:
+        A._tool = lambda act, args=None, **k: executions.append(act) or "✅ ok"
+        A._complex_app_flow = lambda m: None
+        A._resolve_app_action = lambda m: ("GMAIL_SEND_EMAIL",
+                                           {"to": "papa@exemple.fr", "subject": "PEA"})
+        A._ATTENTE.clear()
+
+        # 35b. Un envoi de mail ne part PAS tout seul
+        r = A._direct_app_prepare("envoie un mail à papa")
+        check("aucun mail envoyé au premier tour", executions, [])
+        check_true("Nova demande confirmation", "Confirme" in (r.get("done_answer") or ""))
+        check_true("elle dit ce qu'elle va faire",
+                   "papa@exemple.fr" in (r.get("done_answer") or ""))
+
+        # 35c. « annule » n'envoie rien
+        r = A._direct_app_prepare("non annule")
+        check("rien envoyé après refus", executions, [])
+        check_true("l'annulation est confirmée", "Annulé" in (r.get("done_answer") or ""))
+
+        # 35d. « oui » exécute ce qui était en attente — et RIEN d'autre
+        A._ATTENTE.clear(); executions.clear()
+        A._direct_app_prepare("envoie un mail à papa")
+        A._direct_app_prepare("oui vas-y")
+        check("l'accord déclenche l'envoi", executions, ["GMAIL_SEND_EMAIL"])
+
+        # 35e. Une lecture n'est jamais bloquée
+        A._ATTENTE.clear(); executions.clear()
+        A._resolve_app_action = lambda m: ("GOOGLECALENDAR_EVENTS_LIST", {"calendarId": "primary"})
+        r = A._direct_app_prepare("mon agenda demain")
+        check("une lecture part directement", executions, ["GOOGLECALENDAR_EVENTS_LIST"])
+        check("aucune confirmation demandée pour lire", r.get("done_answer"), None)
+
+        # 35f. Une attente oubliée ne s'exécute pas des heures plus tard
+        A._ATTENTE.clear(); executions.clear()
+        A._resolve_app_action = lambda m: ("GMAIL_SEND_EMAIL", {"to": "x"})
+        A._direct_app_prepare("envoie un mail")
+        A._ATTENTE[A._PROFILE_ID]["t"] -= 10_000
+        A._direct_app_prepare("oui")
+        check("une attente expirée n'envoie rien", "GMAIL_SEND_EMAIL" in executions, False)
+
+        # 35g. Un message qui n'est ni oui ni non abandonne l'attente
+        A._ATTENTE.clear(); executions.clear()
+        A._resolve_app_action = lambda m: ("GMAIL_SEND_EMAIL", {"to": "x"})
+        A._direct_app_prepare("envoie un mail")
+        A._resolve_app_action = lambda m: ("GOOGLECALENDAR_EVENTS_LIST", {})
+        A._direct_app_prepare("finalement montre-moi mon agenda")
+        check("changer de sujet n'envoie pas le mail", "GMAIL_SEND_EMAIL" in executions, False)
+    finally:
+        A._tool, A._resolve_app_action, A._complex_app_flow = vrais
+        A._ATTENTE.clear()
+
+
+# ── 36. Les dates de l'agenda ne se devinent pas ─────────────────────────────
+def test_calendrier_exact():
+    """Le modèle avait produit un tableau où le 14/08/2026 était « lundi » (c'est un
+    vendredi), pour la semaine du 14 au 20 alors qu'on était le 21."""
+    from datetime import datetime
+    from agent.core import _JOURS
+
+    cal = A._calendrier_periode("quand suis-je libre cette semaine ?")
+    check_true("un calendrier est fourni", bool(cal))
+    auj = datetime.now()
+    check_true("aujourd'hui est indiqué", "aujourd'hui" in cal)
+    check_true("le bon jour pour aujourd'hui", _JOURS[auj.weekday()] in cal)
+
+    # Chaque ligne doit associer le BON jour à la date
+    import re as _re
+    lignes = [l for l in cal.split("\n") if l.startswith("- ")]
+    check_true(f"la semaine est listée ({len(lignes)} jours)", 7 <= len(lignes) <= 9)
+    faux = []
+    for l in lignes:
+        m = _re.match(r"- (\w+) (\d{2})/(\d{2})/(\d{4})", l)
+        if not m:
+            continue
+        jour, d, mo, an = m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4))
+        if _JOURS[datetime(an, mo, d).weekday()] != jour:
+            faux.append(l)
+    check("aucune correspondance jour/date fausse", faux, [])
+
+    # La période doit contenir aujourd'hui — pas une semaine passée
+    check_true("la semaine en cours, pas une autre",
+               auj.strftime("%d/%m/%Y") in cal)
+    # Une période courte reste courte
+    demain = A._calendrier_periode("mon agenda demain")
+    check_true("« demain » ne liste pas la semaine entière",
+               len([l for l in demain.split("\n") if l.startswith("- ")]) <= 3)
+    # Le calendrier n'est ajouté QUE pour l'agenda
+    msgs = A._format_app_messages("mes mails", "GMAIL_FETCH_EMAILS", "{}")
+    check("aucun calendrier pour les mails", "CALENDRIER EXACT" in msgs[1]["content"], False)
+    msgs = A._format_app_messages("mon agenda", "GOOGLECALENDAR_EVENTS_LIST", "{}")
+    check_true("calendrier joint pour l'agenda", "CALENDRIER EXACT" in msgs[1]["content"])
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -1799,7 +1906,7 @@ if __name__ == "__main__":
                test_apps_actions, test_actu_pertinence, test_audit_actu,
                test_raisonnement_cache, test_slug_connecte,
                test_modele_annonce, test_affichage_actu, test_enchainement_fichier,
-               test_fournisseur_et_routage):
+               test_fournisseur_et_routage, test_garde_fou, test_calendrier_exact):
         try:
             fn()
         except Exception as e:

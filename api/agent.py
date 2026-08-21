@@ -624,7 +624,37 @@ def _format_app_messages(message: str, action: str, obs: str, is_write: bool = F
             "de prévu. Termine par au plus 2 suggestions utiles."
         )
     user = f"Demande de l'utilisateur : {message}\n\nDONNÉES RÉELLES [{action}] :\n{obs[:3500]}"
+    # ⚠️ Le modèle est INCAPABLE de dire quel jour tombe une date : il a produit un tableau
+    # où le 14/08/2026 était « lundi » (c'est un vendredi) et pour la semaine du 14 au 20
+    # alors qu'on était le 21. Ce que le code sait calculer, on ne le lui fait jamais deviner.
+    if "CALENDAR" in (action or "").upper():
+        cal = _calendrier_periode(message)
+        if cal:
+            user += ("\n\nCALENDRIER EXACT de la période (calculé, à utiliser TEL QUEL — "
+                     "n'en déduis aucun autre jour) :\n" + cal)
     return [{"role": "system", "content": sys}, {"role": "user", "content": user}]
+
+
+def _calendrier_periode(message: str) -> str:
+    """La liste jour par jour de la période demandée : « vendredi 21/08/2026 », etc."""
+    from datetime import datetime, timedelta
+    from agent.core import _JOURS
+    try:
+        tmin, tmax, libelle = _time_bounds(message)
+        d = datetime.fromisoformat(tmin.replace("Z", "+00:00"))
+        f = datetime.fromisoformat(tmax.replace("Z", "+00:00"))
+    except Exception:
+        return ""
+    if (f - d).days > 40:                       # période trop large : inutile de tout lister
+        return ""
+    auj = datetime.now().date()
+    lignes = [f"Période demandée : {libelle}. Aujourd'hui = "
+              f"{_JOURS[auj.weekday()]} {auj.strftime('%d/%m/%Y')}."]
+    while d.date() <= f.date():
+        marque = "  ← aujourd'hui" if d.date() == auj else ""
+        lignes.append(f"- {_JOURS[d.weekday()]} {d.strftime('%d/%m/%Y')}{marque}")
+        d += timedelta(days=1)
+    return "\n".join(lignes[:35])
 
 
 def _format_app_result(message: str, action: str, obs: str, is_write: bool = False) -> str:
@@ -636,9 +666,96 @@ def _format_app_result(message: str, action: str, obs: str, is_write: bool = Fal
         return f"Voici les données réelles récupérées :\n\n{obs[:2000]}"
 
 
+# ── GARDE-FOU : rien d'irréversible sans ton accord ──────────────────────────
+# Une demande ambiguë a suffi à déclencher une création non voulue. Sur un mail ou une
+# suppression, la même ambiguïté serait sans retour : on demande donc confirmation
+# AVANT d'agir, en disant exactement ce qui va se passer.
+_IRREVERSIBLE = ("SEND", "DELETE", "REMOVE", "TRASH", "ARCHIVE", "REVOKE",
+                 "CLEAR", "DROP", "CANCEL", "REPLY", "FORWARD")
+_ATTENTE = {}                       # profil -> action en attente de confirmation
+_ATTENTE_TTL = 300.0                # 5 min : au-delà, on redemande
+
+_MOTS_OUI = ("oui", "ok", "d'accord", "daccord", "vas-y", "vas y", "confirme", "confirmé",
+             "confirme le", "envoie", "fais-le", "fais le", "go", "yes", "valide", "c'est bon")
+_MOTS_NON = ("non", "annule", "laisse", "stop", "surtout pas", "n'envoie pas", "pas ça")
+
+
+def _est_irreversible(action: str) -> bool:
+    """Cette action modifie-t-elle le monde extérieur sans retour possible ?"""
+    a = (action or "").upper()
+    return any(k in a for k in _IRREVERSIBLE)
+
+
+def _resume_action(action: str, args: dict) -> str:
+    """Dit en français ce qui va être fait, pour que la confirmation ait un sens."""
+    a = (action or "").upper()
+    quoi = a.split("_", 1)[-1].replace("_", " ").lower()
+    details = []
+    for cle in ("to", "recipient", "recipients", "email", "destinataire", "subject",
+                "objet", "title", "titre", "name", "nom", "query", "text", "body", "message"):
+        v = (args or {}).get(cle)
+        if isinstance(v, str) and v.strip():
+            details.append(f"{cle} : {v.strip()[:120]}")
+        if len(details) >= 3:
+            break
+    return quoi + ((" — " + " · ".join(details)) if details else "")
+
+
+def _demande_confirmation(profil: str, slug: str, action: str, args: dict) -> str:
+    """Met l'action en attente et rend le message à afficher."""
+    import time as _t
+    _ATTENTE[profil] = {"slug": slug, "action": action, "args": dict(args or {}), "t": _t.monotonic()}
+    verbe = ("envoyer" if "SEND" in action.upper() or "REPLY" in action.upper()
+             else "supprimer" if any(k in action.upper() for k in ("DELETE", "REMOVE", "TRASH"))
+             else "effectuer")
+    return (f"⚠️ Je m'apprête à **{verbe}** quelque chose sur **{slug.capitalize()}**, "
+            f"et c'est sans retour possible :\n\n> {_resume_action(action, args)}\n\n"
+            f"**Confirme et je le fais** (« oui », « vas-y »). Sinon dis « annule ».")
+
+
+def _confirmation_donnee(message: str) -> bool:
+    m = (message or "").lower().strip(" .!?")
+    return any(re.fullmatch(re.escape(w) + r"[\s,.!]*.{0,24}", m) for w in _MOTS_OUI) or \
+        any(re.search(r"(?<![\wÀ-ÿ])" + re.escape(w) + r"(?![\wÀ-ÿ])", m) for w in _MOTS_OUI[:8])
+
+
+def _refus_donne(message: str) -> bool:
+    m = (message or "").lower()
+    return any(re.search(r"(?<![\wÀ-ÿ])" + re.escape(w) + r"(?![\wÀ-ÿ])", m) for w in _MOTS_NON)
+
+
+def _action_en_attente(profil: str):
+    """L'action mise en attente, si elle n'a pas expiré."""
+    import time as _t
+    p = _ATTENTE.get(profil)
+    if not p:
+        return None
+    if _t.monotonic() - p["t"] > _ATTENTE_TTL:
+        _ATTENTE.pop(profil, None)
+        return None
+    return p
+
+
 def _direct_app_prepare(message: str):
     """Comme _direct_app_run mais SANS formater (pour le streaming). Renvoie un dict :
     {steps, done_answer} si terminé (échec → message honnête), ou {steps, action, obs, is_write}."""
+    # ── Une action irréversible attend-elle ton feu vert ? ────────────────────
+    attente = _action_en_attente(_PROFILE_ID)
+    if attente:
+        if _refus_donne(message):
+            _ATTENTE.pop(_PROFILE_ID, None)
+            return {"steps": [], "done_answer": "👍 Annulé, je n'ai rien fait."}
+        if _confirmation_donnee(message):
+            _ATTENTE.pop(_PROFILE_ID, None)
+            obs = _tool(attente["action"], attente["args"])
+            steps = [{"kind": "action", "tool": attente["slug"], "label": attente["action"]},
+                     {"kind": "obs", "tool": attente["slug"], "text": str(obs)[:180]}]
+            if _looks_like_failure(obs):
+                return {"steps": steps, "done_answer": _honest_no_access(attente["action"], obs)}
+            return {"steps": steps, "action": attente["action"], "obs": obs, "is_write": True}
+        # Ni oui ni non : on abandonne l'attente et on traite la nouvelle demande
+        _ATTENTE.pop(_PROFILE_ID, None)
+
     cx = _complex_app_flow(message)
     if cx is not None:
         return {"steps": cx["steps"], "done_answer": cx["done_answer"]}
@@ -651,9 +768,13 @@ def _direct_app_prepare(message: str):
             _remember_user(message)   # pour comprendre un suivi vague au tour suivant
             return {"steps": g["steps"], "done_answer": g["done_answer"]}
         return None
+    slug = (action or "").split("_", 1)[0].lower()
+    # ⚠️ Rien d'irréversible sans ton accord explicite.
+    if _est_irreversible(action):
+        return {"steps": [{"kind": "action", "tool": slug, "label": f"{action} (en attente)"}],
+                "done_answer": _demande_confirmation(_PROFILE_ID, slug, action, args)}
     # ⚠️ Passe par _tool() : identité Composio résolue + activité enregistrée (constellation).
     obs = _tool(action, args)
-    slug = (action or "").split("_", 1)[0].lower()
     steps = [
         {"kind": "action", "tool": slug, "label": action},
         {"kind": "obs", "tool": slug, "text": str(obs)[:180]},
@@ -1048,22 +1169,34 @@ _BOUCHONS = re.compile(
     r"[_\s-]?(id|identifiant|name|nom)?[>\]\}]?$", re.I)
 # Champs qui désignent un identifiant de document à résoudre
 _CHAMPS_ID = ("spreadsheet_id", "spreadsheetid", "file_id", "fileid", "document_id",
-              "documentid", "folder_id", "folderid", "page_id", "pageid", "database_id")
+              "documentid", "folder_id", "folderid", "page_id", "pageid", "database_id",
+              "parent_id", "parentid", "databaseid", "board_id", "project_id")
 
 
 def _est_bouchon(v) -> bool:
-    """Cette valeur est-elle un identifiant inventé plutôt qu'un vrai ?"""
+    """Cette valeur est-elle un VRAI identifiant, ou quelque chose que le modèle a inventé ?
+
+    ⚠️ Règle INVERSÉE. Énumérer les formes de bouchon était un combat perdu : le modèle a
+    fini par écrire une phrase entière comme identifiant (« Utilisez le ID du tableur
+    Google Sheets demandé dans le contexte récent : … »), qui ne ressemblait à aucun des
+    motifs prévus. On exige donc que la valeur RESSEMBLE à un identifiant ; tout le reste
+    est un bouchon, quelle que soit la forme qu'il prend.
+    """
     if v is None:
         return True
     t = str(v).strip()
-    if not t or t in ("...", "…", "xxx", "XXX", "abc123"):
+    if not t or len(t) < 8 or len(t) > 200:
         return True
-    if t.startswith("<") or t.startswith("{{") or t.startswith("["):
+    # Un identifiant n'a ni espace, ni accent, ni ponctuation de phrase
+    if not re.fullmatch(r"[A-Za-z0-9_\-]+", t):
         return True
-    # Un vrai identifiant Google fait ~40 caractères mêlant lettres, chiffres, - et _
-    if len(t) >= 20 and re.fullmatch(r"[A-Za-z0-9_\-]+", t):
-        return False
-    return bool(_BOUCHONS.match(t.replace(" ", "_")))
+    # Un UUID tout à zéro (Notion) est un remplissage, pas une page réelle
+    if re.fullmatch(r"[0\-]+", t):
+        return True
+    # Des mots français collés par des underscores restent une description, pas un ID
+    if re.fullmatch(r"(?:[a-z]+_)+[a-z]+", t) and len(t) < 40:
+        return True
+    return bool(_BOUCHONS.match(t))
 
 
 def _action_de_recherche(slug: str, actions: list) -> str:
@@ -1601,6 +1734,12 @@ def _generic_app_flow(message: str, slug: str):
     args, etapes_id = _resoudre_identifiants(slug, action, args, message, actions)
     steps.extend(etapes_id)
     steps[0]["label"] = action
+    # ⚠️ Même garde-fou que pour l'agenda et les mails : sur CETTE voie passent Slack,
+    # Notion, Linear… et tout envoi ou suppression y serait tout aussi sans retour.
+    if _est_irreversible(action):
+        steps[0]["label"] = f"{action} (en attente)"
+        return {"steps": steps,
+                "done_answer": _demande_confirmation(_PROFILE_ID, slug, action, args)}
     obs = _tool(action, args)
     steps.append({"kind": "obs", "tool": slug, "text": str(obs)[:180]})
 
