@@ -52,10 +52,12 @@ FLUX = {
     ],
 }
 
-# Mots de la question → thème de flux à interroger
+# Mots de la question → thème de flux à interroger.
+# ⚠️ La comparaison se fait sur des MOTS ENTIERS. Chercher « ia » en sous-chaîne classait
+# « le procès de la mafia » et « on passe via Lyon » en actualité tech.
 _THEMES = (
     ("tech", ("tech", "technologie", "technologique", "numérique", "numerique", "informatique",
-              "ia ", " ia", "intelligence artificielle", "smartphone", "apple", "google",
+              "ia", "intelligence artificielle", "smartphone", "apple", "google",
               "android", "iphone", "logiciel", "internet", "web", "jeu vidéo", "gaming")),
     ("science", ("science", "scientifique", "espace", "astronomie", "biologie", "physique",
                  "recherche scientifique", "nasa", "climat")),
@@ -70,11 +72,12 @@ FRAICHEUR_H = 48          # au-delà, ce n'est plus « l'actu du jour »
 
 
 def theme_de(question: str) -> str:
-    """Quel thème d'actualité la question vise-t-elle ?"""
-    m = " " + (question or "").lower() + " "
+    """Quel thème d'actualité la question vise-t-elle ? (comparaison par mots entiers)"""
+    m = (question or "").lower()
     for nom, mots in _THEMES:
-        if any(k in m for k in mots):
-            return nom
+        for k in mots:
+            if re.search(r"(?<![\wÀ-ÿ])" + re.escape(k) + r"(?![\wÀ-ÿ])", m):
+                return nom
     return "general"
 
 
@@ -120,6 +123,34 @@ def _nettoie(s: str, maxi: int = 220) -> str:
     return t[:maxi]
 
 
+def _lien_article(el) -> str:
+    """Adresse de l'ARTICLE, pas celle de ses commentaires.
+
+    En Atom un <entry> porte plusieurs <link> : rel="replies" (commentaires),
+    rel="self", rel="alternate" (l'article). On prenait le premier venu — les liens
+    rendus pointaient donc parfois vers la page de commentaires.
+    """
+    ATOM = "{http://www.w3.org/2005/Atom}link"
+    liens = el.findall(ATOM)
+    for attendu in ("alternate", None):
+        for l in liens:
+            rel = l.attrib.get("rel")
+            if rel == attendu or (attendu is None and not rel):
+                href = (l.attrib.get("href") or "").strip()
+                if href:
+                    return href
+    # RSS : <link> simple. <guid> ne sert de lien que s'il est un permalien.
+    for chemin in ("link", "{http://purl.org/rss/1.0/}link"):
+        n = el.find(chemin)
+        if n is not None and (n.text or "").strip():
+            return n.text.strip()
+    g = el.find("guid")
+    if g is not None and (g.text or "").strip().startswith("http") \
+            and g.attrib.get("isPermaLink", "true").lower() != "false":
+        return g.text.strip()
+    return liens[0].attrib.get("href", "").strip() if liens else ""
+
+
 def lire_flux(xml: bytes, source: str) -> list:
     """Articles d'un flux RSS 2.0 ou Atom. Ne lève jamais : un flux cassé en vaut zéro."""
     out = []
@@ -128,14 +159,18 @@ def lire_flux(xml: bytes, source: str) -> list:
     except Exception as e:
         logger.warning(f"[actu] flux illisible ({source}) : {str(e)[:80]}")
         return out
-    # RSS : channel/item — Atom : entry (avec espace de noms)
-    articles = racine.findall(".//item") or racine.findall(".//{http://www.w3.org/2005/Atom}entry")
+    # RSS 2.0 : <item> — RSS 1.0/RDF : <item> dans l'espace purl.org — Atom : <entry>.
+    # Sans le cas RDF, ces flux étaient lus comme « zéro article », en silence.
+    articles = (racine.findall(".//item")
+                or racine.findall(".//{http://purl.org/rss/1.0/}item")
+                or racine.findall(".//{http://www.w3.org/2005/Atom}entry"))
     for a in articles:
-        titre = _texte(a, "title", "{http://www.w3.org/2005/Atom}title")
+        titre = _texte(a, "title", "{http://purl.org/rss/1.0/}title",
+                       "{http://www.w3.org/2005/Atom}title")
         if not titre:
             continue
-        lien = _texte(a, "link", "{http://www.w3.org/2005/Atom}link", "guid")
-        resume = _nettoie(_texte(a, "description", "summary",
+        lien = _lien_article(a)
+        resume = _nettoie(_texte(a, "description", "{http://purl.org/rss/1.0/}description", "summary",
                                  "{http://www.w3.org/2005/Atom}summary",
                                  "{http://www.w3.org/2005/Atom}content"))
         date = _quand(_texte(a, "pubDate", "published", "updated",
@@ -143,7 +178,7 @@ def lire_flux(xml: bytes, source: str) -> list:
                              "{http://www.w3.org/2005/Atom}updated",
                              "{http://purl.org/dc/elements/1.1/}date"))
         out.append({"titre": _nettoie(titre, 180), "lien": lien,
-                    "resume": resume, "date": date, "source": source})
+                    "resume": resume, "date": date, "source": source, "theme": ""})
     return out
 
 
@@ -195,13 +230,23 @@ def recuperer(question: str, maxi: int = 8, fin: float = 0.0) -> list:
         return got
 
     articles = lire_tout(sources)
+    theme_reel = theme
     # Aucun média du thème n'a répondu (panne, blocage) : mieux vaut l'actualité générale
     # que rien du tout. Mais seulement EN DERNIER RECOURS, jamais en mélange.
     if not articles and theme != "general":
         logger.info(f"[actu] aucun média « {theme} » joignable → repli sur l'actualité générale")
         articles = lire_tout(FLUX["general"])
+        theme_reel = "general"      # ⚠️ ne JAMAIS étiqueter « tech » de l'actualité générale
+    for a in articles:
+        a["theme"] = theme_reel
 
-    limite = datetime.now(timezone.utc) - timedelta(hours=FRAICHEUR_H)
+    maintenant = datetime.now(timezone.utc)
+    limite = maintenant - timedelta(hours=FRAICHEUR_H)
+    # Une date dans le futur (fuseau mal déclaré, coquille du média) plaçait l'article
+    # en tête de liste devant la vraie actualité du jour. On la ramène à maintenant.
+    for a in articles:
+        if a["date"] and a["date"] > maintenant + timedelta(hours=6):
+            a["date"] = maintenant
     frais = [a for a in articles if a["date"] and a["date"] >= limite]
     # Si aucun média n'a publié dans les 48 h (nuit, week-end, flux sans date),
     # on rend quand même les plus récents plutôt que rien.
@@ -220,12 +265,34 @@ def recuperer(question: str, maxi: int = 8, fin: float = 0.0) -> list:
     return propres
 
 
+_THEME_FR = {"tech": " tech", "science": " scientifique", "economie": " économique",
+             "sport": " sportive", "general": ""}
+
+
 def formater(articles: list, theme: str = "") -> str:
-    """Mise en forme identique à celle de la recherche web (titres, source, date, lien)."""
+    """Mise en forme identique à celle de la recherche web (titres, source, date, lien).
+
+    L'étiquette dit ce que la liste CONTIENT vraiment : le thème réellement interrogé
+    (pas celui demandé, si on a dû se replier) et « récents » seulement si ça l'est.
+    """
     if not articles:
         return ""
-    t = f" {theme}" if theme and theme != "general" else ""
-    lignes = [f"📰 **Actualité{t} — {len(articles)} articles récents**\n"]
+    # Le thème porté par les articles fait foi ; le paramètre n'est qu'un repli.
+    reel = next((a.get("theme") for a in articles if a.get("theme")), None) or theme
+    t = _THEME_FR.get(reel, f" {reel}" if reel and reel != "general" else "")
+    limite = datetime.now(timezone.utc) - timedelta(hours=FRAICHEUR_H)
+    dates = [a["date"] for a in articles if a.get("date")]
+    recents = bool(dates) and all(d >= limite for d in dates)
+    if recents:
+        entete = f"📰 **Actualité{t} — {len(articles)} articles récents**"
+    elif dates:
+        vieux = min(dates).strftime("%d/%m")
+        entete = (f"📰 **Actualité{t} — {len(articles)} articles**\n"
+                  f"_Rien de neuf dans les dernières {FRAICHEUR_H} h : voici les plus "
+                  f"récents trouvés, le plus ancien datant du {vieux}._")
+    else:
+        entete = f"📰 **Actualité{t} — {len(articles)} articles (dates non fournies)**"
+    lignes = [entete + "\n"]
     for i, a in enumerate(articles, 1):
         quand = a["date"].strftime("%d/%m %Hh%M") if a.get("date") else ""
         meta = " · ".join(x for x in (a.get("source", ""), quand) if x)

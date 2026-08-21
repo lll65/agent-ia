@@ -525,7 +525,7 @@ function loadSessions(){ try{ SESSIONS=JSON.parse(localStorage.getItem("nova_ses
   else newSessionObj();
   saveSessions(); }
 function histPush(role,text){ const s=curSess(); if(!s) return; s.messages.push({role,text}); s.ts=Date.now();
-  if(s.title==="Nouvelle conversation" && role==="me") s.title=text.slice(0,42);   // provisoire
+  if(s.title==="Nouvelle conversation" && role==="me") s.title=coupeSure(text,42);   // provisoire
   saveSessions(); renderSessions();
   // Après le 1er échange, Nova génère un vrai titre court (comme les produits pro)
   if(role==="ai" && !s.titled && s.messages.length>=2){ s.titled=true; makeTitle(s); } }
@@ -606,7 +606,7 @@ async function loadAuto(){ const body=document.getElementById("autoBody");
         +'<a onclick="toggleAuto(\''+it.id+'\','+(!it.active)+')" style="cursor:pointer;color:var(--dim)">'+(it.active?"pause":"activer")+'</a>'
         +'<a onclick="delAuto(\''+it.id+'\')" style="cursor:pointer;color:var(--dim)">✕</a></span></div>'
         +(it.last_result? '<details class="reason" style="margin-top:7px"><summary>Dernier résultat</summary>'
-            +'<div class="rsteps" style="font-size:12px">'+fmt(String(it.last_result).slice(0,900))+'</div></details>':'')
+            +'<div class="rsteps" style="font-size:12px">'+fmt(coupeSure(it.last_result,900))+'</div></details>':'')
         +'</div>'; }).join("")
       : '<div class="pitem">Aucune automatisation. Choisis un modèle ci-dessous 👇</div>';
     const tpl=document.getElementById("autoTpl");
@@ -752,6 +752,15 @@ const _PICTOS = (() => {
 function _clean(d){ if(!d) return "";
   return _cut(String(d).replace(_PICTOS,"").replace(/\*\*(.+?)\*\*/g,"$1")
     .replace(/^R[ée]sultats? web\s*:?\s*/i,"").replace(/\s+/g," ").trim(), 130); }
+/* Découpe SÛRE : jamais au milieu d'un emoji.
+   ⚠️ En JavaScript, "abc📰".slice(0,4) rend "abc\uD83D" — une demi-paire de substitution.
+   Affichée elle donne « � » ; passée à encodeURIComponent elle lève une URIError, ce qui
+   FAISAIT PLANTER le mode vocal quand un emoji tombait pile sur la limite des 900 car. */
+function coupeSure(s, n){ const t=[...String(s==null?"":s)];
+  return t.length<=n ? String(s==null?"":s) : t.slice(0,n).join(""); }
+function finSure(s, n){ const t=[...String(s==null?"":s)];
+  return t.length<=n ? String(s==null?"":s) : t.slice(-n).join(""); }
+
 /* Coupe proprement, à la fin d'un mot */
 function _cut(s,n){ s=String(s||"").trim();
   // [...s] découpe par POINTS DE CODE : s.slice() pouvait couper un emoji en deux
@@ -1034,12 +1043,12 @@ function ask(){
       if(!answer&&!streamed){ bubble.innerHTML=thinkHTML(stepLabel(d), ic); pi=trace.length-1; chat.scrollTop=chat.scrollHeight; } }
     else if(d.type==="token"){ if(!streamed){ streamed=true; stopThink(); bubble.innerHTML=""; graphAdd("✍️","Rédaction"); }
       answer+=(d.t||""); bubble.innerHTML=fmt(answer)+'<span class="cur">▍</span>'; chat.scrollTop=chat.scrollHeight;
-      if(voiceMode) vSet("Nova répond…", answer.slice(-240)); }
+      if(voiceMode) vSet("Nova répond…", finSure(answer,240)); }
     else if(d.type==="answer"){ const fin=d.text||"";
       if(streamed){ answer=fin||answer; bubble.innerHTML=fmt(answer); }
       else { answer=fin; stopThink(); graphAdd("✍️","Rédaction"); typewrite(bubble,answer); }
       histPush("ai",answer);
-      if(voiceMode){ vSet("Nova répond…", answer.slice(0,240)); speak(answer, ()=>{ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }); }
+      if(voiceMode){ vSet("Nova répond…", coupeSure(answer,240)); speak(answer, ()=>{ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }); }
       else if(TTS) speak(answer); }
     else if(d.type==="model"){ MODELE_UTILISE=d.name||""; }
     else if(d.type==="done"){ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false; attachReason(bubble,trace); attachModel(bubble); sndReceive(); setTimeout(refreshUsage,900); }
@@ -1048,7 +1057,7 @@ function ask(){
     if(!answer) bubble.innerHTML="⚠️ Connexion interrompue. Vérifie ta clé (⚙️) et réessaie."; else attachReason(bubble,trace); };
 }
 function typewrite(el,text){ const html=fmt(text); if(html.includes("<pre>")){ el.innerHTML=html; return; }
-  let i=0; clearInterval(el._t); el._t=setInterval(()=>{ el.innerHTML=fmt(text.slice(0,i))+'<span style="opacity:.5">▍</span>'; chat.scrollTop=chat.scrollHeight; i+=2; if(i>=text.length){ clearInterval(el._t); el.innerHTML=html; } },12); }
+  let i=0; clearInterval(el._t); el._t=setInterval(()=>{ el.innerHTML=fmt(coupeSure(text,i))+'<span style="opacity:.5">▍</span>'; chat.scrollTop=chat.scrollHeight; i+=2; if(i>=text.length){ clearInterval(el._t); el.innerHTML=html; } },12); }
 
 /* ═══ PIÈCE JOINTE (trombone + glisser-déposer) ═══ */
 let ATTACH=null;
@@ -1156,7 +1165,8 @@ function stopSpeaking(){ try{ speechSynthesis.cancel(); }catch(e){}
   if(AUDIO){ try{ AUDIO.pause(); }catch(e){} } }
 
 function speak(text,onend){
-  const clean=(text||"").replace(/[*#`>_|]/g,"").replace(/https?:\/\/\S+/g,"").slice(0,900);
+  const clean0=(text||"").replace(/[*#`>_|]/g,"").replace(/https?:\/\/\S+/g,"");
+  const clean=coupeSure(clean0,900);
   LAST_SPOKEN=clean; stopSpeaking();
   if(!clean){ if(onend) onend(); return; }
   if(SERVER_TTS && KEY){

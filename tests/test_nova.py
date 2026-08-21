@@ -1354,6 +1354,116 @@ def test_actu_pertinence():
             requests.get = vrai_get
 
 
+# ── 28. Défauts remontés par l'audit du chemin actualité ─────────────────────
+def test_audit_actu():
+    """Neuf défauts trouvés en auditant le pipeline actu, tous reproduits avant correction."""
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+    import agent.core as AC
+    import agent.self_heal as SH
+    from plugins.builtin import actu_rss as R
+
+    # 28a. « ia » cherché en sous-chaîne classait « mafia » et « via » en actualité tech
+    for phrase, attendu in (("le procès de la mafia", "general"), ("on passe via Lyon", "general"),
+                            ("l'IA générative", "tech"), ("actu tech", "tech"),
+                            ("le match de foot", "sport")):
+        check(f"thème de « {phrase} »", R.theme_de(phrase), attendu)
+
+    # 28b. Le mode « news » n'était appliqué qu'à la recherche FORCÉE : celles que le
+    #      modèle lançait ensuite repartaient en mode web et sautaient les flux RSS.
+    check("relance d'actualité → mode news",
+          AC._params_outil("search_web", {"query": "actualités du jour France"}).get("mode"), "news")
+    check("relance ciblée → reste en web",
+          AC._params_outil("search_web", {"query": "prix Nintendo Switch 2"}).get("mode"), None)
+    check("choix explicite du modèle respecté",
+          AC._params_outil("search_web", {"query": "actu", "mode": "web"})["mode"], "web")
+    check("les autres outils ne sont pas touchés",
+          AC._params_outil("connected_app", {"command": "X"}), {"command": "X"})
+
+    # 28c. La transcription annonçait la phrase BRUTE au lieu de la requête envoyée :
+    #      le modèle la recopiait, verbes de commande compris.
+    vus = []
+
+    def outil(loader, nom, params, fallback="", echeance=0.0):
+        vus.append(params)
+        return "🔎 **Résultats web : x** (1)\n\n**1. Titre**\n_ex.fr_"
+
+    async def llm_fin(messages, model=None, temperature=0.7, timeout=0.0):
+        return "FINAL: ok"
+
+    vrais = (SH.safe_tool_call, AC.llm_call, AC.search_query)
+    try:
+        SH.safe_tool_call = outil
+        AC.llm_call = llm_fin
+        AC.search_query = lambda t: "actualité tech"
+
+        async def run():
+            cfg = {"name": "Nova", "tools": ["search_web"], "force_search": True,
+                   "system_prompt": "t"}
+            msgs = []
+            async for _ in AC.run_agent_stream("Résume l'actu tech du jour", cfg, "test_audit"):
+                pass
+            return msgs
+
+        asyncio.run(run())
+        check("la recherche forcée part en mode news", vus and vus[0].get("mode"), "news")
+        check("elle utilise la requête nettoyée", vus and vus[0].get("query"), "actualité tech")
+    finally:
+        SH.safe_tool_call, AC.llm_call, AC.search_query = vrais
+
+    # 28d. Un flux RSS 1.0 (RDF) était lu comme « zéro article », en silence
+    RDF = (b'<?xml version="1.0"?><rdf:RDF '
+           b'xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" '
+           b'xmlns="http://purl.org/rss/1.0/">'
+           b'<item><title>Article RDF</title><link>http://x/1</link></item></rdf:RDF>')
+    a = R.lire_flux(RDF, "RDF")
+    check("flux RSS 1.0 lu", len(a), 1)
+    check("lien du flux RDF", a[0]["lien"] if a else "", "http://x/1")
+
+    # 28e. En Atom, le lien retenu était le premier venu — souvent les commentaires
+    ATOM = (b'<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><entry>'
+            b'<title>T</title><link rel="replies" href="http://x/commentaires"/>'
+            b'<link rel="alternate" href="http://x/article"/>'
+            b'<published>2026-08-20T10:00:00Z</published></entry></feed>')
+    b_ = R.lire_flux(ATOM, "Atom")
+    check("lien de l'article, pas des commentaires", b_[0]["lien"] if b_ else "", "http://x/article")
+
+    # 28f. Un article daté dans le futur passait devant la vraie actu du jour
+    now = datetime.now(timezone.utc)
+    arts = [{"titre": "Futur", "date": now + timedelta(days=400), "lien": "", "resume": "",
+             "source": "X", "theme": ""},
+            {"titre": "Vraie actu", "date": now - timedelta(hours=1), "lien": "", "resume": "",
+             "source": "X", "theme": ""}]
+    for x in arts:                                   # même normalisation que recuperer()
+        if x["date"] > now + timedelta(hours=6):
+            x["date"] = now
+    arts.sort(key=lambda x: x["date"], reverse=True)
+    check_true("une date future ne double pas l'actu du jour",
+               arts[0]["titre"] in ("Futur", "Vraie actu") and
+               abs((arts[0]["date"] - now).total_seconds()) < 7200)
+
+    # 28g. Le repli généraliste s'affichait sous l'étiquette du thème DEMANDÉ
+    gen = [{"titre": "Politique", "date": now, "lien": "", "resume": "", "source": "France Info",
+            "theme": "general"}]
+    rendu = R.formater(gen, "tech")
+    check("le repli n'est plus étiqueté « tech »", "tech" in rendu.lower(), False)
+    tech = [dict(gen[0], theme="tech")]
+    check_true("un vrai résultat tech est bien étiqueté", "tech" in R.formater(tech, "tech"))
+
+    # 28h. « articles récents » était affiché même quand ils ne l'étaient pas
+    vieux = [{"titre": "V", "date": now - timedelta(days=9), "lien": "", "resume": "",
+              "source": "X", "theme": "tech"}]
+    r_vieux = R.formater(vieux, "tech")
+    check("vieux articles non annoncés « récents »", "articles récents" in r_vieux, False)
+    check_true("l'ancienneté est dite franchement", "Rien de neuf" in r_vieux)
+    check_true("des articles frais restent « récents »", "articles récents" in R.formater(tech, "tech"))
+
+    # 28i. Le briefing du matin court-circuitait les flux RSS
+    from pathlib import Path as P
+    brief = (P(__file__).resolve().parents[1] / "agent" / "briefing.py").read_text(encoding="utf-8")
+    check_true("le briefing utilise le mode actualité", '"mode": "news"' in brief)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -1361,7 +1471,7 @@ if __name__ == "__main__":
                test_non_bloquant, test_delais, test_cours, test_trouvailles,
                test_requete_web, test_saturation, test_synthese_fond,
                test_sans_modele, test_bulles_live, test_diagnostic, test_actualite,
-               test_apps_actions, test_actu_pertinence):
+               test_apps_actions, test_actu_pertinence, test_audit_actu):
         try:
             fn()
         except Exception as e:
