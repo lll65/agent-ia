@@ -483,6 +483,11 @@ function fmt(s){
   t=t.replace(/!\[[^\]]*\]\(([^)]+)\)/g, (m,u)=>'<a href="'+u+'" target="_blank" class="imgw"><img src="'+u+'" alt="visuel"></a>');
   t=t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');   // liens markdown
   return t.replace(/\*\*(.+?)\*\*/g,"<b>$1</b>")
+          // *italique* à une astérisque : les modèles l'utilisent autant que _ceci_
+          // et il s'affichait avec ses astérisques (« *Mario Kart World* »).
+          // Le contenu ne peut ni commencer ni finir par une espace, sinon
+          // « 2 * 3 * 4 = 24 » deviendrait de l'italique.
+          .replace(/(^|[\s(>])\*(\S|\S[^*\n]{0,118}\S)\*(?=$|[\s.,;:!?)<])/g,"$1<i>$2</i>")
           // _italique_ : les sources des recherches sont notées ainsi (« _lemonde.fr_ »)
           // et s'affichaient avec leurs tirets bas.
           .replace(/(^|[\s(>])_([^_\n]{1,80})_(?=$|[\s.,;:!?)<])/g,"$1<i>$2</i>")

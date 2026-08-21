@@ -12,6 +12,7 @@ Les flux RSS des médias, eux, sont datés, triés par fraîcheur et toujours su
 Gratuits, sans clé, sans quota.
 """
 import logging
+import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -69,6 +70,12 @@ _THEMES = (
 
 TIMEOUT_FLUX = 6          # par flux : on préfère 3 médias en 6 s qu'un seul en 20 s
 FRAICHEUR_H = 48          # au-delà, ce n'est plus « l'actu du jour »
+# Un média qui publie 30 articles par heure raflait presque toutes les places au tri par
+# date, et l'utilisateur n'avait qu'un seul point de vue. On plafonne sa part.
+PART_MAX_MEDIA = 0.5      # au plus la moitié de la liste pour un seul média
+# Heure de lecture : les flux datent en UTC ou dans leur propre fuseau ; afficher
+# « 20h05 » alors qu'il est 22h05 à Paris trompe sur la fraîcheur de l'article.
+FUSEAU_AFFICHAGE = os.getenv("FUSEAU", "Europe/Paris")
 
 
 def theme_de(question: str) -> str:
@@ -108,6 +115,21 @@ def _quand(brut: str):
         return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
     except Exception:
         return None
+
+
+def _heure_locale(d):
+    """Convertit la date d'un article dans le fuseau de lecture (Paris par défaut).
+
+    Les flux datent en UTC ou dans leur propre fuseau. Afficher « 20h05 » quand il est
+    22h05 à Paris fait paraître un article vieux de deux heures — ou tout frais.
+    """
+    if not d:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        return d.astimezone(ZoneInfo(FUSEAU_AFFICHAGE))
+    except Exception:
+        return d.astimezone()          # repli : fuseau du serveur
 
 
 def _nettoie(s: str, maxi: int = 220) -> str:
@@ -253,13 +275,23 @@ def recuperer(question: str, maxi: int = 8, fin: float = 0.0) -> list:
     retenus = frais or [a for a in articles if a["date"]] or articles
     retenus.sort(key=lambda a: a["date"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
 
-    vus, propres = set(), []
-    for a in retenus:
-        c = _cle_titre(a["titre"])
-        if c in vus:
-            continue
-        vus.add(c)
-        propres.append(a)
+    # Deux passes : la première respecte le plafond par média pour garantir plusieurs
+    # points de vue, la seconde comble s'il reste de la place.
+    plafond = max(1, int(maxi * PART_MAX_MEDIA))
+    vus, propres, par_media = set(), [], {}
+    for tour in (1, 2):
+        for a in retenus:
+            if len(propres) >= maxi:
+                break
+            c = _cle_titre(a["titre"])
+            if c in vus:
+                continue
+            src = a.get("source", "")
+            if tour == 1 and par_media.get(src, 0) >= plafond:
+                continue
+            vus.add(c)
+            par_media[src] = par_media.get(src, 0) + 1
+            propres.append(a)
         if len(propres) >= maxi:
             break
     return propres
@@ -286,7 +318,7 @@ def formater(articles: list, theme: str = "") -> str:
     if recents:
         entete = f"📰 **Actualité{t} — {len(articles)} articles récents**"
     elif dates:
-        vieux = min(dates).strftime("%d/%m")
+        vieux = (_heure_locale(min(dates)) or min(dates)).strftime("%d/%m")
         entete = (f"📰 **Actualité{t} — {len(articles)} articles**\n"
                   f"_Rien de neuf dans les dernières {FRAICHEUR_H} h : voici les plus "
                   f"récents trouvés, le plus ancien datant du {vieux}._")
@@ -294,7 +326,8 @@ def formater(articles: list, theme: str = "") -> str:
         entete = f"📰 **Actualité{t} — {len(articles)} articles (dates non fournies)**"
     lignes = [entete + "\n"]
     for i, a in enumerate(articles, 1):
-        quand = a["date"].strftime("%d/%m %Hh%M") if a.get("date") else ""
+        loc = _heure_locale(a.get("date"))
+        quand = loc.strftime("%d/%m %Hh%M") if loc else ""
         meta = " · ".join(x for x in (a.get("source", ""), quand) if x)
         lignes.append(f"**{i}. {a['titre']}**" + (f"\n_{meta}_" if meta else "")
                       + (f"\n{a['resume']}" if a.get("resume") else "")

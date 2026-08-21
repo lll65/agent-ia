@@ -183,6 +183,20 @@ _BUDGET_APPEL = contextvars.ContextVar("budget_appel_llm", default=0.0)
 _DERNIER_OK = {"nom": ""}
 
 
+def executer_et_capturer(fn, *a, **k):
+    """Exécute `fn` DANS LE THREAD COURANT et rend (résultat, modèle réellement utilisé).
+
+    ⚠️ DERNIER est une variable de CONTEXTE : renseignée dans un thread de travail, sa
+    valeur ne remonte jamais à la coroutine appelante. L'affichage « quel modèle a
+    répondu » était donc toujours vide — la fonctionnalité n'a jamais marché.
+    On remet la variable à zéro à l'entrée, car les threads du pool sont RÉUTILISÉS et
+    garderaient sinon la valeur d'une requête précédente.
+    """
+    DERNIER.set("")
+    resultat = fn(*a, **k)
+    return resultat, DERNIER.get("")
+
+
 def _modele_impose(nom: str) -> str:
     """Modèle explicitement choisi par l'utilisateur (ex. NVIDIA_MODEL sur Render).
     Présent dans l'environnement = volonté explicite → prioritaire sur le routage auto."""
