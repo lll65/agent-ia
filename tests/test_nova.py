@@ -1464,6 +1464,69 @@ def test_audit_actu():
     check_true("le briefing utilise le mode actualité", '"mode": "news"' in brief)
 
 
+# ── 29. Le brouillon des modèles raisonneurs ne doit jamais s'afficher ───────
+def test_raisonnement_cache():
+    """Vu en production : « <think> L'utilisateur demande un résumé… Je vais synthétiser
+    cela en quelques phrases </think> » affiché AVANT la réponse."""
+    from agent.core import sans_raisonnement, FiltreRaisonnement, parse_response
+
+    # 29a. Le bloc est retiré, la réponse est gardée intacte
+    brut = ("<think>\nL'utilisateur demande un résumé de l'actu tech.\n"
+            "Je vais synthétiser cela en quelques phrases.\n</think>\n\n"
+            "Voici l'essentiel de l'actu tech du jour.")
+    check("brouillon retiré", sans_raisonnement(brut), "Voici l'essentiel de l'actu tech du jour.")
+    for balise in ("think", "thinking", "reasoning", "scratchpad"):
+        check(f"balise <{balise}> gérée",
+              sans_raisonnement(f"<{balise}>brouillon</{balise}>Réponse."), "Réponse.")
+    # Un bloc jamais refermé (réponse coupée) ne doit pas s'afficher en morceaux
+    check("bloc non refermé jeté", sans_raisonnement("<think>je réfléchis et ça coupe"), "")
+    # Une réponse normale n'est jamais abîmée
+    check("réponse normale intacte", sans_raisonnement("Bonjour Lohan !"), "Bonjour Lohan !")
+    check("chaîne vide", sans_raisonnement(""), "")
+    check("None géré", sans_raisonnement(None), "")
+
+    # 29b. Un « ACTION: » écrit DANS le brouillon ne doit pas déclencher d'outil
+    piege = "<think>je pourrais faire ACTION: search_web pour ça</think>\nVoici la réponse."
+    action, _p, final = parse_response(piege)
+    check("aucun outil déclenché par le brouillon", action, None)
+    check_true("la vraie réponse survit", "Voici la réponse" in (final or piege))
+
+    # 29c. En streaming, le brouillon ne doit jamais atteindre l'écran, même coupé en deux
+    def flux(morceaux):
+        f = FiltreRaisonnement()
+        return "".join(f(m) for m in morceaux) + f.reste()
+
+    check("balise coupée entre deux tokens",
+          flux(["<th", "ink>", "Je ", "réfléchis", "</thi", "nk>", "Voici ", "la réponse."]),
+          "Voici la réponse.")
+    check("aucun brouillon → rien n'est perdu",
+          flux(["Bon", "jour ", "Lohan", " !"]), "Bonjour Lohan !")
+    check("un « < » ordinaire n'est pas avalé",
+          flux(["5 ", "< ", "10 et a<b"]), "5 < 10 et a<b")
+    check("brouillon en fin de flux non refermé",
+          flux(["Réponse. ", "<think>", "et je continue"]), "Réponse. ")
+    check("deux brouillons successifs",
+          flux(["<think>a</think>", "X", "<think>b</think>", "Y"]), "XY")
+
+
+# ── 30. Une app connectée ne doit jamais être déclarée absente ───────────────
+def test_slug_connecte():
+    """Nova répondait « Googlemaps n'est pas connecté » alors que le compte l'était :
+    Composio écrit « google_maps », nous « googlemaps »."""
+    vrai = A._connected_accounts
+    try:
+        A._connected_accounts = lambda: [("google_maps", "u1", "ACTIVE"),
+                                         ("googlecalendar", "u1", "ACTIVE"),
+                                         ("google_sheets", "u1", "ACTIVE")]
+        for slug in ("googlemaps", "google_maps", "googlesheets"):
+            rep = A._capability_answer(slug)
+            check(f"« {slug} » reconnu comme connecté", "n'est pas connecté" in rep, False)
+        # Une app réellement absente reste bien signalée comme telle
+        check_true("une app absente est signalée", "n'est pas connecté" in A._capability_answer("notion"))
+    finally:
+        A._connected_accounts = vrai
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -1471,7 +1534,8 @@ if __name__ == "__main__":
                test_non_bloquant, test_delais, test_cours, test_trouvailles,
                test_requete_web, test_saturation, test_synthese_fond,
                test_sans_modele, test_bulles_live, test_diagnostic, test_actualite,
-               test_apps_actions, test_actu_pertinence, test_audit_actu):
+               test_apps_actions, test_actu_pertinence, test_audit_actu,
+               test_raisonnement_cache, test_slug_connecte):
         try:
             fn()
         except Exception as e:
