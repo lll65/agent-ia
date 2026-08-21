@@ -315,6 +315,18 @@ _SYS_CONDENSE = (
 )
 
 
+def _propre(texte: str) -> str:
+    """Retire le brouillon interne des modèles raisonneurs.
+
+    ⚠️ Le mode Cours appelle `chat()` directement : il ne passe ni par parse_response ni
+    par les nettoyages du chat. Le monologue « <think> L'utilisateur veut une synthèse… »
+    se retrouvait donc DANS les notes de cours — le document même que l'élève garde pour
+    réviser des mois plus tard.
+    """
+    from agent.core import sans_raisonnement
+    return sans_raisonnement(texte or "")
+
+
 def _condenser(sid: str) -> None:
     """Transforme la portion en attente en notes intermédiaires, puis la vide."""
     from llm.client import chat
@@ -326,10 +338,10 @@ def _condenser(sid: str) -> None:
         s["en_attente"] = ""
         _ecrire(s)                          # on libère tout de suite : l'écoute continue
     try:
-        notes = chat([
+        notes = _propre(chat([
             {"role": "system", "content": _SYS_CONDENSE},
             {"role": "user", "content": f"Transcription à mettre en notes :\n\n{brut[:14000]}"},
-        ], temperature=0.2, niveau="equilibre", patience=PATIENCE)
+        ], temperature=0.2, niveau="equilibre", patience=PATIENCE))
     except Exception:
         with _LOCK:                         # échec : on remet le texte en file, rien n'est perdu
             s = _lire(sid)
@@ -379,13 +391,13 @@ def _reduire(blocs: list) -> str:
         textes = []
         for morceau in fusion:
             try:
-                textes.append(chat([
+                textes.append(_propre(chat([
                     {"role": "system", "content":
                         "Fusionne ces notes de cours en gardant TOUT ce qui a une valeur "
                         "pédagogique : définitions, formules, chiffres, dates, exemples. "
                         "Supprime uniquement les redites. N'invente rien. Markdown."},
                     {"role": "user", "content": morceau[:14000]},
-                ], temperature=0.2, niveau="equilibre", patience=PATIENCE) or morceau)
+                ], temperature=0.2, niveau="equilibre", patience=PATIENCE)) or morceau)
             except Exception:
                 textes.append(morceau[:BUDGET_FINAL // 2])   # repli : on tronque plutôt qu'échouer
     return "\n\n".join(textes)[:BUDGET_FINAL]
@@ -422,10 +434,10 @@ def _fiches_depuis(cours: str) -> list:
     from agent.core import _off  # noqa: F401  (import tardif volontaire, évite un cycle)
     from llm.client import chat
     try:
-        brut = chat([
+        brut = _propre(chat([
             {"role": "system", "content": _SYS_FICHES},
             {"role": "user", "content": cours[:12000]},
-        ], temperature=0.3, niveau="equilibre", patience=PATIENCE) or ""
+        ], temperature=0.3, niveau="equilibre", patience=PATIENCE)) or ""
     except Exception as e:
         logger.warning(f"[cours] fiches indisponibles : {str(e)[:120]}")
         return []
@@ -513,10 +525,10 @@ def terminer(sid: str) -> dict:
 
     try:
         base = _reduire(blocs)
-        synthese = (chat([
+        synthese = _propre(chat([
             {"role": "system", "content": _SYS_SYNTHESE},
             {"role": "user", "content": f"Notes du cours{matiere} « {s['titre']} » :\n\n{base}"},
-        ], temperature=0.25, niveau="equilibre", patience=PATIENCE) or "").strip()
+        ], temperature=0.25, niveau="equilibre", patience=PATIENCE)).strip()
     except Exception as e:
         # ⚠️ On marque « à reprendre », JAMAIS perdu : la transcription reste intacte et
         # l'utilisateur peut relancer la synthèse quand les modèles répondent à nouveau.

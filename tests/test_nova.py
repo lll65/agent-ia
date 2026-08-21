@@ -1952,6 +1952,61 @@ def test_continuite_app():
         A._APP_RECENTE.clear()
 
 
+# ── 38. Aucune app connectée ne doit disparaître du catalogue ────────────────
+def test_catalogue_complet():
+    """Cas réel : 7 apps connectées sur Composio, Nova n'en voyait que 3 et répondait
+    « je n'ai pas accès à Notion » à quelqu'un dont Notion ÉTAIT connecté."""
+    from plugins.builtin import composio_tool as CT
+
+    TES_APPS = {"github": 100, "googlecalendar": 28, "notion": 30, "googlesheets": 36,
+                "linear": 21, "google_maps": 7, "canva": 32}
+    vrais = (A._connected_accounts, A._composio_list_actions)
+    try:
+        A._connected_accounts = lambda: [(s, "u", "ACTIVE") for s in TES_APPS]
+        A._composio_list_actions = lambda slug: [
+            {"name": f"{slug.upper()}_ACTION_NUMERO_{i:02d}", "desc": ""}
+            for i in range(TES_APPS.get(slug, 5))]
+
+        cat = CT.catalogue("accede a google map et lit mes points gps")
+        listees = [l.split(" : ")[0].strip("• ") for l in cat.split("\n") if l.startswith("•")]
+        check("les 7 apps connectées sont listées", len(listees), 7)
+        for app in TES_APPS:
+            check_true(f"« {app} » présent dans le catalogue", app in cat)
+        # L'app évoquée passe devant et reçoit la plus grosse part
+        check("l'app évoquée est en tête", listees[0], "google_maps")
+        lignes = {l.split(" : ")[0].strip("• "): l for l in cat.split("\n") if l.startswith("•")}
+        # Ce qui compte n'est pas la longueur de la ligne (google_maps n'a que 7 actions)
+        # mais qu'AUCUNE de ses actions ne soit coupée : c'est l'app dont on a besoin.
+        check("l'app évoquée n'est jamais tronquée", "autres" in lignes["google_maps"], False)
+        check_true("elle montre bien ses 7 actions",
+                   lignes["google_maps"].count("GOOGLE_MAPS_ACTION") == 7)
+        # Le catalogue doit rester d'une taille raisonnable pour le prompt
+        check_true(f"taille maîtrisée ({len(cat)} car.)", len(cat) <= 3000)
+
+        # Même avec BEAUCOUP d'apps, aucune ne disparaît
+        NOMBREUSES = {f"app{i}": 25 for i in range(20)}
+        A._connected_accounts = lambda: [(s, "u", "ACTIVE") for s in NOMBREUSES]
+        A._composio_list_actions = lambda slug: [
+            {"name": f"{slug.upper()}_ACT_{i:02d}"} for i in range(25)]
+        c2 = CT.catalogue("")
+        v2 = [l.split(" : ")[0].strip("• ") for l in c2.split("\n") if l.startswith("•")]
+        check("20 apps → 20 listées", len(v2), 20)
+        check_true("chaque app garde au moins une action",
+                   all(" : " in l and len(l.split(" : ")[1]) > 5
+                       for l in c2.split("\n") if l.startswith("•")))
+
+        # Aucune app connectée : message honnête, pas une liste figée
+        A._connected_accounts = lambda: []
+        check_true("aucune app → on le dit", "aucune app" in CT.catalogue("").lower())
+    finally:
+        A._connected_accounts, A._composio_list_actions = vrais
+
+    # Le prompt ne doit plus tronquer le catalogue
+    from pathlib import Path as P
+    src = (P(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
+    check("plus de troncature du catalogue dans le prompt", "dispo[:1400]" in src, False)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -1963,7 +2018,7 @@ if __name__ == "__main__":
                test_raisonnement_cache, test_slug_connecte,
                test_modele_annonce, test_affichage_actu, test_enchainement_fichier,
                test_fournisseur_et_routage, test_garde_fou, test_calendrier_exact,
-               test_continuite_app):
+               test_continuite_app, test_catalogue_complet):
         try:
             fn()
         except Exception as e:

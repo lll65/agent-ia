@@ -368,8 +368,11 @@ def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
             from plugins.builtin.composio_tool import catalogue
             dispo = catalogue(message)
             if dispo:
+                # ⚠️ PLUS de troncature ici : elle coupait la liste au milieu et faisait
+                # disparaître des apps pourtant connectées. catalogue() gère déjà son
+                # budget en raccourcissant les ACTIONS, jamais la liste des apps.
                 system += ("\nACTIONS DISPONIBLES sur SES apps connectées (utilise ces noms "
-                           "EXACTS, n'en invente aucun) :\n" + dispo[:1400])
+                           "EXACTS, n'en invente aucun) :\n" + dispo)
         except Exception:
             pass
     elif factual and "search_web" in tools:
