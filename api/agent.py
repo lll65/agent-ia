@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 
-from agent.core import run_agent, apercu
+from agent.core import run_agent, apercu, _off
 from memory import get_memory
 from plugins import get_loader
 from config import config
@@ -742,12 +742,32 @@ def _calendrier_periode(message: str) -> str:
 
 
 def _format_app_result(message: str, action: str, obs: str, is_write: bool = False) -> str:
-    """Met en forme les DONNÉES RÉELLES via le LLM — interdiction absolue d'inventer."""
+    """Met en forme les DONNÉES RÉELLES via le LLM — interdiction absolue d'inventer.
+
+    ⚠️ Le brouillon <think> est retiré ICI aussi : ce chemin ne passe ni par
+    parse_response ni par _texte_lisible, et le monologue interne du modèle
+    s'affichait donc en entier sur toutes les réponses d'app (agenda, Sheets, Notion…).
+    """
     from llm.client import chat
     try:
-        return chat(_format_app_messages(message, action, obs, is_write), temperature=0.2)
+        brut = chat(_format_app_messages(message, action, obs, is_write), temperature=0.2)
     except Exception:
         return f"Voici les données réelles récupérées :\n\n{obs[:2000]}"
+    propre = _prose_seule(brut)
+    # Si le modèle n'a produit que du protocole, mieux vaut les données brutes que rien.
+    return propre or f"Voici les données réelles récupérées :\n\n{obs[:2000]}"
+
+
+def _prose_seule(brut: str) -> str:
+    """Ne garde que la prose : ni brouillon <think>, ni marqueurs du protocole ReAct.
+
+    Les chemins d'apps ne passent ni par parse_response ni par _texte_lisible : le
+    brouillon interne ET le préfixe « FINAL: » s'affichaient donc tels quels.
+    """
+    from agent.core import sans_raisonnement
+    t = sans_raisonnement(brut or "")
+    t = re.sub(r"^\s*(THOUGHT|FINAL|ACTION|PARAMS)\s*:\s*", "", t, flags=re.M | re.I)
+    return t.strip()
 
 
 # ── GARDE-FOU : rien d'irréversible sans ton accord ──────────────────────────
@@ -941,7 +961,9 @@ def _llm_json(system: str, user: str, temperature: float = 0.1) -> dict:
                    temperature=temperature) or ""      # le modèle peut renvoyer un contenu vide
     except Exception:
         return {}
-    m = re.search(r"\{.*\}", str(out), re.DOTALL)
+    from agent.core import sans_raisonnement
+    out = sans_raisonnement(str(out))   # un « { » écrit dans le brouillon fausserait tout
+    m = re.search(r"\{.*\}", out, re.DOTALL)
     if not m:
         return {}
     for cand in (m.group(0), m.group(0).replace("'", '"')):
@@ -1146,7 +1168,16 @@ def _gmail_send_flow(message: str):
             to = addr
     if "@" not in to:
         return {"steps": steps, "done_answer": f"Je n'ai pas l'adresse email de « {to or '?'} ». Donne-la-moi (ex : prenom@domaine.com) et j'envoie tout de suite."}
-    obs = _tool("GMAIL_SEND_EMAIL", {"recipient_email": to, "subject": subject, "body": body})
+    # ⚠️ Ce chemin SPÉCIALISÉ est vérifié AVANT le chemin générique : le garde-fou y était
+    # donc entièrement contourné, et un mail pouvait partir sans le moindre accord.
+    # C'est exactement le risque redouté (« et s'il fait ça avec mes mails ! »).
+    args_envoi = {"recipient_email": to, "subject": subject, "body": body}
+    if not _confirmation_donnee(message):
+        steps[0]["label"] = "GMAIL_SEND_EMAIL (en attente)"
+        return {"steps": steps,
+                "done_answer": _demande_confirmation(_PROFILE_ID, "gmail",
+                                                     "GMAIL_SEND_EMAIL", args_envoi)}
+    obs = _tool("GMAIL_SEND_EMAIL", args_envoi)
     steps.append({"kind": "obs", "tool": "connected_app", "text": str(obs)[:160]})
     if _looks_like_failure(obs):
         return {"steps": steps, "done_answer": _honest_no_access("GMAIL_SEND_EMAIL", obs)}
@@ -1169,7 +1200,18 @@ def _calendar_delete_flow(message: str):
     eid = (pick.get("event_id") or "").strip()
     if not eid:
         return {"steps": steps, "done_answer": "Je n'ai pas trouvé l'événement à supprimer. Précise son intitulé ou sa date."}
-    obs = _tool("GOOGLECALENDAR_DELETE_EVENT", {"calendar_id": "primary", "event_id": eid})
+    # ⚠️ Même contournement que pour l'envoi de mail : une suppression est sans retour.
+    args_suppr = {"calendar_id": "primary", "event_id": eid}
+    if not _confirmation_donnee(message):
+        steps[0]["label"] = "GOOGLECALENDAR_DELETE_EVENT (en attente)"
+        titre = pick.get("title") or "(sans titre)"
+        _ATTENTE[_PROFILE_ID] = {"slug": "googlecalendar", "action": "GOOGLECALENDAR_DELETE_EVENT",
+                                 "args": args_suppr, "t": __import__("time").monotonic()}
+        return {"steps": steps, "done_answer": (
+            f"⚠️ Je m'apprête à **supprimer** cet événement de ton agenda, "
+            f"et c'est sans retour possible :\n\n> {titre}\n\n"
+            f"**Confirme et je le fais** (« oui », « vas-y »). Sinon dis « annule ».")}
+    obs = _tool("GOOGLECALENDAR_DELETE_EVENT", args_suppr)
     steps.append({"kind": "obs", "tool": "connected_app", "text": str(obs)[:160]})
     if _looks_like_failure(obs):
         return {"steps": steps, "done_answer": _honest_no_access("GOOGLECALENDAR_DELETE_EVENT", obs)}
@@ -2048,7 +2090,7 @@ async def _ask_agent(message: str) -> str:
             from agent.briefing import build_briefing
             return await loop.run_in_executor(None, build_briefing)
         # Agenda / mails → chemin déterministe (données réelles ou aveu honnête, jamais d'invention)
-        direct = await loop.run_in_executor(None, _direct_app_run, message)
+        direct = await _off(_direct_app_run, message)
         if direct is not None:
             return direct["answer"]
         cfg = _build_agent_cfg(message, "Nova")
@@ -2190,7 +2232,7 @@ async def ask_stream(q: str = "", key: str = ""):
                 yield sse({"type": "model", "name": _modele_utilise()})
                 yield sse({"type": "done"}); return
             # 2) Agenda / mails → chemin déterministe (aucune invention), réponse streamée
-            direct = await loop.run_in_executor(None, _direct_app_prepare, message)
+            direct = await _off(_direct_app_prepare, message)
             if direct is not None:
                 for st in direct["steps"]:
                     if st["kind"] == "action":
@@ -2203,6 +2245,7 @@ async def ask_stream(q: str = "", key: str = ""):
                     yield sse({"type": "answer", "text": direct["done_answer"]})
                     yield sse({"type": "model", "name": _modele_utilise()})
                     yield sse({"type": "done"}); return
+                # (les autres sorties annoncent le modèle plus bas)
                 msgs = _format_app_messages(message, direct["action"], direct["obs"], direct["is_write"])
                 async for tok in _stream_llm(msgs, 0.2, niveau=_niveau_tache(message)):
                     yield sse({"type": "token", "t": tok})
@@ -2243,7 +2286,7 @@ async def briefing_ep(key: str = ""):
     _check_key(key)
     loop = asyncio.get_running_loop()
     from agent.briefing import build_briefing
-    txt = await loop.run_in_executor(None, build_briefing)
+    txt = await _off(build_briefing)
     return {"briefing": txt}
 
 
@@ -2661,7 +2704,7 @@ async def upload(request: Request):
         raise HTTPException(status_code=400, detail=f"Écriture impossible : {str(e)[:150]}")
 
     loop = asyncio.get_running_loop()
-    answer = await loop.run_in_executor(None, _analyze_upload, str(dest), question)
+    answer = await _off(_analyze_upload, str(dest), question)
     try:
         get_memory().remember(_PROFILE_ID, "user", f"[fichier déposé] {safe} — {question[:120]}")
     except Exception:
