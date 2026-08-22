@@ -181,11 +181,72 @@ class ComposioPlugin(Plugin):
             return f"❌ Composio injoignable : {type(e).__name__}: {str(e)[:180]}"
 
 
+_MAX_RESULTAT = 2500
+_MAX_LISTE = 8000        # pour un simple index « identifiant + nom », bien plus utile
+# Ce qui sert vraiment à identifier un élément : tout le reste peut sauter quand la
+# réponse est trop longue. Mieux vaut 200 fichiers réduits à l'essentiel que 6 complets.
+_CHAMPS_ESSENTIELS = ("id", "name", "title", "spreadsheetId", "spreadsheetTitle", "fileId",
+                      "documentId", "pageId", "databaseId", "filename", "displayName",
+                      "summary", "subject", "email", "status", "url", "start", "end")
+
+
+def _essentiel(element):
+    """Ne garde d'un enregistrement que de quoi le reconnaître et le rouvrir."""
+    if not isinstance(element, dict):
+        return element
+    court = {k: v for k, v in element.items()
+             if k in _CHAMPS_ESSENTIELS and not isinstance(v, (dict, list))}
+    return court or element
+
+
+def _reduit(payload, limite: int = _MAX_RESULTAT):
+    """Raccourcit une réponse en retirant des ENREGISTREMENTS ENTIERS, jamais des lettres.
+
+    ⚠️ Couper le texte à 2500 caractères tronquait le JSON au milieu d'un fichier : il
+    devenait illisible, et Nova annonçait « aucun document trouvé » alors que la liste
+    était bien arrivée. Ici on enlève des éléments de liste jusqu'à tenir dans la limite,
+    et on dit combien ont été omis — le JSON reste toujours valide.
+    """
+    def taille(o):
+        return len(json.dumps(o, ensure_ascii=False, indent=1))
+
+    if taille(payload) <= limite:
+        return payload
+    # La plus longue liste du document est celle qui coûte : c'est elle qu'on raccourcit.
+    if isinstance(payload, dict):
+        cle = max((k for k, v in payload.items() if isinstance(v, list)),
+                  key=lambda k: len(payload[k]), default=None)
+        if cle:
+            # 1) D'ABORD alléger chaque élément — un fichier Drive traîne son type MIME,
+            # sa date, son lien, ses propriétaires… alors que seuls son identifiant et son
+            # nom servent. Supprimer des fichiers entiers en premier faisait disparaître
+            # celui que l'utilisateur cherchait (son PEA était le 8e de la liste).
+            garde = [_essentiel(e) for e in payload[cle]]
+            # Une fois réduite à « identifiant + nom », une liste coûte peu et vaut cher :
+            # c'est elle qui permet de retrouver le bon fichier. On lui laisse donc plus
+            # de place qu'à une réponse ordinaire — sinon un Drive un peu fourni faisait
+            # disparaître le fichier cherché passé la 20e position.
+            plafond = _MAX_LISTE if garde != payload[cle] else limite
+            while garde and taille({**payload, cle: garde}) > plafond:
+                garde.pop()
+            reduit = {**payload, cle: garde}
+            omis = len(payload[cle]) - len(garde)
+            if omis > 0:
+                reduit["_note"] = f"{omis} élément(s) supplémentaire(s) non affiché(s)"
+            return reduit
+    if isinstance(payload, list):
+        garde = list(payload)
+        while garde and taille(garde) > limite:
+            garde.pop()
+        return garde
+    return payload
+
+
 def _fmt(action: str, data) -> str:
-    """Rend la réponse Composio lisible pour le LLM."""
+    """Rend la réponse Composio lisible pour le LLM, SANS jamais casser le JSON."""
     try:
         payload = data.get("data", data) if isinstance(data, dict) else data
-        txt = json.dumps(payload, ensure_ascii=False, indent=1)
+        txt = json.dumps(_reduit(payload), ensure_ascii=False, indent=1)
     except Exception:
-        txt = str(data)
-    return f"✅ [{action}] résultat :\n{txt[:2500]}"
+        txt = str(data)[:_MAX_RESULTAT]
+    return f"✅ [{action}] résultat :\n{txt}"
