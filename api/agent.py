@@ -396,6 +396,18 @@ def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
     if not fin:
         system += (" INTERDIT : ne parle pas de bourse, actions, crypto, marchés, investissement, "
                    "épargne ou placements — l'utilisateur ne l'a pas demandé.")
+    else:
+        # ⚠️ « tu penses quoi de nos investissements ? », juste après avoir lu le tableur
+        # PEA : Nova répondait « je ne suis pas conseiller financier » et proposait de
+        # trier des documents. Esquiver une question portant sur SES PROPRES chiffres,
+        # qu'on vient de lui afficher, n'est pas de la prudence — c'est inutile.
+        system += (" Si l'HISTORIQUE RÉCENT contient ses chiffres (positions, montants, "
+                   "performances), commente CES chiffres-là : répartition, concentration, "
+                   "lignes en gain et en perte, poids de chaque ligne. Appuie-toi UNIQUEMENT "
+                   "sur les nombres présents — n'en invente aucun et ne va pas chercher de "
+                   "cours. Tu décris ce qu'il possède, tu ne lui dis pas quoi acheter ou "
+                   "vendre. Ne réponds JAMAIS uniquement « consulte un conseiller financier » : "
+                   "c'est une esquive, pas une réponse.")
     if app and "connected_app" in tools:
         tools.remove("connected_app"); tools.insert(0, "connected_app")
         system += (" Pour l'agenda, le calendrier, les mails, les fichiers, Slack ou Notion, utilise "
@@ -885,7 +897,7 @@ def _action_en_attente(profil: str):
     return p
 
 
-def _direct_app_prepare(message: str):
+def _direct_app_prepare_brut(message: str):
     """Comme _direct_app_run mais SANS formater (pour le streaming). Renvoie un dict :
     {steps, done_answer} si terminé (échec → message honnête), ou {steps, action, obs, is_write}."""
     # ── Une action irréversible attend-elle ton feu vert ? ────────────────────
@@ -914,7 +926,6 @@ def _direct_app_prepare(message: str):
         slug = app_courante(message)      # tient compte de l'app dont on vient de parler
         if slug and slug not in ("googlecalendar", "gmail"):
             g = _generic_app_flow(message, slug)
-            _remember_user(message)   # pour comprendre un suivi vague au tour suivant
             return {"steps": g["steps"], "done_answer": g["done_answer"]}
         return None
     slug = (action or "").split("_", 1)[0].lower()
@@ -971,7 +982,7 @@ def _composio_connect_link(app_slug: str):
         return None, f"link exception: {type(e).__name__}: {str(e)[:150]}"
 
 
-def _direct_app_run(message: str):
+def _direct_app_run_brut(message: str):
     """Chemin déterministe agenda/mail. Renvoie {'steps','answer','ok'} ou None si non concerné."""
     cx = _complex_app_flow(message)
     if cx is not None:
@@ -981,7 +992,6 @@ def _direct_app_run(message: str):
         slug = app_courante(message)      # tient compte de l'app dont on vient de parler
         if slug and slug not in ("googlecalendar", "gmail"):
             g = _generic_app_flow(message, slug)
-            _remember_user(message)   # pour comprendre un suivi vague au tour suivant
             return {"steps": g["steps"], "answer": g["done_answer"], "ok": True}
         return None
     obs = _tool(action, args)   # identité résolue + activité enregistrée
@@ -1328,6 +1338,28 @@ def _build_args(action: str, spec: dict, message: str, ctx: str = "", error: str
     out = _llm_json(sys, usr)
     args = out.get("arguments")
     return args if isinstance(args, dict) else {}
+
+
+# ── Se souvenir de CE QU'ON A RÉPONDU, pas seulement de ce qu'on a demandé ────
+# Nova lisait le tableur PEA, affichait tous les chiffres, puis répondait « je ne suis pas
+# conseiller financier » à « tu penses quoi de nos investissements ? » — comme si elle
+# n'avait jamais vu ces données. Elle les avait lues : elle ne les gardait pas.
+# On enveloppe ICI, à la sortie du chemin app, pour que TOUS les chemins en profitent
+# (agenda, mails, Notion, Sheets…) et pas seulement celui qu'on venait de corriger.
+def _direct_app_prepare(message: str):
+    r = _direct_app_prepare_brut(message)
+    if r is not None and r.get("done_answer") is not None:
+        _remember_user(message)
+        _remember_answer(r["done_answer"])
+    return r
+
+
+def _direct_app_run(message: str):
+    r = _direct_app_run_brut(message)
+    if r is not None and r.get("answer") is not None:
+        _remember_user(message)
+        _remember_answer(r["answer"])
+    return r
 
 
 # ── Résolution automatique des identifiants ──────────────────────────────────
@@ -1921,6 +1953,29 @@ def _remember_user(message: str) -> None:
         get_memory().remember(_PROFILE_ID, "user", message.strip()[:300])
     except Exception:
         pass
+
+
+def _remember_answer(reponse: str) -> None:
+    """Mémorise CE QUE NOVA A RÉPONDU, et pas seulement la question posée.
+
+    ⚠️ Sans ça, Nova lisait le tableur PEA, affichait tous les chiffres… puis, à la
+    question suivante « tu penses quoi de nos investissements ? », répondait « je ne suis
+    pas conseiller financier » — comme si elle n'avait jamais vu ces données. Elle les
+    avait bien lues : elle ne les gardait simplement pas. Une réponse issue d'une app est
+    de la DONNÉE, et c'est le seul endroit où elle existe pour le tour suivant.
+    """
+    texte = (reponse or "").strip()
+    if not texte:
+        return
+    try:
+        get_memory().remember(_PROFILE_ID, "assistant", texte[:_MEM_REPONSE_MAX])
+    except Exception:
+        pass
+
+
+# Un tableau de données vaut d'être gardé en entier : le tronquer trop court reviendrait
+# à reperdre les chiffres qu'on vient d'aller chercher.
+_MEM_REPONSE_MAX = 2000
 
 
 def _recent_user_context(n: int = 4) -> str:

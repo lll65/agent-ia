@@ -9,11 +9,29 @@ L'interface publique (remember / recall_recent / recall_relevant / build_context
 clear) est identique quel que soit le backend — le reste du code n'a rien à changer.
 """
 import logging
+import re
 from datetime import datetime
 
 from agent.memory import save_message, get_history, clear_history
 from memory.chroma_store import ChromaStore
 from config import config
+
+
+def _ressemble_a_des_donnees(texte: str) -> bool:
+    """Ce texte porte-t-il des DONNÉES qu'on voudra réinterroger, ou est-ce de la prose ?
+
+    Une réponse d'app (tableur, agenda, mails) est la seule trace de ce qu'on est allé
+    chercher : la couper court revient à jeter le résultat. Une longue explication en
+    prose, elle, n'a pas à revenir en entier — elle pousse le modèle à se répéter.
+    """
+    t = texte or ""
+    if t.count("|") >= 6:                       # un tableau Markdown
+        return True
+    if t.count("\n- ") + t.count("\n• ") >= 3:  # une liste d'éléments
+        return True
+    if "{" in t and ('":' in t or '" :' in t):  # du JSON renvoyé par une API
+        return True
+    return len(re.findall(r"\d[\d\s.,]*", t)) >= 8   # beaucoup de chiffres = des mesures
 
 logger = logging.getLogger(__name__)
 
@@ -109,9 +127,20 @@ class MemoryManager:
         # (ex. finance) réinjectées en entier poussaient le modèle à rejouer le même sujet/format.
         recent = self.recall_recent(agent_id, recent_limit)
         if recent:
+            # ⚠️ Ce qui compte n'est pas l'ancienneté mais la NATURE du contenu.
+            # Une longue analyse en prose, réinjectée en entier, pousse le modèle à
+            # rejouer le même sujet : on la coupe court, c'est le réglage d'origine.
+            # Mais un TABLEAU de données est la seule trace de ce qu'on est allé
+            # chercher : coupé à 150 caractères, Nova affichait tout le portefeuille PEA
+            # puis répondait « je ne suis pas conseiller financier » à la question
+            # suivante — elle ne voyait plus un seul chiffre.
+            def limite(m):
+                if m.get("role") == "user":
+                    return 400
+                return 1200 if _ressemble_a_des_donnees(m.get("content") or "") else 150
+
             history_text = "\n".join(
-                f"{m['role'].upper()}: {m['content'][:400 if m.get('role') == 'user' else 150]}"
-                for m in recent
+                f"{m['role'].upper()}: {m['content'][:limite(m)]}" for m in recent
             )
             parts.append(
                 "[HISTORIQUE RÉCENT — simple rappel de la conversation. "

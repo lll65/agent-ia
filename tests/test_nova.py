@@ -2057,6 +2057,98 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_memoire_des_donnees():
+    """Nova lisait le tableur PEA, affichait tous les chiffres, puis répondait « je ne
+    suis pas conseiller financier » à « tu penses quoi de nos investissements ? ».
+    Elle avait bien lu les données : elle ne les gardait pas d'un tour à l'autre."""
+    from memory import get_memory
+
+    PEA = ("| Lohan | Amundi PEA Nasdaq-100 | 19 | 6,94 | +31 % |\n"
+           "| Lohan | action valneva | 23 | 2,26 | -50 % |\n"
+           "| Père | Amundi PEA S&P 500 | 6 | 57,41 | -0,5 % |")
+    vrais = (A._PROFILE_ID, A._connected_accounts, A._composio_list_actions,
+             A._tool, A._format_app_result)
+    try:
+        A._PROFILE_ID = "test_memoire_donnees"        # profil vierge, isolé des autres tests
+        A._connected_accounts = lambda: [("googlesheets", "u", "ACTIVE")]
+        A._composio_list_actions = lambda s: [
+            {"name": "GOOGLESHEETS_BATCH_GET", "desc": ""},
+            {"name": "GOOGLESHEETS_SEARCH_SPREADSHEETS", "desc": ""}]
+        A._tool = lambda a, args=None, **k: (
+            "✅ résultat :\n" + json.dumps({"data": {"files": [
+                {"id": "11qGW0rhYzR4XWab0UKTLDVUU1S2_Mizn0eToOOZRph8",
+                 "name": "Suivi_PEA_Lohan_Pere"}]}})
+            if "SEARCH" in a.upper() else "✅ résultat :\n" + PEA)
+        A._format_app_result = lambda msg, act, obs, w: PEA
+
+        mem = get_memory()
+        avant = len(mem.recall_recent(A._PROFILE_ID, 200) or [])
+        A._direct_app_prepare("lit mon fichier pea sur google sheet")
+        garde = (mem.recall_recent(A._PROFILE_ID, 200) or [])[avant:]
+        roles = [g.get("role") for g in garde]
+        check_true("la question est mémorisée", "user" in roles)
+        check_true("la RÉPONSE est mémorisée aussi", "assistant" in roles)
+        dit = " ".join(g.get("content") or "" for g in garde)
+        check_true("les chiffres lus sont conservés", "valneva" in dit)
+
+        # …et ils arrivent bien dans le contexte de la question suivante
+        ctx = mem.build_context(A._PROFILE_ID, "tu penses quoi de nos investissements ?",
+                                recent_limit=6)
+        check_true("les chiffres sont disponibles au tour suivant", "valneva" in ctx.lower())
+
+        # Une réponse vide ne doit rien polluer
+        avant2 = len(mem.recall_recent(A._PROFILE_ID, 200) or [])
+        A._remember_answer("")
+        check("une réponse vide n'est pas mémorisée",
+              len(mem.recall_recent(A._PROFILE_ID, 200) or []), avant2)
+    finally:
+        (A._PROFILE_ID, A._connected_accounts, A._composio_list_actions,
+         A._tool, A._format_app_result) = vrais
+
+    # Des DONNÉES restent lisibles longtemps ; une longue prose reste coupée court
+    # (la réinjecter en entier poussait le modèle à rejouer le même sujet).
+    from memory.manager import _ressemble_a_des_donnees as _donnees
+    for texte, att in (
+            ("| Lohan | Nasdaq | 19 | 6,94 | +31 % |\n| Lohan | valneva | 23 | 2,26 |", True),
+            ('{"valueRanges": [["Personne","ETF"]]}', True),
+            ("Tes rendez-vous :\n- 9h dentiste\n- 14h cours\n- 18h sport", True),
+            ("Tu as 19 parts à 6,94 €, 23 à 2,26 €, 6 à 57,41 € et 55 à 5,40 €", True),
+            ("Bonjour Lohan, comment vas-tu ?", False),
+            ("La photosynthèse est le processus par lequel les plantes convertissent "
+             "la lumière en énergie chimique, dans les chloroplastes.", False),
+            ("Je ne suis pas un conseiller financier, mais la diversification et la "
+             "patience sont souvent de bons points de départ.", False),
+            ("", False)):
+        check(f"données ? « {texte[:34]}… »", _donnees(texte), att)
+
+    # Bout en bout : le tableau survit à la troncature du contexte, la prose non
+    from memory import get_memory as _gm
+    mem2 = _gm()
+    _gm().clear("test_troncature_ctx")
+    mem2.remember("test_troncature_ctx", "user", "consulte mon pea")
+    mem2.remember("test_troncature_ctx", "assistant",
+                  "| Personne | ETF | Qté | Cours |\n" + "\n".join(
+                      f"| Lohan | ligne {i} | {i} | {i},50 |" for i in range(30)) +
+                  "\n| Lohan | action valneva | 23 | 2,26 |")
+    mem2.remember("test_troncature_ctx", "user", "et alors ?")
+    ctx2 = mem2.build_context("test_troncature_ctx", "tu penses quoi ?", recent_limit=6)
+    check_true("un tableau long reste lisible dans le contexte", "valneva" in ctx2)
+
+    # La consigne : commenter SES chiffres, ne pas esquiver
+    cfg = A._build_agent_cfg("tu penses quoi de nos investissements ?", "Nova")
+    sysm = cfg.get("system") or cfg.get("system_prompt") or ""
+    check_true("Nova a le droit de parler de ses placements",
+               "INTERDIT" not in sysm or "ne parle pas de bourse" not in sysm)
+    check_true("elle doit commenter les chiffres de l'HISTORIQUE", "HISTORIQUE" in sysm)
+    check_true("l'esquive est explicitement interdite", "esquive" in sysm.lower())
+    check_true("elle ne conseille pas d'acheter ou vendre",
+               "quoi acheter" in sysm or "acheter ou" in sysm)
+    # …mais sur une discussion ordinaire, rien de tout ça ne s'active
+    cfg2 = A._build_agent_cfg("bonjour ça va ?", "Nova")
+    sys2 = cfg2.get("system") or cfg2.get("system_prompt") or ""
+    check_true("aucune consigne finance sur une discussion normale", "esquive" not in sys2.lower())
+
+
 def test_continuite_app():
     """« tu peux faire quoi avec Notion ? » puis, 20 secondes après, « vas-y crée un
     doc » : Nova repartait de zéro — et « doc » l'envoyait même vers Google Docs."""
@@ -2240,7 +2332,7 @@ if __name__ == "__main__":
                test_raisonnement_cache, test_slug_connecte,
                test_modele_annonce, test_affichage_actu, test_enchainement_fichier,
                test_fournisseur_et_routage, test_garde_fou, test_calendrier_exact,
-               test_continuite_app, test_catalogue_complet):
+               test_continuite_app, test_catalogue_complet, test_memoire_des_donnees):
         try:
             fn()
         except Exception as e:
