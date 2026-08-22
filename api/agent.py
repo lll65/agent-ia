@@ -215,17 +215,40 @@ def _mots_cles_souples(k: str) -> tuple:
     return (k, k[:-1]) if k.endswith("s") and len(k) > 3 else (k, k + "s")
 
 
-def _detect_toolkit(message: str):
+# Mots-clés d'app qui sont AUSSI des verbes courants. « affiche » désigne un visuel chez
+# Canva, mais dans « affiche la page » c'est le verbe : Nova partait sur Canva. Ils ne
+# peuvent donc pas choisir une app à eux seuls — « fais-moi une affiche », si.
+_MOTS_CLES_AMBIGUS = {"affiche", "liste", "note", "adresse", "commit", "trajet"}
+
+
+def _mot_cle_faible(k: str) -> bool:
+    """Ce mot-clé désigne-t-il l'app à lui seul, ou est-il trop banal pour ça ?
+
+    « fichier » figurait comme mot-clé de Google Drive. Résultat : « liste-moi les titres
+    des fichiers », dit juste après avoir parlé de Google Sheets, partait vers le Drive —
+    qui n'est même pas connecté. Un mot que tout le monde emploie pour tout ne peut pas
+    choisir une app ; « google drive » ou « document drive », si.
+    """
+    mots = [w for w in re.split(r"[\s'’-]+", (k or "").lower()) if w]
+    return bool(mots) and all(w in _MOTS_GENERIQUES or w in _MOTS_CLES_AMBIGUS for w in mots)
+
+
+def _detect_toolkit(message: str, strict: bool = False):
     """Renvoie le slug de l'app concernée par le message, ou None.
 
     ⚠️ Comparaison par MOTS ENTIERS. En sous-chaîne, « repo » se retrouvait dans
     « ré**po**nse » : « je veux une réponse avec l'api nvidia » partait vers GitHub, et
     « utilise groq pour ré**po**ndre » aussi. Même famille de piège que « ia » dans
     « mafia » — une comparaison lâche finit toujours par attraper un mot innocent.
+
+    `strict=True` n'accepte que les mots-clés qui désignent VRAIMENT une app, en ignorant
+    les mots banals (fichier, document, page…) qui appartiennent à toutes.
     """
     m = (message or "").lower()
     for slug in _TOOLKIT_ORDER:
         for k in _TOOLKITS.get(slug, ()):
+            if strict and _mot_cle_faible(k):
+                continue
             for v in _mots_cles_souples(k):
                 if v and re.search(r"(?<![\wÀ-ÿ])" + re.escape(v) + r"(?![\wÀ-ÿ])", m):
                     return slug
@@ -268,13 +291,18 @@ def _app_nommee(message: str) -> str:
     ⚠️ Il faut parcourir TOUT le message : « crée un doc dans Google Docs » contient
     d'abord « doc » (générique) puis « google docs » (explicite). S'arrêter au premier
     mot trouvé faisait gagner le générique, et le contexte l'emportait à tort.
+
+    La règle du « mot trop banal » est celle de `_mot_cle_faible`, et une seule : elle
+    était écrite deux fois, et la version d'ici ignorait les verbes ambigus — « affiche
+    la page » partait donc vers Canva, où « affiche » désigne un visuel.
     """
     m = (message or "").lower()
     for slug in _TOOLKIT_ORDER:
         for k in _TOOLKITS.get(slug, ()):
+            if _mot_cle_faible(k):
+                continue
             for v in _mots_cles_souples(k):
-                if (v and v.lower() not in _MOTS_GENERIQUES
-                        and re.search(r"(?<![\wÀ-ÿ])" + re.escape(v) + r"(?![\wÀ-ÿ])", m)):
+                if v and re.search(r"(?<![\wÀ-ÿ])" + re.escape(v) + r"(?![\wÀ-ÿ])", m):
                     return slug
     return ""
 
@@ -292,10 +320,18 @@ def app_courante(message: str, profil: str = None) -> str:
     if nommee:
         _retenir_app(nommee, profil)
         return nommee
-    direct = _detect_toolkit(message)
+    # Un mot-clé FORT (« drive », « notion », « tableur ») désigne l'app sans ambiguïté et
+    # l'emporte sur le contexte : c'est ainsi qu'on change de sujet.
+    fort = _detect_toolkit(message, strict=True)
+    if fort:
+        _retenir_app(fort, profil)
+        return fort
+    # Sinon la phrase enchaîne sur l'app dont on vient de parler. Un mot banal comme
+    # « fichier » ne doit surtout pas la faire changer d'app en cours de route.
     recente = _app_recente(profil)
     if recente and _suite_de_conversation(message):
         return recente
+    direct = _detect_toolkit(message)
     if direct:
         _retenir_app(direct, profil)
     return direct
@@ -308,10 +344,16 @@ _VERBES_SUITE = ("vas-y", "vas y", "vasy", "fais", "fais-le", "crée", "cree", "
 
 
 def _suite_de_conversation(message: str) -> bool:
-    """La phrase enchaîne-t-elle sur ce qui vient d'être dit ?"""
+    """La phrase enchaîne-t-elle sur ce qui vient d'être dit ?
+
+    ⚠️ Il y avait ici un plafond de 18 mots — « une longue demande se suffit à elle-même ».
+    C'était faux : « suivie pea pere et moi mais j'ai pas le nom exact, si tu trouves pas
+    liste-moi les titres des fichiers » fait 19 mots et enchaîne évidemment. Le contexte
+    était perdu pile quand l'utilisateur donnait le plus de précisions.
+    Le vrai signal n'est pas la longueur : c'est qu'aucune AUTRE app n'est nommée — ce que
+    `app_courante` a déjà vérifié avant d'arriver ici.
+    """
     m = (message or "").lower()
-    if len(m.split()) > 18:            # une longue demande se suffit à elle-même
-        return False
     return any(re.search(r"(?<![\wÀ-ÿ])" + re.escape(v) + r"(?![\wÀ-ÿ])", m)
                for v in _VERBES_SUITE)
 
@@ -1378,25 +1420,51 @@ def _mots_cles_fichier(message: str) -> str:
     return " ".join(mots)[:60] or requete_simple(m)[:60]
 
 
+_CLES_ID = ("id", "spreadsheetId", "fileId", "documentId", "pageId", "databaseId")
+_CLES_NOM = ("name", "title", "spreadsheetTitle", "filename", "displayName")
+
+
+def _paires_a_la_main(brut: str) -> list:
+    """Extrait [(identifiant, nom)] d'un JSON ABÎMÉ, sans le parser.
+
+    ⚠️ Indispensable : une réponse Drive/Sheets dépasse vite la taille maximale d'un
+    résultat d'outil, et se retrouve coupée en plein milieu. `json.loads` échouait alors
+    sur TOUTE la réponse et Nova répondait « aucun document trouvé » alors que le fichier
+    était là — c'est exactement ce qui est arrivé sur « lit mon fichier pea ».
+    On repêche donc chaque paire identifiant/nom au fil du texte.
+    """
+    ids = [(m.start(), m.group(2)) for m in re.finditer(
+        r'"(' + "|".join(_CLES_ID) + r')"\s*:\s*"([^"]{10,})"', brut or "")]
+    noms = [(m.start(), m.group(2)) for m in re.finditer(
+        r'"(' + "|".join(_CLES_NOM) + r')"\s*:\s*"([^"]*)"', brut or "")]
+    out = []
+    for pos, ident in ids:
+        # Le nom du même enregistrement est le plus proche, avant ou après l'identifiant.
+        proche = min(noms, key=lambda n: abs(n[0] - pos), default=None)
+        out.append((ident, proche[1] if proche and abs(proche[0] - pos) < 400 else ""))
+    return out
+
+
 def _identifiants_trouves(brut: str) -> list:
     """Extrait [(identifiant, nom)] d'une réponse de recherche Composio."""
     out = []
     m = re.search(r"\{.*\}", brut or "", re.S)
     if not m:
-        return out
+        return _paires_a_la_main(brut)
     try:
         data = json.loads(m.group(0))
     except Exception as e:
-        # On TRACE : un « except » muet ici avait masqué un NameError pendant tout un test.
-        logger.warning(f"[apps] réponse de recherche illisible : {str(e)[:100]}")
-        return out
+        # Réponse tronquée ou malformée : on repêche à la main plutôt que de prétendre
+        # qu'il n'y a aucun document. Renoncer ici, c'était mentir à l'utilisateur.
+        repeches = _paires_a_la_main(brut)
+        logger.warning(f"[apps] réponse de recherche illisible ({str(e)[:80]}) — "
+                       f"{len(repeches)} identifiant(s) repêché(s) à la main")
+        return repeches
 
     def parcours(o):
         if isinstance(o, dict):
-            ident = next((o[k] for k in ("id", "spreadsheetId", "fileId", "documentId")
-                          if isinstance(o.get(k), str)), "")
-            nom = next((o[k] for k in ("name", "title", "spreadsheetTitle", "filename")
-                        if isinstance(o.get(k), str)), "")
+            ident = next((o[k] for k in _CLES_ID if isinstance(o.get(k), str)), "")
+            nom = next((o[k] for k in _CLES_NOM if isinstance(o.get(k), str)), "")
             if ident and len(str(ident)) >= 10:
                 out.append((str(ident), str(nom)))
             for v in o.values():
@@ -2028,6 +2096,39 @@ def _known_args(action: str, message: str):
     return None
 
 
+def _est_connectee(slug: str) -> bool:
+    """Cette app est-elle réellement connectée au compte Composio ?
+
+    Comparaison NORMALISÉE : Composio écrit « google_drive » là où nous écrivons
+    « googledrive ».
+    """
+    try:
+        connected = {_norm_slug(s) for s, _u, _st in _connected_accounts() if s}
+    except Exception:            # Composio injoignable : on ne bloque pas à tort
+        return True
+    return not connected or _norm_slug(slug) in connected
+
+
+def _refus_app_non_connectee(slug: str) -> str:
+    """Le dire simplement, et proposer ce qui EST connecté plutôt qu'une erreur d'API."""
+    nice = _APP_FR.get(slug, slug.capitalize())
+    # Le nom du toolkit chez Composio, pas la tournure familière : on écrit
+    # « Toolkits → Googledrive », jamais « Toolkits → ton Drive ».
+    catalogue_nom = slug.replace("_", " ").capitalize()
+    link, _ = _composio_connect_link(slug)
+    msg = f"🔌 **{nice}** n'est pas connecté à mon compte Composio, je ne peux donc rien y lire."
+    try:
+        autres = sorted({_APP_FR.get(_norm_slug(s), s.replace("_", " ").capitalize())
+                         for s, _u, _st in _connected_accounts() if s})
+    except Exception:
+        autres = []
+    if autres:
+        msg += "\n\nCe à quoi j'ai accès pour l'instant :\n" + "\n".join(f"• {a}" for a in autres[:12])
+    msg += (f"\n\n👉 **Connecte-le en un clic :**\n{link}" if link
+            else f"\n\nConnecte-le sur Composio → **Toolkits → {catalogue_nom}**.")
+    return msg
+
+
 def _generic_app_flow(message: str, slug: str):
     """Exécute une action sur N'IMPORTE QUELLE app connectée :
     1) découvre les actions réelles de l'app, 2) le LLM choisit l'action + arguments,
@@ -2036,6 +2137,11 @@ def _generic_app_flow(message: str, slug: str):
     # « as-tu accès à GitHub ? » → on RÉPOND, on n'essaie pas d'exécuter une action.
     if _is_capability_question(message):
         return {"steps": steps, "done_answer": _capability_answer(slug)}
+    # ⚠️ App NON connectée : on ne tente rien. Nova lançait l'action quand même, Composio
+    # répondait 404, et l'utilisateur recevait « L'action GOOGLEDRIVE_FIND_FILE n'existe
+    # pas » suivi de la liste brute des actions Canva — incompréhensible et inutile.
+    if not _est_connectee(slug):
+        return {"steps": steps, "done_answer": _refus_app_non_connectee(slug)}
     actions = _composio_list_actions(slug)
     if not actions:
         return {"steps": steps, "done_answer": (

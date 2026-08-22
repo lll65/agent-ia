@@ -96,8 +96,18 @@ class ModeleCapricieux:
             yield mot
 
 
-FICHIERS = [{"id": "1AAAaaaBBBcccDDDeeeFFFgggHHHiiiJJJkkkLLL", "name": "Budget vacances 2026"},
-            {"id": "1ZZZzzzYYYxxxWWWvvvUUUtttSSSrrrQQQpppOOO", "name": "Suivi_PEA_Lohan_Pere"}]
+# Un Drive REALISTE : beaucoup de fichiers, et chacun traine toutes ses metadonnees
+# Google (type MIME, date, lien, proprietaires). C'est ce VOLUME qui cassait le JSON
+# rendu a Nova : elle annoncait « aucun document trouve » alors que tout etait arrive.
+FICHIERS = ([{"id": "1AAAaaaBBBcccDDDeeeFFFgggHHHiiiJJJkkkLLL", "name": "Budget vacances 2026"},
+             {"id": "1ZZZzzzYYYxxxWWWvvvUUUtttSSSrrrQQQpppOOO", "name": "Suivi_PEA_Lohan_Pere"}]
+            + [{"id": f"1{chr(65 + i % 26)}{i:03d}" + "x" * 38,
+                "name": f"Document numero {i} — rapport",
+                "mimeType": "application/vnd.google-apps.spreadsheet",
+                "modifiedTime": "2026-08-20T10:00:00.000Z",
+                "webViewLink": f"https://docs.google.com/spreadsheets/d/1{i}/edit",
+                "owners": [{"displayName": "Lohan", "emailAddress": "lohan@exemple.fr"}]}
+               for i in range(40)])
 
 # Catalogues RÉELS (noms exacts renvoyés par Composio) pour les apps où le choix de
 # l'action a déjà dérapé. L'ordre est celui de l'API : le faux modèle prend le premier
@@ -145,7 +155,12 @@ def faux_composio(action, args=None, **kw):
     ARGS_EXECUTES.append((action, dict(args or {})))
     a = (action or "").upper()
     if "SEARCH" in a or ("LIST" in a and "EVENT" not in a):
-        return "✅ résultat :\n" + json.dumps({"data": {"files": FICHIERS}})
+        # On passe par le VRAI formateur : c'est lui qui raccourcit les reponses trop
+        # longues, et c'est la que le JSON se cassait. Le simuler masquerait le defaut.
+        from plugins.builtin.composio_tool import _fmt
+        q = str((args or {}).get("query") or "").lower()
+        trouves = [f for f in FICHIERS if not q or q in f["name"].lower()]
+        return _fmt(action, {"data": {"files": trouves}})
     if "EVENTS_LIST" in a:
         return "✅ [%s] résultat :\n%s" % (action, AGENDA)
     ident = (args or {}).get("spreadsheet_id", "")
@@ -347,6 +362,18 @@ SCENARIOS = [
      "regles": [jamais_de_bouchon_execute, dit_ne_pas_savoir,
                 jamais_execute(r"BATCH_GET|_GET$"),
                 sans("voici le contenu", "voici les données")]},
+
+    # ── La conversation reelle du 22/08 : deux tours, deux defauts ───────────
+    # 1) la reponse Drive tronquee cassait le JSON -> « aucun document trouve »
+    # 2) « ...les titres des fichiers » (19 mots) quittait Sheets pour le Drive,
+    #    qui n'est meme pas connecte -> erreur 404 brute affichee a l'utilisateur.
+    {"nom": "REEL-pea-deux-tours",
+     "tours": ["lit mon fichier pea sur google sheet",
+               "suivie pea pere et moi mas jai pas le nom exact. "
+               "si tu trouve pas liste moi les titres des fichiers"],
+     "regles": [jamais_de_bouchon_execute, jamais_execute(r"GOOGLEDRIVE"),
+                a_execute(r"GOOGLESHEETS"),
+                sans("n'existe pas", "not found", "canva")]},
 
     # ── Continuité : la phrase suivante enchaîne ─────────────────────────────
     {"nom": "contexte-notion",

@@ -1792,6 +1792,43 @@ def test_enchainement_fichier():
     check_true("aucun document ouvert au hasard", A._est_bouchon(args["spreadsheet_id"]))
     A._tool = vrai_tool
 
+    # 33c-quater. Une réponse Composio TRONQUÉE ne doit plus faire dire « aucun document ».
+    # C'est le vrai coupable de « lit mon fichier pea » : le JSON d'un Drive fourni était
+    # coupé en plein milieu, json.loads échouait, et Nova annonçait une liste vide.
+    from plugins.builtin.composio_tool import _fmt as _fmt_composio
+
+    def _drive(n, pos):
+        f = [{"id": f"1{chr(65 + i % 26)}{i:03d}" + "x" * 38,
+              "name": f"Document numero {i} — rapport",
+              "mimeType": "application/vnd.google-apps.spreadsheet",
+              "modifiedTime": "2026-08-20T10:00:00.000Z",
+              "webViewLink": f"https://docs.google.com/spreadsheets/d/1{i}/edit",
+              "owners": [{"displayName": "Lohan", "emailAddress": "lohan@exemple.fr"}]}
+             for i in range(n)]
+        f[pos]["name"] = "suivi pea pere et moi"
+        return f
+
+    for n, pos in ((3, 1), (30, 7), (60, 55)):
+        brut = _fmt_composio("GOOGLESHEETS_SEARCH_SPREADSHEETS", {"data": {"files": _drive(n, pos)}})
+        corps = brut.split("résultat :", 1)[1]
+        try:
+            json.loads(corps)
+            valide = True
+        except Exception:
+            valide = False
+        check_true(f"{n} fichiers : le JSON rendu reste valide", valide)
+        cands = A._identifiants_trouves(brut)
+        check(f"{n} fichiers : le PEA est retrouvé",
+              A._meilleur_document(cands, "pea")[1], "suivi pea pere et moi")
+
+    # Et même sur un JSON VOLONTAIREMENT abîmé, on repêche au lieu de renoncer
+    abime = _fmt_composio("X_SEARCH", {"data": {"files": _drive(30, 7)}})[:1500]
+    repeches = A._identifiants_trouves(abime)
+    check_true("JSON coupé : on repêche quand même des identifiants", len(repeches) > 0)
+    check_true("JSON coupé : les noms suivent les identifiants",
+               all(len(i) >= 10 for i, _n in repeches))
+    check("réponse sans le moindre JSON", A._identifiants_trouves("erreur brute"), [])
+
     # 33d. « le fichier X » doit viser une app de fichiers, pas le vide
     check("« fichier » routé", A._detect_toolkit("consulte le fichier Suivi_PEA"), "googledrive")
     check("« tableur » routé", A._detect_toolkit("trouve le tableur de mon pea"), "googlesheets")
@@ -2060,11 +2097,73 @@ def test_continuite_app():
         check("un contexte trop vieux n'impose plus Notion", apres == "notion", False)
         check("retour à la détection habituelle", apres, "googledocs")
 
-        # 37f. Une longue demande se suffit à elle-même
+        # 37f. Une demande LONGUE enchaîne quand même sur l'app en cours.
+        # Il y avait ici un plafond de 18 mots, et c'était un défaut : Lohan a écrit
+        # « suivie pea pere et moi mas jai pas le nom exact. si tu trouve pas liste moi
+        # les titres des fichiers » (19 mots) juste après avoir parlé de Google Sheets,
+        # et Nova partait dans le Drive — qui n'est même pas connecté. Le contexte était
+        # perdu pile au moment où l'utilisateur donnait le plus de précisions.
+        suite = ("suivie pea pere et moi mas jai pas le nom exact. "
+                 "si tu trouve pas liste moi les titres des fichiers")
+        check_true("le cas réel dépasse bien 18 mots", len(suite.split()) > 18)
+        A._APP_RECENTE.clear(); A._retenir_app("googlesheets")
+        check("une longue suite reste sur Sheets", A.app_courante(suite), "googlesheets")
         A._APP_RECENTE.clear(); A._retenir_app("notion")
         longue = ("crée pour moi un tableau récapitulatif complet avec toutes les colonnes "
                   "nécessaires pour suivre mes dépenses mensuelles de cette année")
-        check("une longue demande n'hérite pas du contexte", A.app_courante(longue), None)
+        check("une longue demande enchaîne aussi", A.app_courante(longue), "notion")
+        # …mais nommer une AUTRE app reprend toujours le dessus, si longue soit la phrase
+        A._APP_RECENTE.clear(); A._retenir_app("notion")
+        check("une app nommée l'emporte sur le contexte",
+              A.app_courante(longue + " dans google sheets"), "googlesheets")
+
+        # 37f-bis. Un mot banal ne fait JAMAIS changer d'app en cours de route.
+        # « fichier » est un mot-clé de Google Drive : « liste-moi les titres des fichiers »
+        # quittait Sheets pour le Drive.
+        for phrase in ("liste moi les titres des fichiers", "montre-moi mes documents",
+                       "ouvre le fichier", "affiche la page"):
+            A._APP_RECENTE.clear(); A._retenir_app("googlesheets")
+            check(f"« {phrase[:34]}… » reste sur Sheets", A.app_courante(phrase), "googlesheets")
+        # …alors qu'un mot-clé FORT désigne bien le Drive
+        A._APP_RECENTE.clear(); A._retenir_app("googlesheets")
+        check("« mon google drive » va bien au Drive",
+              A.app_courante("cherche dans mon google drive"), "googledrive")
+        check_true("« fichier » est un mot-clé faible", A._mot_cle_faible("fichier"))
+        check("« google drive » est un mot-clé fort", A._mot_cle_faible("google drive"), False)
+        check("« document drive » est un mot-clé fort", A._mot_cle_faible("document drive"), False)
+
+        # 37h. Une app NON connectée : on le dit, on n'exécute rien.
+        # Nova lançait l'action quand même ; Composio répondait 404 et l'utilisateur
+        # recevait « L'action GOOGLEDRIVE_FIND_FILE n'existe pas » suivi de la liste
+        # brute des actions Canva — illisible, et sans rapport avec sa demande.
+        vrais_cnx = (A._connected_accounts, A._composio_connect_link, A._composio_list_actions)
+        appels_cnx = []
+        try:
+            A._connected_accounts = lambda: [(s, "u", "ACTIVE") for s in
+                                             ("gmail", "googlecalendar", "googlesheets", "notion")]
+            A._composio_connect_link = lambda s: ("", "")
+            A._composio_list_actions = lambda s: (appels_cnx.append(s) or
+                                                  [{"name": "X_SEARCH", "desc": ""}])
+            check_true("Sheets est vue comme connectée", A._est_connectee("googlesheets"))
+            check("le Drive n'est pas connecté", A._est_connectee("googledrive"), False)
+            r = A._generic_app_flow("cherche le fichier pea dans mon drive", "googledrive")
+            rep = r["done_answer"]
+            check_true("le refus est explicite", "n'est pas connecté" in rep)
+            check_true("le refus reste en français", "n'existe pas" not in rep)
+            check_true("aucun nom d'action brut n'est montré", "GOOGLEDRIVE" not in rep)
+            check_true("le refus propose ce qui EST connecté", "Notion" in rep and "Sheets" in rep)
+            check("aucune action n'a été listée pour une app non connectée", appels_cnx, [])
+            # …et une app connectée passe toujours
+            A._generic_app_flow("cherche mes tableurs", "googlesheets")
+            check_true("une app connectée est bien traitée", "googlesheets" in appels_cnx)
+            # Composio injoignable : on ne bloque pas à tort
+            def _boum():
+                raise RuntimeError("composio injoignable")
+            A._connected_accounts = _boum
+            check_true("Composio injoignable ne bloque pas", A._est_connectee("googledrive"))
+        finally:
+            (A._connected_accounts, A._composio_connect_link,
+             A._composio_list_actions) = vrais_cnx
 
         # 37g. Un mot générique ne désigne jamais une app à lui seul
         for mot in ("doc", "page", "tableau", "fichier", "note", "projet", "ticket"):
