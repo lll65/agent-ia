@@ -78,7 +78,9 @@ async def morning_loop():
     from datetime import datetime, timedelta
     while True:
         try:
-            now = datetime.now()
+            # Même piège : sans fuseau, le briefing « de 7h » partait à 9h à Paris.
+            from agent.horloge import maintenant
+            now = maintenant()
             target = now.replace(hour=config.BRIEFING_HOUR, minute=0, second=0, microsecond=0)
             if target <= now:
                 target += timedelta(days=1)

@@ -2057,6 +2057,104 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_automatisations_heure():
+    """« Briefing du matin à 7h » partait à 9h heure de Paris : les planificateurs
+    lisaient l'heure du SERVEUR (UTC sur Render), pas celle de l'utilisateur.
+    Le jour aussi pouvait basculer — le bilan du dimanche soir tombait un lundi."""
+    import time as _t
+    from datetime import datetime, timedelta
+    from agent import horloge as H
+    from agent import automations as AU
+
+    # 40a. L'horloge rend bien l'heure de l'utilisateur, pas celle du serveur
+    check("le fuseau par défaut est celui de Lohan", H.FUSEAU, "Europe/Paris")
+    check_true("l'horloge répond", isinstance(H.maintenant(), datetime))
+    try:
+        from zoneinfo import ZoneInfo
+        attendu = datetime.now(ZoneInfo("Europe/Paris")).replace(tzinfo=None)
+        check_true("l'heure locale est la bonne à la minute près",
+                   abs((H.maintenant() - attendu).total_seconds()) < 60)
+        check_true("le décalage avec le serveur est mesuré",
+                   isinstance(H.decalage_h(), float))
+    except Exception:
+        pass       # sans base de fuseaux, on retombe sur l'heure serveur : c'est prévu
+
+    # Un fuseau invalide ne doit RIEN casser : on retombe sur l'heure du serveur
+    vrai_fuseau = H.FUSEAU
+    try:
+        H.FUSEAU = "Pas/UnFuseau"
+        check_true("un fuseau invalide ne plante pas", isinstance(H.maintenant(), datetime))
+    finally:
+        H.FUSEAU = vrai_fuseau
+
+    # 40b. Plus aucun planificateur ne lit l'heure du serveur
+    import inspect
+    for mod, nom in ((AU, "automations"), (__import__("agent.briefing", fromlist=["x"]), "briefing")):
+        src = inspect.getsource(mod)
+        boucle = src[src.find("async def"):]
+        check(f"{nom} n'utilise plus datetime.now() pour planifier",
+              "datetime.now()" in boucle, False)
+
+    # 40c. La prochaine exécution est annoncée en heure locale, et respecte les jours
+    vrais = (AU._load, AU._save)
+    try:
+        stock = []
+        AU._load = lambda: list(stock)
+        AU._save = lambda items: (stock.clear(), stock.extend(items))
+
+        a = AU.add("Veille tech", "résume l'actu", hour=12)
+        quand = AU.prochaine_execution(a)
+        check_true("une heure est annoncée", "à 12h" in quand)
+
+        # Seulement le dimanche → jamais annoncé un autre jour
+        dim = AU.add("Bilan", "bilan", hour=19, days=[6])
+        q2 = AU.prochaine_execution(dim)
+        check_true("le jour choisi est respecté", "à 19h" in q2)
+        jour = datetime.strptime(q2.split(" à ")[0].split(" ", 1)[1], "%d/%m")
+        # On revérifie le jour de la semaine en repartant de l'heure locale
+        cible = next(H.maintenant() + timedelta(days=d) for d in range(8)
+                     if (H.maintenant() + timedelta(days=d)).weekday() == 6
+                     and not ((H.maintenant() + timedelta(days=d)).date() == H.maintenant().date()
+                              and H.maintenant().hour >= 19))
+        check("c'est bien un dimanche", cible.weekday(), 6)
+
+        AU.update(a["id"], active=False)
+        check("une automatisation éteinte le dit",
+              AU.prochaine_execution(AU.list_all()[0]), "désactivée")
+        check("aucun jour coché → rien n'est promis",
+              AU.prochaine_execution({"active": True, "hour": 9, "days": []}),
+              "aucune (aucun jour coché)")
+        check("jours absents → tous les jours", AU._jours({"hour": 9}), list(range(7)))
+        check("jours vides → aucun jour", AU._jours({"days": []}), [])
+        check("les jours choisis sont respectés", AU._jours({"days": [1, 3]}), [1, 3])
+        # …et la création respecte le même contrat
+        vide = AU.add("Jamais", "rien", hour=9, days=[])
+        check("créer sans aucun jour ne coche pas tout", vide["days"], [])
+        check("créer sans préciser coche tous les jours",
+              AU.add("Tous", "rien", hour=9)["days"], list(range(7)))
+        AU.delete(vide["id"])
+
+        # 40d. Le diagnostic dit la VÉRITÉ sur l'état du planificateur
+        sauve = dict(AU.BATTEMENT)
+        try:
+            AU.BATTEMENT.update({"ts": 0.0, "demarre": 0.0})
+            check_true("jamais démarré : c'est dit",
+                       "jamais démarré" in AU.etat_planificateur()["resume"])
+            AU.BATTEMENT.update({"demarre": _t.time() - 9000, "ts": _t.time() - 2820})
+            etat = AU.etat_planificateur()
+            check_true("instance endormie : c'est dit", "ne tourne plus" in etat["resume"])
+            check_true("…et on explique quoi faire", "veille" in etat["resume"].lower())
+            check_true("…avec une solution concrète", "/health" in etat.get("solution", ""))
+            AU.BATTEMENT.update({"demarre": _t.time() - 9000, "ts": _t.time() - 12})
+            etat = AU.etat_planificateur()
+            check_true("tout va bien : c'est dit aussi", etat["resume"].startswith("✅"))
+            check_true("le fuseau est annoncé", "Europe/Paris" in etat["resume"])
+        finally:
+            AU.BATTEMENT.update(sauve)
+    finally:
+        (AU._load, AU._save) = vrais
+
+
 def test_memoire_des_documents():
     """Nova relançait une recherche à CHAQUE demande du PEA : même travail, même risque
     de retomber sur le mauvais fichier. Elle retient maintenant ce qu'elle a trouvé."""
@@ -2448,7 +2546,7 @@ if __name__ == "__main__":
                test_modele_annonce, test_affichage_actu, test_enchainement_fichier,
                test_fournisseur_et_routage, test_garde_fou, test_calendrier_exact,
                test_continuite_app, test_catalogue_complet, test_memoire_des_donnees,
-               test_memoire_des_documents):
+               test_memoire_des_documents, test_automatisations_heure):
         try:
             fn()
         except Exception as e:

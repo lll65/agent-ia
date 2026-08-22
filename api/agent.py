@@ -3117,6 +3117,17 @@ async def diag_memoire(key: str = ""):
     return _etat_memoire()
 
 
+@router.get("/diag/automatisations")
+async def diag_automatisations(key: str = ""):
+    """Les automatisations partent-elles vraiment, et à la bonne heure ?
+
+    Ouvre /agent/diag/automatisations?key=TA_CLE
+    """
+    _check_key(key)
+    from agent.automations import etat_planificateur
+    return etat_planificateur()
+
+
 @router.get("/diag/composio")
 async def diag_composio(key: str = ""):
     """Auto-test Composio : appelle l'API et renvoie la réponse BRUTE (pour diagnostic).
