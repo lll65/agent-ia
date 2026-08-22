@@ -1297,9 +1297,21 @@ _BOUCHONS = re.compile(
     r"(spreadsheet|sheet|file|document|folder|doc|drive|calendar|table|base|page)?"
     r"[_\s-]?(id|identifiant|name|nom)?[>\]\}]?$", re.I)
 # Champs qui désignent un identifiant de document à résoudre
-_CHAMPS_ID = ("spreadsheet_id", "spreadsheetid", "file_id", "fileid", "document_id",
-              "documentid", "folder_id", "folderid", "page_id", "pageid", "database_id",
-              "parent_id", "parentid", "databaseid", "board_id", "project_id")
+# Champs qui désignent un document à retrouver. On raisonne par SUFFIXE : toute clé qui
+# finit par « id » en est un — énumérer les noms exacts laissait passer parent_page_id et
+# discussion_id, et l'appel partait avec un bouchon.
+_SUFFIXES_ID = ("_id", "id")
+# …sauf ceux-ci, qui attendent une valeur littérale et non un document à chercher.
+_ID_LITTERAUX = ("user_id", "userid", "calendar_id", "calendarid", "connection_id",
+                 "connectionid", "entity_id", "entityid", "thread_id", "threadid")
+
+
+def _est_champ_identifiant(cle: str) -> bool:
+    """Cette clé attend-elle l'identifiant d'un document qu'on peut retrouver ?"""
+    k = (cle or "").lower().replace("-", "_")
+    if k in _ID_LITTERAUX:
+        return False
+    return k.endswith(_SUFFIXES_ID) and len(k) > 2
 
 
 def _est_bouchon(v) -> bool:
@@ -1339,16 +1351,31 @@ def _action_de_recherche(slug: str, actions: list) -> str:
     return ""
 
 
+# Mots qui décrivent le CONTENANT, jamais le document cherché. « lit mon fichier pea sur
+# google sheet » doit chercher « pea », pas « lit fichier pea google sheet » — sinon la
+# recherche ne trouve rien et l'appel repart avec un bouchon.
+_MOTS_CONTENANT = {
+    "fichier", "fichiers", "document", "documents", "tableur", "tableau", "feuille",
+    "classeur", "page", "base", "donnee", "donnees", "données", "projet", "dossier",
+    "google", "sheet", "sheets", "docs", "drive", "notion", "excel", "calc",
+    "mon", "ma", "mes", "le", "la", "les", "sur", "dans", "de", "du",
+}
+
+
 def _mots_cles_fichier(message: str) -> str:
-    """Ce que l'utilisateur a nommé : « le fichier Suivi_PEA_Lohan_Pere » → « Suivi_PEA »."""
+    """Ce que l'utilisateur a NOMMÉ, débarrassé de la description du contenant."""
     m = message or ""
-    # Un nom de fichier explicite (majuscules, underscores, extension) prime
-    for motif in (r"[«\"']([^»\"']{3,60})[»\"']", r"\b([A-Za-zÀ-ÿ0-9]+(?:[_-][A-Za-zÀ-ÿ0-9]+){1,6})\b"):
+    # 1) Un nom entre guillemets, ou un nom composé (Suivi_PEA_Lohan_Pere) : c'est LUI
+    for motif in (r"[«\"']([^»\"']{3,60})[»\"']",
+                  r"\b([A-Za-zÀ-ÿ0-9]+(?:[_-][A-Za-zÀ-ÿ0-9]+){1,6})\b"):
         g = re.search(motif, m)
         if g:
             return g.group(1).strip()
+    # 2) Sinon : la demande nettoyée, PUIS débarrassée des mots de contenant
     from agent.core import requete_simple
-    return requete_simple(m)[:60]
+    mots = [w for w in requete_simple(m).split()
+            if w.lower().strip("'") not in _MOTS_CONTENANT]
+    return " ".join(mots)[:60] or requete_simple(m)[:60]
 
 
 def _identifiants_trouves(brut: str) -> list:
@@ -1383,22 +1410,38 @@ def _identifiants_trouves(brut: str) -> list:
 
 
 def _meilleur_document(candidats: list, recherche: str) -> tuple:
-    """Le document dont le nom colle le mieux à ce que l'utilisateur a demandé."""
+    """Le document dont le nom colle le mieux à ce que l'utilisateur a demandé.
+
+    ⚠️ Renvoie ("", "") quand AUCUN nom ne ressemble à la demande. Auparavant le premier
+    de la liste était rendu par défaut : « ouvre le tableur Machin_Qui_Nexiste_Pas »
+    ouvrait « Budget vacances 2026 ». Ouvrir le mauvais document est pire que de dire
+    qu'on ne l'a pas trouvé — surtout avant un envoi ou une suppression.
+    """
     if not candidats:
         return ("", "")
+
     def norme(t):
         import unicodedata
         t = unicodedata.normalize("NFD", (t or "").lower())
         return re.sub(r"[^a-z0-9]", "", "".join(c for c in t if unicodedata.category(c) != "Mn"))
+
     cible = norme(recherche)
     mots = [norme(w) for w in re.split(r"[\s_-]+", recherche or "") if len(w) > 2]
-    meilleur, score_max = candidats[0], -1
+    mots = [w for w in mots if w]
+    # Sans le moindre indice de nom, on ne devine que s'il n'y a qu'un seul document.
+    if not cible and not mots:
+        return candidats[0] if len(candidats) == 1 else ("", "")
+    meilleur, score_max = ("", ""), 0
     for ident, nom in candidats:
         n = norme(nom)
         score = 0
         if cible and cible in n:
             score += 100
-        score += sum(10 for w in mots if w and w in n)
+        for w in mots:
+            if w in n:
+                score += 10
+            elif len(w) >= 5 and w[:5] in n:   # « suivipea » vs « suivi_pea_2026 »
+                score += 4
         if score > score_max:
             meilleur, score_max = (ident, nom), score
     return meilleur
@@ -1406,19 +1449,106 @@ def _meilleur_document(candidats: list, recherche: str) -> tuple:
 
 # Verbe employé → famille d'action, pour se passer du modèle quand il est indisponible.
 _VERBES_ACTION = (
-    (("crée", "cree", "créer", "ajoute", "ajouter", "nouveau", "nouvelle", "génère"),
+    # Les variantes sans accent (« creer », « genere ») sont la norme quand on tape vite :
+    # « vazy creer un doc alors » ne déclenchait rien tant que seul « créer » était listé.
+    (("crée", "cree", "créer", "creer", "ajoute", "ajouter", "nouveau", "nouvelle",
+      "génère", "genere", "générer", "generer", "rédige", "redige", "rédiger", "rediger",
+      "écris", "ecris", "écrire", "ecrire"),
      ("CREATE", "ADD", "INSERT", "QUICK_ADD")),
     (("supprime", "efface", "retire", "annule"), ("DELETE", "REMOVE", "TRASH")),
     (("modifie", "change", "renomme", "mets à jour", "met à jour"), ("UPDATE", "PATCH", "EDIT")),
     (("envoie", "envoi", "partage", "réponds"), ("SEND", "SHARE", "REPLY")),
     (("cherche", "trouve", "recherche"), ("SEARCH", "FIND", "QUERY")),
-    (("consulte", "lis", "lire", "ouvre", "affiche", "montre", "liste", "regarde", "voir"),
+    # « lit » (sans s) est la faute de frappe la plus courante à l'écrit rapide : sans elle,
+    # « lit mon fichier pea sur google sheet » ne déclenchait aucune action de lecture.
+    (("consulte", "consulter", "lis", "lit", "lire", "ouvre", "ouvrir", "affiche", "montre",
+      "liste", "regarde", "voir", "va voir", "accède", "accede", "accéder", "acceder",
+      "récupère", "recupere", "vérifie", "verifie"),
      ("GET", "LIST", "FETCH", "READ", "BATCH_GET", "SEARCH")),
 )
 
 
+# L'OBJET de la demande départage deux actions de même famille. « crée un projet » et
+# « crée un commentaire » sont tous deux des CREATE : sans ce classement, Nova choisissait
+# NOTION_CREATE_COMMENT (premier par ordre alphabétique) pour « crée un nouveau projet ».
+_OBJETS = (
+    (("page", "projet", "note", "document", "doc"), ("PAGE", "DOC")),
+    (("base", "base de données", "database", "tableau", "table", "tableur"),
+     ("DATABASE", "SPREADSHEET", "TABLE", "SHEET")),
+    (("commentaire", "comment"), ("COMMENT",)),
+    (("tâche", "tache", "ticket", "issue"), ("ISSUE", "TASK", "TICKET")),
+    (("événement", "evenement", "rdv", "rendez-vous"), ("EVENT",)),
+    (("mail", "email", "message"), ("EMAIL", "MESSAGE", "MAIL")),
+    (("design", "visuel"), ("DESIGN",)),
+)
+# Jamais choisis par défaut : ils demandent un contexte que l'utilisateur n'a pas donné.
+_ACTIONS_IMPROBABLES = ("COMMENT", "ATTACHMENT", "WEBHOOK", "SUBSCRIPTION", "ARCHIVE",
+                        "DUPLICATE", "RESTORE", "MEMBER", "USER")
+# …sauf si l'utilisateur les a demandés lui-même : « archive cette page » vise bien ARCHIVE.
+_MOTS_IMPROBABLES = {
+    "COMMENT": ("commentaire", "commenter", "comment"),
+    "ATTACHMENT": ("pièce jointe", "piece jointe", "pièces jointes", "pieces jointes",
+                   "attachement", "attachment"),
+    "WEBHOOK": ("webhook", "webhooks"),
+    "SUBSCRIPTION": ("abonnement", "abonne", "abonné", "subscription"),
+    "ARCHIVE": ("archive", "archiver", "archivé", "archivée"),
+    "DUPLICATE": ("duplique", "dupliquer", "copie", "copier", "duplicata"),
+    # « récupère » est un verbe de LECTURE courant (« récupère mon tableur ») : l'accepter
+    # ici ferait passer une action de restauration pour un choix légitime.
+    "RESTORE": ("restaure", "restaurer", "restore", "corbeille"),
+    # MEMBER et USER désignent la même chose côté API (Slack invite un « user » quand on
+    # ajoute un « membre ») : les deux partagent donc le même vocabulaire.
+    "MEMBER": ("membre", "membres", "équipe", "equipe", "collaborateur", "collaborateurs",
+               "member", "utilisateur", "utilisateurs", "compte", "user", "invite", "inviter"),
+    "USER": ("membre", "membres", "équipe", "equipe", "collaborateur", "collaborateurs",
+             "member", "utilisateur", "utilisateurs", "compte", "user", "invite", "inviter"),
+}
+
+
+def _demande_explicitement(message: str, famille: str) -> bool:
+    """L'utilisateur a-t-il nommé lui-même cet objet « exotique » ?"""
+    m = (message or "").lower()
+    return any(re.search(r"(?<![\wÀ-ÿ])" + re.escape(k) + r"(?![\wÀ-ÿ])", m)
+               for k in _MOTS_IMPROBABLES.get(famille, ()))
+
+
+def _objets_vises(message: str) -> list:
+    """Les familles d'objets que la demande désigne explicitement (PAGE, DATABASE, COMMENT…)."""
+    m = (message or "").lower()
+    vises = []
+    for mots, familles in _OBJETS:
+        if any(re.search(r"(?<![\wÀ-ÿ])" + re.escape(k) + r"(?![\wÀ-ÿ])", m) for k in mots):
+            vises.extend(familles)
+    return vises
+
+
+def _action_douteuse(message: str, action: str) -> bool:
+    """Le modèle a-t-il choisi une action que la demande ne désigne visiblement pas ?
+
+    Cas réel : « accède à Notion et crée un nouveau projet intitulé agent ia » →
+    le modèle rendait NOTION_CREATE_COMMENT. Un commentaire n'est pas un projet, et
+    l'utilisateur n'a jamais écrit « commentaire ». On préfère alors notre classement
+    déterministe, qui lit le verbe ET l'objet.
+    """
+    N = (action or "").upper()
+    if not N:
+        return False
+    vises = _objets_vises(message)
+    # 1) L'action vise un objet « exotique » que l'utilisateur n'a nommé nulle part.
+    exotiques = [x for x in _ACTIONS_IMPROBABLES if x in N]
+    if exotiques and not any(x in vises or _demande_explicitement(message, x)
+                             for x in exotiques):
+        return True
+    # 2) L'utilisateur a nommé un objet précis et l'action en vise un AUTRE, incompatible.
+    if vises:
+        autres = [f for _mots, fams in _OBJETS for f in fams if f not in vises]
+        if any(f in N for f in autres) and not any(f in N for f in vises):
+            return True
+    return False
+
+
 def _action_par_defaut(message: str, actions: list) -> str:
-    """Devine l'action d'après le VERBE, sans aucun appel de modèle.
+    """Devine l'action d'après le VERBE **et l'OBJET**, sans aucun appel de modèle.
 
     Quand tous les modèles gratuits sont saturés, Nova répondait « dis-m'en un peu plus »
     avec la liste de ses capacités — alors que « consulte le fichier X » désigne sans
@@ -1426,14 +1556,53 @@ def _action_par_defaut(message: str, actions: list) -> str:
     """
     m = (message or "").lower()
     noms = [a["name"] for a in actions]
+    # Quel OBJET vise la demande ? (page, base, commentaire, tâche…)
+    vises = _objets_vises(message)
+
+    def convient(nom: str, fam: str) -> int:
+        """Score : la famille du verbe est obligatoire, l'objet départage."""
+        N = nom.upper()
+        if fam not in N:
+            return -1
+        score = 10
+        if vises:
+            score += 50 if any(o in N for o in vises) else 0
+        # Une action improbable ne gagne que si l'utilisateur l'a explicitement demandée
+        exotiques = [x for x in _ACTIONS_IMPROBABLES if x in N]
+        if exotiques and not any(x in vises or _demande_explicitement(message, x)
+                                 for x in exotiques):
+            score -= 40
+        return score
+
     for verbes, familles in _VERBES_ACTION:
-        if not any(v in m for v in verbes):
+        if not any(re.search(r"(?<![\wÀ-ÿ])" + re.escape(v) + r"(?![\wÀ-ÿ])", m) for v in verbes):
             continue
+        meilleur, best = "", 0
         for fam in familles:
             for n in noms:
-                if fam in n.upper():
-                    return n
+                sc = convient(n, fam)
+                if sc > best:
+                    meilleur, best = n, sc
+        if meilleur:
+            return meilleur
     return ""
+
+
+def _est_emplacement(action: str, champs: list) -> bool:
+    """Ces identifiants désignent-ils un EMPLACEMENT (où créer) plutôt qu'une CIBLE ?
+
+    « crée un doc » ne nomme pas la page parente : c'est normal, et ce n'est pas une
+    raison d'abandonner. En revanche « ouvre le tableur PEA » nomme bien sa cible :
+    là, se tromper de document serait grave.
+    """
+    N = (action or "").upper()
+    # Volontairement limité à CREATE/INSERT : ADD et APPEND ajoutent DANS un objet existant
+    # (« ajoute ce paragraphe à ma page projet »), qui est bien la cible de la demande.
+    if not any(v in N for v in ("CREATE", "INSERT")):
+        return False
+    return bool(champs) and all(
+        (c or "").lower().replace("-", "_").startswith(("parent", "workspace", "folder", "dossier"))
+        for c in champs)
 
 
 def _resoudre_identifiants(slug: str, action: str, args: dict, message: str, actions: list):
@@ -1447,26 +1616,71 @@ def _resoudre_identifiants(slug: str, action: str, args: dict, message: str, act
     """
     etapes = []
     a_resoudre = [k for k, v in (args or {}).items()
-                  if k.lower().replace("-", "_") in _CHAMPS_ID and _est_bouchon(v)]
+                  if _est_champ_identifiant(k) and _est_bouchon(v)]
     if not a_resoudre:
-        return args, etapes
+        return args, etapes, ""
     recherche = _action_de_recherche(slug, actions)
     if not recherche:
-        return args, etapes
+        return args, etapes, _refus_sans_identifiant(slug, a_resoudre, [])
     quoi = _mots_cles_fichier(message)
     etapes.append({"kind": "action", "tool": slug, "label": f"{recherche} · « {quoi} »"})
     brut = _tool(recherche, {"query": quoi} if "SEARCH" in recherche.upper() else {})
     candidats = _identifiants_trouves(str(brut))
+    # ⚠️ La recherche par mots-clés peut ne rien rendre (paramètre inattendu, nom
+    # approximatif). On redemande alors la liste COMPLÈTE et on compare nous-mêmes :
+    # c'est bien plus fiable que de dépendre du moteur de recherche de l'app.
     if not candidats:
-        etapes.append({"kind": "obs", "tool": slug, "text": f"aucun document trouvé pour « {quoi} »"})
-        return args, etapes
+        brut = _tool(recherche, {})
+        candidats = _identifiants_trouves(str(brut))
+        if candidats:
+            etapes.append({"kind": "obs", "tool": slug,
+                           "text": f"{len(candidats)} document(s) listé(s), je cherche « {quoi} »"})
+    if not candidats:
+        etapes.append({"kind": "obs", "tool": slug,
+                       "text": f"aucun document trouvé pour « {quoi} »"})
+        return args, etapes, _refus_sans_identifiant(slug, a_resoudre, [])
     ident, nom = _meilleur_document(candidats, quoi)
+    # Un identifiant de PARENT n'est pas la cible de la demande, c'est juste l'endroit où
+    # ranger ce qu'on crée. « vas-y crée un doc alors » ne nomme aucun parent : refuser
+    # serait absurde. On prend le premier emplacement disponible et on le dit.
+    if not ident and _est_emplacement(action, a_resoudre) and candidats:
+        ident, nom = candidats[0]
+        etapes.append({"kind": "obs", "tool": slug,
+                       "text": f"aucun emplacement précisé, je le range dans « {nom or ident} »"})
+    # ⚠️ Ne JAMAIS exécuter avec un identifiant qu'on sait faux : l'appel échouait et
+    # l'utilisateur recevait l'erreur brute de l'API en anglais, avec « YOUR_SPREADSHEET_ID »
+    # affiché tel quel. Si rien ne correspond vraiment, on le dit et on propose la liste.
+    if not ident or _est_bouchon(ident):
+        return args, etapes, _refus_sans_identifiant(slug, a_resoudre, candidats)
     etapes.append({"kind": "obs", "tool": slug,
                    "text": f"trouvé : {nom or ident} ({len(candidats)} document(s) examiné(s))"})
     for k in a_resoudre:
         args[k] = ident
     logger.info(f"[apps] identifiant résolu pour {action} : « {nom} » → {ident[:12]}…")
-    return args, etapes
+    return args, etapes, ""
+
+
+def _refus_sans_identifiant(slug: str, champs: list, candidats: list) -> str:
+    """Message honnête quand le document demandé reste introuvable.
+
+    Mieux vaut dire « je n'ai pas trouvé, voici ce que j'ai » que de lancer l'appel avec
+    un identifiant inventé et de servir l'erreur anglaise de l'API.
+    """
+    quoi = "le document" if not champs else {
+        "spreadsheet_id": "le tableur", "parent_page_id": "la page parente",
+        "parent_id": "la page parente", "database_id": "la base",
+        "page_id": "la page", "file_id": "le fichier",
+    }.get(champs[0].lower().replace("-", "_"), "le document")
+    msg = (f"🔍 Je n'ai pas trouvé {quoi} dont tu parles dans **{slug.capitalize()}**, "
+           f"et je préfère te le dire plutôt que d'ouvrir n'importe quoi.")
+    noms = [n for _i, n in candidats if n][:8]
+    if noms:
+        msg += "\n\nVoici ce que j'y vois :\n" + "\n".join(f"• {n}" for n in noms)
+        msg += "\n\nDis-moi lequel et je l'ouvre."
+    else:
+        msg += ("\n\nSoit il porte un autre nom, soit le compte connecté n'y a pas accès. "
+                "Donne-moi son nom exact et je réessaie.")
+    return msg
 
 
 def _composio_list_actions(slug: str):
@@ -1850,6 +2064,14 @@ def _generic_app_flow(message: str, slug: str):
         action = near[0] if near else ""
     if not action:
         action = _action_par_defaut(message, actions)
+    # ⚠️ Le modèle se trompe d'objet plus souvent qu'on ne croit (« crée un projet » →
+    # CREATE_COMMENT). Quand son choix contredit visiblement la demande, notre classement
+    # déterministe reprend la main — et seulement dans ce cas.
+    elif _action_douteuse(message, action):
+        secours = _action_par_defaut(message, actions)
+        if secours and secours != action:
+            logger.info(f"[apps] choix du modèle corrigé : {action} → {secours}")
+            action = secours
     if not action:
         return {"steps": steps, "done_answer": (
             f"Dis-m'en un peu plus sur ce que tu veux faire avec **{slug.capitalize()}** 🙂\n\n"
@@ -1866,8 +2088,11 @@ def _generic_app_flow(message: str, slug: str):
     if known:
         args = {**args, **known}
     # ── ENCHAÎNEMENT : d'abord TROUVER le document, ensuite l'ouvrir ──────────
-    args, etapes_id = _resoudre_identifiants(slug, action, args, message, actions)
+    args, etapes_id, refus = _resoudre_identifiants(slug, action, args, message, actions)
     steps.extend(etapes_id)
+    if refus:                       # document introuvable : on n'exécute PAS à l'aveugle
+        steps[0]["label"] = f"{action} (abandonné)"
+        return {"steps": steps, "done_answer": refus}
     steps[0]["label"] = action
     # ⚠️ Même garde-fou que pour l'agenda et les mails : sur CETTE voie passent Slack,
     # Notion, Linear… et tout envoi ou suppression y serait tout aussi sans retour.

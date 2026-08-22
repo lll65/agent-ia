@@ -45,9 +45,23 @@ class ModeleCapricieux:
         # ⚠️ On distingue précisément CE QU'ON LUI DEMANDE. Un faux modèle qui répond du
         # JSON à tout produirait du bruit et masquerait les vrais défauts de Nova.
         if "Tu construis les ARGUMENTS" in sysm:
-            # Il met un BOUCHON à la place de l'identifiant, comme en vrai
+            # Il met un BOUCHON à la place de l'identifiant, comme en vrai — mais avec les
+            # NOMS DE CHAMPS de l'action visée : un vrai modèle ne réclame pas de
+            # « spreadsheet_id » pour créer une page Notion, et lui en prêter un ferait
+            # échouer Nova sur un défaut qui n'existe pas.
+            m = re.search(r"Action\s*:\s*([A-Z][A-Z0-9_]{6,})", usr)
+            act = m.group(1) if m else ""
+            if "NOTION" in act and "CREATE" in act:
+                return json.dumps({"arguments": {
+                    "parent_id": "00000000-0000-0000-0000-000000000000",
+                    "title": "agent ia"}})
+            if "NOTION" in act:
+                return json.dumps({"arguments": {"page_id": "<page_id>"}})
+            if "CALENDAR" in act:
+                return json.dumps({"arguments": {"summary": "Rendez-vous", "calendar_id": "primary"}})
+            if "GMAIL" in act:
+                return json.dumps({"arguments": {"to": "papa@exemple.fr", "subject": "Message"}})
             return json.dumps({"arguments": {"spreadsheet_id": "YOUR_SPREADSHEET_ID",
-                                             "parent_id": "00000000-0000-0000-0000-000000000000",
                                              "ranges": ["A1:D50"]}})
         if "ACTIONS DISPONIBLES" in usr and '"action"' in sysm:
             m = re.search(r"\b([A-Z][A-Z0-9_]{6,})\b", usr)
@@ -85,6 +99,25 @@ class ModeleCapricieux:
 FICHIERS = [{"id": "1AAAaaaBBBcccDDDeeeFFFgggHHHiiiJJJkkkLLL", "name": "Budget vacances 2026"},
             {"id": "1ZZZzzzYYYxxxWWWvvvUUUtttSSSrrrQQQpppOOO", "name": "Suivi_PEA_Lohan_Pere"}]
 
+# Catalogues RÉELS (noms exacts renvoyés par Composio) pour les apps où le choix de
+# l'action a déjà dérapé. L'ordre est celui de l'API : le faux modèle prend le premier
+# qu'il croise, exactement comme un vrai modèle pressé — c'est ainsi que
+# « crée un nouveau projet » est devenu NOTION_CREATE_COMMENT chez Lohan.
+CATALOGUES = {
+    "notion": [{"name": "NOTION_CREATE_COMMENT", "desc": "ajouter un commentaire"},
+               {"name": "NOTION_CREATE_DATABASE", "desc": "créer une base"},
+               {"name": "NOTION_CREATE_NOTION_PAGE", "desc": "créer une page"},
+               {"name": "NOTION_DELETE_BLOCK", "desc": "supprimer un bloc"},
+               {"name": "NOTION_FETCH_NOTION_PAGE", "desc": "lire une page"},
+               {"name": "NOTION_SEARCH_NOTION_PAGE", "desc": "chercher une page"},
+               {"name": "NOTION_UPDATE_PAGE", "desc": "modifier une page"}],
+    "googlesheets": [{"name": "GOOGLESHEETS_BATCH_GET", "desc": "lire des cellules"},
+                     {"name": "GOOGLESHEETS_BATCH_UPDATE", "desc": "écrire des cellules"},
+                     {"name": "GOOGLESHEETS_CREATE_SPREADSHEET", "desc": "créer un tableur"},
+                     {"name": "GOOGLESHEETS_DELETE_SHEET", "desc": "supprimer une feuille"},
+                     {"name": "GOOGLESHEETS_SEARCH_SPREADSHEETS", "desc": "chercher un tableur"}],
+}
+
 ARTICLES = ("📰 **Actualité tech — 3 articles récents**\n\n"
             "**1. Nintendo Switch 2 : la console revient en stock**\n_01net · 21/08 22h05_\n"
             "🔗 https://01net.com/switch2\n\n"
@@ -104,10 +137,12 @@ def faux_outil(loader, nom, params, fallback="", echeance=0.0):
 
 
 EXECUTIONS = []          # ce que Composio a REELLEMENT execute
+ARGS_EXECUTES = []       # …et AVEC QUOI : c'est là que se cachent les identifiants bouchons
 
 
 def faux_composio(action, args=None, **kw):
     EXECUTIONS.append(action)
+    ARGS_EXECUTES.append((action, dict(args or {})))
     a = (action or "").upper()
     if "SEARCH" in a or ("LIST" in a and "EVENT" not in a):
         return "✅ résultat :\n" + json.dumps({"data": {"files": FICHIERS}})
@@ -217,6 +252,35 @@ def outils_appeles(*attendus):
     return v
 
 
+def a_execute(motif: str):
+    """Une action correspondant au motif a-t-elle été RÉELLEMENT exécutée ?"""
+    def v(r):
+        return [] if any(re.search(motif, a or "", re.I) for a in EXECUTIONS) else [
+            f"aucune action « {motif} » exécutée (vues : {EXECUTIONS})"]
+    return v
+
+
+def jamais_execute(motif: str):
+    """Nova ne doit pas se tromper d'objet : créer un commentaire pour « crée un projet »."""
+    def v(r):
+        partis = [a for a in EXECUTIONS if re.search(motif, a or "", re.I)]
+        return [f"action hors sujet exécutée : {a}" for a in partis]
+    return v
+
+
+def jamais_de_bouchon_execute(r):
+    """Aucun appel ne doit partir avec un identifiant que Nova sait faux.
+
+    C'est le défaut le plus visible côté utilisateur : Composio répondait
+    « Failed to open spreadsheet with ID YOUR_SPREADSHEET_ID », en anglais et sans issue.
+    """
+    import api.agent as A
+    return [f"appel parti avec un identifiant bouchon : {a} {v!r}"
+            for a, v in ARGS_EXECUTES
+            if any(A._est_champ_identifiant(k) and A._est_bouchon(x)
+                   for k, x in (v or {}).items())]
+
+
 def aucun_outil_irreversible(r):
     """Vérifie ce qui a été RÉELLEMENT exécuté, pas ce qui était affiché.
 
@@ -263,10 +327,32 @@ SCENARIOS = [
      "regles": [lambda r: ([] if any("SEND" in a for a in EXECUTIONS)
                            else ["l'accord donné n'a PAS déclenché l'envoi"])]},
 
+    # ── Se tromper d'OBJET : les deux défauts relevés par Lohan le 22/08 ──────
+    # Le modèle rendait NOTION_CREATE_COMMENT pour « crée un nouveau projet » : Nova
+    # ajoutait un commentaire au lieu de créer la page demandée.
+    {"nom": "OBJET-notion-projet",
+     "tours": ["accède à notion et crée un nouveau projet intitulé agent ia"],
+     "regles": [jamais_execute(r"COMMENT"), a_execute(r"NOTION_CREATE_NOTION_PAGE"),
+                jamais_de_bouchon_execute]},
+    # « lit mon fichier pea sur google sheet » partait avec YOUR_SPREADSHEET_ID et
+    # l'utilisateur recevait « Failed to open spreadsheet with ID YOUR_SPREADSHEET_ID ».
+    {"nom": "OBJET-sheets-pea",
+     "tours": ["lit mon fichier pea sur google sheet"],
+     "regles": [jamais_de_bouchon_execute, sans("failed to open", "your_spreadsheet_id"),
+                a_execute(r"GOOGLESHEETS")]},
+    # Ne jamais ouvrir « le premier de la liste » quand rien ne correspond. Proposer les
+    # documents existants est en revanche voulu : c'est la suite utile de l'aveu.
+    {"nom": "OBJET-fichier-au-hasard",
+     "tours": ["ouvre le tableur Machin_Qui_Nexiste_Pas"],
+     "regles": [jamais_de_bouchon_execute, dit_ne_pas_savoir,
+                jamais_execute(r"BATCH_GET|_GET$"),
+                sans("voici le contenu", "voici les données")]},
+
     # ── Continuité : la phrase suivante enchaîne ─────────────────────────────
     {"nom": "contexte-notion",
      "tours": ["tu peux faire quoi avec notion ?", "vas-y crée un doc alors"],
-     "regles": [sans("google docs", "googledocs")]},
+     "regles": [sans("google docs", "googledocs"), jamais_execute(r"COMMENT"),
+                a_execute(r"NOTION_CREATE"), jamais_de_bouchon_execute]},
     {"nom": "contexte-changement",
      "tours": ["tu peux faire quoi avec notion ?", "montre-moi mon agenda de demain"],
      "regles": [sans("notion")]},
@@ -418,6 +504,25 @@ def verifie_les_regles() -> list:
         muettes.append("la règle « aveu d'ignorance » n'attrape pas une invention")
     if dit_ne_pas_savoir({"reponse": "Je n'ai rien trouvé pour cette date."}):
         muettes.append("la règle « aveu d'ignorance » se déclenche à tort sur un vrai aveu")
+
+    # Les règles qui inspectent CE QUI A ÉTÉ EXÉCUTÉ (et non ce qui a été affiché)
+    sauve_a, sauve_v = list(EXECUTIONS), list(ARGS_EXECUTES)
+    try:
+        EXECUTIONS[:] = ["NOTION_CREATE_COMMENT"]
+        ARGS_EXECUTES[:] = [("GOOGLESHEETS_BATCH_GET",
+                             {"spreadsheet_id": "YOUR_SPREADSHEET_ID"})]
+        if not jamais_execute(r"COMMENT")({}):
+            muettes.append("la règle « action hors sujet » n'attrape pas un CREATE_COMMENT")
+        if a_execute(r"NOTION_CREATE_NOTION_PAGE")({}) == []:
+            muettes.append("la règle « action attendue » ne voit pas qu'elle manque")
+        if not jamais_de_bouchon_execute({}):
+            muettes.append("la règle « identifiant bouchon exécuté » n'attrape pas un bouchon")
+        ARGS_EXECUTES[:] = [("GOOGLESHEETS_BATCH_GET",
+                             {"spreadsheet_id": "1AAAaaaBBBcccDDDeeeFFFgggHHHiiiJJJkkkLLL"})]
+        if jamais_de_bouchon_execute({}):
+            muettes.append("la règle « identifiant bouchon » se déclenche sur un VRAI identifiant")
+    finally:
+        EXECUTIONS[:], ARGS_EXECUTES[:] = sauve_a, sauve_v
     return muettes
 
 
@@ -467,7 +572,7 @@ def main():
     A._connected_accounts = lambda: [(s, "u", "ACTIVE") for s in
                                      ("gmail", "googlecalendar", "googlesheets", "notion",
                                       "google_drive", "linear")]
-    A._composio_list_actions = lambda slug: [
+    A._composio_list_actions = lambda slug: CATALOGUES.get(slug) or [
         {"name": f"{slug.upper()}_SEARCH", "desc": "chercher"},
         {"name": f"{slug.upper()}_BATCH_GET", "desc": "lire"},
         {"name": f"{slug.upper()}_CREATE_PAGE", "desc": "créer"},
@@ -493,7 +598,8 @@ def main():
     resultats = []
     with TestClient(app) as client:
         for sc in retenus:
-            A._ATTENTE.clear(); A._APP_RECENTE.clear(); EXECUTIONS.clear()
+            A._ATTENTE.clear(); A._APP_RECENTE.clear()
+            EXECUTIONS.clear(); ARGS_EXECUTES.clear()
             problemes, dernier = [], None
             for message in sc["tours"]:
                 dernier = interroge(client, message)
