@@ -674,6 +674,12 @@ _VERBES_DEMANDE = {
     "parle", "parles", "liste", "listes", "indique", "détaille", "detaille", "précise",
     "presente", "présente", "fais", "fait", "faire", "peux", "peut", "pourrais",
     "voudrais", "veux", "aimerais", "sais", "connais", "penses", "pense",
+    # Verbes d'accès : ils décrivent le geste, jamais ce qu'on cherche.
+    # Sans eux, « lit mon fichier pea » cherchait « lit pea » et ne trouvait rien.
+    "lis", "lit", "lire", "ouvre", "ouvrir", "ouvres", "accede", "accède", "accéder",
+    "accedes", "accèdes", "consulte", "consulter", "consultes", "va", "vas", "aller",
+    "regarde", "regarder", "regardes", "affiche", "afficher", "affiches",
+    "récupère", "recupere", "récupérer", "recuperer", "vérifie", "verifie",
 }
 _STOP_REQUETE = {
     "quand", "comment", "pourquoi", "est", "ce", "que", "qui", "quoi", "le", "la", "les",

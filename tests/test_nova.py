@@ -1680,36 +1680,117 @@ def test_enchainement_fichier():
                                  ("trouve le tableur qui parle de mon pea", "Suivi_PEA_Lohan_Pere"),
                                  ("ouvre Budget vacances 2026", "Budget vacances 2026")):
             appels.clear()
-            args, etapes = A._resoudre_identifiants(
+            args, etapes, refus = A._resoudre_identifiants(
                 "googlesheets", "GOOGLESHEETS_BATCH_GET",
                 {"spreadsheet_id": "YOUR_SPREADSHEET_ID"}, demande, ACTIONS)
             nom = next((f["name"] for f in FICHIERS if f["id"] == args["spreadsheet_id"]), "")
             check(f"« {demande[:30]}… » → bon fichier", nom, attendu)
+            check("document trouvé : aucun refus", refus, "")
             check_true("la recherche est visible dans le raisonnement",
                        any(e["kind"] == "action" for e in etapes))
 
         # Un VRAI identifiant ne doit déclencher aucune recherche inutile
         appels.clear()
         vrai = {"spreadsheet_id": "1AAAaaaBBBcccDDDeeeFFFgggHHHiiiJJJkkkLLL"}
-        args, etapes = A._resoudre_identifiants("googlesheets", "GOOGLESHEETS_BATCH_GET",
-                                                dict(vrai), "lis ce fichier", ACTIONS)
+        args, etapes, refus = A._resoudre_identifiants("googlesheets", "GOOGLESHEETS_BATCH_GET",
+                                                       dict(vrai), "lis ce fichier", ACTIONS)
         check("aucune recherche inutile", len(appels), 0)
         check("identifiant conservé", args, vrai)
+        check("identifiant réel : aucun refus", refus, "")
 
-        # Une app sans action de recherche ne doit rien casser
-        args, etapes = A._resoudre_identifiants("x", "X_GET", {"file_id": "YOUR_FILE_ID"},
-                                                "lis", [{"name": "X_GET", "desc": ""}])
-        check("app sans recherche : inchangé", args["file_id"], "YOUR_FILE_ID")
+        # Une app sans action de recherche : on REFUSE au lieu d'appeler avec un bouchon
+        args, etapes, refus = A._resoudre_identifiants("x", "X_GET", {"file_id": "YOUR_FILE_ID"},
+                                                       "lis", [{"name": "X_GET", "desc": ""}])
         check("app sans recherche : aucune étape", etapes, [])
+        check_true("app sans recherche : refus explicite", bool(refus))
+        check_true("le refus ne montre pas le bouchon", "YOUR_FILE_ID" not in refus)
 
-        # Aucun document trouvé : on le dit, on n'invente pas
+        # La recherche par mots-clés est muette → on redemande la liste complète
+        appels.clear()
+
+        def recherche_muette(action, args=None, **kw):
+            appels.append((action, dict(args or {})))
+            if (args or {}).get("query"):          # le moteur de l'app ne trouve rien
+                return "✅ résultat :\n" + json.dumps({"data": {"files": []}})
+            return "✅ résultat :\n" + json.dumps({"data": {"files": FICHIERS}})
+
+        A._tool = recherche_muette
+        args, etapes, refus = A._resoudre_identifiants(
+            "googlesheets", "GOOGLESHEETS_BATCH_GET",
+            {"spreadsheet_id": "YOUR_SPREADSHEET_ID"},
+            "lit mon fichier pea sur google sheet", ACTIONS)
+        check("repli sur la liste complète", args["spreadsheet_id"],
+              "1ZZZzzzYYYxxxWWWvvvUUUtttSSSrrrQQQpppOOO")
+        check("deux appels : mots-clés puis liste", len(appels), 2)
+        check("repli réussi : aucun refus", refus, "")
+
+        # Aucun document trouvé : on le dit, on n'invente pas, on N'EXÉCUTE PAS
         A._tool = lambda a, args=None, **k: "✅ résultat :\n" + json.dumps({"data": {"files": []}})
-        args, etapes = A._resoudre_identifiants("googlesheets", "GOOGLESHEETS_BATCH_GET",
-                                                {"spreadsheet_id": "<id>"}, "ouvre Inexistant", ACTIONS)
+        args, etapes, refus = A._resoudre_identifiants(
+            "googlesheets", "GOOGLESHEETS_BATCH_GET",
+            {"spreadsheet_id": "<id>"}, "ouvre Inexistant", ACTIONS)
         check_true("absence de résultat annoncée",
                    any("aucun document" in (e.get("text") or "") for e in etapes))
+        check_true("rien trouvé : refus explicite", bool(refus))
+        check_true("le refus reste en français", "n'ai pas trouvé" in refus)
+        check_true("le bouchon n'est jamais exécuté", A._est_bouchon(args["spreadsheet_id"]))
+
+        # Rien trouvé mais des documents existent : on les propose
+        A._tool = lambda a, args=None, **k: "✅ résultat :\n" + json.dumps({"data": {"files": FICHIERS}})
+        args, etapes, refus = A._resoudre_identifiants(
+            "googlesheets", "GOOGLESHEETS_BATCH_GET",
+            {"spreadsheet_id": "YOUR_SPREADSHEET_ID"}, "ouvre le fichier zzzzzzzz", ACTIONS)
+        if refus:
+            check_true("le refus liste les documents disponibles", "Suivi_PEA_Lohan_Pere" in refus)
     finally:
         A._tool = vrai_tool
+
+    # 33c-bis. Aucun nom ne ressemble à la demande → on n'ouvre PAS le premier venu.
+    # « ouvre le tableur Machin_Qui_Nexiste_Pas » ouvrait « Budget vacances 2026 ».
+    PAIRES = [(f["id"], f["name"]) for f in FICHIERS]
+    for quoi, attendu in (("Suivi_PEA_Lohan_Pere", "1ZZZzzzYYYxxxWWWvvvUUUtttSSSrrrQQQpppOOO"),
+                          ("pea", "1ZZZzzzYYYxxxWWWvvvUUUtttSSSrrrQQQpppOOO"),
+                          ("budget", "1AAAaaaBBBcccDDDeeeFFFgggHHHiiiJJJkkkLLL"),
+                          ("Machin_Qui_Nexiste_Pas", ""),
+                          ("zzzzzzzz", ""),
+                          ("", "")):        # plusieurs documents, aucun indice → on refuse
+        check(f"meilleur document pour « {quoi or '(rien)'} »",
+              A._meilleur_document(PAIRES, quoi)[0], attendu)
+    check("un seul document et aucun indice → on le prend",
+          A._meilleur_document([("solo", "Le seul")], "")[0], "solo")
+    check("liste vide", A._meilleur_document([], "pea"), ("", ""))
+
+    # 33c-ter. …mais un identifiant de PARENT n'est qu'un EMPLACEMENT : « vas-y crée un
+    # doc alors » ne nomme aucune page parente, et refuser serait absurde.
+    for act, champs, attendu in (("NOTION_CREATE_NOTION_PAGE", ["parent_page_id"], True),
+                                 ("NOTION_CREATE_NOTION_PAGE", ["parent_id"], True),
+                                 ("GOOGLEDRIVE_CREATE_FILE", ["folder_id"], True),
+                                 ("NOTION_ADD_PAGE_CONTENT", ["parent_block_id"], False),
+                                 ("NOTION_CREATE_COMMENT", ["page_id"], False),
+                                 ("GOOGLESHEETS_BATCH_GET", ["spreadsheet_id"], False),
+                                 ("NOTION_DELETE_BLOCK", ["parent_page_id"], False),
+                                 ("NOTION_CREATE_NOTION_PAGE", ["parent_page_id", "database_id"],
+                                  False),
+                                 ("X_GET", [], False)):
+        check(f"emplacement ? {act} {champs}", A._est_emplacement(act, champs), attendu)
+
+    # Bout en bout : créer sans nommer de parent doit ABOUTIR, pas refuser
+    A._tool = lambda a, args=None, **k: "✅ résultat :\n" + json.dumps({"data": {"files": FICHIERS}})
+    args, etapes, refus = A._resoudre_identifiants(
+        "notion", "NOTION_CREATE_NOTION_PAGE",
+        {"parent_page_id": "YOUR_PAGE_ID", "title": "agent ia"},
+        "vas-y crée un doc alors", ACTIONS)
+    check("création sans parent nommé : pas de refus", refus, "")
+    check_true("un emplacement a bien été choisi", not A._est_bouchon(args["parent_page_id"]))
+    check_true("le choix d'emplacement est annoncé",
+               any("je le range dans" in (e.get("text") or "") for e in etapes))
+    # …alors qu'une LECTURE d'un document introuvable refuse toujours
+    args, etapes, refus = A._resoudre_identifiants(
+        "googlesheets", "GOOGLESHEETS_BATCH_GET", {"spreadsheet_id": "YOUR_SPREADSHEET_ID"},
+        "ouvre le tableur Machin_Qui_Nexiste_Pas", ACTIONS)
+    check_true("lecture d'un document introuvable : refus", bool(refus))
+    check_true("aucun document ouvert au hasard", A._est_bouchon(args["spreadsheet_id"]))
+    A._tool = vrai_tool
 
     # 33d. « le fichier X » doit viser une app de fichiers, pas le vide
     check("« fichier » routé", A._detect_toolkit("consulte le fichier Suivi_PEA"), "googledrive")
@@ -1723,6 +1804,48 @@ def test_enchainement_fichier():
                              ("trouve le tableur PEA", "GOOGLESHEETS_SEARCH_SPREADSHEETS")):
         check(f"repli sans modèle : « {demande} »", A._action_par_defaut(demande, ACTIONS), attendu)
     check("aucun verbe d'action → aucune supposition", A._action_par_defaut("bonjour", ACTIONS), "")
+
+    # 33f. Les fautes de frappe courantes ne doivent pas faire perdre le verbe.
+    # « lit mon fichier pea sur google sheet » ne déclenchait AUCUNE action de lecture,
+    # et « vazy creer un doc alors » aucune action de création.
+    LECTURE = ("GOOGLESHEETS_BATCH_GET", "GOOGLESHEETS_SEARCH_SPREADSHEETS")
+    for demande in ("lit mon fichier pea sur google sheet", "lis mon fichier pea",
+                    "va voir mon suivi pea sur google sheet",
+                    "accede a mon google sheets et ouvre le tableur pea",
+                    "récupère mon tableur pea", "vérifie mon tableur pea"):
+        check_true(f"verbe de lecture reconnu : « {demande[:38]}… »",
+                   A._action_par_defaut(demande, ACTIONS) in LECTURE)
+    for demande in ("vazy creer un tableur alors", "genere un nouveau tableur",
+                    "rédige un tableur budget"):
+        check(f"verbe de création reconnu : « {demande[:34]}… »",
+              A._action_par_defaut(demande, ACTIONS), "GOOGLESHEETS_CREATE_SPREADSHEET")
+
+    # 33g. Le modèle se trompe d'OBJET : « crée un projet » → NOTION_CREATE_COMMENT.
+    # Nova doit détecter le contresens et reprendre la main. (Bug remonté par Lohan.)
+    NOTION = [{"name": n, "desc": ""} for n in
+              ("NOTION_CREATE_COMMENT", "NOTION_CREATE_DATABASE", "NOTION_CREATE_NOTION_PAGE",
+               "NOTION_DELETE_BLOCK", "NOTION_SEARCH_NOTION_PAGE", "NOTION_UPDATE_PAGE")]
+    for demande, choix in (("accède à notion et crée un nouveau projet intitulé agent ia",
+                            "NOTION_CREATE_COMMENT"),
+                           ("crée une base de données clients", "NOTION_CREATE_NOTION_PAGE"),
+                           ("crée une page notion", "NOTION_CREATE_DATABASE"),
+                           ("envoie un mail à paul", "GMAIL_ADD_ATTACHMENT")):
+        check_true(f"contresens détecté : « {demande[:34]}… » → {choix}",
+                   A._action_douteuse(demande, choix))
+    # …sans jamais contredire un choix légitime
+    for demande, choix in (("crée un nouveau projet intitulé agent ia", "NOTION_CREATE_NOTION_PAGE"),
+                           ("ajoute un commentaire sur cette page", "NOTION_CREATE_COMMENT"),
+                           ("archive cette page", "NOTION_ARCHIVE_PAGE"),
+                           ("ajoute un membre à l'équipe", "SLACK_INVITE_USER_TO_WORKSPACE"),
+                           ("lit mon fichier pea", "GOOGLESHEETS_BATCH_GET"),
+                           ("supprime cet évènement", "GOOGLECALENDAR_DELETE_EVENT"),
+                           ("bonjour", "")):
+        check(f"choix légitime préservé : « {demande[:30]}… »",
+              A._action_douteuse(demande, choix), False)
+    # Le contresens est bien CORRIGÉ, pas seulement détecté
+    check("« crée un projet » corrigé en page",
+          A._action_par_defaut("accède à notion et crée un nouveau projet intitulé agent ia", NOTION),
+          "NOTION_CREATE_NOTION_PAGE")
 
 
 # ── 34. Choisir son fournisseur, et ne plus confondre « réponse » avec « repo »
