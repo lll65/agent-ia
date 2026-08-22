@@ -2771,9 +2771,15 @@ def _diag_un_llm(nom: str) -> dict:
     # appliqué en usage normal. Au-delà, ce fournisseur sera abandonné même s'il marche.
     from llm.client import TIMEOUT_LLM as _TL
     if d["ok"] and d["latence_s"] > _TL:
+        # ⚠️ Conseil COMPLET : LLM_TIMEOUT seul ne suffit pas. Le budget de la chaîne est
+        # partagé entre MIN_ESSAIS fournisseurs, donc le 1er n'obtient jamais plus que
+        # LLM_TIMEOUT_TOTAL / 3. Ne citer que LLM_TIMEOUT envoyait dans le mur.
+        vise = int(d["latence_s"]) + 5
         d["conseil"] = (f"répond mais LENTEMENT ({d['latence_s']} s) — c'est plus que "
                         f"LLM_TIMEOUT ({_TL} s), donc il est abandonné en usage normal. "
-                        "Augmente LLM_TIMEOUT sur Render si tu veux l'utiliser.")
+                        f"Pour l'utiliser, règle sur Render LLM_TIMEOUT={vise} ET "
+                        f"LLM_TIMEOUT_TOTAL={vise * 3} (le budget est partagé entre 3 "
+                        f"fournisseurs) et AGENT_TIMEOUT={vise * 3 + 10}.")
     elif not d["ok"] and not d["conseil"]:
         e = d["erreur"].lower()
         if "401" in e or "unauthorized" in e or "invalid" in e:
@@ -2817,8 +2823,14 @@ async def diag_llm(key: str = ""):
         if lents:
             resume += (f" — ⚠️ {', '.join(r['fournisseur'] for r in lents)} dépasse(nt) "
                        f"LLM_TIMEOUT ({TIMEOUT_LLM} s) et sera(ont) abandonné(s) en usage normal.")
+    from llm.client import MIN_ESSAIS
     return {"resume": resume,
-            "reglages": {"LLM_TIMEOUT": TIMEOUT_LLM, "LLM_TIMEOUT_TOTAL": TIMEOUT_CHAINE},
+            "reglages": {"LLM_TIMEOUT": TIMEOUT_LLM, "LLM_TIMEOUT_TOTAL": TIMEOUT_CHAINE,
+                         "AGENT_TIMEOUT": getattr(config, "AGENT_TIMEOUT", 75),
+                         # Le chiffre qui compte vraiment : ce que le 1er fournisseur
+                         # obtient réellement, une fois le budget de chaîne partagé.
+                         "delai_reel_1er_essai_s": round(
+                             min(TIMEOUT_LLM, TIMEOUT_CHAINE / MIN_ESSAIS), 1)},
             "fournisseurs": res}
 
 
