@@ -85,6 +85,13 @@ class ModeleCapricieux:
             return ("<think>Je rédige la synthèse.</think>\n"
                     f"## En bref\nCours sur l'effet {sujet.group(1) if sujet else 'étudié'}.\n"
                     "\n## Le cours\n### Principe\nLe **décalage** de fréquence.")
+        # Mise en forme de DONNÉES RÉELLES : un vrai modèle les restitue (celui de Lohan
+        # affichait tout son tableau PEA). Un faux modèle qui répond une phrase creuse
+        # ferait croire que Nova perd les donnees alors qu'elle les a bien transmises.
+        if "DONNÉES RÉELLES" in usr:
+            donnees = usr.split("DONNÉES RÉELLES", 1)[1]
+            return ("<think>Je mets en forme.</think>\n"
+                    "FINAL: Voici tes données :\n" + donnees[:900])
         # Réponse finale — avec son brouillon interne, comme les modèles raisonneurs
         return ("<think>\nL'utilisateur demande quelque chose. Je vais synthétiser.\n</think>\n"
                 "FINAL: Voici ma réponse, appuyée sur les données réelles fournies.")
@@ -166,6 +173,12 @@ def faux_composio(action, args=None, **kw):
     ident = (args or {}).get("spreadsheet_id", "")
     if ident and not re.fullmatch(r"[A-Za-z0-9_\-]{20,}", str(ident)):
         return ('✅ résultat : {"message": "Failed to open spreadsheet with ID %s."}' % ident)
+    if "BATCH_GET" in a:          # de vraies lignes de PEA, comme dans le tableur de Lohan
+        return ("✅ [%s] résultat :\n" % action + json.dumps({"valueRanges": [
+            ["Personne", "ETF", "Qte", "Cours", "Gain %"],
+            ["Lohan", "Amundi PEA Nasdaq-100", 19, 6.94, "+31 %"],
+            ["Lohan", "action valneva", 23, 2.26, "-50 %"],
+            ["Pere", "Amundi PEA S&P 500", 6, 57.41, "-0,5 %"]]}, ensure_ascii=False))
     return "✅ [%s] résultat : {\"ok\": true}" % action
 
 
@@ -296,6 +309,22 @@ def jamais_de_bouchon_execute(r):
                    for k, x in (v or {}).items())]
 
 
+def donnees_retenues(motif: str) -> list:
+    """Ce qu'une app vient de rendre doit rester disponible au tour SUIVANT.
+
+    On regarde la memoire, pas la reponse affichee : c'est elle qui alimente la question
+    d'apres. Nova affichait les chiffres du PEA puis les oubliait aussitot.
+    """
+    import api.agent as A
+    from memory import get_memory
+    try:
+        ctx = get_memory().build_context(A._PROFILE_ID, "et alors ?", recent_limit=6)
+    except Exception as e:
+        return [f"memoire illisible : {type(e).__name__}"]
+    return [] if motif.lower() in (ctx or "").lower() else [
+        f"les donnees lues (« {motif} ») ne sont pas retenues pour le tour suivant"]
+
+
 def aucun_outil_irreversible(r):
     """Vérifie ce qui a été RÉELLEMENT exécuté, pas ce qui était affiché.
 
@@ -374,6 +403,13 @@ SCENARIOS = [
      "regles": [jamais_de_bouchon_execute, jamais_execute(r"GOOGLEDRIVE"),
                 a_execute(r"GOOGLESHEETS"),
                 sans("n'existe pas", "not found", "canva")]},
+
+    # Nova affichait les chiffres du PEA puis, a la question suivante, repondait
+    # « je ne suis pas conseiller financier » — comme si elle ne les avait jamais lus.
+    {"nom": "REEL-suivi-donnees",
+     "tours": ["consulte le tableur Suivi_PEA_Lohan_Pere",
+               "tu penses quoi de nos investissements ?"],
+     "regles": [lambda r: donnees_retenues("valneva")]},
 
     # ── Continuité : la phrase suivante enchaîne ─────────────────────────────
     {"nom": "contexte-notion",
