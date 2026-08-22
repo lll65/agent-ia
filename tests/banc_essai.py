@@ -411,6 +411,16 @@ SCENARIOS = [
                "tu penses quoi de nos investissements ?"],
      "regles": [lambda r: donnees_retenues("valneva")]},
 
+    # Nova relançait une recherche à CHAQUE demande du meme fichier : meme travail,
+    # meme risque de retomber sur le mauvais. Elle doit apprendre ou il se trouve.
+    {"nom": "MEMOIRE-document-appris",
+     "tours": ["consulte le tableur Suivi_PEA_Lohan_Pere",
+               "consulte le tableur Suivi_PEA_Lohan_Pere"],
+     "regles": [lambda r: ([] if len([a for a in EXECUTIONS if "SEARCH" in a]) <= 1
+                           else [f"le document est recherche a chaque fois "
+                                 f"({len([a for a in EXECUTIONS if 'SEARCH' in a])} recherches)"]),
+                jamais_de_bouchon_execute]},
+
     # ── Continuité : la phrase suivante enchaîne ─────────────────────────────
     {"nom": "contexte-notion",
      "tours": ["tu peux faire quoi avec notion ?", "vas-y crée un doc alors"],
@@ -663,6 +673,10 @@ def main():
         for sc in retenus:
             A._ATTENTE.clear(); A._APP_RECENTE.clear()
             EXECUTIONS.clear(); ARGS_EXECUTES.clear()
+            # Un raccourci appris dans un scenario fausserait le suivant (il sauterait la
+            # recherche). Chaque scenario doit repartir sans rien savoir.
+            from agent import documents as _D
+            _D.effacer_tout()
             problemes, dernier = [], None
             for message in sc["tours"]:
                 dernier = interroge(client, message)

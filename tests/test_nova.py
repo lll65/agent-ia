@@ -2057,6 +2057,121 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_memoire_des_documents():
+    """Nova relançait une recherche à CHAQUE demande du PEA : même travail, même risque
+    de retomber sur le mauvais fichier. Elle retient maintenant ce qu'elle a trouvé."""
+    from agent import documents as D
+
+    D.effacer_tout()
+    try:
+        # 39a. Retenir, retrouver — y compris sur une formulation différente
+        D.retenir("googlesheets", "pea", "11qGW0rhYzR4XWab0UKTLDVUU1S2_Mizn0eToOOZRph8",
+                  "Suivi_PEA_Lohan_Pere")
+        for demande in ("pea", "PEA", "p.e.a", "mon suivi pea", "pea pere et moi"):
+            ident, nom = D.retrouver("googlesheets", demande)
+            check(f"« {demande} » retrouve le PEA", nom, "Suivi_PEA_Lohan_Pere")
+        check("une autre app ne partage pas les raccourcis",
+              D.retrouver("notion", "pea"), ("", ""))
+        check("une demande sans rapport ne retrouve rien",
+              D.retrouver("googlesheets", "vacances"), ("", ""))
+        check("une demande trop courte ne retrouve rien", D.retrouver("googlesheets", "a"),
+              ("", ""))
+
+        # 39b. Le plus SPÉCIFIQUE gagne : « pea pere » ne doit pas être éclipsé par « pea »
+        D.retenir("googlesheets", "pea pere", "1PERE" + "x" * 30, "PEA_du_Pere")
+        check("le libellé le plus précis l'emporte",
+              D.retrouver("googlesheets", "mon pea pere")[1], "PEA_du_Pere")
+        check("le libellé général reste bon", D.retrouver("googlesheets", "pea")[1],
+              "Suivi_PEA_Lohan_Pere")
+
+        # 39c. Oublier un raccourci devenu faux
+        check("un raccourci s'oublie",
+              D.oublier("googlesheets", "11qGW0rhYzR4XWab0UKTLDVUU1S2_Mizn0eToOOZRph8"), 1)
+        check("il n'est plus retrouvé", D.retrouver("googlesheets", "pea")[1], "PEA_du_Pere")
+
+        # 39d. Rien d'incomplet n'est mémorisé
+        for app, quoi, ident in (("", "pea", "1abc"), ("googlesheets", "", "1abc"),
+                                 ("googlesheets", "pea", ""), ("googlesheets", "a", "1abc")):
+            check(f"refus de retenir ({app!r},{quoi!r},{ident!r})", D.retenir(app, quoi, ident, "x"), {})
+
+        # 39e. Un raccourci trop vieux n'est plus servi : mieux vaut revérifier
+        D.effacer_tout()
+        D.retenir("googlesheets", "vieux", "1VIEUX" + "y" * 30, "Ancien")
+        items = D._load()
+        items[0]["ts"] = 0.0                       # comme s'il datait de 1970
+        D._save(items)
+        check("un raccourci périmé est ignoré", D.retrouver("googlesheets", "vieux"), ("", ""))
+    finally:
+        D.effacer_tout()
+
+    # 39f. Bout en bout : chercher une fois, puis aller droit au but
+    APPELS = []
+    FICHIERS = [{"id": "11qGW0rhYzR4XWab0UKTLDVUU1S2_Mizn0eToOOZRph8",
+                 "name": "Suivi_PEA_Lohan_Pere"},
+                {"id": "1AAAaaaBBBcccDDDeeeFFFgggHHHiiiJJJkkkLLL", "name": "Budget vacances"}]
+    ACTIONS = [{"name": "GOOGLESHEETS_BATCH_GET", "desc": ""},
+               {"name": "GOOGLESHEETS_SEARCH_SPREADSHEETS", "desc": ""}]
+    mort = {"on": False}
+
+    def faux_tool(action, args=None, **kw):
+        APPELS.append(action)
+        if "SEARCH" in action.upper():
+            return "✅ résultat :\n" + json.dumps({"data": {"files": FICHIERS}})
+        if mort["on"] and (args or {}).get("spreadsheet_id") == FICHIERS[0]["id"]:
+            return '❌ Action échouée : {"message": "File not found"}'
+        return "✅ résultat :\n" + json.dumps({"valueRanges": [["Lohan", "valneva", 23]]})
+
+    vrais = (A._tool, A._composio_list_actions, A._connected_accounts,
+             A._build_args, A._llm_json, A._format_app_result)
+    D.effacer_tout()
+    try:
+        A._tool = faux_tool
+        A._composio_list_actions = lambda s: ACTIONS
+        A._connected_accounts = lambda: [("googlesheets", "u", "ACTIVE")]
+        A._build_args = lambda act, spec, msg, ctx="", error="": {
+            "spreadsheet_id": "YOUR_SPREADSHEET_ID"}
+        A._llm_json = lambda s, u: {"action": "GOOGLESHEETS_BATCH_GET", "arguments": {}}
+        A._format_app_result = lambda m, a, o, w: "Voici tes données."
+
+        APPELS.clear()
+        A._generic_app_flow("lit mon fichier pea sur google sheet", "googlesheets")
+        check("1er passage : recherche puis lecture", len(APPELS), 2)
+        check("le document est appris", D.retrouver("googlesheets", "pea")[1],
+              "Suivi_PEA_Lohan_Pere")
+
+        APPELS.clear()
+        A._generic_app_flow("lit mon fichier pea sur google sheet", "googlesheets")
+        check("2e passage : plus de recherche", APPELS, ["GOOGLESHEETS_BATCH_GET"])
+
+        APPELS.clear()
+        r = A._generic_app_flow("montre mon suivi pea", "googlesheets")
+        check("une autre formulation profite du raccourci", APPELS, ["GOOGLESHEETS_BATCH_GET"])
+        check_true("le raccourci est annoncé",
+                   any("je sais déjà où c'est" in (s.get("text") or "") for s in r["steps"]))
+
+        # Le document disparaît côté Google : on oublie et on rouvre les yeux
+        mort["on"] = True
+        APPELS.clear()
+        r = A._generic_app_flow("lit mon fichier pea sur google sheet", "googlesheets")
+        check_true("l'échec relance une recherche", "GOOGLESHEETS_SEARCH_SPREADSHEETS" in APPELS)
+        check_true("Nova le dit",
+                   any("ne répond plus" in (s.get("text") or "") for s in r["steps"]))
+        check("un identifiant qui échoue n'est pas ré-appris",
+              D.retrouver("googlesheets", "pea"), ("", ""))
+    finally:
+        (A._tool, A._composio_list_actions, A._connected_accounts,
+         A._build_args, A._llm_json, A._format_app_result) = vrais
+        D.effacer_tout()
+
+    # 39g. Le diagnostic dit la vérité sur la persistance
+    etat = A._etat_memoire()
+    check_true("le diagnostic tranche", isinstance(etat.get("persistante"), bool))
+    check_true("il explique où c'est stocké", bool(etat.get("ou")))
+    if not etat["persistante"]:
+        check_true("il prévient que tout sera perdu", "PAS persistante" in etat["resume"])
+        check_true("il donne la solution", "SUPABASE_DB_URL" in etat.get("solution", ""))
+
+
 def test_memoire_des_donnees():
     """Nova lisait le tableur PEA, affichait tous les chiffres, puis répondait « je ne
     suis pas conseiller financier » à « tu penses quoi de nos investissements ? ».
@@ -2332,7 +2447,8 @@ if __name__ == "__main__":
                test_raisonnement_cache, test_slug_connecte,
                test_modele_annonce, test_affichage_actu, test_enchainement_fichier,
                test_fournisseur_et_routage, test_garde_fou, test_calendrier_exact,
-               test_continuite_app, test_catalogue_complet, test_memoire_des_donnees):
+               test_continuite_app, test_catalogue_complet, test_memoire_des_donnees,
+               test_memoire_des_documents):
         try:
             fn()
         except Exception as e:
