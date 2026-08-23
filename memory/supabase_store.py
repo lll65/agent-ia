@@ -83,22 +83,28 @@ class SupabaseStore:
         self.db_url = db_url or ""
         self._conn = None
         self.available = False
+        # ⚠️ On CONSERVE la raison de l'échec. Elle n'allait que dans les logs : une URL
+        # devenue invalide (mot de passe change, adresse IPv6 injoignable) faisait
+        # retomber Nova sur la memoire locale SANS que personne le sache. On croyait sa
+        # memoire persistante depuis des mois alors qu'elle repartait de zero a chaque
+        # redeploiement.
+        self.erreur = ""
         if not self.db_url:
+            self.erreur = "SUPABASE_DB_URL n'est pas définie"
             return
         try:
             import psycopg2  # noqa: F401
         except ImportError:
-            logger.warning(
-                "[Supabase] psycopg2 non installé — backend désactivé. "
-                "Installe: pip install psycopg2-binary"
-            )
+            self.erreur = "psycopg2 n'est pas installé (pip install psycopg2-binary)"
+            logger.warning(f"[Supabase] {self.erreur} — backend désactivé.")
             return
         try:
             self._ensure_schema()
             self.available = True
             logger.info("[Supabase] Backend mémoire persistant actif.")
         except Exception as e:
-            logger.warning(f"[Supabase] Init échec (fallback local): {e}")
+            self.erreur = f"{type(e).__name__}: {str(e)[:300]}"
+            logger.warning(f"[Supabase] Init échec (fallback local): {self.erreur}")
             self.available = False
 
     # ── Connexion ────────────────────────────────────────────────────────────

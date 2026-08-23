@@ -325,6 +325,18 @@ def donnees_retenues(motif: str) -> list:
         f"les donnees lues (« {motif} ») ne sont pas retenues pour le tour suivant"]
 
 
+def profil_retenu(*mots) -> list:
+    """Ce que l'utilisateur dit de LUI doit finir dans son profil."""
+    from agent import profile as P
+    try:
+        txt = " ".join(f.get("texte", "") for f in P.list_facts()).lower()
+    except Exception as e:
+        return [f"profil illisible : {type(e).__name__}"]
+    if not txt:
+        return ["rien n'a ete retenu de ce qu'il a dit de lui"]
+    return [f"« {m} » n'a pas ete retenu dans le profil" for m in mots if m.lower() not in txt]
+
+
 def competence_retenue() -> list:
     """Une action reussie doit laisser une recette — et AUCUNE donnee personnelle."""
     from agent import competences as K
@@ -443,6 +455,12 @@ SCENARIOS = [
      "tours": ["consulte le tableur Suivi_PEA_Lohan_Pere",
                "consulte le tableur Budget vacances 2026"],
      "regles": [lambda r: competence_retenue()]},
+
+    # Nova n'enregistrait presque rien de ce qu'on lui dit de soi : les tournures
+    # possessives (« mon pere », « ma soeur ») etaient toutes ignorees.
+    {"nom": "MEMOIRE-confidence",
+     "tours": ["mon pere et moi on a un PEA ensemble", "ma soeur s'appelle Emma"],
+     "regles": [lambda r: profil_retenu("pere", "soeur")]},
 
     # ── Continuité : la phrase suivante enchaîne ─────────────────────────────
     {"nom": "contexte-notion",
@@ -698,8 +716,8 @@ def main():
             EXECUTIONS.clear(); ARGS_EXECUTES.clear()
             # Un raccourci appris dans un scenario fausserait le suivant (il sauterait la
             # recherche). Chaque scenario doit repartir sans rien savoir.
-            from agent import documents as _D, competences as _K
-            _D.effacer_tout(); _K.effacer_tout()
+            from agent import documents as _D, competences as _K, profile as _P
+            _D.effacer_tout(); _K.effacer_tout(); _P.clear_all()
             problemes, dernier = [], None
             for message in sc["tours"]:
                 dernier = interroge(client, message)
