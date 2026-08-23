@@ -297,6 +297,28 @@
   .pitem{ padding:9px 11px; border-radius:11px; background:var(--glass); border:1px solid var(--stroke); line-height:1.45; word-break:break-word; font-size:13px; }
   .pitem b{ color:var(--neon2); font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; }
 
+  /* Choix des jours : sept pastilles, toutes cochées par défaut. Avant, les jours
+     existaient côté serveur mais l'interface ne les proposait nulle part. */
+  .days{ display:flex; gap:6px; flex-wrap:wrap; }
+  .days button{ width:38px; height:38px; border-radius:11px; font-size:13px; font-weight:700;
+    background:var(--glass); border:1px solid var(--stroke); color:var(--dim); cursor:pointer; transition:.15s; }
+  .days button.on{ background:linear-gradient(135deg,var(--neon),var(--neon2)); border-color:transparent; color:#fff; }
+  .days button:active{ transform:scale(.92); }
+  /* Rappel permanent de la prochaine échéance : « je ne sais pas où elle apparaît »
+     venait surtout de là — rien ne disait QUAND ça partirait. */
+  .quand{ margin:10px 0 4px; font-size:12.5px; color:var(--neon2); min-height:18px; }
+  .quand.ko{ color:var(--pink); }
+  /* Une automatisation qui vient d'être créée se signale d'elle-même. */
+  @keyframes surligne{ 0%{ box-shadow:0 0 0 2px var(--neon2); } 100%{ box-shadow:0 0 0 0 transparent; } }
+  .pitem.neuf{ animation:surligne 2.4s ease-out; }
+  /* Aucun retour n'était donné après une action : on ne savait pas si ça avait marché. */
+  #toast{ position:fixed; left:50%; transform:translateX(-50%) translateY(20px); z-index:30;
+    bottom:calc(88px + env(safe-area-inset-bottom)); max-width:min(460px,92vw);
+    background:rgba(12,12,26,.96); border:1px solid var(--neon2); border-radius:14px;
+    padding:11px 15px; font-size:13px; line-height:1.45; color:var(--txt);
+    box-shadow:0 10px 34px rgba(0,0,0,.5); opacity:0; pointer-events:none; transition:.3s; }
+  #toast.show{ opacity:1; transform:translateX(-50%) translateY(0); }
+
   /* ═══ APP INSTALLÉE (écran d'accueil) : gérer l'encoche et la barre du bas ═══
      En standalone il n'y a plus les barres Safari : sans ces marges, le contenu colle aux
      bords et paraît décentré. */
@@ -457,6 +479,8 @@
     </div>
   </aside>
 
+  <div id="toast"></div>
+
   <div class="modal" id="autoModal"><div class="card" style="max-width:520px">
     <div class="chead"><h3>🌙 Automatisations</h3><button class="ic" onclick="closeAuto()" title="Fermer">✕</button></div>
     <p>Ce que Nova fait <b>toute seule</b>, même quand tu dors.</p>
@@ -466,10 +490,15 @@
       <div id="autoTpl" class="chips" style="padding:0 0 9px"></div>
       <input id="autoTitre" placeholder="Titre (ex. Résumé du soir)" style="margin-bottom:7px">
       <input id="autoPrompt" placeholder="Ce que Nova doit faire…" style="margin-bottom:7px">
-      <div style="display:flex;gap:8px;align-items:center">
-        <input id="autoHour" type="number" min="0" max="23" value="8" style="width:88px">
-        <span style="color:var(--dim);font-size:12.5px">h — chaque jour</span>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <input id="autoHour" type="number" min="0" max="23" value="8" style="width:66px;text-align:center" oninput="apercuQuand()">
+        <span style="color:var(--dim);font-size:13px">h</span>
+        <input id="autoMin" type="number" min="0" max="59" step="5" value="0" style="width:66px;text-align:center" oninput="apercuQuand()">
+        <span style="color:var(--dim);font-size:12.5px">min</span>
       </div>
+      <div style="font-size:11px;letter-spacing:.14em;color:var(--dim);margin:10px 0 6px">QUELS JOURS</div>
+      <div id="autoDays" class="days"></div>
+      <div id="autoQuand" class="quand"></div>
       <button onclick="addAuto()">＋ Créer l'automatisation</button>
     </div>
   </div></div>
@@ -621,22 +650,25 @@ function clearMemory(){ if(confirm("Nova oublie tout ce qu'elle sait sur toi ?")
 
 /* ═══ AUTOMATISATIONS (« pendant que tu dors ») ═══ */
 function openAuto(){ closeSidebar(); if(!KEY){ openCfg(); return; }
-  document.getElementById("autoModal").classList.add("show"); loadAuto(); }
+  document.getElementById("autoModal").classList.add("show"); renderDays(); loadAuto(); }
 function closeAuto(){ document.getElementById("autoModal").classList.remove("show"); }
-async function loadAuto(){ const body=document.getElementById("autoBody");
+async function loadAuto(idNeuf){ const body=document.getElementById("autoBody");
   body.innerHTML='<div class="pitem">Chargement…</div>';
   try{ const d=await (await fetch(ORIGIN+"/agent/automations?key="+encodeURIComponent(KEY),{cache:"no-store"})).json();
     const items=d.items||[];
     body.innerHTML = items.length ? items.map(it=>{
       const when=it.last_run? "il y a "+fmtAgo((Date.now()/1000)-it.last_run) : "jamais lancée";
-      return '<div class="pitem"><div style="display:flex;align-items:center;gap:8px">'
+      return '<div class="pitem" data-id="'+it.id+'"><div style="display:flex;align-items:center;gap:8px">'
         +'<span style="font-size:16px">'+(it.icon||"⚡")+'</span>'
         +'<b style="color:var(--txt);font-size:13px;text-transform:none;letter-spacing:0">'+esc(it.titre)+'</b>'
-        +'<span style="margin-left:auto;color:var(--dim);font-size:11px">'+it.hour+'h</span></div>'
+        +'<span style="margin-left:auto;color:var(--dim);font-size:11px">'+hhmm(it)+'</span></div>'
         +'<div style="color:var(--dim);font-size:11.5px;margin:5px 0">'+esc(it.prompt).slice(0,110)+'</div>'
+        +(it.prochaine? '<div style="color:var(--neon2);font-size:11.5px;margin:-1px 0 5px">⏱️ prochaine : '
+            +esc(it.prochaine)+'</div>' : '')
         +'<div style="display:flex;gap:7px;align-items:center;font-size:11px">'
         +'<span style="color:'+(it.active?"var(--neon2)":"var(--dim)")+'">'+(it.active?"● active":"○ en pause")+'</span>'
         +'<span style="color:var(--dim)">· '+when+'</span>'
+        +'<span style="color:var(--dim)">· '+esc(joursTxt(it.days))+'</span>'
         +'<span style="margin-left:auto;display:flex;gap:8px">'
         +'<a onclick="runAuto(\''+it.id+'\')" style="cursor:pointer;color:var(--neon2)">▶ tester</a>'
         +'<a onclick="toggleAuto(\''+it.id+'\','+(!it.active)+')" style="cursor:pointer;color:var(--dim)">'+(it.active?"pause":"activer")+'</a>'
@@ -645,21 +677,73 @@ async function loadAuto(){ const body=document.getElementById("autoBody");
             +'<div class="rsteps" style="font-size:12px">'+fmt(coupeSure(it.last_result,900))+'</div></details>':'')
         +'</div>'; }).join("")
       : '<div class="pitem">Aucune automatisation. Choisis un modèle ci-dessous 👇</div>';
+    // On remonte sur la nouvelle ligne et on la surligne : sinon elle apparaissait
+    // silencieusement en haut d'une liste que l'utilisateur ne pensait pas à regarder.
+    if(idNeuf){ const el=body.querySelector('[data-id="'+idNeuf+'"]');
+      if(el){ el.classList.add("neuf"); el.scrollIntoView({behavior:"smooth",block:"center"}); } }
     const tpl=document.getElementById("autoTpl");
     tpl.innerHTML=(d.templates||[]).map((t,i)=>'<span class="chip" onclick="useTpl('+i+')">'+t.icon+' '+esc(t.titre)+'</span>').join("");
     window._TPL=d.templates||[];
   }catch(e){ body.innerHTML='<div class="pitem">Impossible de charger les automatisations.</div>'; } }
+function toast(txt, ms){ const t=document.getElementById("toast"); if(!t) return;
+  t.textContent=txt; t.classList.add("show");
+  clearTimeout(window._toastT); window._toastT=setTimeout(()=>t.classList.remove("show"), ms||4200); }
+
+// ── Choix des jours ─────────────────────────────────────────────────────────
+// L'interface ne proposait AUCUN moyen de choisir les jours : tout partait « chaque
+// jour ». Les sept pastilles, toutes cochées au départ, comblent ce manque.
+const JOURS_L=["L","M","M","J","V","S","D"], JOURS_N=["lundi","mardi","mercredi","jeudi","vendredi","samedi","dimanche"];
+let AUTO_DAYS=[0,1,2,3,4,5,6];
+function renderDays(){ const z=document.getElementById("autoDays"); if(!z) return;
+  z.innerHTML=JOURS_L.map((d,i)=>'<button type="button" class="'+(AUTO_DAYS.includes(i)?"on":"")
+    +'" title="'+JOURS_N[i]+'" onclick="toggleDay('+i+')">'+d+'</button>').join("");
+  apercuQuand(); }
+function toggleDay(i){ AUTO_DAYS = AUTO_DAYS.includes(i) ? AUTO_DAYS.filter(x=>x!==i) : [...AUTO_DAYS,i].sort();
+  renderDays(); }
+function joursTxt(days){
+  if(!days || days.length===7 || days.length===undefined) return "chaque jour";
+  if(!days.length) return "aucun jour !";
+  if(days.length===5 && [0,1,2,3,4].every(d=>days.includes(d))) return "en semaine";
+  if(days.length===2 && days.includes(5) && days.includes(6)) return "le week-end";
+  return days.slice().sort().map(i=>JOURS_N[i]).join(", "); }
+function hhmm(it){ const m=(it.minute||0); return it.hour+"h"+(m<10?"0"+m:m); }
+// Aperçu EN DIRECT : on doit voir quand ça partira AVANT de valider.
+function apercuQuand(){ const z=document.getElementById("autoQuand"); if(!z) return;
+  const h=+document.getElementById("autoHour").value||0, mi=+document.getElementById("autoMin").value||0;
+  if(!AUTO_DAYS.length){ z.className="quand ko"; z.textContent="⚠️ Aucun jour coché : elle ne partira jamais."; return; }
+  const now=new Date(); let d=new Date(now); d.setHours(h,mi,0,0);
+  for(let k=0;k<8;k++){ const j=(d.getDay()+6)%7;      // JS : dimanche=0 → on veut lundi=0
+    if(d>now && AUTO_DAYS.includes(j)) break; d=new Date(d.getTime()+86400000); }
+  const j=(d.getDay()+6)%7, hh=h+"h"+(mi<10?"0"+mi:mi);
+  const sameDay = d.toDateString()===now.toDateString();
+  const demain = d.toDateString()===new Date(now.getTime()+86400000).toDateString();
+  z.className="quand";
+  z.textContent="⏱️ Première exécution : "+(sameDay?"aujourd'hui":demain?"demain":JOURS_N[j])+" à "+hh
+    +"  ·  ensuite "+joursTxt(AUTO_DAYS); }
+
 function useTpl(i){ const t=(window._TPL||[])[i]; if(!t) return;
   document.getElementById("autoTitre").value=t.titre;
   document.getElementById("autoPrompt").value=t.prompt;
-  document.getElementById("autoHour").value=t.hour; }
+  document.getElementById("autoHour").value=t.hour;
+  document.getElementById("autoMin").value=t.minute||0;
+  AUTO_DAYS = t.days ? t.days.slice() : [0,1,2,3,4,5,6];
+  renderDays(); }
 async function addAuto(){ const titre=document.getElementById("autoTitre").value.trim(),
-    prompt=document.getElementById("autoPrompt").value.trim(), hour=+document.getElementById("autoHour").value||8;
+    prompt=document.getElementById("autoPrompt").value.trim(),
+    hour=+document.getElementById("autoHour").value||0, minute=+document.getElementById("autoMin").value||0;
   if(!titre||!prompt){ alert("Donne un titre et ce que Nova doit faire."); return; }
-  await fetch(ORIGIN+"/agent/automations",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({key:KEY,titre,prompt,hour})});
+  if(!AUTO_DAYS.length){ alert("Coche au moins un jour, sinon elle ne partira jamais."); return; }
+  let cree=null;
+  try{ cree=await (await fetch(ORIGIN+"/agent/automations",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({key:KEY,titre,prompt,hour,minute,days:AUTO_DAYS})})).json(); }
+  catch(e){ alert("Création impossible : "+e); return; }
   document.getElementById("autoTitre").value=""; document.getElementById("autoPrompt").value="";
-  sndReceive(); loadAuto(); }
+  sndReceive();
+  // ⚠️ « Je ne sais pas où elle apparaît » : la nouvelle ligne était ajoutée en haut de
+  // la fenêtre, hors de vue, sans un mot. On remonte dessus, on la surligne, et on dit
+  // quand elle partira.
+  await loadAuto(cree && cree.id);
+  if(cree && cree.prochaine) toast("✅ « "+titre+" » créée — prochaine : "+cree.prochaine); }
 async function toggleAuto(id,active){ await fetch(ORIGIN+"/agent/automations/toggle",{method:"POST",
   headers:{"Content-Type":"application/json"},body:JSON.stringify({key:KEY,id,active})}); loadAuto(); }
 async function delAuto(id){ if(!confirm("Supprimer cette automatisation ?")) return;

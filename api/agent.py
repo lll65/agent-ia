@@ -142,7 +142,10 @@ def _smalltalk_messages(message: str) -> list:
             "- Pas de titres, pas de listes à puces, pas de plan d'action, pas de rapport.\n"
             "Si l'utilisateur te donne une info sur lui (âge, prénom, ville, goûts), accuse simplement "
             "réception avec chaleur et dis que tu le retiens. Tu peux poser UNE question courte ou "
-            "proposer ton aide en une phrase.")},
+            "proposer ton aide en une phrase."
+            # ⚠️ C'est PAR ICI que passe « tu es sur quel fuseau horaire ? ». Sans repère,
+            # Nova répondait « UTC » — l'heure du conteneur, pas la sienne.
+            + _repere_temporel())},
         {"role": "user", "content": message},
     ]
 
@@ -435,6 +438,30 @@ def _finance_intent(message: str) -> bool:
     return any(w in m for w in _FINANCE_WORDS)
 
 
+_JOURS_SEMAINE = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
+_MOIS = ("janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août",
+         "septembre", "octobre", "novembre", "décembre")
+
+
+def _repere_temporel() -> str:
+    """Où et quand Nova se trouve — sans ça, elle inventait « je suis en UTC ».
+
+    Le conteneur tourne en UTC mais Nova est réglée sur le fuseau de l'utilisateur
+    (variable FUSEAU). Elle doit le savoir : pour répondre à la question, et surtout
+    pour situer « demain », « ce soir », « la semaine prochaine ».
+    """
+    try:
+        from agent.horloge import maintenant, FUSEAU
+        n = maintenant()
+        ville = FUSEAU.split("/")[-1].replace("_", " ")
+        return (f"\n\nREPÈRE TEMPOREL (fiable, ne le contredis pas) : nous sommes le "
+                f"{_JOURS_SEMAINE[n.weekday()]} {n.day} {_MOIS[n.month - 1]} {n.year}, "
+                f"il est {n.hour}h{n.minute:02d}, fuseau {FUSEAU} (heure de {ville}). "
+                "Si on te demande ton fuseau ou l'heure, réponds CELA — tu n'es pas en UTC.")
+    except Exception:
+        return ""
+
+
 def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
     """Prépare la config de l'agent en priorisant le bon outil selon l'intention :
     - Intention app (agenda/mail/calendar/slack/notion) → connected_app en 1er, PAS de web.
@@ -450,7 +477,12 @@ def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
               "concise. Réponds UNIQUEMENT à ce qui est demandé, avec une longueur proportionnée "
               "(remarque anodine → 1-2 phrases). "
               "Jamais de source inventée : ne cite une source que si un outil te l'a réellement fournie. "
-              "N'invente JAMAIS un cours, un indice, un prix ou une statistique.")
+              "N'invente JAMAIS un cours, un indice, un prix ou une statistique."
+              # ⚠️ Nova ignorait la date, l'heure et son propre fuseau : à « tu es sur quel
+              # fuseau ? » elle répondait « UTC », alors qu'elle est réglée sur Europe/Paris
+              # depuis que les automatisations ont été corrigées. Elle ne pouvait pas non
+              # plus situer « demain » ou « la semaine prochaine ».
+              + _repere_temporel())
     if not fin:
         system += (" INTERDIT : ne parle pas de bourse, actions, crypto, marchés, investissement, "
                    "épargne ou placements — l'utilisateur ne l'a pas demandé.")
@@ -797,12 +829,47 @@ def _honest_no_access(action: str, obs: str) -> str:
             + "J'ai tenté de corriger automatiquement, sans succès. **Sois plus précis** et je réessaie "
               "(ex. « crée une **présentation** Canva intitulée Projet X », « crée un **document** Canva »).")
     nice = tk.capitalize() if tk else "cette application"
+    # Cause : la CIBLE n'existe pas (404). Rien à voir avec la connexion — et pourtant
+    # on affichait le JSON brut de l'API (« {"http_error": "404 …", "asset_not_found" } »),
+    # ce qui donnait l'impression que tout était cassé alors qu'il manquait juste un
+    # élément que Nova ne pouvait pas connaître.
+    if "404" in low or "not found" in low or "notfound" in low.replace("_", ""):
+        quoi = ("l'élément à joindre" if "asset" in low else
+                "la page visée" if "page" in low or "block" in low else
+                "le fichier visé" if "file" in low else "ce que la demande visait")
+        return (
+            f"🔍 **{nice} ne trouve pas {quoi}.** L'accès fonctionne : c'est la cible qui "
+            "n'existe pas (ou plus).\n\n"
+            f"Dis-moi son **nom exact** et je réessaie — ou demande-moi de le **créer**."
+        )
+    # Cause : l'API de l'app est momentanément en panne (5xx)
+    if any(c in low for c in ("500", "502", "503", "504", "timeout", "timed out")):
+        return (f"⏳ **{nice} ne répond pas** pour le moment (panne ou lenteur de son côté, "
+                "pas du tien). Réessaie dans quelques minutes.")
     return (
         f"🔌 Je n'ai pas pu accéder à {nice}, donc je ne t'invente rien.\n\n"
-        f"**Raison technique :**\n> {obs[:350]}\n\n"
+        f"**Raison technique :**\n> {_erreur_lisible_app(obs)}\n\n"
         f"**Pistes :** vérifie que **{nice}** est bien connecté sur composio.dev (statut vert), "
         "puis redemande-moi."
     )
+
+
+def _erreur_lisible_app(obs: str) -> str:
+    """Extrait la phrase utile d'une erreur d'API, sans le JSON autour.
+
+    On servait `obs[:350]` tel quel : l'utilisateur recevait un bloc
+    `{"http_error": "404 Client Error…", "message": "{\"code\":…"}`. Illisible, et
+    ça faisait passer un détail pour une panne générale.
+    """
+    import re as _re
+    flat = (obs or "").replace('\\"', '"').replace("\\\\", "\\")
+    for cle in ("message", "error", "detail"):
+        for m in reversed(_re.findall(r'"' + cle + r'"\s*:\s*"([^"]{4,300})"', flat)):
+            if not m.lstrip().startswith("{"):
+                return m[:220]
+    code = _re.search(r"\b([45]\d\d)\b", flat)
+    return (f"erreur {code.group(1)} renvoyée par l'application" if code
+            else (obs or "")[:220])
 
 
 def _format_app_messages(message: str, action: str, obs: str, is_write: bool = False) -> list:
@@ -1801,8 +1868,33 @@ def _resoudre_identifiants(slug: str, action: str, args: dict, message: str, act
     le bon. C'est l'enchaînement « chercher puis lire » qui lui manquait.
     """
     etapes = []
-    a_resoudre = [k for k, v in (args or {}).items()
+    args = dict(args or {})
+    spec = next((a for a in (actions or []) if a.get("name") == action), {})
+    requis = [str(r) for r in (spec.get("required") or [])]
+    # ⚠️ Un identifiant OBLIGATOIRE mais ABSENT était ignoré : on ne regardait que les
+    # valeurs bouchons, jamais les clés manquantes. Notion répondait alors
+    # « block_id should be a valid uuid, instead was `` » — l'appel partait sans cible.
+    for r in requis:
+        if _est_champ_identifiant(r) and r not in args:
+            args[r] = ""
+    a_resoudre = [k for k, v in args.items()
                   if _est_champ_identifiant(k) and _est_bouchon(v)]
+    if not a_resoudre:
+        return args, etapes, ""
+    # ⚠️ Un identifiant FACULTATIF qu'on ne sait pas remplir doit être RETIRÉ, jamais
+    # envoyé vide ou inventé. Canva répondait « asset_not_found » (404) en boucle parce
+    # qu'on lui passait un asset_id fantôme sur une action dont l'asset est OPTIONNEL :
+    # sans ce champ, le même appel réussit.
+    # ⚠️ Uniquement quand le schéma déclare VRAIMENT ses champs obligatoires. Sans cette
+    # garde, une action dont Composio ne donne pas la liste voyait TOUS ses identifiants
+    # supprimés — y compris le spreadsheet_id indispensable pour lire un tableur.
+    facultatifs = [k for k in a_resoudre if k not in requis] if requis else []
+    for k in facultatifs:
+        args.pop(k, None)
+    if facultatifs:
+        etapes.append({"kind": "obs", "tool": slug,
+                       "text": f"champ facultatif sans valeur, je le retire : {', '.join(facultatifs)}"})
+    a_resoudre = [k for k in a_resoudre if k in requis] or [k for k in a_resoudre if k not in facultatifs]
     if not a_resoudre:
         return args, etapes, ""
     recherche = _action_de_recherche(slug, actions)
@@ -3526,6 +3618,7 @@ class AutoReq(BaseModel):
     titre: Optional[str] = None
     prompt: Optional[str] = None
     hour: Optional[int] = 8
+    minute: Optional[int] = 0
     days: Optional[list] = None
     icon: Optional[str] = "⚡"
     active: Optional[bool] = None
@@ -3536,8 +3629,11 @@ class AutoReq(BaseModel):
 async def automations_list(key: str = ""):
     """Liste les automatisations + les modèles proposés."""
     _check_key(key)
-    from agent.automations import list_all, TEMPLATES
-    return {"items": list_all(), "templates": TEMPLATES}
+    from agent.automations import list_all, TEMPLATES, prochaine_execution
+    # ⚠️ « Je ne sais pas où elle apparaît » : une automatisation créée ne disait NULLE
+    # PART quand elle partirait. On joint donc la prochaine échéance à chaque ligne.
+    items = [{**it, "prochaine": prochaine_execution(it)} for it in list_all()]
+    return {"items": items, "templates": TEMPLATES}
 
 
 @router.post("/automations")
@@ -3546,8 +3642,11 @@ async def automations_add(req: AutoReq):
     _check_key(req.key or "")
     if not (req.titre and req.prompt):
         raise HTTPException(status_code=400, detail="titre et prompt requis.")
-    from agent.automations import add
-    return add(req.titre, req.prompt, req.hour or 8, req.days, req.icon or "⚡")
+    from agent.automations import add, prochaine_execution
+    item = add(req.titre, req.prompt, req.hour or 8, req.days, req.icon or "⚡",
+               req.minute or 0)
+    # On renvoie l'échéance : l'utilisateur doit voir tout de suite QUAND ça partira.
+    return {**item, "prochaine": prochaine_execution(item)}
 
 
 @router.post("/automations/toggle")
