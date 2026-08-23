@@ -1316,6 +1316,29 @@ def _trim_schema(schema, depth: int = 0):
     return keep
 
 
+def slug_de(action: str) -> str:
+    """« GOOGLESHEETS_BATCH_GET » → « googlesheets »."""
+    return (action or "").split("_", 1)[0].lower()
+
+
+def _indice_competence(app: str, action: str) -> str:
+    """La forme d'appel déjà éprouvée, s'il y en a une. Jamais d'exception."""
+    try:
+        from agent.competences import indice
+        return indice(app, action)
+    except Exception:
+        return ""
+
+
+def _apprendre_competence(app: str, action: str, args: dict, corrections: int,
+                          erreur: str) -> None:
+    try:
+        from agent.competences import apprendre
+        apprendre(app, action, args, corrections, erreur)
+    except Exception:
+        pass
+
+
 def _build_args(action: str, spec: dict, message: str, ctx: str = "", error: str = "") -> dict:
     """Construit les arguments d'une action à partir de son SCHÉMA réel.
     Étape séparée du choix de l'action : le modèle se concentre sur la forme attendue."""
@@ -1333,6 +1356,11 @@ def _build_args(action: str, spec: dict, message: str, ctx: str = "", error: str
            f"SCHÉMA :\n{schema}\n\nDemande : {message}")
     if ctx:
         usr += f"\nContexte récent : {ctx}"
+    # ── Ce qu'on a déjà appris sur CETTE action ──────────────────────────────
+    # Nova corrigeait ses arguments après l'erreur de l'API… puis jetait la correction.
+    # À la demande suivante : même erreur, même aller-retour, même attente. La forme qui
+    # a marché est soufflée au modèle, il n'a plus à la deviner.
+    usr += _indice_competence(slug_de(action), action)
     if error:
         usr += f"\n\n⚠️ L'appel précédent a ÉCHOUÉ avec cette erreur — corrige-la :\n{error[:600]}"
     out = _llm_json(sys, usr)
@@ -2333,6 +2361,7 @@ def _generic_app_flow(message: str, slug: str):
     # ── AUTO-CORRECTION : on renvoie l'erreur de l'API au constructeur d'arguments,
     # qui la lit et corrige (jusqu'à 2 tentatives).
     tries = 0
+    premiere_erreur = str(obs) if (_looks_like_failure(obs) and _is_param_error(obs)) else ""
     while _looks_like_failure(obs) and _is_param_error(obs) and tries < 2:
         tries += 1
         new_args = _build_args(action, spec, message, ctx, error=str(obs))
@@ -2350,6 +2379,9 @@ def _generic_app_flow(message: str, slug: str):
     appris = _A_RETENIR.pop(slug, None)
     if appris:
         _retenir_document(slug, *appris)
+    # …et on garde la RECETTE : la forme d'appel qui a marché. Si elle a demandé des
+    # corrections, c'est justement celle qu'il ne faut plus jamais avoir à retrouver.
+    _apprendre_competence(slug, action, args, tries, premiere_erreur)
     is_write = any(k in action for k in ("CREATE", "UPDATE", "DELETE", "SEND", "ADD", "POST", "PATCH"))
     return {"steps": steps, "done_answer": _format_app_result(message, action, obs, is_write)}
 
@@ -3527,6 +3559,35 @@ async def documents_delete(app: str = "", id: str = "", key: str = ""):
         effacer_tout()
         return {"ok": True, "oublies": "tous"}
     return {"ok": True, "oublies": oublier(app, id)}
+
+
+@router.get("/competences")
+async def competences_get(key: str = ""):
+    """Ce que Nova a appris à faire toute seule — les formes d'appel qui marchent.
+
+    Ouvre /agent/competences?key=TA_CLE. Les plus durement acquises sont en haut.
+    Seule la FORME est stockée : aucun contenu de mail, de note ou de titre.
+    """
+    _check_key(key)
+    from agent.competences import lister
+    import time as _t
+    return {"competences": [
+        {"action": c.get("action"), "app": c.get("app"),
+         "apprise_apres_corrections": c.get("corrections"), "reutilisee": c.get("usages"),
+         "forme": c.get("forme"), "erreur_evitee": (c.get("erreur_evitee") or "")[:160],
+         "vue_il_y_a_jours": round((_t.time() - float(c.get("ts") or 0)) / 86400, 1)}
+        for c in lister()]}
+
+
+@router.delete("/competences")
+async def competences_delete(action: str = "", key: str = ""):
+    """Fait oublier une recette (ou toutes) — si l'API a changé de format."""
+    _check_key(key)
+    from agent.competences import oublier, effacer_tout
+    if not action:
+        effacer_tout()
+        return {"ok": True, "oubliees": "toutes"}
+    return {"ok": True, "oubliees": oublier(action)}
 
 
 class TitleReq(BaseModel):

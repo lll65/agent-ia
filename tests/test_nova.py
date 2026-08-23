@@ -2057,6 +2057,122 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_competences():
+    """Nova corrigeait ses arguments après l'erreur de l'API… puis jetait la correction.
+    À la demande suivante : même erreur, même aller-retour. Elle galérait à l'identique."""
+    from agent import competences as K
+
+    K.effacer_tout()
+    try:
+        # 41a. ⚠️ Une recette décrit une FORME. Aucun contenu personnel ne doit y entrer.
+        forme = K.squelette({
+            "design_type": {"type": "preset", "name": "doc"},
+            "title": "RDV médecin Dr Dupont", "to": "papa@exemple.fr",
+            "body": "Salut papa, je rentre à 18h", "ranges": ["A1:D50"],
+            "calendar_id": "primary", "phone": "+33612345678",
+            "lien": "https://docs.google.com/spreadsheets/d/1abc",
+            "count": 42, "actif": True, "vide": None})
+        check("la structure imbriquée est gardée", forme["design_type"],
+              {"type": "preset", "name": "doc"})
+        check("un format technique est gardé", forme["ranges"], ["A1:D50"])
+        check("un mot d'énumération est gardé", forme["calendar_id"], "primary")
+        for champ in ("title", "to", "body", "phone", "lien"):
+            check(f"« {champ} » ne fuite pas", forme[champ], "<texte>")
+        check("les nombres sont neutralisés", forme["count"], 0)
+        check("un booléen reste un booléen", forme["actif"], True)
+        check("un vide reste vide", forme["vide"], None)
+        texte = json.dumps(forme, ensure_ascii=False)
+        for secret in ("Dupont", "papa@exemple.fr", "18h", "33612345678", "docs.google"):
+            check_true(f"« {secret} » absent de la recette", secret not in texte)
+
+        # 41b. Apprendre, relire
+        K.apprendre("canva", "CANVA_CREATE_DESIGN",
+                    {"design_type": {"type": "preset", "name": "doc"}, "title": "Affiche"},
+                    corrections=1, erreur="design_type must be an object")
+        r = K.recette("canva", "CANVA_CREATE_DESIGN")
+        check("la recette se relit", r["forme"]["design_type"], {"type": "preset", "name": "doc"})
+        check("une action inconnue n'invente rien", K.recette("canva", "X_Y"), {})
+        ind = K.indice("canva", "CANVA_CREATE_DESIGN")
+        check_true("l'indice est soufflé au modèle", "A DÉJÀ FONCTIONNÉ" in ind)
+        check_true("…avec l'erreur qu'il évite", "must be an object" in ind)
+        check("pas d'indice sans recette", K.indice("canva", "X_Y"), "")
+
+        # 41c. Le PIRE cas est conservé : une recette chèrement acquise le reste
+        K.apprendre("canva", "CANVA_CREATE_DESIGN",
+                    {"design_type": {"type": "preset", "name": "doc"}}, corrections=0)
+        r = K.recette("canva", "CANVA_CREATE_DESIGN")
+        check("les corrections passées ne s'effacent pas", r["corrections"], 1)
+        check("la réutilisation est comptée", r["usages"], 2)
+        check_true("l'erreur d'origine est gardée", "must be an object" in r["erreur_evitee"])
+
+        # 41d. Rien d'incomplet n'est appris
+        check("sans action, rien", K.apprendre("canva", "", {"a": 1}), {})
+        check("sans arguments, rien", K.apprendre("canva", "X_Y", {}), {})
+        check("des arguments non-dict, rien", K.apprendre("canva", "X_Y", "bonjour"), {})
+
+        # 41e. Oublier une recette devenue fausse
+        check("une recette s'oublie", K.oublier("CANVA_CREATE_DESIGN"), 1)
+        check("elle n'est plus servie", K.recette("canva", "CANVA_CREATE_DESIGN"), {})
+    finally:
+        K.effacer_tout()
+
+    # 41f. Bout en bout : galérer une fois, puis ne plus jamais galérer
+    ACTIONS = [{"name": "CANVA_CREATE_DESIGN", "desc": "", "schema": {}}]
+    APPELS, INDICES = [], []
+
+    def faux_llm_json(sysm, usr):
+        INDICES.append("A DÉJÀ FONCTIONNÉ" in usr)
+        if "Tu construis les ARGUMENTS" in sysm:
+            if "A DÉJÀ FONCTIONNÉ" in usr or "ÉCHOUÉ" in usr:
+                return {"arguments": {"design_type": {"type": "preset", "name": "doc"},
+                                      "title": "Affiche"}}
+            return {"arguments": {"design_type": "doc", "title": "Affiche"}}   # la faute
+        return {"action": "CANVA_CREATE_DESIGN", "arguments": {}}
+
+    def faux_tool(action, args=None, **kw):
+        APPELS.append(dict(args or {}))
+        if isinstance((args or {}).get("design_type"), str):
+            return ('❌ Action échouée : {"message": "Invalid parameter: '
+                    'design_type must be an object"}')
+        return '✅ résultat : {"ok": true}'
+
+    vrais = (A._llm_json, A._tool, A._composio_list_actions, A._connected_accounts,
+             A._format_app_result, A._known_args)
+    K.effacer_tout()
+    try:
+        A._llm_json, A._tool = faux_llm_json, faux_tool
+        A._composio_list_actions = lambda s: ACTIONS
+        A._connected_accounts = lambda: [("canva", "u", "ACTIVE")]
+        A._format_app_result = lambda m, a, o, w: "✅ Design créé."
+        A._known_args = lambda action, message: None
+
+        APPELS.clear(); INDICES.clear()
+        A._generic_app_flow("fais-moi une affiche pour la fête", "canva")
+        check("1re fois : il faut corriger", len(APPELS), 2)
+        check("aucune recette au départ", any(INDICES), False)
+
+        APPELS.clear(); INDICES.clear()
+        A._generic_app_flow("fais-moi une affiche pour le concert", "canva")
+        check("2e fois : plus aucune correction", len(APPELS), 1)
+        check_true("la recette a bien été soufflée", any(INDICES))
+        check("la forme est la bonne du premier coup",
+              APPELS[0]["design_type"], {"type": "preset", "name": "doc"})
+        check("la difficulté d'origine est retenue",
+              K.recette("canva", "CANVA_CREATE_DESIGN")["corrections"], 1)
+
+        # Un appel qui ÉCHOUE ne doit rien apprendre
+        K.effacer_tout()
+        A._llm_json = lambda s, u: ({"arguments": {"design_type": "doc"}}
+                                    if "ARGUMENTS" in s
+                                    else {"action": "CANVA_CREATE_DESIGN", "arguments": {}})
+        A._generic_app_flow("fais-moi une affiche", "canva")
+        check("un échec n'apprend rien", K.recette("canva", "CANVA_CREATE_DESIGN"), {})
+    finally:
+        (A._llm_json, A._tool, A._composio_list_actions, A._connected_accounts,
+         A._format_app_result, A._known_args) = vrais
+        K.effacer_tout()
+
+
 def test_automatisations_heure():
     """« Briefing du matin à 7h » partait à 9h heure de Paris : les planificateurs
     lisaient l'heure du SERVEUR (UTC sur Render), pas celle de l'utilisateur.
@@ -2546,7 +2662,8 @@ if __name__ == "__main__":
                test_modele_annonce, test_affichage_actu, test_enchainement_fichier,
                test_fournisseur_et_routage, test_garde_fou, test_calendrier_exact,
                test_continuite_app, test_catalogue_complet, test_memoire_des_donnees,
-               test_memoire_des_documents, test_automatisations_heure):
+               test_memoire_des_documents, test_automatisations_heure,
+               test_competences):
         try:
             fn()
         except Exception as e:
