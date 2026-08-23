@@ -2057,6 +2057,335 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_competences():
+    """Nova corrigeait ses arguments après l'erreur de l'API… puis jetait la correction.
+    À la demande suivante : même erreur, même aller-retour. Elle galérait à l'identique."""
+    from agent import competences as K
+
+    K.effacer_tout()
+    try:
+        # 41a. ⚠️ Une recette décrit une FORME. Aucun contenu personnel ne doit y entrer.
+        forme = K.squelette({
+            "design_type": {"type": "preset", "name": "doc"},
+            "title": "RDV médecin Dr Dupont", "to": "papa@exemple.fr",
+            "body": "Salut papa, je rentre à 18h", "ranges": ["A1:D50"],
+            "calendar_id": "primary", "phone": "+33612345678",
+            "lien": "https://docs.google.com/spreadsheets/d/1abc",
+            "count": 42, "actif": True, "vide": None})
+        check("la structure imbriquée est gardée", forme["design_type"],
+              {"type": "preset", "name": "doc"})
+        check("un format technique est gardé", forme["ranges"], ["A1:D50"])
+        check("un mot d'énumération est gardé", forme["calendar_id"], "primary")
+        for champ in ("title", "to", "body", "phone", "lien"):
+            check(f"« {champ} » ne fuite pas", forme[champ], "<texte>")
+        check("les nombres sont neutralisés", forme["count"], 0)
+        check("un booléen reste un booléen", forme["actif"], True)
+        check("un vide reste vide", forme["vide"], None)
+        texte = json.dumps(forme, ensure_ascii=False)
+        for secret in ("Dupont", "papa@exemple.fr", "18h", "33612345678", "docs.google"):
+            check_true(f"« {secret} » absent de la recette", secret not in texte)
+
+        # 41b. Apprendre, relire
+        K.apprendre("canva", "CANVA_CREATE_DESIGN",
+                    {"design_type": {"type": "preset", "name": "doc"}, "title": "Affiche"},
+                    corrections=1, erreur="design_type must be an object")
+        r = K.recette("canva", "CANVA_CREATE_DESIGN")
+        check("la recette se relit", r["forme"]["design_type"], {"type": "preset", "name": "doc"})
+        check("une action inconnue n'invente rien", K.recette("canva", "X_Y"), {})
+        ind = K.indice("canva", "CANVA_CREATE_DESIGN")
+        check_true("l'indice est soufflé au modèle", "A DÉJÀ FONCTIONNÉ" in ind)
+        check_true("…avec l'erreur qu'il évite", "must be an object" in ind)
+        check("pas d'indice sans recette", K.indice("canva", "X_Y"), "")
+
+        # 41c. Le PIRE cas est conservé : une recette chèrement acquise le reste
+        K.apprendre("canva", "CANVA_CREATE_DESIGN",
+                    {"design_type": {"type": "preset", "name": "doc"}}, corrections=0)
+        r = K.recette("canva", "CANVA_CREATE_DESIGN")
+        check("les corrections passées ne s'effacent pas", r["corrections"], 1)
+        check("la réutilisation est comptée", r["usages"], 2)
+        check_true("l'erreur d'origine est gardée", "must be an object" in r["erreur_evitee"])
+
+        # 41d. Rien d'incomplet n'est appris
+        check("sans action, rien", K.apprendre("canva", "", {"a": 1}), {})
+        check("sans arguments, rien", K.apprendre("canva", "X_Y", {}), {})
+        check("des arguments non-dict, rien", K.apprendre("canva", "X_Y", "bonjour"), {})
+
+        # 41e. Oublier une recette devenue fausse
+        check("une recette s'oublie", K.oublier("CANVA_CREATE_DESIGN"), 1)
+        check("elle n'est plus servie", K.recette("canva", "CANVA_CREATE_DESIGN"), {})
+    finally:
+        K.effacer_tout()
+
+    # 41f. Bout en bout : galérer une fois, puis ne plus jamais galérer
+    ACTIONS = [{"name": "CANVA_CREATE_DESIGN", "desc": "", "schema": {}}]
+    APPELS, INDICES = [], []
+
+    def faux_llm_json(sysm, usr):
+        INDICES.append("A DÉJÀ FONCTIONNÉ" in usr)
+        if "Tu construis les ARGUMENTS" in sysm:
+            if "A DÉJÀ FONCTIONNÉ" in usr or "ÉCHOUÉ" in usr:
+                return {"arguments": {"design_type": {"type": "preset", "name": "doc"},
+                                      "title": "Affiche"}}
+            return {"arguments": {"design_type": "doc", "title": "Affiche"}}   # la faute
+        return {"action": "CANVA_CREATE_DESIGN", "arguments": {}}
+
+    def faux_tool(action, args=None, **kw):
+        APPELS.append(dict(args or {}))
+        if isinstance((args or {}).get("design_type"), str):
+            return ('❌ Action échouée : {"message": "Invalid parameter: '
+                    'design_type must be an object"}')
+        return '✅ résultat : {"ok": true}'
+
+    vrais = (A._llm_json, A._tool, A._composio_list_actions, A._connected_accounts,
+             A._format_app_result, A._known_args)
+    K.effacer_tout()
+    try:
+        A._llm_json, A._tool = faux_llm_json, faux_tool
+        A._composio_list_actions = lambda s: ACTIONS
+        A._connected_accounts = lambda: [("canva", "u", "ACTIVE")]
+        A._format_app_result = lambda m, a, o, w: "✅ Design créé."
+        A._known_args = lambda action, message: None
+
+        APPELS.clear(); INDICES.clear()
+        A._generic_app_flow("fais-moi une affiche pour la fête", "canva")
+        check("1re fois : il faut corriger", len(APPELS), 2)
+        check("aucune recette au départ", any(INDICES), False)
+
+        APPELS.clear(); INDICES.clear()
+        A._generic_app_flow("fais-moi une affiche pour le concert", "canva")
+        check("2e fois : plus aucune correction", len(APPELS), 1)
+        check_true("la recette a bien été soufflée", any(INDICES))
+        check("la forme est la bonne du premier coup",
+              APPELS[0]["design_type"], {"type": "preset", "name": "doc"})
+        check("la difficulté d'origine est retenue",
+              K.recette("canva", "CANVA_CREATE_DESIGN")["corrections"], 1)
+
+        # Un appel qui ÉCHOUE ne doit rien apprendre
+        K.effacer_tout()
+        A._llm_json = lambda s, u: ({"arguments": {"design_type": "doc"}}
+                                    if "ARGUMENTS" in s
+                                    else {"action": "CANVA_CREATE_DESIGN", "arguments": {}})
+        A._generic_app_flow("fais-moi une affiche", "canva")
+        check("un échec n'apprend rien", K.recette("canva", "CANVA_CREATE_DESIGN"), {})
+    finally:
+        (A._llm_json, A._tool, A._composio_list_actions, A._connected_accounts,
+         A._format_app_result, A._known_args) = vrais
+        K.effacer_tout()
+
+
+def test_automatisations_heure():
+    """« Briefing du matin à 7h » partait à 9h heure de Paris : les planificateurs
+    lisaient l'heure du SERVEUR (UTC sur Render), pas celle de l'utilisateur.
+    Le jour aussi pouvait basculer — le bilan du dimanche soir tombait un lundi."""
+    import time as _t
+    from datetime import datetime, timedelta
+    from agent import horloge as H
+    from agent import automations as AU
+
+    # 40a. L'horloge rend bien l'heure de l'utilisateur, pas celle du serveur
+    check("le fuseau par défaut est celui de Lohan", H.FUSEAU, "Europe/Paris")
+    check_true("l'horloge répond", isinstance(H.maintenant(), datetime))
+    try:
+        from zoneinfo import ZoneInfo
+        attendu = datetime.now(ZoneInfo("Europe/Paris")).replace(tzinfo=None)
+        check_true("l'heure locale est la bonne à la minute près",
+                   abs((H.maintenant() - attendu).total_seconds()) < 60)
+        check_true("le décalage avec le serveur est mesuré",
+                   isinstance(H.decalage_h(), float))
+    except Exception:
+        pass       # sans base de fuseaux, on retombe sur l'heure serveur : c'est prévu
+
+    # Un fuseau invalide ne doit RIEN casser : on retombe sur l'heure du serveur
+    vrai_fuseau = H.FUSEAU
+    try:
+        H.FUSEAU = "Pas/UnFuseau"
+        check_true("un fuseau invalide ne plante pas", isinstance(H.maintenant(), datetime))
+    finally:
+        H.FUSEAU = vrai_fuseau
+
+    # 40b. Plus aucun planificateur ne lit l'heure du serveur
+    import inspect
+    for mod, nom in ((AU, "automations"), (__import__("agent.briefing", fromlist=["x"]), "briefing")):
+        src = inspect.getsource(mod)
+        boucle = src[src.find("async def"):]
+        check(f"{nom} n'utilise plus datetime.now() pour planifier",
+              "datetime.now()" in boucle, False)
+
+    # 40c. La prochaine exécution est annoncée en heure locale, et respecte les jours
+    vrais = (AU._load, AU._save)
+    try:
+        stock = []
+        AU._load = lambda: list(stock)
+        AU._save = lambda items: (stock.clear(), stock.extend(items))
+
+        a = AU.add("Veille tech", "résume l'actu", hour=12)
+        quand = AU.prochaine_execution(a)
+        check_true("une heure est annoncée", "à 12h" in quand)
+
+        # Seulement le dimanche → jamais annoncé un autre jour
+        dim = AU.add("Bilan", "bilan", hour=19, days=[6])
+        q2 = AU.prochaine_execution(dim)
+        check_true("le jour choisi est respecté", "à 19h" in q2)
+        jour = datetime.strptime(q2.split(" à ")[0].split(" ", 1)[1], "%d/%m")
+        # On revérifie le jour de la semaine en repartant de l'heure locale
+        cible = next(H.maintenant() + timedelta(days=d) for d in range(8)
+                     if (H.maintenant() + timedelta(days=d)).weekday() == 6
+                     and not ((H.maintenant() + timedelta(days=d)).date() == H.maintenant().date()
+                              and H.maintenant().hour >= 19))
+        check("c'est bien un dimanche", cible.weekday(), 6)
+
+        AU.update(a["id"], active=False)
+        check("une automatisation éteinte le dit",
+              AU.prochaine_execution(AU.list_all()[0]), "désactivée")
+        check("aucun jour coché → rien n'est promis",
+              AU.prochaine_execution({"active": True, "hour": 9, "days": []}),
+              "aucune (aucun jour coché)")
+        check("jours absents → tous les jours", AU._jours({"hour": 9}), list(range(7)))
+        check("jours vides → aucun jour", AU._jours({"days": []}), [])
+        check("les jours choisis sont respectés", AU._jours({"days": [1, 3]}), [1, 3])
+        # …et la création respecte le même contrat
+        vide = AU.add("Jamais", "rien", hour=9, days=[])
+        check("créer sans aucun jour ne coche pas tout", vide["days"], [])
+        check("créer sans préciser coche tous les jours",
+              AU.add("Tous", "rien", hour=9)["days"], list(range(7)))
+        AU.delete(vide["id"])
+
+        # 40d. Le diagnostic dit la VÉRITÉ sur l'état du planificateur
+        sauve = dict(AU.BATTEMENT)
+        try:
+            AU.BATTEMENT.update({"ts": 0.0, "demarre": 0.0})
+            check_true("jamais démarré : c'est dit",
+                       "jamais démarré" in AU.etat_planificateur()["resume"])
+            AU.BATTEMENT.update({"demarre": _t.time() - 9000, "ts": _t.time() - 2820})
+            etat = AU.etat_planificateur()
+            check_true("instance endormie : c'est dit", "ne tourne plus" in etat["resume"])
+            check_true("…et on explique quoi faire", "veille" in etat["resume"].lower())
+            check_true("…avec une solution concrète", "/health" in etat.get("solution", ""))
+            AU.BATTEMENT.update({"demarre": _t.time() - 9000, "ts": _t.time() - 12})
+            etat = AU.etat_planificateur()
+            check_true("tout va bien : c'est dit aussi", etat["resume"].startswith("✅"))
+            check_true("le fuseau est annoncé", "Europe/Paris" in etat["resume"])
+        finally:
+            AU.BATTEMENT.update(sauve)
+    finally:
+        (AU._load, AU._save) = vrais
+
+
+def test_memoire_des_documents():
+    """Nova relançait une recherche à CHAQUE demande du PEA : même travail, même risque
+    de retomber sur le mauvais fichier. Elle retient maintenant ce qu'elle a trouvé."""
+    from agent import documents as D
+
+    D.effacer_tout()
+    try:
+        # 39a. Retenir, retrouver — y compris sur une formulation différente
+        D.retenir("googlesheets", "pea", "11qGW0rhYzR4XWab0UKTLDVUU1S2_Mizn0eToOOZRph8",
+                  "Suivi_PEA_Lohan_Pere")
+        for demande in ("pea", "PEA", "p.e.a", "mon suivi pea", "pea pere et moi"):
+            ident, nom = D.retrouver("googlesheets", demande)
+            check(f"« {demande} » retrouve le PEA", nom, "Suivi_PEA_Lohan_Pere")
+        check("une autre app ne partage pas les raccourcis",
+              D.retrouver("notion", "pea"), ("", ""))
+        check("une demande sans rapport ne retrouve rien",
+              D.retrouver("googlesheets", "vacances"), ("", ""))
+        check("une demande trop courte ne retrouve rien", D.retrouver("googlesheets", "a"),
+              ("", ""))
+
+        # 39b. Le plus SPÉCIFIQUE gagne : « pea pere » ne doit pas être éclipsé par « pea »
+        D.retenir("googlesheets", "pea pere", "1PERE" + "x" * 30, "PEA_du_Pere")
+        check("le libellé le plus précis l'emporte",
+              D.retrouver("googlesheets", "mon pea pere")[1], "PEA_du_Pere")
+        check("le libellé général reste bon", D.retrouver("googlesheets", "pea")[1],
+              "Suivi_PEA_Lohan_Pere")
+
+        # 39c. Oublier un raccourci devenu faux
+        check("un raccourci s'oublie",
+              D.oublier("googlesheets", "11qGW0rhYzR4XWab0UKTLDVUU1S2_Mizn0eToOOZRph8"), 1)
+        check("il n'est plus retrouvé", D.retrouver("googlesheets", "pea")[1], "PEA_du_Pere")
+
+        # 39d. Rien d'incomplet n'est mémorisé
+        for app, quoi, ident in (("", "pea", "1abc"), ("googlesheets", "", "1abc"),
+                                 ("googlesheets", "pea", ""), ("googlesheets", "a", "1abc")):
+            check(f"refus de retenir ({app!r},{quoi!r},{ident!r})", D.retenir(app, quoi, ident, "x"), {})
+
+        # 39e. Un raccourci trop vieux n'est plus servi : mieux vaut revérifier
+        D.effacer_tout()
+        D.retenir("googlesheets", "vieux", "1VIEUX" + "y" * 30, "Ancien")
+        items = D._load()
+        items[0]["ts"] = 0.0                       # comme s'il datait de 1970
+        D._save(items)
+        check("un raccourci périmé est ignoré", D.retrouver("googlesheets", "vieux"), ("", ""))
+    finally:
+        D.effacer_tout()
+
+    # 39f. Bout en bout : chercher une fois, puis aller droit au but
+    APPELS = []
+    FICHIERS = [{"id": "11qGW0rhYzR4XWab0UKTLDVUU1S2_Mizn0eToOOZRph8",
+                 "name": "Suivi_PEA_Lohan_Pere"},
+                {"id": "1AAAaaaBBBcccDDDeeeFFFgggHHHiiiJJJkkkLLL", "name": "Budget vacances"}]
+    ACTIONS = [{"name": "GOOGLESHEETS_BATCH_GET", "desc": ""},
+               {"name": "GOOGLESHEETS_SEARCH_SPREADSHEETS", "desc": ""}]
+    mort = {"on": False}
+
+    def faux_tool(action, args=None, **kw):
+        APPELS.append(action)
+        if "SEARCH" in action.upper():
+            return "✅ résultat :\n" + json.dumps({"data": {"files": FICHIERS}})
+        if mort["on"] and (args or {}).get("spreadsheet_id") == FICHIERS[0]["id"]:
+            return '❌ Action échouée : {"message": "File not found"}'
+        return "✅ résultat :\n" + json.dumps({"valueRanges": [["Lohan", "valneva", 23]]})
+
+    vrais = (A._tool, A._composio_list_actions, A._connected_accounts,
+             A._build_args, A._llm_json, A._format_app_result)
+    D.effacer_tout()
+    try:
+        A._tool = faux_tool
+        A._composio_list_actions = lambda s: ACTIONS
+        A._connected_accounts = lambda: [("googlesheets", "u", "ACTIVE")]
+        A._build_args = lambda act, spec, msg, ctx="", error="": {
+            "spreadsheet_id": "YOUR_SPREADSHEET_ID"}
+        A._llm_json = lambda s, u: {"action": "GOOGLESHEETS_BATCH_GET", "arguments": {}}
+        A._format_app_result = lambda m, a, o, w: "Voici tes données."
+
+        APPELS.clear()
+        A._generic_app_flow("lit mon fichier pea sur google sheet", "googlesheets")
+        check("1er passage : recherche puis lecture", len(APPELS), 2)
+        check("le document est appris", D.retrouver("googlesheets", "pea")[1],
+              "Suivi_PEA_Lohan_Pere")
+
+        APPELS.clear()
+        A._generic_app_flow("lit mon fichier pea sur google sheet", "googlesheets")
+        check("2e passage : plus de recherche", APPELS, ["GOOGLESHEETS_BATCH_GET"])
+
+        APPELS.clear()
+        r = A._generic_app_flow("montre mon suivi pea", "googlesheets")
+        check("une autre formulation profite du raccourci", APPELS, ["GOOGLESHEETS_BATCH_GET"])
+        check_true("le raccourci est annoncé",
+                   any("je sais déjà où c'est" in (s.get("text") or "") for s in r["steps"]))
+
+        # Le document disparaît côté Google : on oublie et on rouvre les yeux
+        mort["on"] = True
+        APPELS.clear()
+        r = A._generic_app_flow("lit mon fichier pea sur google sheet", "googlesheets")
+        check_true("l'échec relance une recherche", "GOOGLESHEETS_SEARCH_SPREADSHEETS" in APPELS)
+        check_true("Nova le dit",
+                   any("ne répond plus" in (s.get("text") or "") for s in r["steps"]))
+        check("un identifiant qui échoue n'est pas ré-appris",
+              D.retrouver("googlesheets", "pea"), ("", ""))
+    finally:
+        (A._tool, A._composio_list_actions, A._connected_accounts,
+         A._build_args, A._llm_json, A._format_app_result) = vrais
+        D.effacer_tout()
+
+    # 39g. Le diagnostic dit la vérité sur la persistance
+    etat = A._etat_memoire()
+    check_true("le diagnostic tranche", isinstance(etat.get("persistante"), bool))
+    check_true("il explique où c'est stocké", bool(etat.get("ou")))
+    if not etat["persistante"]:
+        check_true("il prévient que tout sera perdu", "PAS persistante" in etat["resume"])
+        check_true("il donne la solution", "SUPABASE_DB_URL" in etat.get("solution", ""))
+
+
 def test_memoire_des_donnees():
     """Nova lisait le tableur PEA, affichait tous les chiffres, puis répondait « je ne
     suis pas conseiller financier » à « tu penses quoi de nos investissements ? ».
@@ -2332,7 +2661,9 @@ if __name__ == "__main__":
                test_raisonnement_cache, test_slug_connecte,
                test_modele_annonce, test_affichage_actu, test_enchainement_fichier,
                test_fournisseur_et_routage, test_garde_fou, test_calendrier_exact,
-               test_continuite_app, test_catalogue_complet, test_memoire_des_donnees):
+               test_continuite_app, test_catalogue_complet, test_memoire_des_donnees,
+               test_memoire_des_documents, test_automatisations_heure,
+               test_competences):
         try:
             fn()
         except Exception as e:

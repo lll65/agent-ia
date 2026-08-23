@@ -193,7 +193,8 @@ def run_once(dry_run: bool = False) -> dict:
 
     sent = False
     if fresh_alerts and not dry_run:
-        header = f"🔔 Alerte PEA — {datetime.now().strftime('%d/%m %H:%M')}\n\n"
+        from agent.horloge import maintenant
+        header = f"🔔 Alerte PEA — {maintenant().strftime('%d/%m %H:%M')}\n\n"
         body = header + "\n\n".join(fresh_alerts)
         body += "\n\n_Surveillance automatique • ajuste les seuils dans .env_"
         from bots.telegram_push import send_message

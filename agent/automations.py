@@ -17,6 +17,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from agent.horloge import maintenant
 from config import config
 
 logger = logging.getLogger(__name__)
@@ -101,7 +102,9 @@ def list_all() -> list:
 def add(titre: str, prompt: str, hour: int = 8, days=None, icon: str = "⚡") -> dict:
     item = {"id": uuid.uuid4().hex[:10], "titre": titre.strip()[:80],
             "prompt": prompt.strip()[:400], "hour": max(0, min(23, int(hour))),
-            "days": days or [0, 1, 2, 3, 4, 5, 6], "icon": icon, "active": True,
+            # `days or [...]` transformait une liste VIDE en « tous les jours ».
+            "days": list(range(7)) if days is None else list(days),
+            "icon": icon, "active": True,
             "last_run": None, "last_result": "", "runs": 0}
     with _LOCK:
         items = _load()
@@ -132,6 +135,65 @@ def delete(aid: str) -> bool:
 
 
 # ── Exécution ─────────────────────────────────────────────────────────────────
+def _jours(item: dict) -> list:
+    """Les jours cochés. Absent = tous les jours ; VIDE = aucun.
+
+    ⚠️ `item.get("days") or [0..6]` traitait une liste VIDE comme « pas de préférence » :
+    décocher tous les jours faisait tourner l'automatisation TOUS les jours, exactement
+    l'inverse de ce qu'on demandait.
+    """
+    j = item.get("days")
+    return list(range(7)) if j is None else list(j)
+
+
+def prochaine_execution(item: dict) -> str:
+    """Quand cette automatisation partira-t-elle, en heure de l'utilisateur ?"""
+    from datetime import timedelta
+    if not item.get("active", True):
+        return "désactivée"
+    now = maintenant()
+    jours = _jours(item)
+    h = int(item.get("hour", 8))
+    for d in range(8):
+        cible = (now + timedelta(days=d)).replace(hour=h, minute=0, second=0, microsecond=0)
+        if cible <= now or cible.weekday() not in jours:
+            continue
+        return cible.strftime("%a %d/%m à %Hh")
+    return "aucune (aucun jour coché)"
+
+
+def etat_planificateur() -> dict:
+    """Le planificateur tourne-t-il VRAIMENT, et à quelle heure ?
+
+    Répondre « oui il est démarré » ne suffit pas : sur une offre gratuite l'instance
+    s'endort, la boucle s'arrête, et rien ne part. Le battement le prouve ou l'infirme.
+    """
+    from agent.horloge import FUSEAU, decalage_h
+    vu = float(BATTEMENT.get("ts") or 0)
+    depuis = (time.time() - vu) if vu else None
+    items = list_all()
+    d = {"fuseau": FUSEAU, "heure_utilisateur": maintenant().strftime("%a %d/%m %H:%M"),
+         "decalage_avec_le_serveur_h": decalage_h(),
+         "automatisations": len(items),
+         "actives": sum(1 for i in items if i.get("active", True)),
+         "dernier_battement_il_y_a_s": round(depuis) if depuis is not None else None,
+         "prochaines": [{"titre": i.get("titre"), "quand": prochaine_execution(i)}
+                        for i in items if i.get("active", True)][:10]}
+    if not BATTEMENT.get("demarre"):
+        d["resume"] = "❌ Le planificateur n'a jamais démarré."
+    elif depuis is None or depuis > 300:
+        d["resume"] = ("⚠️ Le planificateur ne tourne plus : dernier passage il y a "
+                       f"{round((depuis or 0) / 60)} min. C'est le symptôme d'un hébergement "
+                       "gratuit qui met l'instance en veille faute de visites — pendant ce "
+                       "temps AUCUNE automatisation ne part.")
+        d["solution"] = ("Soit un hébergement qui ne s'endort pas, soit un réveil externe "
+                         "qui appelle /health toutes les 10 min (cron-job.org, gratuit).")
+    else:
+        d["resume"] = (f"✅ Le planificateur tourne (vu il y a {round(depuis)} s) et raisonne "
+                       f"en heure de {FUSEAU}.")
+    return d
+
+
 async def run_one(item: dict) -> str:
     """Exécute une automatisation via l'agent complet (mêmes capacités que le chat)."""
     from api.agent import _ask_agent
@@ -167,17 +229,28 @@ async def run_one(item: dict) -> str:
     return answer
 
 
+# Dernier passage du planificateur. ⚠️ Sur une offre gratuite, l'hébergeur ENDORT
+# l'instance après quelques minutes sans visite : la boucle s'arrête alors sans rien
+# dire, et les automatisations ne partent jamais. Ce battement est la seule preuve
+# vérifiable qu'elle tourne encore (voir /agent/diag/automatisations).
+BATTEMENT = {"ts": 0.0, "demarre": 0.0}
+
+
 async def scheduler_loop():
     """Boucle de fond : vérifie chaque minute s'il y a une automatisation à lancer."""
     logger.info("Automatisations : planificateur démarré.")
+    BATTEMENT["demarre"] = time.time()
     while True:
         try:
             await asyncio.sleep(60)
-            now = datetime.now()
+            BATTEMENT["ts"] = time.time()
+            # ⚠️ L'heure de L'UTILISATEUR, pas celle du serveur : le conteneur est en
+            # UTC, donc « à 7h » se déclenchait à 9h heure de Paris.
+            now = maintenant()
             for it in list_all():
                 if not it.get("active", True):
                     continue
-                if now.hour != int(it.get("hour", 8)) or now.weekday() not in it.get("days", list(range(7))):
+                if now.hour != int(it.get("hour", 8)) or now.weekday() not in _jours(it):
                     continue
                 last = it.get("last_run") or 0
                 if time.time() - last < 3600:      # déjà lancée cette heure-ci

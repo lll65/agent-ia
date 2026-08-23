@@ -1316,6 +1316,29 @@ def _trim_schema(schema, depth: int = 0):
     return keep
 
 
+def slug_de(action: str) -> str:
+    """« GOOGLESHEETS_BATCH_GET » → « googlesheets »."""
+    return (action or "").split("_", 1)[0].lower()
+
+
+def _indice_competence(app: str, action: str) -> str:
+    """La forme d'appel déjà éprouvée, s'il y en a une. Jamais d'exception."""
+    try:
+        from agent.competences import indice
+        return indice(app, action)
+    except Exception:
+        return ""
+
+
+def _apprendre_competence(app: str, action: str, args: dict, corrections: int,
+                          erreur: str) -> None:
+    try:
+        from agent.competences import apprendre
+        apprendre(app, action, args, corrections, erreur)
+    except Exception:
+        pass
+
+
 def _build_args(action: str, spec: dict, message: str, ctx: str = "", error: str = "") -> dict:
     """Construit les arguments d'une action à partir de son SCHÉMA réel.
     Étape séparée du choix de l'action : le modèle se concentre sur la forme attendue."""
@@ -1333,6 +1356,11 @@ def _build_args(action: str, spec: dict, message: str, ctx: str = "", error: str
            f"SCHÉMA :\n{schema}\n\nDemande : {message}")
     if ctx:
         usr += f"\nContexte récent : {ctx}"
+    # ── Ce qu'on a déjà appris sur CETTE action ──────────────────────────────
+    # Nova corrigeait ses arguments après l'erreur de l'API… puis jetait la correction.
+    # À la demande suivante : même erreur, même aller-retour, même attente. La forme qui
+    # a marché est soufflée au modèle, il n'a plus à la deviner.
+    usr += _indice_competence(slug_de(action), action)
     if error:
         usr += f"\n\n⚠️ L'appel précédent a ÉCHOUÉ avec cette erreur — corrige-la :\n{error[:600]}"
     out = _llm_json(sys, usr)
@@ -1723,6 +1751,17 @@ def _resoudre_identifiants(slug: str, action: str, args: dict, message: str, act
     if not recherche:
         return args, etapes, _refus_sans_identifiant(slug, a_resoudre, [])
     quoi = _mots_cles_fichier(message)
+    # ── Déjà vu ? On ne recherche pas deux fois le même document ─────────────
+    # Sans ça, Nova relançait une recherche à CHAQUE demande du PEA, recomparait les
+    # noms, et pouvait retomber sur un autre fichier. Elle refaisait le même travail avec
+    # le même risque, indéfiniment. Un raccourci périmé est oublié à la première erreur.
+    connu_id, connu_nom = _document_connu(slug, quoi)
+    if connu_id and not _est_emplacement(action, a_resoudre):
+        etapes.append({"kind": "obs", "tool": slug,
+                       "text": f"je sais déjà où c'est : {connu_nom or connu_id}"})
+        for k in a_resoudre:
+            args[k] = connu_id
+        return args, etapes, ""
     etapes.append({"kind": "action", "tool": slug, "label": f"{recherche} · « {quoi} »"})
     brut = _tool(recherche, {"query": quoi} if "SEARCH" in recherche.upper() else {})
     candidats = _identifiants_trouves(str(brut))
@@ -1756,8 +1795,43 @@ def _resoudre_identifiants(slug: str, action: str, args: dict, message: str, act
                    "text": f"trouvé : {nom or ident} ({len(candidats)} document(s) examiné(s))"})
     for k in a_resoudre:
         args[k] = ident
+    # ⚠️ On ne mémorise PAS ici : à ce stade on a seulement trouvé un nom qui ressemble,
+    # pas encore la preuve que le document s'ouvre. Retenir trop tôt, c'était s'exposer à
+    # servir éternellement un identifiant mort. Le souvenir est pris après l'appel réussi.
+    if not _est_emplacement(action, a_resoudre):
+        _A_RETENIR[slug] = (quoi, ident, nom)
     logger.info(f"[apps] identifiant résolu pour {action} : « {nom} » → {ident[:12]}…")
     return args, etapes, ""
+
+
+# Document identifié pendant CE tour, en attente de la preuve qu'il s'ouvre vraiment.
+_A_RETENIR: dict = {}
+
+
+def _document_connu(app: str, quoi: str) -> tuple:
+    """Un document déjà identifié pour cette demande ? ("", "") sinon — jamais d'exception."""
+    try:
+        from agent.documents import retrouver
+        return retrouver(app, quoi)
+    except Exception:
+        return ("", "")
+
+
+def _retenir_document(app: str, quoi: str, ident: str, nom: str) -> None:
+    try:
+        from agent.documents import retenir
+        retenir(app, quoi, ident, nom)
+    except Exception:
+        pass
+
+
+def _oublier_document(app: str, ident: str) -> None:
+    """Le raccourci s'est révélé faux : on le supprime plutôt que de s'entêter."""
+    try:
+        from agent.documents import oublier
+        oublier(app, ident)
+    except Exception:
+        pass
 
 
 def _refus_sans_identifiant(slug: str, champs: list, candidats: list) -> str:
@@ -2264,9 +2338,30 @@ def _generic_app_flow(message: str, slug: str):
     obs = _tool(action, args)
     steps.append({"kind": "obs", "tool": slug, "text": str(obs)[:180]})
 
+    # ── UN RACCOURCI PÉRIMÉ NE DOIT JAMAIS COINCER ───────────────────────────
+    # Le document mémorisé a pu être renommé, supprimé, ou ses droits retirés. Dans ce
+    # cas l'appel échoue : on oublie le raccourci et on RECHERCHE, au lieu de resservir
+    # éternellement la même erreur. Se souvenir ne doit jamais valoir s'entêter.
+    if _looks_like_failure(obs) and any(
+            _est_champ_identifiant(k) for k in (args or {})):
+        vieux = next((v for k, v in args.items() if _est_champ_identifiant(k)), "")
+        if vieux and _document_connu(slug, _mots_cles_fichier(message))[0] == vieux:
+            _oublier_document(slug, vieux)
+            steps.append({"kind": "obs", "tool": slug,
+                          "text": "ce document ne répond plus, je le recherche à nouveau"})
+            args2 = {k: ("" if _est_champ_identifiant(k) else v) for k, v in args.items()}
+            args2, etapes2, refus2 = _resoudre_identifiants(slug, action, args2, message, actions)
+            steps.extend(etapes2)
+            if refus2:
+                return {"steps": steps, "done_answer": refus2}
+            args = args2
+            obs = _tool(action, args)
+            steps.append({"kind": "obs", "tool": slug, "text": str(obs)[:180]})
+
     # ── AUTO-CORRECTION : on renvoie l'erreur de l'API au constructeur d'arguments,
     # qui la lit et corrige (jusqu'à 2 tentatives).
     tries = 0
+    premiere_erreur = str(obs) if (_looks_like_failure(obs) and _is_param_error(obs)) else ""
     while _looks_like_failure(obs) and _is_param_error(obs) and tries < 2:
         tries += 1
         new_args = _build_args(action, spec, message, ctx, error=str(obs))
@@ -2278,7 +2373,15 @@ def _generic_app_flow(message: str, slug: str):
         steps.append({"kind": "obs", "tool": slug, "text": str(obs)[:180]})
 
     if _looks_like_failure(obs):
+        _A_RETENIR.pop(slug, None)      # l'appel a échoué : ce document ne s'apprend pas
         return {"steps": steps, "done_answer": _honest_no_access(action, obs)}
+    # L'appel a RÉUSSI : maintenant seulement, on sait que ce document est le bon.
+    appris = _A_RETENIR.pop(slug, None)
+    if appris:
+        _retenir_document(slug, *appris)
+    # …et on garde la RECETTE : la forme d'appel qui a marché. Si elle a demandé des
+    # corrections, c'est justement celle qu'il ne faut plus jamais avoir à retrouver.
+    _apprendre_competence(slug, action, args, tries, premiere_erreur)
     is_write = any(k in action for k in ("CREATE", "UPDATE", "DELETE", "SEND", "ADD", "POST", "PATCH"))
     return {"steps": steps, "done_answer": _format_app_result(message, action, obs, is_write)}
 
@@ -2995,6 +3098,68 @@ async def diag_llm(key: str = ""):
             "fournisseurs": res}
 
 
+def _etat_memoire() -> dict:
+    """La mémoire de Nova survit-elle à un redéploiement — oui ou non ?
+
+    ⚠️ Sur Render, le disque du conteneur est REMIS À ZÉRO à chaque redéploiement. Sans
+    Supabase, l'historique (SQLite) et le profil (data/profile.json) repartent donc de
+    zéro à chaque mise en ligne : Nova « oublie » tout, et c'est invisible tant qu'on ne
+    le dit pas. Mieux vaut l'annoncer que de promettre une mémoire qui n'existe pas.
+    """
+    from agent.profile import list_facts, _FILE as FICHIER_PROFIL
+    mem = get_memory()
+    persistant = bool(getattr(mem, "backend", None))
+    try:
+        faits = len(list_facts())
+    except Exception:
+        faits = 0
+    _CAP = 500
+    try:
+        messages = len(mem.recall_recent(_PROFILE_ID, _CAP) or [])
+    except Exception:
+        messages = 0
+    # Ne pas annoncer un plafond de lecture comme s'il s'agissait du compte réel.
+    combien = f"au moins {messages}" if messages >= _CAP else str(messages)
+    d = {"persistante": persistant,
+         "ou": "Supabase (Postgres)" if persistant else "disque du conteneur",
+         "faits_memorises": faits, "messages_memorises": combien,
+         "recherche_semantique": bool(getattr(getattr(mem, "chroma", None), "available", False)
+                                      or persistant)}
+    if persistant:
+        d["resume"] = (f"✅ Ma mémoire est persistante : {faits} fait(s) et {combien} message(s) "
+                       "sont dans Supabase, ils survivent aux redéploiements.")
+    else:
+        d["resume"] = ("⚠️ Ma mémoire N'EST PAS persistante. Elle est sur le disque du "
+                       "conteneur, que Render remet à zéro à chaque redéploiement : "
+                       f"les {faits} fait(s) et {combien} message(s) que j'ai seront perdus.")
+        d["solution"] = ("Crée un projet gratuit sur supabase.com → Project Settings → "
+                         "Database → Connection string (URI), et mets-la dans la variable "
+                         "SUPABASE_DB_URL sur Render. Rien d'autre à changer.")
+        d["fichiers_ephemeres"] = [str(FICHIER_PROFIL), getattr(config, "DB_PATH", "data/memory.db")]
+    return d
+
+
+@router.get("/diag/memoire")
+async def diag_memoire(key: str = ""):
+    """Dit franchement si la mémoire de Nova survit à un redéploiement.
+
+    Ouvre /agent/diag/memoire?key=TA_CLE
+    """
+    _check_key(key)
+    return _etat_memoire()
+
+
+@router.get("/diag/automatisations")
+async def diag_automatisations(key: str = ""):
+    """Les automatisations partent-elles vraiment, et à la bonne heure ?
+
+    Ouvre /agent/diag/automatisations?key=TA_CLE
+    """
+    _check_key(key)
+    from agent.automations import etat_planificateur
+    return etat_planificateur()
+
+
 @router.get("/diag/composio")
 async def diag_composio(key: str = ""):
     """Auto-test Composio : appelle l'API et renvoie la réponse BRUTE (pour diagnostic).
@@ -3366,6 +3531,63 @@ async def profile_delete(id: str = "", key: str = ""):
         return {"ok": delete_fact(id)}
     clear_all()
     return {"ok": True}
+
+
+@router.get("/documents")
+async def documents_get(key: str = ""):
+    """Les documents que Nova a appris à retrouver toute seule.
+
+    Ouvre /agent/documents?key=TA_CLE — tu vois exactement ce qu'elle associe à quoi,
+    et tu peux corriger si elle a retenu le mauvais fichier.
+    """
+    _check_key(key)
+    from agent.documents import lister
+    import time as _t
+    return {"raccourcis": [
+        {"app": d.get("app"), "quand_tu_dis": d.get("quoi"), "elle_ouvre": d.get("nom"),
+         "id": (d.get("id") or "")[:14] + "…",
+         "vu_il_y_a_jours": round((_t.time() - float(d.get("ts") or 0)) / 86400, 1)}
+        for d in lister()]}
+
+
+@router.delete("/documents")
+async def documents_delete(app: str = "", id: str = "", key: str = ""):
+    """Fait oublier un raccourci (ou tous). Utile si Nova a retenu le mauvais document."""
+    _check_key(key)
+    from agent.documents import oublier, effacer_tout
+    if not app and not id:
+        effacer_tout()
+        return {"ok": True, "oublies": "tous"}
+    return {"ok": True, "oublies": oublier(app, id)}
+
+
+@router.get("/competences")
+async def competences_get(key: str = ""):
+    """Ce que Nova a appris à faire toute seule — les formes d'appel qui marchent.
+
+    Ouvre /agent/competences?key=TA_CLE. Les plus durement acquises sont en haut.
+    Seule la FORME est stockée : aucun contenu de mail, de note ou de titre.
+    """
+    _check_key(key)
+    from agent.competences import lister
+    import time as _t
+    return {"competences": [
+        {"action": c.get("action"), "app": c.get("app"),
+         "apprise_apres_corrections": c.get("corrections"), "reutilisee": c.get("usages"),
+         "forme": c.get("forme"), "erreur_evitee": (c.get("erreur_evitee") or "")[:160],
+         "vue_il_y_a_jours": round((_t.time() - float(c.get("ts") or 0)) / 86400, 1)}
+        for c in lister()]}
+
+
+@router.delete("/competences")
+async def competences_delete(action: str = "", key: str = ""):
+    """Fait oublier une recette (ou toutes) — si l'API a changé de format."""
+    _check_key(key)
+    from agent.competences import oublier, effacer_tout
+    if not action:
+        effacer_tout()
+        return {"ok": True, "oubliees": "toutes"}
+    return {"ok": True, "oubliees": oublier(action)}
 
 
 class TitleReq(BaseModel):
