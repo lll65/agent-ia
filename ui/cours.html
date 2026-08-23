@@ -17,7 +17,14 @@
   @keyframes f2{ 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(-6vw,5vh) scale(.9)} }
   body.rec #aurora{ opacity:.5; }
 
-  .app{ position:relative; z-index:2; max-width:840px; margin:0 auto; padding:18px 16px 60px; }
+  /* ⚠️ Encoche et barre d'accueil : sans ces marges, l'en-tête et le chronomètre
+     passaient SOUS la barre d'état de l'iPhone. Cette page s'utilise en cours, sur le
+     téléphone : c'est justement là qu'il ne faut pas avoir à deviner où on en est. */
+  .app{ position:relative; z-index:2; max-width:840px; margin:0 auto;
+        padding-top:max(18px,env(safe-area-inset-top));
+        padding-right:max(16px,env(safe-area-inset-right));
+        padding-bottom:calc(60px + env(safe-area-inset-bottom));
+        padding-left:max(16px,env(safe-area-inset-left)); }
   header{ display:flex; align-items:center; justify-content:space-between; gap:10px; padding-bottom:18px; }
   .logo{ font-weight:800; font-size:22px; letter-spacing:.3em;
          background:linear-gradient(90deg,var(--neon),var(--neon2)); -webkit-background-clip:text;

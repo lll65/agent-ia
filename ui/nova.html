@@ -144,7 +144,11 @@
                        100%{ transform:scale(1.08); filter:brightness(1.25) } }
   @keyframes wakeHalo{ 0%{ transform:scale(1); opacity:.5 } 100%{ transform:scale(1.35); opacity:0 } }
   @media (max-width:620px){ .sleeper{ width:104px; height:104px } }
-  .modal{ position:fixed; inset:0; z-index:9; background:rgba(0,0,0,.6); display:none; place-items:center; padding:20px; } .modal.show{ display:grid; }
+  /* Même correction que pour le menu : l'encoche n'était gérée qu'en app installée. */
+  .modal{ position:fixed; inset:0; z-index:9; background:rgba(0,0,0,.6); display:none; place-items:center;
+          padding:max(20px,env(safe-area-inset-top)) max(20px,env(safe-area-inset-right))
+                  max(20px,env(safe-area-inset-bottom)) max(20px,env(safe-area-inset-left));
+          overflow-y:auto; } .modal.show{ display:grid; }
   .card{ background:#0d0d1a; border:1px solid var(--stroke); border-radius:18px; padding:22px; max-width:420px; width:100%; }
   .card h3{ margin-bottom:6px; } .card p{ color:var(--dim); font-size:13px; margin-bottom:14px; }
   /* En-tête de fenêtre : titre à gauche, croix alignée à droite */
@@ -253,7 +257,11 @@
   .sidebar{ position:fixed; top:0; left:0; bottom:0; width:min(300px,84vw); z-index:12;
     background:linear-gradient(180deg, rgba(16,16,32,.96), rgba(8,8,18,.98)); backdrop-filter:blur(18px);
     border-right:1px solid var(--stroke); transform:translateX(-100%); transition:transform .35s cubic-bezier(.2,.9,.3,1);
-    display:flex; flex-direction:column; padding:14px 12px; gap:12px; }
+    display:flex; flex-direction:column; gap:12px;
+    /* L'encoche n'était gérée ici que pour l'app INSTALLÉE. Dans Safari, où Lohan
+       ouvre Nova, le haut du menu passait donc sous la barre d'état. */
+    padding:max(14px,env(safe-area-inset-top)) 12px max(14px,env(safe-area-inset-bottom))
+            max(12px,env(safe-area-inset-left)); }
   .sidebar.show{ transform:none; box-shadow:24px 0 70px rgba(0,0,0,.55); }
   .sbhead{ display:flex; align-items:center; justify-content:space-between; padding:2px 4px; }
   .sbhead .b{ font-weight:800; letter-spacing:.28em; font-size:16px; background:linear-gradient(90deg,var(--neon),var(--neon2)); -webkit-background-clip:text; background-clip:text; color:transparent; }
@@ -307,17 +315,37 @@
   }
   /* ═══ MOBILE : compact, une seule rangée de suggestions, hauteur dvh ═══ */
   @media (max-width:620px){
-    .app{ height:100dvh; padding:8px 10px max(8px,env(safe-area-inset-bottom)); }
+    /* ⚠️ La forme COURTE de `padding` remettait padding-top à 8px et annulait la
+       protection contre l'encoche définie plus haut : sur iPhone (mini surtout), le
+       logo et les boutons passaient SOUS la barre d'état. Invisible sur un écran
+       d'ordinateur, où safe-area-inset-top vaut 0. On écrit donc chaque côté. */
+    .app{ height:100dvh;
+          padding-top:max(8px,env(safe-area-inset-top));
+          padding-right:max(10px,env(safe-area-inset-right));
+          padding-bottom:max(8px,env(safe-area-inset-bottom));
+          padding-left:max(10px,env(safe-area-inset-left)); }
     .logo{ font-size:19px; letter-spacing:.24em } .logo small{ font-size:8.5px }
     .usage{ display:none }
     header{ padding:2px 2px 8px } .ic{ width:36px; height:36px; font-size:14px; border-radius:10px }
     /* suggestions : rangée unique qui défile horizontalement au lieu de 4 lignes */
-    .chips{ flex-wrap:nowrap; overflow-x:auto; gap:6px; padding:1px 0 8px; scrollbar-width:none; -webkit-overflow-scrolling:touch }
+    .chips{ flex-wrap:nowrap; overflow-x:auto; gap:6px; padding:1px 0 8px; scrollbar-width:none; -webkit-overflow-scrolling:touch;
+            /* La rangée était tranchée net en plein mot au bord de l'écran : on ne
+               devinait pas qu'elle défile, ça passait pour un défaut d'affichage.
+               Un fondu sur les 22 derniers pixels le dit sans ajouter de bouton. */
+            -webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 22px),transparent);
+            mask-image:linear-gradient(90deg,#000 calc(100% - 22px),transparent);
+            scroll-snap-type:x proximity; }
     .chips::-webkit-scrollbar{ display:none }
+    .chip{ scroll-snap-align:start }
     .chip{ flex:0 0 auto; font-size:12px; padding:6px 11px }
     .bubble{ font-size:14.5px; padding:11px 13px } .col,.me .bubble{ max-width:88% }
-    .composer{ gap:7px; padding-top:6px }
+    .composer{ gap:6px; padding-top:6px }
     .composer textarea{ padding:11px 13px; font-size:16px }   /* 16px = pas de zoom auto iOS */
+    /* Sur 375 px, trombone + micro + envoi mangeaient 160 px : il ne restait que 196 px
+       pour écrire, soit à peine plus de la moitié de la largeur. On resserre les boutons
+       (44 px reste la cible tactile minimale recommandée) et la saisie double presque. */
+    .composer .ic, .composer .micbtn, .composer .send{ width:44px; flex:0 0 44px; }
+    .composer textarea{ min-width:0; }
     .send,.micbtn{ width:46px; border-radius:13px; font-size:17px }
     .hint{ font-size:12.5px; padding:0 18px }
   }
