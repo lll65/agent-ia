@@ -99,9 +99,12 @@ def list_all() -> list:
         return _load()
 
 
-def add(titre: str, prompt: str, hour: int = 8, days=None, icon: str = "⚡") -> dict:
+def add(titre: str, prompt: str, hour: int = 8, days=None, icon: str = "⚡",
+        minute: int = 0) -> dict:
     item = {"id": uuid.uuid4().hex[:10], "titre": titre.strip()[:80],
             "prompt": prompt.strip()[:400], "hour": max(0, min(23, int(hour))),
+            # Les minutes manquaient : on ne pouvait planifier qu'a l'heure pile.
+            "minute": max(0, min(59, int(minute or 0))),
             # `days or [...]` transformait une liste VIDE en « tous les jours ».
             "days": list(range(7)) if days is None else list(days),
             "icon": icon, "active": True,
@@ -135,6 +138,10 @@ def delete(aid: str) -> bool:
 
 
 # ── Exécution ─────────────────────────────────────────────────────────────────
+_JOURS_FR = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
+_JOURS_COURT = ("L", "M", "M", "J", "V", "S", "D")
+
+
 def _jours(item: dict) -> list:
     """Les jours cochés. Absent = tous les jours ; VIDE = aucun.
 
@@ -153,12 +160,19 @@ def prochaine_execution(item: dict) -> str:
         return "désactivée"
     now = maintenant()
     jours = _jours(item)
-    h = int(item.get("hour", 8))
+    h, mi = int(item.get("hour", 8)), int(item.get("minute", 0) or 0)
     for d in range(8):
-        cible = (now + timedelta(days=d)).replace(hour=h, minute=0, second=0, microsecond=0)
+        cible = (now + timedelta(days=d)).replace(hour=h, minute=mi, second=0, microsecond=0)
         if cible <= now or cible.weekday() not in jours:
             continue
-        return cible.strftime("%a %d/%m à %Hh")
+        # strftime rend « Mon », « Sun »… : la locale du conteneur est anglaise et on ne
+        # peut pas compter dessus. On nomme les jours nous-mêmes.
+        quand = f"{_JOURS_FR[cible.weekday()]} {cible.strftime('%d/%m à %Hh%M')}"
+        if d == 0:
+            quand = f"aujourd'hui à {cible.strftime('%Hh%M')}"
+        elif d == 1:
+            quand = f"demain à {cible.strftime('%Hh%M')}"
+        return quand
     return "aucune (aucun jour coché)"
 
 
@@ -250,10 +264,20 @@ async def scheduler_loop():
             for it in list_all():
                 if not it.get("active", True):
                     continue
-                if now.hour != int(it.get("hour", 8)) or now.weekday() not in _jours(it):
+                if now.weekday() not in _jours(it):
+                    continue
+                # ⚠️ La boucle ne passe que toutes les 60 s : exiger la minute EXACTE
+                # ferait rater le rendez-vous une fois sur deux. On accepte donc les
+                # deux minutes qui suivent l'heure prevue, et on se protege du doublon
+                # par la date du dernier lancement.
+                cible = now.replace(hour=int(it.get("hour", 8)),
+                                    minute=int(it.get("minute", 0) or 0),
+                                    second=0, microsecond=0)
+                retard = (now - cible).total_seconds()
+                if not (0 <= retard < 120):
                     continue
                 last = it.get("last_run") or 0
-                if time.time() - last < 3600:      # déjà lancée cette heure-ci
+                if time.time() - last < 300:       # déjà lancée à l'instant
                     continue
                 await run_one(it)
         except asyncio.CancelledError:

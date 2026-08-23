@@ -3526,6 +3526,7 @@ class AutoReq(BaseModel):
     titre: Optional[str] = None
     prompt: Optional[str] = None
     hour: Optional[int] = 8
+    minute: Optional[int] = 0
     days: Optional[list] = None
     icon: Optional[str] = "⚡"
     active: Optional[bool] = None
@@ -3536,8 +3537,11 @@ class AutoReq(BaseModel):
 async def automations_list(key: str = ""):
     """Liste les automatisations + les modèles proposés."""
     _check_key(key)
-    from agent.automations import list_all, TEMPLATES
-    return {"items": list_all(), "templates": TEMPLATES}
+    from agent.automations import list_all, TEMPLATES, prochaine_execution
+    # ⚠️ « Je ne sais pas où elle apparaît » : une automatisation créée ne disait NULLE
+    # PART quand elle partirait. On joint donc la prochaine échéance à chaque ligne.
+    items = [{**it, "prochaine": prochaine_execution(it)} for it in list_all()]
+    return {"items": items, "templates": TEMPLATES}
 
 
 @router.post("/automations")
@@ -3546,8 +3550,11 @@ async def automations_add(req: AutoReq):
     _check_key(req.key or "")
     if not (req.titre and req.prompt):
         raise HTTPException(status_code=400, detail="titre et prompt requis.")
-    from agent.automations import add
-    return add(req.titre, req.prompt, req.hour or 8, req.days, req.icon or "⚡")
+    from agent.automations import add, prochaine_execution
+    item = add(req.titre, req.prompt, req.hour or 8, req.days, req.icon or "⚡",
+               req.minute or 0)
+    # On renvoie l'échéance : l'utilisateur doit voir tout de suite QUAND ça partira.
+    return {**item, "prochaine": prochaine_execution(item)}
 
 
 @router.post("/automations/toggle")
