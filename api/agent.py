@@ -38,21 +38,67 @@ _SMALLTALK = {
 
 # Faits personnels : l'utilisateur se présente / donne une info sur lui.
 # → réponse naturelle courte + mémorisation. JAMAIS d'analyse ni de rapport.
+# Une CONSIGNE explicite de mémoriser. Elle prime sur tout le reste : si l'utilisateur
+# demande « tu peux retenir que je me lève à 6h30 ? », le point d'interrogation ne doit
+# pas faire jeter la phrase — c'est justement là qu'il tient le plus à être écouté.
+_ORDRE_MEMOIRE = (
+    r"\b(retiens|retenir|note|noter|m[ée]morise|m[ée]moriser|souviens[- ]toi|"
+    r"rappelle[- ]toi|garde en t[êe]te|n'oublie pas)\b",
+)
 _PERSONAL_RE = (
+    # Ce que je suis / ce que je fais
     r"\bj'?ai\s+\d{1,3}\s*ans?\b", r"\bje\s+m'?appelle\b", r"\bmon\s+(pr[ée]nom|nom)\s+(c'?est|est)\b",
-    r"\bj'?habite\b", r"\bje\s+vis\s+[àa]\b", r"\bje\s+suis\s+(un|une|en|au|à|a|étudiant|etudiant|lycéen|lyceen|développeur|developpeur)\b",
-    r"\bje\s+travaille\b", r"\bj'?aime\b", r"\bje\s+pr[ée]f[èe]re\b", r"\bje\s+d[ée]teste\b",
-    r"\bmon\s+(anniversaire|objectif|projet|but)\b", r"\bje\s+fais\s+(du|de la|des)\b",
+    r"\bj'?habite\b", r"\bje\s+vis\s+[àa]\b",
+    r"\bje\s+suis\s+(un|une|en|au|à|a|étudiant|etudiant|lycéen|lyceen|développeur|developpeur|"
+    r"allergique|passionn[ée]|n[ée]|inscrit|abonn[ée]|majeur|mineur|gaucher|droitier)\b",
+    r"\bje\s+(travaille|bosse|[ée]tudie|joue|pratique|cherche|voudrais|veux devenir)\b",
+    r"\bj'?aime\b", r"\bje\s+pr[ée]f[èe]re\b", r"\bje\s+d[ée]teste\b", r"\bje\s+n'?aime pas\b",
+    r"\bje\s+fais\s+(du|de la|des)\b", r"\bje\s+me\s+l[èe]ve\b", r"\bje\s+me\s+couche\b",
+    # ⚠️ Les tournures POSSESSIVES manquaient entièrement : « ma sœur s'appelle Emma »,
+    # « mes parents sont divorcés », « mon père et moi », « j'ai un chien »… étaient
+    # ignorées alors que ce sont les confidences les plus courantes.
+    r"\bm(on|a|es)\s+(p[èe]re|m[èe]re|parents?|fr[èe]re|s(œ|oe)ur|famille|copine|copain|"
+    r"petit[e]?[- ]ami[e]?|ami[e]?s?|chien|chat|prof|classe|lyc[ée]e|coll[èe]ge|[ée]cole|"
+    r"boulot|travail|anniversaire|objectif|objectifs|projet|projets|but|r[êe]ve|"
+    r"emploi du temps|niveau|taille|poids|voiture|quartier|ville)\b",
+    r"\bj'?ai\s+(un|une|des|deux|trois)\s+(fr[èe]re|s(œ|oe)ur|chien|chat|enfant|"
+    r"voiture|permis|projet|examen|contr[ôo]le)\w*\b",
 )
 
 
-def _is_personal_fact(message: str) -> bool:
+def _est_ordre_memoire(message: str) -> bool:
+    """L'utilisateur demande-t-il EXPLICITEMENT de retenir quelque chose ?"""
     import re
-    m = message.strip().lower()
-    if len(m.split()) > 25:
+    m = (message or "").strip().lower()
+    return any(re.search(p, m) for p in _ORDRE_MEMOIRE)
+
+
+def _is_personal_fact(message: str) -> bool:
+    """Cette phrase contient-elle quelque chose de durable à retenir sur l'utilisateur ?
+
+    ⚠️ Trois règles faisaient perdre l'essentiel :
+      - tout message contenant « ? » était jeté, y compris « tu peux retenir que… ? » ;
+      - seules les tournures en « je… » comptaient, jamais « ma sœur », « mes parents » ;
+      - au-delà de 25 mots, plus rien n'était retenu.
+    """
+    import re
+    m = (message or "").strip().lower()
+    if not m:
         return False
-    if "?" in m:
-        return False  # une question n'est pas une simple confidence
+    # Un ORDRE de mémoriser l'emporte sur tout, ponctuation comprise.
+    if _est_ordre_memoire(m):
+        return True
+    # Une demande adressée à une app est une COMMANDE, pas une confidence :
+    # « ouvre mon agenda » contient « mon agenda » sans rien dire de l'utilisateur.
+    if app_courante(m):
+        return False
+    if len(m.split()) > 45:          # au-delà, c'est une demande, pas une confidence
+        return False
+    # Une question reste écartée — sauf si elle affirme quand même quelque chose
+    # (« j'ai 17 ans, tu peux m'aider ? » parle bien de lui).
+    interroge = m.endswith("?") and not re.search(r"\b(j'?ai|je suis|je m'appelle|m(on|a|es))\b", m)
+    if interroge:
+        return False
     return any(re.search(p, m) for p in _PERSONAL_RE)
 
 
@@ -120,11 +166,23 @@ def _remember_fact(message: str) -> None:
         get_memory().remember(_PROFILE_ID, "user", message.strip()[:200])
     except Exception:
         pass
+    faits = []
     try:
         from agent.profile import learn_from
-        learn_from(message)
+        faits = learn_from(message) or []
     except Exception:
-        pass
+        faits = []
+    # ⚠️ learn_from a besoin d'un modèle pour reformuler le fait. Quand toutes les offres
+    # gratuites sont saturées — ce qui arrive souvent — il ne rend rien, et la confidence
+    # était perdue alors que l'utilisateur venait de la donner. On garde alors sa phrase
+    # telle quelle : mal rangée vaut infiniment mieux qu'oubliée.
+    if not faits:
+        try:
+            from agent.profile import add_fact
+            add_fact("autre", message.strip()[:160])
+            logger.info("[profil] aucun modèle pour reformuler — phrase gardée telle quelle.")
+        except Exception:
+            pass
 
 
 def _smalltalk_reply(message: str) -> str:
@@ -2698,6 +2756,11 @@ async def ask_stream(q: str = "", key: str = ""):
         yield_acc = [""]
         try:
             _log_activity(message)   # visible immédiatement dans la constellation
+            # ⚠️ Retenir ce qu'il dit de LUI, quel que soit le chemin pris ensuite.
+            # L'apprentissage ne tournait que sur la voie « discussion » : dès que la
+            # phrase partait vers une app, une recherche ou l'agent, la confidence était
+            # perdue. « mon père et moi on a un PEA » n'était jamais retenu.
+            await _off(_remember_fact, message)
             # Le serveur annonce ses VRAIES décisions de routage → sous-bulles authentiques
             # (et non des mots-clés extraits de la question, qui simulaient un raisonnement).
             # Les décisions arrivent UNE PAR UNE, en français clair. Elles partaient
@@ -2709,7 +2772,6 @@ async def ask_stream(q: str = "", key: str = ""):
                 await asyncio.sleep(0.3)      # le temps de les lire défiler
             # 1) Chitchat / info personnelle → streamé directement (aucun outil)
             if _is_smalltalk(message):
-                _remember_fact(message)
                 async for tok in _stream_llm(_smalltalk_messages(message), 0.6, niveau="rapide"):
                     yield sse({"type": "token", "t": tok})
                 yield sse({"type": "answer", "text": yield_acc[0], "final": True})
@@ -3098,6 +3160,34 @@ async def diag_llm(key: str = ""):
             "fournisseurs": res}
 
 
+def _conseil_supabase(erreur: str) -> str:
+    """Traduire l'erreur Postgres en geste concret, plutôt qu'en jargon anglais."""
+    e = (erreur or "").lower()
+    if "network is unreachable" in e or "cannot assign requested address" in e or "-2" in e:
+        return ("C'est le piège de l'IPv6 : la chaîne « Direct connection » de Supabase "
+                "n'existe qu'en IPv6, or Render ne sort qu'en IPv4 — la base est donc "
+                "hors d'atteinte. Sur Supabase, bouton vert « Connect » en haut, prends "
+                "« Session pooler » : son adresse finit par .pooler.supabase.com et elle, "
+                "elle est joignable. Remplace SUPABASE_DB_URL par celle-là.")
+    if "password authentication failed" in e or "auth" in e:
+        return ("Le mot de passe est refusé. Soit [YOUR-PASSWORD] est resté tel quel dans "
+                "l'URL, soit il a changé : Supabase → Settings → Database → "
+                "« Reset database password », puis remets l'URL complète sur Render.")
+    if "does not exist" in e and "database" in e:
+        return ("La base nommée dans l'URL n'existe pas — le nom après le dernier « / » "
+                "doit être « postgres ».")
+    if "timeout" in e or "timed out" in e:
+        return ("La base ne répond pas à temps. Vérifie que le projet Supabase n'est pas "
+                "en pause (les projets gratuits s'endorment après une semaine sans usage) : "
+                "ouvre son tableau de bord pour le réveiller.")
+    if "psycopg2" in e:
+        return "Ajoute psycopg2-binary aux dépendances, puis redéploie."
+    if "ssl" in e:
+        return "Ajoute « ?sslmode=require » à la fin de l'URL."
+    return ("Vérifie l'URL sur Supabase (bouton vert « Connect » → « Session pooler », "
+            "pas « Direct connection ») et que le mot de passe y est bien écrit.")
+
+
 def _etat_memoire() -> dict:
     """La mémoire de Nova survit-elle à un redéploiement — oui ou non ?
 
@@ -3132,10 +3222,26 @@ def _etat_memoire() -> dict:
         d["resume"] = ("⚠️ Ma mémoire N'EST PAS persistante. Elle est sur le disque du "
                        "conteneur, que Render remet à zéro à chaque redéploiement : "
                        f"les {faits} fait(s) et {combien} message(s) que j'ai seront perdus.")
-        d["solution"] = ("Crée un projet gratuit sur supabase.com → Project Settings → "
-                         "Database → Connection string (URI), et mets-la dans la variable "
-                         "SUPABASE_DB_URL sur Render. Rien d'autre à changer.")
         d["fichiers_ephemeres"] = [str(FICHIER_PROFIL), getattr(config, "DB_PATH", "data/memory.db")]
+        # ⚠️ « Configurée mais en panne » est le pire des cas : ça RESSEMBLE à ça marche.
+        # On distingue donc les deux, et on donne la raison exacte du refus.
+        echec = getattr(mem, "echec_persistance", "")
+        configuree = bool((getattr(config, "SUPABASE_DB_URL", "") or "").strip())
+        if configuree:
+            d["etat"] = "configurée mais INJOIGNABLE"
+            d["raison"] = echec or "cause inconnue"
+            d["resume"] = ("⚠️ SUPABASE_DB_URL est bien renseignée, mais la base est "
+                           "INJOIGNABLE — je suis donc retombée sur le disque du conteneur "
+                           "sans le dire. Tout ce que je retiens est perdu à chaque "
+                           f"redéploiement. Raison : {d['raison']}")
+            d["solution"] = _conseil_supabase(echec)
+        else:
+            d["etat"] = "non configurée"
+            d["solution"] = ("Crée un projet gratuit sur supabase.com, puis bouton vert "
+                             "« Connect » en haut → prends la chaîne « Session pooler » "
+                             "(surtout PAS « Direct connection », qui est en IPv6 et que "
+                             "Render ne peut pas joindre), remplace [YOUR-PASSWORD], et "
+                             "mets-la dans SUPABASE_DB_URL sur Render.")
     return d
 
 

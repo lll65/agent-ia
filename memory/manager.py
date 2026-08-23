@@ -41,6 +41,7 @@ class MemoryManager:
         self.backend = None     # SupabaseStore persistant (prioritaire)
         self.chroma = None      # ChromaDB local (fallback sémantique)
         self._summary_cache: dict[str, str] = {}
+        self.echec_persistance = ""   # pourquoi la mémoire n'est pas persistante
 
         # 1. Tente le backend persistant Supabase
         if config.SUPABASE_DB_URL:
@@ -50,7 +51,12 @@ class MemoryManager:
                 if store.available:
                     self.backend = store
                     logger.info("Mémoire: backend Supabase (persistant, pgvector).")
+                else:
+                    # On garde la raison pour le diagnostic : « configurée mais en panne »
+                    # est le pire des cas, car il ressemble à « ça marche ».
+                    self.echec_persistance = store.erreur
             except Exception as e:
+                self.echec_persistance = f"{type(e).__name__}: {str(e)[:300]}"
                 logger.warning(f"Mémoire: Supabase indisponible ({e}) — fallback local.")
 
         # 2. Fallback local (SQLite + ChromaDB)

@@ -179,6 +179,69 @@ def test_profil():
     check("tout effacé", P.list_facts(), [])
     check("contexte vide", P.context_block(), "")
 
+    # 7b. ⚠️ Nova n'enregistrait presque rien de ce qu'on lui dit de soi. Trois règles
+    # trop strictes : toute phrase avec « ? » était jetée (même « tu peux retenir
+    # que… ? »), seules les tournures en « je… » comptaient (jamais « ma sœur »,
+    # « mes parents »), et rien au-delà de 25 mots.
+    vrais_cnx = A._connected_accounts
+    try:
+        A._connected_accounts = lambda: [(s, "u", "ACTIVE") for s in
+                                         ("gmail", "googlecalendar", "googlesheets", "notion")]
+        A._APP_RECENTE.clear()
+        for phrase in ("j'ai 17 ans", "je m'appelle Lohan", "j'habite à Pau",
+                       "mon père et moi on a un PEA ensemble",
+                       "je suis en terminale au lycée, je passe le bac cette année",
+                       "je bosse sur un projet d'IA qui s'appelle Nova",
+                       "mes parents sont divorcés", "ma soeur s'appelle Emma",
+                       "j'ai un chien qui s'appelle Rex", "je me lève à 6h30",
+                       "je suis allergique aux arachides",
+                       "je fais du sport 3 fois par semaine et j'essaie de manger "
+                       "équilibré, mon objectif c'est de prendre du muscle avant l'été"):
+            check_true(f"retenu : « {phrase[:44]}… »", A._is_personal_fact(phrase))
+        # Un ORDRE de retenir l'emporte sur tout, point d'interrogation compris
+        for phrase in ("tu peux retenir que je me lève à 6h30 la semaine ?",
+                       "note que je suis allergique aux arachides",
+                       "souviens-toi que je déteste les maths",
+                       "n'oublie pas mon rendez-vous du 12 mars"):
+            check_true(f"ordre explicite : « {phrase[:40]}… »", A._is_personal_fact(phrase))
+            check_true("…et il est reconnu comme tel", A._est_ordre_memoire(phrase))
+        # …sans jamais confondre une COMMANDE avec une confidence
+        for phrase in ("ouvre mon agenda", "lit mon fichier pea sur google sheet",
+                       "envoie un mail à mon père", "montre mes mails",
+                       "tu peux faire quoi avec notion ?", "quelle heure est-il ?",
+                       "résume l'actu tech du jour", "bonjour", ""):
+            check(f"ignoré : « {phrase[:40]}… »", A._is_personal_fact(phrase), False)
+    finally:
+        A._connected_accounts = vrais_cnx
+        A._APP_RECENTE.clear()
+
+    # 7c. Sans modèle disponible, la confidence ne doit PAS être perdue.
+    # learn_from a besoin d'un LLM pour reformuler ; quand toutes les offres gratuites
+    # sont saturées il ne rend rien, et la phrase était jetée.
+    vrais = (A._llm_json, A._connected_accounts)
+    try:
+        A._connected_accounts = lambda: [("gmail", "u", "ACTIVE")]
+        P.clear_all()
+        A._llm_json = lambda s, u: (_ for _ in ()).throw(RuntimeError("aucun modèle"))
+        A._remember_fact("mon père et moi on a un PEA ensemble")
+        gardes = P.list_facts()
+        check_true("sans modèle : la phrase est gardée telle quelle", len(gardes) == 1)
+        check_true("…et son contenu est intact", "PEA" in gardes[0]["texte"])
+        # Avec un modèle, on garde la version reformulée, pas la phrase brute
+        P.clear_all()
+        A._llm_json = lambda s, u: {"faits": [{"cat": "autre", "texte": "A un PEA avec son père"}]}
+        A._remember_fact("mon père et moi on a un PEA ensemble")
+        gardes = P.list_facts()
+        check("avec modèle : un seul fait, reformulé", len(gardes), 1)
+        check("c'est bien la version reformulée", gardes[0]["texte"], "A un PEA avec son père")
+        # Une commande ne laisse aucune trace
+        P.clear_all()
+        A._remember_fact("ouvre mon agenda")
+        check("une commande n'entre pas dans le profil", P.list_facts(), [])
+    finally:
+        (A._llm_json, A._connected_accounts) = vrais
+        P.clear_all()
+
 
 # ── 8. Automatisations ────────────────────────────────────────────────────────
 def test_automatisations():
@@ -2383,7 +2446,46 @@ def test_memoire_des_documents():
     check_true("il explique où c'est stocké", bool(etat.get("ou")))
     if not etat["persistante"]:
         check_true("il prévient que tout sera perdu", "PAS persistante" in etat["resume"])
-        check_true("il donne la solution", "SUPABASE_DB_URL" in etat.get("solution", ""))
+        check_true("il donne la solution", bool(etat.get("solution")))
+
+    # 39h. ⚠️ « Configurée mais en panne » est le PIRE cas : ça ressemble à « ça marche ».
+    # Une URL devenue invalide faisait retomber Nova sur la mémoire locale en silence.
+    from config import config as CFG
+    from memory import get_memory as _gm
+    vrai_url = getattr(CFG, "SUPABASE_DB_URL", "")
+    mem_ = _gm()
+    vrai_echec = getattr(mem_, "echec_persistance", "")
+    try:
+        CFG.SUPABASE_DB_URL = ""
+        mem_.echec_persistance = ""
+        e = A._etat_memoire()
+        if not e["persistante"]:
+            check("sans URL : non configurée", e.get("etat"), "non configurée")
+            check_true("…et on explique où la trouver", "Connect" in e.get("solution", ""))
+
+        CFG.SUPABASE_DB_URL = "postgresql://postgres:x@db.abc.supabase.co:5432/postgres"
+        mem_.echec_persistance = "OperationalError: Network is unreachable"
+        e = A._etat_memoire()
+        if not e["persistante"]:
+            check("URL présente mais KO : c'est dit", e.get("etat"), "configurée mais INJOIGNABLE")
+            check_true("la raison exacte est donnée", "unreachable" in e.get("raison", ""))
+            check_true("on ne laisse pas croire que ça marche", "INJOIGNABLE" in e["resume"])
+    finally:
+        CFG.SUPABASE_DB_URL = vrai_url
+        mem_.echec_persistance = vrai_echec
+
+    # Chaque panne doit donner un GESTE, pas du jargon anglais
+    for erreur, attendu in (
+            ("could not connect to server: Network is unreachable", "Session pooler"),
+            ("Cannot assign requested address", "Session pooler"),
+            ("FATAL: password authentication failed for user", "mot de passe"),
+            ("connection timed out", "en pause"),
+            ("No module named psycopg2", "psycopg2-binary"),
+            ("SSL connection is required", "sslmode"),
+            ("quelque chose d'inattendu", "Session pooler")):
+        conseil = A._conseil_supabase(erreur)
+        check_true(f"conseil utile pour « {erreur[:36]}… »", attendu in conseil)
+        check_true("le conseil reste en français", " the " not in conseil.lower())
 
 
 def test_memoire_des_donnees():
