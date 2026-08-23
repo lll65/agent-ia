@@ -86,7 +86,7 @@
   #graphMini:hover{ transform:translateY(-2px) scale(1.06); box-shadow:0 8px 30px rgba(34,211,238,.6); }
   body.voice #graphMini{ display:none!important; }
   @media (max-width:620px){ #graphMini{ right:12px; bottom:84px; width:42px; height:42px; font-size:18px } }
-  #graphWrap .cap{ position:fixed; top:64px; left:50%; transform:translateX(-50%); font-size:11px; letter-spacing:.34em; color:var(--dim); opacity:.55; }
+  #graphWrap .cap{ position:fixed; top:64px; left:50%; transform:translateX(-50%); font-size:11px; letter-spacing:.34em; color:var(--dim); opacity:.55; white-space:nowrap; }
 
   .composer{ display:flex; gap:10px; padding-top:8px; }
   .composer textarea{ flex:1; resize:none; background:var(--glass); border:1px solid var(--stroke); color:var(--txt); border-radius:16px; padding:14px 16px; font-size:15px; font-family:inherit; max-height:120px; outline:none; transition:.2s; }
@@ -337,6 +337,9 @@
             scroll-snap-type:x proximity; }
     .chips::-webkit-scrollbar{ display:none }
     .chip{ scroll-snap-align:start }
+    /* Le libellé du schéma tenait sur deux lignes et retombait sur les suggestions :
+       moins d'interlettrage, et posé sous la rangée de suggestions plutôt qu'en travers. */
+    #graphWrap .cap{ top:calc(env(safe-area-inset-top) + 96px); font-size:9.5px; letter-spacing:.22em }
     .chip{ flex:0 0 auto; font-size:12px; padding:6px 11px }
     .bubble{ font-size:14.5px; padding:11px 13px } .col,.me .bubble{ max-width:88% }
     .composer{ gap:6px; padding-top:6px }
@@ -725,21 +728,43 @@ function loopP(){ px.clearRect(0,0,PW,PH); const sp=thinking?2.6:1, gl=thinking?
 /* ═══ GRAPHE de raisonnement — HUD 3D façon "automation" ═══ */
 const gw=document.getElementById("graphWrap"), gc=document.getElementById("graph"), gx=gc.getContext("2d");
 let nodes=[], gAnim=null, GW=innerWidth, GH=innerHeight, GCX=GW/2, GCY=GH*.42, GT=0, RAD=220;
-function gResize(){ const dpr=Math.min(devicePixelRatio||1,2); GW=innerWidth; GH=innerHeight;
+function gResize(){ const dpr=Math.min(devicePixelRatio||1,2);
+  // ⚠️ Sur iPhone, innerHeight ne décrit PAS ce qu'on voit : Safari y compte la zone
+  // masquée par ses propres barres. Le schéma était donc centré sur une hauteur
+  // imaginaire et se retrouvait décalé vers le haut de l'écran. visualViewport, lui,
+  // donne la surface réellement visible.
+  const vv = window.visualViewport;
+  GW = Math.round(vv ? vv.width : innerWidth);
+  GH = Math.round(vv ? vv.height : innerHeight);
   gc.width=GW*dpr; gc.height=GH*dpr; gc.style.width=GW+"px"; gc.style.height=GH+"px";
   gx.setTransform(dpr,0,0,dpr,0,0); GCX=GW/2;
-  // En mode vocal le schéma remonte : sinon son cœur se retrouve derrière l'orbe.
   const voice=document.body.classList.contains("voice");
   // En vocal le schéma remonte pour ne pas passer derrière l'orbe — mais seulement sur mobile,
   // où la place manque. Sur grand écran il garde une position centrale et ample.
   const petit = GW < 620;
-  // En mode vocal, le schéma occupe TOUT l'espace disponible (il n'y a pas de texte à lire) :
-  // centre plus haut mais rayon nettement plus large, calculé sur la largeur ET la hauteur.
-  GCY = GH * (voice ? (petit ? .30 : .34) : .50);
-  RAD = voice
-      ? Math.min(GW * (petit ? .42 : .34), GH * (petit ? .26 : .34))
-      : Math.min(GW, GH) * .30; }
+  if (voice) {
+    // Pas de texte à lire : le schéma prend toute la place, centre plus haut, rayon large.
+    GCY = GH * (petit ? .30 : .34);
+    RAD = Math.min(GW * (petit ? .42 : .34), GH * (petit ? .26 : .34));
+    return;
+  }
+  // Hors vocal, « au centre » ne veut pas dire « au milieu de la fenêtre » : l'en-tête et
+  // la barre de saisie occupent le haut et le bas. On centre le schéma dans l'espace qui
+  // reste réellement libre entre les deux — c'est ce que l'œil appelle le centre.
+  const bas = e => { const n=document.querySelector(e); return n ? n.getBoundingClientRect().bottom : 0; };
+  const haut = e => { const n=document.querySelector(e); return n ? n.getBoundingClientRect().top : GH; };
+  const y1 = Math.max(0, Math.max(bas("header"), bas(".chips")));
+  const y2 = Math.min(GH, haut(".composer") || GH);
+  const libre = (y2 - y1);
+  GCY = (libre > 160) ? (y1 + libre / 2) : GH * .50;
+  RAD = Math.min(GW, Math.max(libre, 200)) * .30; }
 addEventListener("resize",()=>{ if(gAnim) gResize(); });
+// Sur iPhone, la fenêtre visible change SANS événement « resize » : barres de Safari qui
+// se replient, clavier qui s'ouvre. Sans ça, le schéma restait calé sur l'ancienne taille.
+if (window.visualViewport){
+  visualViewport.addEventListener("resize", ()=>{ if(gAnim) gResize(); });
+  visualViewport.addEventListener("scroll", ()=>{ if(gAnim) gResize(); });
+}
 function graphStart(){ gw.classList.remove("mini"); gw.classList.add("show");
   const mb=document.getElementById("graphMini"); if(mb) mb.classList.remove("show");
   clearTimeout(window._gTimer);
