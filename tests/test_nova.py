@@ -2120,6 +2120,90 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_apps_robustesse():
+    """Un bug à chaque nouvelle app connectée. Trois causes, toutes génériques."""
+    FICHIERS = [{"id": "1abcdefghijABCDEFGHIJ1234567890xyz", "name": "Mes notes"},
+                {"id": "2abcdefghijABCDEFGHIJ1234567890xyz", "name": "Journal"}]
+    vrai_tool = A._tool
+    try:
+        A._tool = lambda a, args=None, **k: (
+            "✅ résultat :\n" + json.dumps({"data": {"files": FICHIERS}})
+            if "SEARCH" in a.upper() else "✅ ok")
+
+        # 42a. ⚠️ Canva : un identifiant FACULTATIF qu'on ne sait pas remplir doit être
+        # RETIRÉ. On envoyait un asset_id fantôme → « asset_not_found » (404) en boucle,
+        # alors que l'action marche très bien sans.
+        CANVA = [{"name": "CANVA_CREATE_CANVA_DESIGN_WITH_OPTIONAL_ASSET", "desc": "",
+                  "required": ["design_type"], "props": ["design_type", "title", "asset_id"]}]
+        args, _et, refus = A._resoudre_identifiants(
+            "canva", "CANVA_CREATE_CANVA_DESIGN_WITH_OPTIONAL_ASSET",
+            {"design_type": {"type": "preset", "name": "doc"}, "title": "Salut", "asset_id": ""},
+            "crée un doc canva", CANVA)
+        check_true("l'asset facultatif est retiré", "asset_id" not in args)
+        check("…et l'appel part quand même", refus, "")
+        check("le reste des arguments est intact", args["title"], "Salut")
+
+        # 42b. ⚠️ Notion : un identifiant OBLIGATOIRE mais ABSENT n'était pas vu — on ne
+        # regardait que les valeurs bouchons, jamais les clés manquantes. Notion répondait
+        # « block_id should be a valid uuid, instead was `` ».
+        NOTION = [{"name": "NOTION_ADD_MULTIPLE_PAGE_CONTENT", "desc": "",
+                   "required": ["block_id", "content"], "props": ["block_id", "content"]},
+                  {"name": "NOTION_SEARCH_NOTION_PAGE", "desc": "", "required": [],
+                   "props": ["query"]}]
+        args, _et, refus = A._resoudre_identifiants(
+            "notion", "NOTION_ADD_MULTIPLE_PAGE_CONTENT", {"content": "salut"},
+            "écris salut dans ma page Journal", NOTION)
+        check("l'identifiant obligatoire absent est résolu", args.get("block_id"),
+              "2abcdefghijABCDEFGHIJ1234567890xyz")
+        check("aucun refus quand la page est nommée", refus, "")
+        # …et sans page nommée, on REFUSE proprement au lieu d'envoyer du vide
+        args, _et, refus = A._resoudre_identifiants(
+            "notion", "NOTION_ADD_MULTIPLE_PAGE_CONTENT", {"content": "salut"},
+            "écris salut c'est nova", NOTION)
+        check_true("sans cible : refus clair", bool(refus))
+        check_true("…qui propose les pages existantes", "Journal" in refus)
+        check_true("aucun identifiant vide n'est envoyé", A._est_bouchon(args.get("block_id")))
+    finally:
+        A._tool = vrai_tool
+
+    # 42c. ⚠️ Les erreurs d'API étaient servies en JSON brut : l'utilisateur recevait
+    # « {"http_error": "404 Client Error…" } », ce qui faisait passer un détail pour
+    # une panne générale.
+    c404 = A._honest_no_access(
+        "CANVA_CREATE_CANVA_DESIGN_WITH_OPTIONAL_ASSET",
+        '{"http_error": "404 Client Error: Not Found for url: https://api.canva.com/'
+        'rest/v1/designs", "message": "asset_not_found", "status_code": 404}')
+    check_true("un 404 est expliqué en français", "ne trouve pas" in c404)
+    check_true("…sans JSON brut", "http_error" not in c404 and "{" not in c404)
+    check_true("…et propose une suite", "créer" in c404 or "nom exact" in c404)
+
+    c503 = A._honest_no_access("GMAIL_FETCH_EMAILS", '{"http_error": "503 Service Unavailable"}')
+    check_true("une panne de l'app est distinguée", "ne répond pas" in c503)
+    check_true("…et on dit que ça ne vient pas de lui", "pas du tien" in c503)
+
+    # Une erreur inconnue reste lisible : on extrait la phrase utile, pas le JSON
+    lisible = A._erreur_lisible_app('{"http_error": "400 Bad Request", "message": "titre manquant"}')
+    check("la phrase utile est extraite", lisible, "titre manquant")
+    check_true("un JSON sans message donne au moins le code",
+               "400" in A._erreur_lisible_app('{"http_error": "400 Bad Request"}'))
+
+    # 42d. ⚠️ Nova répondait « je suis en UTC » alors qu'elle est réglée sur Paris,
+    # et ne savait pas non plus quel jour on est.
+    rep = A._repere_temporel()
+    check_true("le fuseau est annoncé", "Europe/Paris" in rep)
+    check_true("…et démenti explicite de l'UTC", "pas en UTC" in rep)
+    check_true("la date est donnée", any(j in rep for j in
+                                         ("lundi", "mardi", "mercredi", "jeudi",
+                                          "vendredi", "samedi", "dimanche")))
+    check_true("l'heure aussi", "h" in rep)
+    # …sur les DEUX chemins : discussion ET agent
+    smalltalk = A._smalltalk_messages("tu es sur quel fuseau horaire ?")[0]["content"]
+    check_true("le chemin discussion le sait", "Europe/Paris" in smalltalk)
+    cfg = A._build_agent_cfg("tu es sur quel fuseau ?", "Nova")
+    sysm = cfg.get("system") or cfg.get("system_prompt") or ""
+    check_true("le chemin agent le sait aussi", "Europe/Paris" in sysm)
+
+
 def test_competences():
     """Nova corrigeait ses arguments après l'erreur de l'API… puis jetait la correction.
     À la demande suivante : même erreur, même aller-retour. Elle galérait à l'identique."""
@@ -2765,7 +2849,7 @@ if __name__ == "__main__":
                test_fournisseur_et_routage, test_garde_fou, test_calendrier_exact,
                test_continuite_app, test_catalogue_complet, test_memoire_des_donnees,
                test_memoire_des_documents, test_automatisations_heure,
-               test_competences):
+               test_competences, test_apps_robustesse):
         try:
             fn()
         except Exception as e:
