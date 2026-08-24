@@ -10,6 +10,7 @@ class Config:
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
     XAI_API_KEY = os.getenv("XAI_API_KEY", "")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")     # Google AI Studio → ai.google.dev (gratuit, sans CB)
+    MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
     CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY", "") # Cerebras → cloud.cerebras.ai (gratuit, inference ultra-rapide)
     HF_API_TOKEN = os.getenv("HF_API_TOKEN", "")
     REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
