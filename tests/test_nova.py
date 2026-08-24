@@ -2120,6 +2120,158 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_apps_inconnues():
+    """« Un bug à chaque nouvelle app. » Six défauts trouvés par audit systématique, tous
+    vérifiés en exécutant le code. Ils ne touchaient PAS les apps déjà déboguées — d'où
+    l'impression que chaque nouvelle connexion cassait quelque chose."""
+
+    # 44a. ⚠️ Le bouchon n'était reconnu que pour 12 noms d'objets (spreadsheet, sheet,
+    # file, page…). YOUR_DATABASE_ID, YOUR_CARD_ID, YOUR_CHANNEL_ID passaient pour de
+    # VRAIS identifiants : Notion, Trello, Slack, Linear les exécutaient tels quels.
+    for faux in ("YOUR_DATABASE_ID", "YOUR_CARD_ID", "YOUR_BOARD_ID", "YOUR_CHANNEL_ID",
+                 "YOUR_TEAM_ID", "YOUR_PROJECT_ID", "YOUR_ISSUE_ID", "YOUR_ASSET_ID",
+                 "PLACEHOLDER_ID", "REPLACE_WITH_YOUR_ID", "EXAMPLE_ID_12345",
+                 "insert_id_here", "xxx-xxx-xxx", "votre_identifiant"):
+        check_true(f"bouchon reconnu : {faux}", A._est_bouchon(faux))
+    for vrai in ("1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms",
+                 "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "5f2b8c1e9a4d3b2c1e0f9a8b",
+                 "C01ABC2DEFG", "gid://company/Task/1122334455", "urn:li:person:abc123"):
+        check(f"vrai identifiant accepté : {vrai[:22]}…", A._est_bouchon(vrai), False)
+    check_true("une URL n'est pas un identifiant",
+               A._est_bouchon("https://docs.google.com/spreadsheets/d/1abc"))
+
+    # 44b. ⚠️ Seules les clés plates « *_id » étaient inspectées : Trello (idBoard),
+    # Asana (gid), Slack (channel) échappaient à toute la protection.
+    for cle in ("idBoard", "idList", "boardId", "pageId", "gid", "uid", "channel",
+                "team", "workspace", "database_id", "parent_page_id"):
+        check_true(f"champ identifiant reconnu : {cle}", A._est_champ_identifiant(cle))
+    for cle in ("user_id", "calendar_id", "entity_id", "title", "content", "body"):
+        check(f"…et pas confondu : {cle}", A._est_champ_identifiant(cle), False)
+
+    # 44c. ⚠️ « USER » dans le nom disqualifiait l'action canonique « mes propres
+    # données » de presque TOUTE API. Nova exécutait une action absurde à la place.
+    for msg, act in (("liste mes dépôts github",
+                      "GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER"),
+                     ("montre mes playlists", "SPOTIFY_GET_A_LIST_OF_CURRENT_USER_S_PLAYLISTS"),
+                     ("mes infos", "GITHUB_GET_THE_AUTHENTICATED_USER"),
+                     ("mes tâches", "ASANA_GET_TASKS_FOR_CURRENT_USER")):
+        check(f"« {act[:38]}… » n'est plus écartée", A._action_douteuse(msg, act), False)
+    # …sans cesser d'écarter ce qui est vraiment hors sujet
+    check_true("un contresens reste détecté",
+               A._action_douteuse("crée un projet", "NOTION_CREATE_COMMENT"))
+    check("le préfixe d'app ne pollue plus la comparaison",
+          A._objet_de_action("GMAIL_LIST_THREADS"), "LIST_THREADS")
+
+    # 44d. ⚠️ Un nom approchant était pris dans un SET (ordre dépendant du hash du
+    # process) et sans notion de verbe : « montre-moi ma page » pouvait CRÉER une page
+    # vide, annoncée en succès. Le repli déterministe avait le même défaut.
+    NOTION = [{"name": n, "desc": ""} for n in
+              ("NOTION_CREATE_COMMENT", "NOTION_CREATE_DATABASE", "NOTION_CREATE_NOTION_PAGE",
+               "NOTION_DELETE_BLOCK", "NOTION_FETCH_NOTION_PAGE", "NOTION_SEARCH_NOTION_PAGE",
+               "NOTION_UPDATE_PAGE")]
+    for demande in ("montre-moi ma page Recettes", "lis ma page notion",
+                    "ouvre ma base de données", "consulte mes pages"):
+        choisi = A._action_par_defaut(demande, NOTION)
+        check(f"« {demande[:32]}… » n'écrit jamais", A._ecrit(choisi) if choisi else False, False)
+    check("…mais une création demandée reste possible",
+          A._action_par_defaut("crée une page notion", NOTION), "NOTION_CREATE_NOTION_PAGE")
+    check("…et une suppression demandée aussi",
+          A._action_par_defaut("supprime cette page", NOTION), "NOTION_DELETE_BLOCK")
+    for act, ecrit in (("NOTION_CREATE_NOTION_PAGE", True), ("NOTION_FETCH_NOTION_PAGE", False),
+                       ("GMAIL_SEND_EMAIL", True), ("GMAIL_LIST_THREADS", False),
+                       ("LINEAR_UPDATE_ISSUE", True), ("GITHUB_LIST_COMMITS", False)):
+        check(f"écriture ? {act}", A._ecrit(act), ecrit)
+
+    # 44e. ⚠️ « montre-moi mon pea » cherchait un document nommé « montre-moi » : Nova
+    # ouvrait le premier venu, servait SES données, et mémorisait le mauvais raccourci.
+    for demande, attendu in (("montre-moi mon pea", "pea"),
+                             ("affiche-moi mes notes", "notes"),
+                             ("donne-moi mon budget", "budget"),
+                             ("consulte le tableur Suivi_PEA_Lohan_Pere", "Suivi_PEA_Lohan_Pere"),
+                             ("ouvre « Budget 2026 » stp", "Budget 2026")):
+        check(f"mots-clés de « {demande[:30]}… »", A._mots_cles_fichier(demande), attendu)
+    check_true("« montre-moi » n'est pas un nom de document",
+               A._que_des_mots_vides("montre-moi"))
+    check("…contrairement à un vrai nom", A._que_des_mots_vides("Suivi_PEA_Lohan"), False)
+
+    # 44f. ⚠️ Un identifiant NUMÉRIQUE, ou nommé gid/idBoard, était invisible : la
+    # recherche répondait « aucun document trouvé » alors que l'app venait de le rendre.
+    for payload, attendu in (
+            ('{"data":{"items":[{"id":123456789012,"name":"Mon tableau"}]}}', "Mon tableau"),
+            ('{"data":{"boards":[{"gid":"1122334455667","name":"Projets"}]}}', "Projets"),
+            ('{"results":[{"idBoard":"5f2b8c1e9a4d","name":"Sprint"}]}', "Sprint"),
+            ('{"channels":[{"id":"C01ABC2DEFG","name":"general"}]}', "general")):
+        trouves = A._identifiants_trouves(payload)
+        check_true(f"identifiant lu dans {payload[:30]}…", bool(trouves))
+        check(f"…avec son nom ({attendu})", trouves[0][1] if trouves else "", attendu)
+
+
+def test_choix_fournisseur():
+    """Lohan veut CHOISIR qui répond (NVIDIA, Grok…). Le mécanisme existait par message
+    (« réponds avec l'api nvidia ») mais rien ne permettait de le fixer une fois pour
+    toutes."""
+    import llm.client as C
+    import time as _t
+    from config import config as CFG
+
+    ancien = C.PREFERENCE.get("fournisseur", "")
+    ko = dict(C._FOURNISSEURS_KO)
+    try:
+        # 43a. Choisir, relire, revenir à l'automatique
+        check("un fournisseur connu est retenu", C.choisir_fournisseur("nvidia"), "nvidia")
+        check("…et relu", C.fournisseur_choisi(), "nvidia")
+        check("« grok » passe par son vrai nom", C.choisir_fournisseur("xai"), "xai")
+        check("un nom inconnu est ignoré", C.choisir_fournisseur("nimportequoi"), "")
+        check("« auto » remet le choix automatique", C.choisir_fournisseur("auto"), "")
+        check("vide aussi", C.choisir_fournisseur(""), "")
+
+        # 43b. Le choix passe DEVANT dans la chaîne — sans supprimer le secours
+        C._FOURNISSEURS_KO.clear()
+        vraies = {}
+        for nom, attr in (("nvidia", "NVIDIA_API_KEY"), ("groq", "GROQ_API_KEY"),
+                          ("xai", "XAI_API_KEY")):
+            vraies[attr] = getattr(CFG, attr, "")
+            setattr(CFG, attr, "cle-de-test")
+        try:
+            C.choisir_fournisseur("xai")
+            chaine = [n for n, _f, _m in C._providers_disponibles("equilibre")]
+            check("le fournisseur choisi passe en tête", chaine[0] if chaine else "", "xai")
+            check_true("les autres restent en secours", len(chaine) > 1)
+            # …mais une consigne ÉCRITE dans la phrase reste plus précise
+            chaine = [n for n, _f, _m in C._providers_disponibles("equilibre", impose="nvidia")]
+            check("la consigne du message l'emporte", chaine[0] if chaine else "", "nvidia")
+            C.choisir_fournisseur("")
+            chaine = [n for n, _f, _m in C._providers_disponibles("equilibre")]
+            check_true("sans choix, la chaîne reste complète", len(chaine) >= 3)
+        finally:
+            for attr, v in vraies.items():
+                setattr(CFG, attr, v)
+
+        # 43c. L'état de chacun est lisible par l'interface
+        C._FOURNISSEURS_KO["nvidia"] = (_t.monotonic() - 30, "lent")
+        C._FOURNISSEURS_KO["gemini"] = (_t.monotonic() - 10, "mort")
+        etats = {f["nom"]: f for f in C.etat_fournisseurs()}
+        check_true("tous les fournisseurs sont listés", len(etats) >= 6)
+        # ⚠️ On stocke le DÉBUT de la sanction : mal calculé, le délai restant était négatif.
+        for nom in ("nvidia", "gemini"):
+            if etats[nom]["configure"]:
+                check_true(f"{nom} : délai restant positif", etats[nom]["reprend_dans_s"] > 0)
+        check_true("un délai n'est jamais négatif",
+                   all(f["reprend_dans_s"] >= 0 for f in etats.values()))
+        check_true("une sanction longue dure plus qu'une courte",
+                   etats["gemini"]["reprend_dans_s"] >= etats["nvidia"]["reprend_dans_s"]
+                   or not etats["gemini"]["configure"])
+        for f in etats.values():
+            if not f["configure"]:
+                check(f"{f['nom']} sans clé : annoncé comme tel", f["etat"], "non configuré")
+                check(f"{f['nom']} sans clé : aucune raison affichée", f["raison"], "")
+        check_true("chacun a un nom lisible", all(f["joli"] for f in etats.values()))
+    finally:
+        C.PREFERENCE["fournisseur"] = ancien
+        C._FOURNISSEURS_KO.clear()
+        C._FOURNISSEURS_KO.update(ko)
+
+
 def test_apps_robustesse():
     """Un bug à chaque nouvelle app connectée. Trois causes, toutes génériques."""
     FICHIERS = [{"id": "1abcdefghijABCDEFGHIJ1234567890xyz", "name": "Mes notes"},
@@ -2849,7 +3001,8 @@ if __name__ == "__main__":
                test_fournisseur_et_routage, test_garde_fou, test_calendrier_exact,
                test_continuite_app, test_catalogue_complet, test_memoire_des_donnees,
                test_memoire_des_documents, test_automatisations_heure,
-               test_competences, test_apps_robustesse):
+               test_competences, test_apps_robustesse,
+               test_choix_fournisseur, test_apps_inconnues):
         try:
             fn()
         except Exception as e:

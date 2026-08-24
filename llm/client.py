@@ -229,6 +229,63 @@ def fournisseur_demande(message: str) -> str:
     return ""
 
 
+# Fournisseur choisi par l'utilisateur DANS L'INTERFACE, pour toute la conversation.
+# ⚠️ Volontairement un simple dict de module, PAS un contextvar : les appels LLM partent
+# dans des threads via run_in_executor, où un contextvar ne suit pas (c'est exactement ce
+# qui avait empêché l'affichage du modèle pendant des semaines). Nova est mono-utilisateur,
+# un réglage global est donc à la fois suffisant et fiable.
+PREFERENCE = {"fournisseur": ""}
+
+
+def choisir_fournisseur(nom: str) -> str:
+    """Fixe le fournisseur préféré. "" ou "auto" = choix automatique."""
+    nom = (nom or "").strip().lower()
+    PREFERENCE["fournisseur"] = nom if nom in _NOMS_FOURNISSEURS else ""
+    return PREFERENCE["fournisseur"]
+
+
+def fournisseur_choisi() -> str:
+    return PREFERENCE.get("fournisseur", "")
+
+
+def etat_fournisseurs() -> list:
+    """Qui est configuré, qui répond, qui est écarté — pour le sélecteur de l'interface."""
+    import time as _t
+    cles = {
+        "nvidia": getattr(config, "NVIDIA_API_KEY", ""), "groq": config.GROQ_API_KEY,
+        "gemini": getattr(config, "GEMINI_API_KEY", ""),
+        "openrouter": getattr(config, "OPENROUTER_API_KEY", ""),
+        "cerebras": config.CEREBRAS_API_KEY, "xai": getattr(config, "XAI_API_KEY", ""),
+    }
+    jolis = {"nvidia": "NVIDIA", "groq": "Groq", "gemini": "Gemini",
+             "openrouter": "OpenRouter", "cerebras": "Cerebras", "xai": "Grok (xAI)"}
+    out = []
+    for nom, cle in cles.items():
+        # ⚠️ On stocke le DÉBUT de la sanction, pas sa fin : le temps restant se calcule
+        # depuis la durée du genre de panne, sinon on annonce des délais négatifs.
+        ko = _FOURNISSEURS_KO.get(nom)
+        reste = 0
+        genre = ""
+        if ko:
+            quand, genre = ko
+            ttl = _KO_FOURNISSEUR_TTL if genre == "mort" else _KO_LENT_TTL
+            reste = max(0, round(ttl - (_t.monotonic() - quand)))
+        out.append({
+            "nom": nom, "joli": jolis.get(nom, nom.capitalize()),
+            "configure": bool(cle),
+            "etat": ("non configuré" if not cle else
+                     "écarté" if reste > 0 else "prêt"),
+            "raison": ("" if not cle else
+                       "panne franche" if genre == "mort" and reste else
+                       "trop lent" if genre == "lent" and reste else ""),
+            "reprend_dans_s": reste,
+            "modele": _MODELES_OK.get(nom, "") or MODELES.get(nom, {}).get("equilibre", ""),
+            "dernier_ok": _DERNIER_OK["nom"] == nom,
+            "choisi": PREFERENCE.get("fournisseur") == nom,
+        })
+    return out
+
+
 def _providers_disponibles(niveau: str = "equilibre", impose: str = ""):
     """Chaîne de secours : le fournisseur préféré d'abord, puis TOUS les autres configurés.
     Avant, seuls 2 étaient essayés — si Cerebras passait en payant (402) et Groq atteignait sa
@@ -254,6 +311,9 @@ def _providers_disponibles(niveau: str = "equilibre", impose: str = ""):
         chaine.append((nom, cle_fn[1], modele))
 
     # 0) Fournisseur RÉCLAMÉ par l'utilisateur dans son message → il passe avant tout.
+    #    À défaut, celui qu'il a choisi dans l'interface : une consigne écrite dans la
+    #    phrase reste plus précise qu'un réglage général, elle garde donc la priorité.
+    impose = impose or PREFERENCE.get("fournisseur", "")
     if impose and impose in tous and tous[impose][0]:
         add(impose)
     # 1) Fournisseur imposé EXPLICITEMENT (LLM_PREFER=nvidia par ex.) → en tête.
