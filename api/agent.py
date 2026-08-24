@@ -3384,6 +3384,11 @@ async def selftest(key: str = ""):
     return await loop.run_in_executor(None, run)
 
 
+# Combien de temps on laisse à un fournisseur pour PROUVER qu'il répond. Bien au-delà de
+# l'usage normal : le but est de distinguer « lent » de « mort », pas de le presser.
+_DIAG_PATIENCE = 60.0
+
+
 def _diag_un_llm(nom: str) -> dict:
     """Teste UN fournisseur pour de vrai : format de clé, appel minimal, latence, erreur exacte."""
     import time as _t
@@ -3414,7 +3419,11 @@ def _diag_un_llm(nom: str) -> dict:
         return d
     modele = MODELES.get(nom, {}).get("equilibre") or config.LLM_MODEL
     t0 = _t.monotonic()
-    jeton = _BUDGET_APPEL.set(45.0)          # test large : on veut MESURER, pas juger vite
+    # On veut MESURER, pas juger vite : le fournisseur a droit à un délai généreux, sinon
+    # « n'a pas répondu en 22,4 s » ne dit rien — c'est juste notre propre limite.
+    from llm.client import _TIMEOUT_MESURE
+    jeton = _BUDGET_APPEL.set(_DIAG_PATIENCE)
+    _TIMEOUT_MESURE["s"] = _DIAG_PATIENCE
     try:
         out = fn([{"role": "user", "content": "Réponds juste : ok"}], modele, 0.0, "equilibre")
         d.update(ok=bool(out and out.strip()), modele=_MODELES_OK.get(nom) or modele,
@@ -3429,6 +3438,7 @@ def _diag_un_llm(nom: str) -> dict:
     except Exception as e:
         d["erreur"] = str(e)[:300]
     finally:
+        _TIMEOUT_MESURE["s"] = 0.0
         _BUDGET_APPEL.reset(jeton)
     d["latence_s"] = round(_t.monotonic() - t0, 1)
     # Le seuil qui compte n'est pas un chiffre arbitraire : c'est le délai réellement
@@ -3453,8 +3463,13 @@ def _diag_un_llm(nom: str) -> dict:
         elif "429" in e or "rate" in e:
             d["conseil"] = "limite atteinte pour le moment — ça se débloque tout seul"
         elif "timed out" in e or "timeout" in e:
-            d["conseil"] = (f"n'a pas répondu en {d['latence_s']} s — service lent ou injoignable "
-                            "depuis Render")
+            # ⚠️ On a été PATIENT (bien au-delà de l'usage normal) : si ça n'a pas suffi,
+            # le problème n'est pas un réglage de délai, et il ne sert à rien d'augmenter
+            # LLM_TIMEOUT. C'est ce qu'il faut dire, plutôt que de laisser espérer.
+            d["conseil"] = (f"aucune réponse même après {int(_DIAG_PATIENCE)} s d'attente — "
+                            "ce n'est donc PAS un problème de délai : augmenter LLM_TIMEOUT "
+                            "ne changera rien. Le service est injoignable depuis Render "
+                            "(compte non vérifié, région bloquée, ou API en panne).")
         elif "402" in e or "payment" in e:
             d["conseil"] = "offre gratuite épuisée sur ce compte"
     return d
@@ -3489,6 +3504,8 @@ async def diag_llm(key: str = ""):
                        f"LLM_TIMEOUT ({TIMEOUT_LLM} s) et sera(ont) abandonné(s) en usage normal.")
     from llm.client import MIN_ESSAIS
     return {"resume": resume,
+            "test": (f"chaque fournisseur a eu jusqu'à {int(_DIAG_PATIENCE)} s pour répondre "
+                     "— bien plus qu'en usage normal, pour distinguer « lent » de « mort »."),
             "reglages": {"LLM_TIMEOUT": TIMEOUT_LLM, "LLM_TIMEOUT_TOTAL": TIMEOUT_CHAINE,
                          "AGENT_TIMEOUT": getattr(config, "AGENT_TIMEOUT", 75),
                          # Le chiffre qui compte vraiment : ce que le 1er fournisseur

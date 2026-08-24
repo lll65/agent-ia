@@ -2120,6 +2120,45 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_diag_patient():
+    """« ❌ nvidia · 22,4 s · n'a pas répondu » : 22,4 s ≈ LLM_TIMEOUT. Le diagnostic
+    coupait à la MÊME limite que l'usage normal, il ne pouvait donc pas répondre à la
+    seule question qui compte — lent, ou mort ?"""
+    import llm.client as C
+
+    # 45a. Le budget ne peut que RACCOURCIR : c'est ce qui bridait la mesure.
+    jeton = C._BUDGET_APPEL.set(45.0)
+    try:
+        t = C._timeout(22.0)
+        mesure = getattr(t, "read", t)
+        check_true("sans forçage, le budget ne rallonge pas le délai", float(mesure) <= 22.0)
+    finally:
+        C._BUDGET_APPEL.reset(jeton)
+
+    # 45b. Le diagnostic, lui, impose sa propre patience
+    C._TIMEOUT_MESURE["s"] = 60.0
+    try:
+        t = C._timeout(22.0)
+        mesure = getattr(t, "read", t)
+        check("le diagnostic mesure jusqu'au bout", float(mesure), 60.0)
+        # …même si un budget plus court traîne dans le contexte
+        jeton = C._BUDGET_APPEL.set(5.0)
+        try:
+            t = C._timeout(22.0)
+            check("un budget résiduel ne rebride pas la mesure",
+                  float(getattr(t, "read", t)), 60.0)
+        finally:
+            C._BUDGET_APPEL.reset(jeton)
+    finally:
+        C._TIMEOUT_MESURE["s"] = 0.0
+
+    # 45c. …et il le remet à zéro : un appel normal ne doit pas hériter de la patience
+    t = C._timeout(22.0)
+    check("hors diagnostic, le délai normal revient", float(getattr(t, "read", t)), 22.0)
+    check_true("la patience du diagnostic dépasse largement l'usage normal",
+               A._DIAG_PATIENCE > C.TIMEOUT_LLM * 2)
+
+
 def test_apps_inconnues():
     """« Un bug à chaque nouvelle app. » Six défauts trouvés par audit systématique, tous
     vérifiés en exécutant le code. Ils ne touchaient PAS les apps déjà déboguées — d'où
@@ -3002,7 +3041,8 @@ if __name__ == "__main__":
                test_continuite_app, test_catalogue_complet, test_memoire_des_donnees,
                test_memoire_des_documents, test_automatisations_heure,
                test_competences, test_apps_robustesse,
-               test_choix_fournisseur, test_apps_inconnues):
+               test_choix_fournisseur, test_apps_inconnues,
+               test_diag_patient):
         try:
             fn()
         except Exception as e:
