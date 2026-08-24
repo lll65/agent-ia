@@ -56,8 +56,26 @@ def _plancher() -> float:
     return min(6.0, TIMEOUT_LLM)
 
 
+# Délai imposé pour un MESURAGE (diagnostic). ⚠️ Volontairement un dict de module et non
+# un contextvar : le diagnostic s'exécute dans des threads (run_in_executor), où un
+# contextvar ne suit pas. Il n'est posé que le temps du test, à la demande explicite de
+# l'utilisateur — un appel normal qui tomberait pile dedans serait simplement plus patient.
+_TIMEOUT_MESURE = {"s": 0.0}
+
+
 def _timeout(t: float):
     """Délai httpx : connexion courte, lecture bornée par le budget restant."""
+    # ⚠️ Le budget ne peut que RACCOURCIR le délai, jamais l'allonger : le diagnostic
+    # avait beau demander 45 s, chaque fournisseur restait coupé à TIMEOUT_LLM (22 s).
+    # NVIDIA était donc déclaré « n'a pas répondu en 22,4 s » sans qu'on sache s'il
+    # aurait répondu à 30 s — c'est-à-dire sans répondre à la seule question posée.
+    if _TIMEOUT_MESURE["s"] > 0:
+        t = _TIMEOUT_MESURE["s"]
+        try:
+            import httpx
+            return httpx.Timeout(t, connect=min(10.0, t))
+        except Exception:
+            return t
     reste = _BUDGET_APPEL.get(0.0) if _BUDGET_APPEL is not None else 0.0
     if reste > 0:
         t = min(reste, max(_plancher(), min(t, reste)))
