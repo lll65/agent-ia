@@ -393,6 +393,12 @@ def app_courante(message: str, profil: str = None) -> str:
     if recente and _suite_de_conversation(message):
         return recente
     direct = _detect_toolkit(message)
+    # ⚠️ Un mot BANAL ne doit jamais faire quitter l'app en cours, même sans verbe de
+    # relance. « oui ben le fichier suivi pea c'est pareil », dit juste après une demande
+    # Google Sheets, partait dans le Drive — qui n'est même pas connecté — parce que
+    # « fichier » est un mot-clé du Drive. Tant qu'on parle d'une app, on y reste.
+    if recente and direct and direct != recente and not _detect_toolkit(message, strict=True):
+        return recente
     if direct:
         _retenir_app(direct, profil)
     return direct
@@ -693,8 +699,22 @@ def _looks_like_failure(obs: str) -> bool:
     # (ex. {"http_error": "401 Client Error: Unauthorized for url: https://api.canva.com/..."}).
     # Il faut donc inspecter le contenu même quand le plugin a préfixé un ✅.
     embedded = ("http_error", '"error"', "client error", "unauthorized", "forbidden",
-                "invalid_grant", "token expired", "insufficient", "\"status\": 4", "\"status\":4")
+                "invalid_grant", "token expired", "insufficient")
     if any(b in low for b in embedded):
+        return True
+    # ⚠️ Un CODE DE STATUT d'échec dans le corps, quelle que soit son écriture.
+    # L'ancienne version cherchait la chaîne exacte « "status": 4 » : une réponse
+    # {"status_code": 404, "message": "Requested entity was not found."} y échappait,
+    # le ✅ du plugin la faisait passer pour un succès, et Nova mettait l'ERREUR en
+    # tableau comme si c'était le résultat demandé.
+    import re as _re
+    if _re.search(r'"status(?:_code)?"\s*:\s*[45]\d\d', low):
+        return True
+    # Message d'échec explicite renvoyé DANS la charge utile (Google Sheets répond
+    # « Sheet 'PEA' not found. Available sheets are [...] » avec un statut vide).
+    if _re.search(r'"(message|detail|reason)"\s*:\s*"[^"]*'
+                  r'(not found|introuvable|no such|does not exist|denied|failed|'
+                  r'invalid|unable to|cannot )', low):
         return True
     if o.startswith("✅"):
         return False  # succès explicite du plugin (même si liste vide)
@@ -713,7 +733,77 @@ def _is_param_error(obs: str) -> bool:
         return False
     return ("400" in low or "invalid_field" in low or "bad request" in low
             or "must be defined" in low or "is required" in low or "missing" in low
-            or "invalid" in low or "validation" in low)
+            or "invalid" in low or "validation" in low
+            # L'API nomme la bonne valeur : c'est corrigeable, et sans deviner.
+            or bool(_suggestions_api(obs)))
+
+
+# Les API disent souvent CE QU'IL FALLAIT ÉCRIRE : « Available sheets are ['Suivi_PEA'] »,
+# « must be one of: a, b », « Did you mean X ? ». Nova jetait cette information et
+# redemandait au modèle de deviner — alors que la bonne valeur était sous ses yeux.
+_MOTIFS_SUGGESTION = (
+    r"available\s+\w+\s+(?:are|is)\s*[:\[]?\s*([^\]\.\}]+)",
+    r"must be one of\s*[:\[]?\s*([^\]\.\}]+)",
+    r"valid values?\s*(?:are|:)\s*[:\[]?\s*([^\]\.\}]+)",
+    r"did you mean\s*[:\s]\s*['\"]?([^'\"\?\.]+)",
+    r"expected one of\s*[:\[]?\s*([^\]\.\}]+)",
+)
+
+
+def _suggestions_api(obs: str) -> list:
+    """Les valeurs que l'API elle-même propose, extraites de son message d'erreur."""
+    import re as _re
+    texte = (obs or "").replace('\\"', '"')
+    for motif in _MOTIFS_SUGGESTION:
+        m = _re.search(motif, texte, _re.I)
+        if not m:
+            continue
+        brut = m.group(1)
+        vals = [v.strip(" '\"[]`") for v in _re.split(r"[,\|]", brut)]
+        vals = [v for v in vals if 1 < len(v) <= 80]
+        if vals:
+            return vals[:12]
+    return []
+
+
+def _corrige_par_suggestion(args: dict, obs: str) -> dict:
+    """Remplace la valeur refusée par celle que l'API propose. Rien à deviner.
+
+    Cas réel : « Sheet 'PEA' not found. Available sheets are ['Suivi_PEA'] ». La bonne
+    valeur est dans le message ; il suffit de la reprendre.
+    """
+    props = _suggestions_api(obs)
+    if not props or not isinstance(args, dict):
+        return {}
+    import re as _re
+    # La valeur REFUSÉE est citée entre quotes juste avant « not found ».
+    refusee = ""
+    m = _re.search(r"['\"]([^'\"]{1,60})['\"]\s*(?:not found|is invalid|introuvable)", obs or "", _re.I)
+    if m:
+        refusee = m.group(1)
+    neuf = dict(args)
+    change = False
+    for k, v in args.items():
+        if not isinstance(v, str) or not v:
+            continue
+        if (refusee and v == refusee) or (not refusee and v in (obs or "")):
+            neuf[k] = props[0]
+            change = True
+        elif isinstance(v, str) and _re.search(r"^\s*" + _re.escape(v) + r"\b", refusee or "", _re.I):
+            neuf[k] = props[0]
+            change = True
+    # Une plage de cellules porte le nom de l'onglet : « PEA!A1:D50 » → « Suivi_PEA!A1:D50 »
+    for k, v in args.items():
+        if isinstance(v, str) and "!" in v and refusee and v.startswith(refusee + "!"):
+            neuf[k] = props[0] + v[len(refusee):]
+            change = True
+        if isinstance(v, list) and v and all(isinstance(x, str) for x in v):
+            maj = [props[0] + x[len(refusee):] if refusee and x.startswith(refusee + "!") else x
+                   for x in v]
+            if maj != v:
+                neuf[k] = maj
+                change = True
+    return neuf if change else {}
 
 
 def _honest_no_access(action: str, obs: str) -> str:
@@ -1519,6 +1609,12 @@ def _direct_app_run(message: str):
 # Le modèle ne CONNAÎT pas l'identifiant interne d'un fichier : il invente donc un
 # bouchon (« YOUR_SPREADSHEET_ID »), et Composio répond une erreur incompréhensible.
 # Nova doit d'abord CHERCHER le fichier, puis l'ouvrir. C'est le maillon qui manquait.
+# Mots qui trahissent un remplissage, quelle que soit l'app : aucun identifiant réel
+# (Notion, Trello, Slack, Linear, Asana…) ne les contient.
+_MARQUEURS_BOUCHON = re.compile(
+    r"(?i)(?:^|[_\-])(your|votre|ton|ta|mon|ma|the|placeholder|example|exemple|sample|"
+    r"dummy|todo|insert|replace|xxx+|abc123|foo|bar|test_?id|here)(?:$|[_\-])"
+    r"|^(?:your|placeholder|example|replace|insert|todo)", re.I)
 _BOUCHONS = re.compile(
     r"^(your[_\s-]?|the[_\s-]?|mon[_\s-]?|le[_\s-]?|<|\[|\{)?"
     r"(spreadsheet|sheet|file|document|folder|doc|drive|calendar|table|base|page)?"
@@ -1531,14 +1627,32 @@ _SUFFIXES_ID = ("_id", "id")
 # …sauf ceux-ci, qui attendent une valeur littérale et non un document à chercher.
 _ID_LITTERAUX = ("user_id", "userid", "calendar_id", "calendarid", "connection_id",
                  "connectionid", "entity_id", "entityid", "thread_id", "threadid")
+# Champs qui désignent un objet SANS le dire dans leur nom (conventions Slack, Trello…)
+_NOMS_ID_NUS = {"channel", "board", "list", "card", "workspace", "team", "project",
+                "repository", "repo", "database", "collection", "space"}
 
 
 def _est_champ_identifiant(cle: str) -> bool:
-    """Cette clé attend-elle l'identifiant d'un document qu'on peut retrouver ?"""
-    k = (cle or "").lower().replace("-", "_")
-    if k in _ID_LITTERAUX:
+    """Cette clé attend-elle l'identifiant d'un document qu'on peut retrouver ?
+
+    ⚠️ Ne raisonner que sur le suffixe « id » ne couvre que la convention de Google et
+    Notion. Trello nomme ses champs `idBoard`/`idList`, Asana utilise `gid`, Slack
+    `channel`, Linear `teamKey` : tous échappaient au contrôle, donc partaient avec leur
+    bouchon. C'est la majorité des apps pas encore connectées.
+    """
+    k = (cle or "").strip()
+    bas = k.lower().replace("-", "_")
+    if bas in _ID_LITTERAUX:
         return False
-    return k.endswith(_SUFFIXES_ID) and len(k) > 2
+    if bas.endswith(_SUFFIXES_ID) and len(bas) > 2:
+        return True
+    # camelCase : idBoard, idList, boardId, pageId
+    if re.fullmatch(r"(?:id|gid|uid)[A-Z]\w*", k) or re.fullmatch(r"\w+(?:Id|Gid|Uid|Key)", k):
+        return True
+    # autres suffixes courants
+    if re.search(r"(?:^|_)(gid|uid|guid|key|slug|ref|token_?id)$", bas):
+        return True
+    return bas in _NOMS_ID_NUS
 
 
 def _est_bouchon(v) -> bool:
@@ -1555,14 +1669,29 @@ def _est_bouchon(v) -> bool:
     t = str(v).strip()
     if not t or len(t) < 8 or len(t) > 200:
         return True
-    # Un identifiant n'a ni espace, ni accent, ni ponctuation de phrase
-    if not re.fullmatch(r"[A-Za-z0-9_\-]+", t):
+    # Un identifiant n'a ni espace, ni accent, ni ponctuation de phrase.
+    # Exception : certains services (Asana) donnent un identifiant en forme d'URI,
+    # « gid://company/Task/1122334455 » — c'est un vrai identifiant, pas une phrase.
+    # …mais une URL n'est PAS un identifiant : l'API en attend un, pas un lien.
+    # gid://…, urn:li:person:… : formes d'identifiant employées par Asana, LinkedIn…
+    uri_ok = (re.fullmatch(r"[a-z]+:(?://)?[\w.:/\-]+", t)
+              and not t.lower().startswith(("http://", "https://")))
+    if not re.fullmatch(r"[A-Za-z0-9_\-]+", t) and not uri_ok:
         return True
     # Un UUID tout à zéro (Notion) est un remplissage, pas une page réelle
     if re.fullmatch(r"[0\-]+", t):
         return True
-    # Des mots français collés par des underscores restent une description, pas un ID
-    if re.fullmatch(r"(?:[a-z]+_)+[a-z]+", t) and len(t) < 40:
+    # Des mots collés par des underscores restent une description, pas un ID.
+    # ⚠️ Insensible à la casse : le modèle écrit ses bouchons en MAJUSCULES.
+    if re.fullmatch(r"(?i)(?:[a-z]+_)+[a-z]+", t) and len(t) < 40:
+        return True
+    # ⚠️ Un MARQUEUR DE REMPLISSAGE, où qu'il soit dans la valeur.
+    # L'ancienne détection dépendait d'une liste de 12 noms d'objets (spreadsheet, sheet,
+    # file, page…) : YOUR_DATABASE_ID, YOUR_CARD_ID, YOUR_CHANNEL_ID, YOUR_TEAM_ID,
+    # PLACEHOLDER_ID passaient pour de VRAIS identifiants et partaient tels quels.
+    # Autrement dit : le bug corrigé pour Sheets se rejouait à l'identique sur chaque
+    # nouvelle app. Aucun identifiant réel ne contient ces mots.
+    if _MARQUEURS_BOUCHON.search(t):
         return True
     return bool(_BOUCHONS.match(t))
 
@@ -1589,6 +1718,21 @@ _MOTS_CONTENANT = {
 }
 
 
+# Pronoms clitiques : « montre-MOI », « donne-LUI ». Jamais un nom de document.
+_CLITIQUES = {"moi", "toi", "lui", "leur", "nous", "vous", "le", "la", "les", "y", "en",
+              "ce", "ca", "ça", "tu", "il", "elle", "on", "je", "me", "te", "se"}
+
+
+def _que_des_mots_vides(candidat: str) -> bool:
+    """Ce « nom composé » n'est-il fait que de verbes, de pronoms et de mots passe-partout ?"""
+    from agent.core import _VERBES_DEMANDE
+    morceaux = [x for x in re.split(r"[_\-\s]+", (candidat or "").lower()) if x]
+    if not morceaux:
+        return True
+    return all(x in _CLITIQUES or x in _MOTS_CONTENANT or x in _VERBES_DEMANDE
+               for x in morceaux)
+
+
 def _mots_cles_fichier(message: str) -> str:
     """Ce que l'utilisateur a NOMMÉ, débarrassé de la description du contenant."""
     m = message or ""
@@ -1596,16 +1740,34 @@ def _mots_cles_fichier(message: str) -> str:
     for motif in (r"[«\"']([^»\"']{3,60})[»\"']",
                   r"\b([A-Za-zÀ-ÿ0-9]+(?:[_-][A-Za-zÀ-ÿ0-9]+){1,6})\b"):
         g = re.search(motif, m)
-        if g:
+        # ⚠️ « montre-moi mon pea » contient le composé « montre-moi » : Nova cherchait
+        # donc un document nommé « montre-moi », ouvrait le premier venu, servait SES
+        # données comme réponse, puis mémorisait le raccourci « montre moi » → mauvais
+        # fichier pour toutes les demandes suivantes. Un composé fait de verbes ou de
+        # pronoms n'est pas un nom de document.
+        if g and not _que_des_mots_vides(g.group(1)):
             return g.group(1).strip()
     # 2) Sinon : la demande nettoyée, PUIS débarrassée des mots de contenant
-    from agent.core import requete_simple
-    mots = [w for w in requete_simple(m).split()
-            if w.lower().strip("'") not in _MOTS_CONTENANT]
+    from agent.core import requete_simple, _VERBES_DEMANDE
+    # ⚠️ On découpe AUSSI sur les traits d'union : « affiche-moi » restait un seul mot et
+    # traversait le filtre, pour finir dans la requête de recherche.
+    bruts = re.split(r"[\s\-]+", requete_simple(m))
+    mots = [w for w in bruts
+            if w and w.lower().strip("'") not in _MOTS_CONTENANT
+            and w.lower() not in _CLITIQUES and w.lower() not in _VERBES_DEMANDE]
     return " ".join(mots)[:60] or requete_simple(m)[:60]
 
 
 _CLES_ID = ("id", "spreadsheetId", "fileId", "documentId", "pageId", "databaseId")
+
+
+def _cle_identifiante(k: str) -> bool:
+    """Cette clé de réponse porte-t-elle un identifiant ? (id, gid, idBoard, pageId…)"""
+    if k in _CLES_ID:
+        return True
+    return bool(re.fullmatch(r"(?i)(?:.*_)?(id|gid|uid|guid|key)", k or "")
+                or re.fullmatch(r"(?:id|gid|uid)[A-Z]\w*", k or "")
+                or re.fullmatch(r"\w+(?:Id|Gid|Uid|Key)", k or ""))
 _CLES_NOM = ("name", "title", "spreadsheetTitle", "filename", "displayName")
 
 
@@ -1648,10 +1810,21 @@ def _identifiants_trouves(brut: str) -> list:
 
     def parcours(o):
         if isinstance(o, dict):
-            ident = next((o[k] for k in _CLES_ID if isinstance(o.get(k), str)), "")
+            # ⚠️ Un identifiant n'est pas toujours une CHAÎNE ni nommé « id » : Trello
+            # écrit `idBoard`, Asana `gid`, et beaucoup d'API renvoient un NOMBRE.
+            # Tout cela était ignoré : la recherche rendait « aucun document trouvé »
+            # alors que l'app venait de renvoyer la liste.
+            ident = ""
+            for k, v in o.items():
+                if isinstance(v, (str, int)) and not isinstance(v, bool) and _cle_identifiante(k):
+                    ident = str(v)
+                    break
             nom = next((o[k] for k in _CLES_NOM if isinstance(o.get(k), str)), "")
-            if ident and len(str(ident)) >= 10:
-                out.append((str(ident), str(nom)))
+            if not nom:
+                nom = next((str(v) for k, v in o.items()
+                            if isinstance(v, str) and re.search(r"(?i)(name|title|label)$", k)), "")
+            if ident and len(ident) >= 5:
+                out.append((ident, str(nom)))
             for v in o.values():
                 parcours(v)
         elif isinstance(o, list):
@@ -1787,17 +1960,65 @@ def _action_douteuse(message: str, action: str) -> bool:
     if not N:
         return False
     vises = _objets_vises(message)
-    # 1) L'action vise un objet « exotique » que l'utilisateur n'a nommé nulle part.
-    exotiques = [x for x in _ACTIONS_IMPROBABLES if x in N]
+    # ⚠️ On juge sur l'OBJET de l'action, pas sur son nom complet. Presque toutes les API
+    # nomment l'utilisateur dans leur action canonique « mes propres données » :
+    # GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER,
+    # SPOTIFY_GET_A_LIST_OF_CURRENT_USER_S_PLAYLISTS, …_OF_CURRENT_USER, GET_ME.
+    # En cherchant « USER » dans le nom entier, Nova disqualifiait systématiquement
+    # l'action la plus utile de chaque nouvelle app et en exécutait une absurde.
+    objet = _objet_de_action(N)
+    exotiques = [x for x in _ACTIONS_IMPROBABLES if x in objet]
     if exotiques and not any(x in vises or _demande_explicitement(message, x)
                              for x in exotiques):
         return True
     # 2) L'utilisateur a nommé un objet précis et l'action en vise un AUTRE, incompatible.
     if vises:
         autres = [f for _mots, fams in _OBJETS for f in fams if f not in vises]
-        if any(f in N for f in autres) and not any(f in N for f in vises):
+        if any(f in objet for f in autres) and not any(f in objet for f in vises):
             return True
     return False
+
+
+# Suffixes qui décrivent QUI, pas QUOI : ils ne doivent jamais peser dans le choix.
+# ⚠️ La mention de l'utilisateur n'est pas toujours en fin de nom :
+# SPOTIFY_GET_A_LIST_OF_CURRENT_USER_S_PLAYLISTS la place au MILIEU. On la retire
+# donc où qu'elle se trouve, sinon l'action reste disqualifiée.
+_SUFFIXES_ROLE = re.compile(
+    r"_?(?:FOR_|OF_)?(?:THE_)?(?:AUTHENTICATED|CURRENT|MY|ME)_?USER(?:_S)?_?|"
+    r"_AUTHENTICATED_USER|_FOR_ME\b", re.I)
+
+
+_FAMILLES_ECRITURE = ("CREATE", "ADD", "INSERT", "UPDATE", "PATCH", "EDIT", "DELETE",
+                      "REMOVE", "TRASH", "SEND", "SHARE", "REPLY", "POST", "MOVE",
+                      "ARCHIVE", "MERGE", "PUBLISH", "INVITE", "TRANSFER", "REVOKE")
+
+
+def _ecrit(action: str) -> bool:
+    """Cette action modifie-t-elle quelque chose chez l'utilisateur ?"""
+    o = _objet_de_action(action)
+    return any(f in o for f in _FAMILLES_ECRITURE)
+
+
+def _familles_du_message(message: str) -> tuple:
+    """Les familles d'action que le VERBE de la demande désigne (CREATE, GET, DELETE…)."""
+    m = (message or "").lower()
+    for verbes, familles in _VERBES_ACTION:
+        if any(re.search(r"(?<![\wÀ-ÿ])" + re.escape(v) + r"(?![\wÀ-ÿ])", m) for v in verbes):
+            return familles
+    return ()
+
+
+def _objet_de_action(nom: str) -> str:
+    """Ce que l'action manipule, sans le préfixe d'app ni les mentions de l'utilisateur.
+
+    « GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER » → « LIST_REPOSITORIES ».
+    Sans ce nettoyage, le préfixe d'app polluait aussi la comparaison : « THREAD »
+    contient « READ », « BUDGET » contient « GET », « DISPATCH » contient « PATCH ».
+    """
+    N = (nom or "").upper()
+    N = _SUFFIXES_ROLE.sub("_", N).strip("_")
+    parts = N.split("_", 1)
+    return parts[1] if len(parts) > 1 else N
 
 
 def _action_par_defaut(message: str, actions: list) -> str:
@@ -1820,19 +2041,30 @@ def _action_par_defaut(message: str, actions: list) -> str:
         score = 10
         if vises:
             score += 50 if any(o in N for o in vises) else 0
-        # Une action improbable ne gagne que si l'utilisateur l'a explicitement demandée
-        exotiques = [x for x in _ACTIONS_IMPROBABLES if x in N]
+        # Une action improbable ne gagne que si l'utilisateur l'a explicitement demandée.
+        # Même correction qu'au-dessus : on juge l'OBJET, pas le nom complet.
+        exotiques = [x for x in _ACTIONS_IMPROBABLES if x in _objet_de_action(N)]
         if exotiques and not any(x in vises or _demande_explicitement(message, x)
                                  for x in exotiques):
             score -= 40
         return score
 
-    for verbes, familles in _VERBES_ACTION:
-        if not any(re.search(r"(?<![\wÀ-ÿ])" + re.escape(v) + r"(?![\wÀ-ÿ])", m) for v in verbes):
-            continue
+    # ⚠️ Le repli parcourt _VERBES_ACTION dans l'ordre du tuple, CREATE en tête : une
+    # demande de consultation pouvait donc tomber sur une action de création et écrire
+    # pour de vrai chez l'utilisateur, sans confirmation (ni CREATE ni UPDATE ne sont
+    # « irréversibles » au sens du garde-fou). On ne considère que les familles dont le
+    # verbe est RÉELLEMENT dans la phrase, et jamais une écriture sur une lecture.
+    demandees = [(verbes, familles) for verbes, familles in _VERBES_ACTION
+                 if any(re.search(r"(?<![\wÀ-ÿ])" + re.escape(v) + r"(?![\wÀ-ÿ])", m)
+                        for v in verbes)]
+    lecture_seule = bool(demandees) and all(
+        not any(f in _FAMILLES_ECRITURE for f in familles) for _v, familles in demandees)
+    for verbes, familles in demandees:
         meilleur, best = "", 0
         for fam in familles:
             for n in noms:
+                if lecture_seule and _ecrit(n):
+                    continue          # on ne CRÉE jamais pour répondre à « montre-moi »
                 sc = convient(n, fam)
                 if sc > best:
                     meilleur, best = n, sc
@@ -2444,8 +2676,17 @@ def _generic_app_flow(message: str, slug: str):
         f"Demande actuelle : {message}\n\nACTIONS DISPONIBLES ({slug}) :\n{catalog}")
     action = (pick.get("action") or "").strip().upper()
     valid = {a["name"] for a in actions}
-    if action and action not in valid:  # tolère un nom approchant
-        near = [n for n in valid if action in n or n in action]
+    if action and action not in valid:
+        # ⚠️ Un nom approchant ne doit JAMAIS pouvoir transformer une lecture en écriture.
+        # `near[0]` était pris dans un SET : l'ordre dépend du hash du process, donc
+        # « montre-moi ma page Notion » pouvait tomber sur NOTION_CREATE_NOTION_PAGE et
+        # créer une page vide — annoncée en succès. On trie (résultat reproductible) et
+        # on ne garde que les candidats de la MÊME famille de verbe que la demande.
+        near = sorted(n for n in valid if action in n or n in action)
+        famille = _familles_du_message(message)
+        if famille:
+            memes = [n for n in near if any(f in _objet_de_action(n) for f in famille)]
+            near = memes or [n for n in near if not _ecrit(n)]
         action = near[0] if near else ""
     if not action:
         action = _action_par_defaut(message, actions)
@@ -2761,7 +3002,7 @@ async def ask_post(req: AskRequest, request: Request):
 
 
 @router.get("/ask/stream")
-async def ask_stream(q: str = "", key: str = ""):
+async def ask_stream(q: str = "", key: str = "", modele: str = ""):
     """Streaming SSE : émet en direct les étapes du raisonnement + la réponse (pour /nova)."""
     import json as _json
     from fastapi.responses import StreamingResponse
@@ -2776,8 +3017,13 @@ async def ask_stream(q: str = "", key: str = ""):
             yield sse({"type": "answer", "text": "Message vide."}); yield sse({"type": "done"}); return
         loop = asyncio.get_running_loop()
 
-        from llm.client import fournisseur_demande
-        _impose = fournisseur_demande(message)
+        from llm.client import fournisseur_demande, fournisseur_choisi
+        # Ordre de priorité, du plus précis au plus général :
+        # 1) « réponds avec l'api nvidia » écrit dans la phrase ;
+        # 2) le fournisseur choisi dans le sélecteur de l'interface ;
+        # 3) rien → chaîne automatique.
+        _impose = (fournisseur_demande(message) or (modele or "").strip().lower()
+                   or fournisseur_choisi())
 
         async def _stream_llm(messages, temp, deadline: float = 150.0, niveau: str = "equilibre"):
             """Diffuse une réponse LLM token par token (dans UN seul thread, non bloquant).
@@ -3335,6 +3581,36 @@ def _etat_memoire() -> dict:
                              "Render ne peut pas joindre), remplace [YOUR-PASSWORD], et "
                              "mets-la dans SUPABASE_DB_URL sur Render.")
     return d
+
+
+class ModeleReq(BaseModel):
+    key: Optional[str] = None
+    fournisseur: Optional[str] = ""
+
+
+@router.get("/modeles")
+async def modeles_get(key: str = ""):
+    """Qui peut répondre, dans quel état, et lequel est choisi.
+
+    Ouvre /agent/modeles?key=TA_CLE — c'est ce que lit le sélecteur de l'interface.
+    """
+    _check_key(key)
+    from llm.client import etat_fournisseurs, fournisseur_choisi
+    return {"fournisseurs": etat_fournisseurs(), "choisi": fournisseur_choisi()}
+
+
+@router.post("/modeles")
+async def modeles_set(req: ModeleReq):
+    """Choisit le fournisseur qui répondra. Vide ou « auto » = choix automatique.
+
+    ⚠️ Ce n'est PAS une garantie : si le fournisseur choisi ne répond pas, la chaîne de
+    secours prend le relais plutôt que de laisser Nova muette. Le badge dira alors qui a
+    réellement répondu — mieux vaut une réponse d'un autre qu'aucune réponse.
+    """
+    _check_key(req.key or "")
+    from llm.client import choisir_fournisseur, etat_fournisseurs
+    choisi = choisir_fournisseur(req.fournisseur or "")
+    return {"ok": True, "choisi": choisi, "fournisseurs": etat_fournisseurs()}
 
 
 @router.get("/diag/memoire")

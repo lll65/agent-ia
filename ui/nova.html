@@ -469,6 +469,7 @@
       <button class="sbf" onclick="location.href='/nova/brain'">🌌 Escouade</button>
       <button class="sbf" onclick="location.href='/nova/cours'">🎓 Mode Cours</button>
       <button class="sbf" onclick="openMemory()">🧠 Mémoire</button>
+      <button class="sbf" onclick="openModeles()">🎛️ Modèle</button>
       <button class="sbf" onclick="diagLLM()">🩺 Diagnostic</button>
       <button class="sbf" id="soundBtn" onclick="toggleSound()">🔉 Sons</button>
       <!-- Réveil, mot-clé, voix… se pilotent aussi à la voix : « réveille mon téléphone », « active le mot-clé » -->
@@ -501,6 +502,13 @@
       <div id="autoQuand" class="quand"></div>
       <button onclick="addAuto()">＋ Créer l'automatisation</button>
     </div>
+  </div></div>
+
+  <div class="modal" id="mdlModal"><div class="card" style="max-width:520px">
+    <div class="chead"><h3>🎛️ Qui répond ?</h3><button class="ic" onclick="closeModeles()" title="Fermer">✕</button></div>
+    <p>Choisis le fournisseur qui répondra. <b>Auto</b> essaie le plus rapide disponible.</p>
+    <div class="memb" id="mdlBody"></div>
+    <div class="quand" id="mdlNote" style="margin-top:10px"></div>
   </div></div>
 
   <div class="modal" id="memModal"><div class="card">
@@ -628,6 +636,49 @@ function toggleSidebar(){ const sb=document.getElementById("sidebar"), sc=docume
 function closeSidebar(){ document.getElementById("sidebar").classList.remove("show"); document.getElementById("scrim").classList.remove("show"); }
 
 /* Mémoire serveur (ce que Nova sait de toi) */
+/* ═══ CHOIX DU FOURNISSEUR ═══
+   Le mecanisme existait deja (« reponds avec l'api nvidia » dans la phrase), mais rien
+   ne permettait de le CHOISIR une fois pour toutes. */
+let MODELE = "";
+try{ MODELE = localStorage.getItem("novaModele") || ""; }catch(e){}
+function openModeles(){ closeSidebar(); if(!KEY){ openCfg(); return; }
+  document.getElementById("mdlModal").classList.add("show"); loadModeles(); }
+function closeModeles(){ document.getElementById("mdlModal").classList.remove("show"); }
+async function loadModeles(){ const body=document.getElementById("mdlBody");
+  body.innerHTML='<div class="pitem">Chargement…</div>';
+  try{
+    const d=await (await fetch(ORIGIN+"/agent/modeles?key="+encodeURIComponent(KEY),{cache:"no-store"})).json();
+    MODELE = d.choisi || MODELE || "";
+    const ligne=(nom,joli,sous,actif,dispo)=>
+      '<div class="pitem" style="cursor:'+(dispo?"pointer":"default")+';opacity:'+(dispo?1:.45)+'"'
+      + (dispo? ' onclick="setModele(\''+nom+'\')"':'') + '>'
+      + '<div style="display:flex;align-items:center;gap:9px">'
+      + '<span style="font-size:15px">'+(actif?"◉":"○")+'</span>'
+      + '<b style="color:var(--txt);font-size:13px;text-transform:none;letter-spacing:0">'+joli+'</b>'
+      + '<span style="margin-left:auto;color:var(--dim);font-size:11px">'+sous+'</span></div></div>';
+    let html = ligne("", "Auto (recommandé)", "le plus rapide qui répond", !MODELE, true);
+    html += (d.fournisseurs||[]).map(f=>{
+      const sous = !f.configure ? "pas de clé"
+        : f.etat==="écarté" ? (f.raison||"écarté")+" · revient dans "+Math.ceil(f.reprend_dans_s/60)+" min"
+        : (f.modele||"prêt").slice(0,30) + (f.dernier_ok? " · a répondu en dernier":"");
+      window._JOLIS = window._JOLIS || {};
+      window._JOLIS[f.nom] = f.joli;      // pour nommer le fournisseur en clair ailleurs
+      return ligne(f.nom, esc(f.joli), esc(sous), MODELE===f.nom, f.configure);
+    }).join("");
+    body.innerHTML = html;
+    document.getElementById("mdlNote").textContent = MODELE
+      ? "Si ce fournisseur ne répond pas, je bascule sur un autre plutôt que de rester muette — le badge sous la réponse dira toujours qui a vraiment répondu."
+      : "Je choisis le plus rapide disponible à chaque question.";
+  }catch(e){ body.innerHTML='<div class="pitem">Impossible de charger la liste.</div>'; } }
+async function setModele(nom){
+  MODELE = nom || "";
+  try{ localStorage.setItem("novaModele", MODELE); }catch(e){}
+  try{ await fetch(ORIGIN+"/agent/modeles",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({key:KEY,fournisseur:MODELE||"auto"})}); }catch(e){}
+  loadModeles();
+  toast(MODELE ? "🎛️ Je répondrai avec "+((window._JOLIS||{})[MODELE]||MODELE)+"."
+               : "🎛️ Choix automatique du modèle."); }
+
 function openMemory(){ closeSidebar(); document.getElementById("memModal").classList.add("show"); loadMemory(); }
 function loadMemory(){ const body=document.getElementById("memBody");
   body.innerHTML='<div class="fact">Chargement…</div>';
@@ -1163,7 +1214,8 @@ function ask(){
     else { pi=(pi+1)%THINK_PHRASES.length; bubble.innerHTML=thinkHTML(THINK_PHRASES[pi],"💭"); }
     chat.scrollTop=chat.scrollHeight; }, 1700);
   const stopThink=()=>clearInterval(thinkTimer);
-  const url=ORIGIN+"/agent/ask/stream?key="+encodeURIComponent(KEY)+"&q="+encodeURIComponent(msg);
+  const url=ORIGIN+"/agent/ask/stream?key="+encodeURIComponent(KEY)+"&q="+encodeURIComponent(msg)
+    + (MODELE ? "&modele="+encodeURIComponent(MODELE) : "");
   const es=new EventSource(url);
   es.onmessage=(e)=>{ let d; try{ d=JSON.parse(e.data);}catch{ return; }
     // Décisions réelles du routeur → sous-bulles du nœud « Analyse »
