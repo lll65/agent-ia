@@ -1994,9 +1994,15 @@ def test_fournisseur_et_routage():
         ordre = [n for n, _f, _m in C._providers_disponibles("equilibre", "gemini")]
         check("le fournisseur réclamé est essayé en premier", ordre[0], "gemini")
         check_true("les autres restent en secours", len(ordre) >= 2)
-        # Sans consigne, le routage par tâche reprend la main
+        # Sans consigne, le routage par tâche reprend la main.
+        # ⚠️ NVIDIA n'est plus en tête : le diagnostic a montré qu'il ne répond pas depuis
+        # Render (aucune réponse même après 60 s). Le laisser premier faisait payer son
+        # délai plein à CHAQUE message avant de basculer. Il reste dans la chaîne au cas
+        # où il reviendrait, mais en dernier.
         libre = [n for n, _f, _m in C._providers_disponibles("equilibre", "")]
-        check("sans consigne, routage normal", libre[0], "nvidia")
+        check("sans consigne, un fournisseur qui répond passe en tête", libre[0], "groq")
+        check_true("NVIDIA reste disponible en dernier recours", "nvidia" in libre)
+        check_true("…et n'est plus essayé en premier", libre.index("nvidia") > 0)
         # Un fournisseur réclamé mais SANS clé ne casse pas la chaîne
         sans = [n for n, _f, _m in C._providers_disponibles("equilibre", "cerebras")]
         check_true("fournisseur sans clé ignoré proprement", sans and "cerebras" not in sans)
@@ -2120,6 +2126,72 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_cours_persistants():
+    """« mes cours sont supprimés après chaque veille de Render ». Ils ne vivaient que
+    sur le disque du conteneur, remis à zéro à chaque mise en veille — et comme la liste
+    est servie par le serveur, ils disparaissaient des DEUX appareils à la fois."""
+    from agent import cours as CO
+
+    vrai_dir, vrai_sb = CO._DIR, CO._sb
+    base = {}                                   # fausse base « persistante »
+
+    class FauxCurseur:
+        def __init__(self): self.res, self.rowcount = None, 0
+        def execute(self, q, a=None):
+            q = " ".join(q.split())
+            if q.startswith("CREATE TABLE"): return
+            if q.startswith("SELECT data FROM cours WHERE"):
+                self.res = [(base[a[0]],)] if a[0] in base else []
+            elif q.startswith("SELECT data FROM cours"):
+                self.res = [(v,) for v in base.values()]
+            elif q.startswith("INSERT INTO cours"):
+                base[a[0]] = json.loads(a[1])
+            elif q.startswith("DELETE FROM cours"):
+                self.rowcount = 1 if base.pop(a[0], None) is not None else 0
+        def fetchone(self): return self.res[0] if self.res else None
+        def fetchall(self): return self.res or []
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    class FausseBase:
+        def cursor(self): return FauxCurseur()
+        def close(self): pass
+
+    try:
+        CO._DIR = Path("/tmp/nova_test_cours")
+        CO._sb = lambda: FausseBase()
+        s = CO.demarrer("Effet Doppler", "Physique")
+        sid = s["id"]
+        check_true("le cours part aussi dans la base", sid in base)
+        check("…et se relit depuis la base", CO._lire(sid)["titre"], "Effet Doppler")
+
+        # ⚠️ LE cas qui posait problème : Render efface le disque pendant la veille.
+        import shutil
+        shutil.rmtree(CO._DIR, ignore_errors=True)
+        check("après effacement du disque, le cours survit",
+              CO._lire(sid)["titre"], "Effet Doppler")
+        listés = CO.lister()
+        check_true("…et reste dans la liste (donc visible sur les 2 appareils)",
+                   any(x["id"] == sid for x in listés))
+        check("aucun doublon disque + base", len([x for x in listés if x["id"] == sid]), 1)
+
+        # Une suppression doit valoir PARTOUT, sinon le cours revient au redémarrage
+        check_true("suppression effective", CO.supprimer(sid))
+        check("…dans la base aussi", sid in base, False)
+        check("…et il ne réapparaît pas", [x for x in CO.lister() if x["id"] == sid], [])
+
+        # Sans base configurée, on retombe proprement sur le disque
+        CO._sb = lambda: None
+        s2 = CO.demarrer("Sans base", "")
+        check("le disque seul fonctionne toujours", CO._lire(s2["id"])["titre"], "Sans base")
+        check_true("…et la liste aussi", any(x["id"] == s2["id"] for x in CO.lister()))
+        CO.supprimer(s2["id"])
+    finally:
+        import shutil
+        shutil.rmtree(Path("/tmp/nova_test_cours"), ignore_errors=True)
+        CO._DIR, CO._sb = vrai_dir, vrai_sb
+
+
 def test_diag_patient():
     """« ❌ nvidia · 22,4 s · n'a pas répondu » : 22,4 s ≈ LLM_TIMEOUT. Le diagnostic
     coupait à la MÊME limite que l'usage normal, il ne pouvait donc pas répondre à la
@@ -3042,7 +3114,7 @@ if __name__ == "__main__":
                test_memoire_des_documents, test_automatisations_heure,
                test_competences, test_apps_robustesse,
                test_choix_fournisseur, test_apps_inconnues,
-               test_diag_patient):
+               test_diag_patient, test_cours_persistants):
         try:
             fn()
         except Exception as e:

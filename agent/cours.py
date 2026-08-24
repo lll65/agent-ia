@@ -59,7 +59,41 @@ def _sid_sur(sid: str) -> str:
     return s
 
 
+def _sb():
+    """Base persistante, si elle est configurée. Sinon None (repli sur le disque).
+
+    ⚠️ Sans elle, un cours ne survit PAS à la mise en veille de Render : le disque du
+    conteneur est remis à zéro. Un cours de 2 h enregistré en classe disparaissait donc
+    dans la soirée — et comme la liste est servie par le serveur, il disparaissait des
+    DEUX appareils à la fois (téléphone et ordinateur).
+    """
+    if not getattr(config, "SUPABASE_DB_URL", ""):
+        return None
+    try:
+        import psycopg2
+        conn = psycopg2.connect(config.SUPABASE_DB_URL, connect_timeout=10)
+        conn.autocommit = True
+        with conn.cursor() as c:
+            c.execute("CREATE TABLE IF NOT EXISTS cours (id text PRIMARY KEY, data jsonb)")
+        return conn
+    except Exception as e:
+        logger.warning(f"[cours] base persistante indisponible ({e}) — disque local.")
+        return None
+
+
 def _lire(sid: str) -> dict:
+    sid = _sid_sur(sid)
+    conn = _sb()
+    if conn:
+        try:
+            with conn.cursor() as c:
+                c.execute("SELECT data FROM cours WHERE id = %s", (sid,))
+                row = c.fetchone()
+            conn.close()
+            if row:
+                return row[0] if isinstance(row[0], dict) else json.loads(row[0])
+        except Exception as e:
+            logger.warning(f"[cours] lecture persistante échouée ({e}) — disque local.")
     p = _chemin(sid)
     if not p.exists():
         raise KeyError("session inconnue")
@@ -67,11 +101,23 @@ def _lire(sid: str) -> dict:
 
 
 def _ecrire(s: dict) -> None:
+    # Toujours sur le disque : c'est le plus rapide, et ça sert de cache pendant la séance.
     _DIR.mkdir(parents=True, exist_ok=True)
     p = _chemin(s["id"])
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(s, ensure_ascii=False), encoding="utf-8")
     tmp.replace(p)                      # écriture atomique : jamais de fichier à moitié écrit
+    # …ET dans la base quand elle existe : c'est la seule copie qui survit à la veille.
+    conn = _sb()
+    if conn:
+        try:
+            with conn.cursor() as c:
+                c.execute("INSERT INTO cours (id, data) VALUES (%s, %s) "
+                          "ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data",
+                          (_sid_sur(s["id"]), json.dumps(s, ensure_ascii=False)))
+            conn.close()
+        except Exception as e:
+            logger.warning(f"[cours] sauvegarde persistante échouée ({e}).")
 
 
 def demarrer(titre: str = "", matiere: str = "") -> dict:
@@ -99,28 +145,56 @@ def demarrer(titre: str = "", matiere: str = "") -> dict:
     return s
 
 
+def _resume(s: dict) -> dict:
+    return {"id": s["id"], "titre": s["titre"], "matiere": s.get("matiere", ""),
+            "debut": s["debut"], "fin": s.get("fin"), "etat": s.get("etat"),
+            "secondes": s.get("secondes", 0), "mots": len(s.get("transcript", "").split()),
+            "a_synthese": bool(s.get("synthese"))}
+
+
 def lister() -> list:
-    """Sessions connues, la plus récente d'abord."""
+    """Sessions connues, la plus récente d'abord — disque ET base, sans doublon."""
+    vues, out = set(), []
+    conn = _sb()
+    if conn:
+        try:
+            with conn.cursor() as c:
+                c.execute("SELECT data FROM cours")
+                for (row,) in c.fetchall():
+                    s = row if isinstance(row, dict) else json.loads(row)
+                    vues.add(s["id"])
+                    out.append(_resume(s))
+            conn.close()
+        except Exception as e:
+            logger.warning(f"[cours] liste persistante illisible ({e}).")
     _DIR.mkdir(parents=True, exist_ok=True)
-    out = []
     for p in _DIR.glob("*.json"):
         try:
             s = json.loads(p.read_text(encoding="utf-8"))
-            out.append({"id": s["id"], "titre": s["titre"], "matiere": s.get("matiere", ""),
-                        "debut": s["debut"], "fin": s.get("fin"), "etat": s.get("etat"),
-                        "secondes": s.get("secondes", 0), "mots": len(s.get("transcript", "").split()),
-                        "a_synthese": bool(s.get("synthese"))})
+            if s["id"] not in vues:
+                out.append(_resume(s))
         except Exception:
             continue
     return sorted(out, key=lambda x: x["debut"], reverse=True)
 
 
 def supprimer(sid: str) -> bool:
+    """Efface partout : un cours supprimé ne doit pas réapparaître au redémarrage."""
+    fait = False
     p = _chemin(sid)
     if p.exists():
         p.unlink()
-        return True
-    return False
+        fait = True
+    conn = _sb()
+    if conn:
+        try:
+            with conn.cursor() as c:
+                c.execute("DELETE FROM cours WHERE id = %s", (_sid_sur(sid),))
+                fait = fait or c.rowcount > 0
+            conn.close()
+        except Exception as e:
+            logger.warning(f"[cours] suppression persistante échouée ({e}).")
+    return fait
 
 
 # ── Transcription ─────────────────────────────────────────────────────────────

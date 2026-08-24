@@ -176,6 +176,9 @@ MODELES = {
     "gemini": {"rapide": "gemini-2.0-flash",
                "equilibre": "gemini-2.0-flash",
                "puissant": "gemini-2.5-pro"},
+    "mistral": {"rapide": "open-mistral-nemo",
+                "equilibre": "mistral-small-latest",
+                "puissant": "mistral-medium-latest"},
     "openrouter": {"rapide": "meta-llama/llama-3.2-3b-instruct:free",
                    "equilibre": "meta-llama/llama-3.3-70b-instruct:free",
                    "puissant": "deepseek/deepseek-r1:free"},
@@ -186,10 +189,13 @@ MODELES = {
 # — rapide    : Groq d'abord, c'est le plus véloce
 # — équilibré : NVIDIA d'abord, quota le plus généreux
 # — puissant  : NVIDIA puis Gemini, ce sont eux qui ont les gros modèles
+# ⚠️ NVIDIA n'est plus en tête : le diagnostic montre qu'il ne répond pas depuis Render.
+# Le laisser premier faisait payer son délai plein à chaque message avant de basculer.
+# Il reste dans la chaîne — s'il revient, il resservira.
 ORDRE = {
-    "rapide":    ("groq", "nvidia", "gemini", "openrouter", "cerebras"),
-    "equilibre": ("nvidia", "groq", "gemini", "openrouter", "cerebras"),
-    "puissant":  ("nvidia", "gemini", "openrouter", "groq", "cerebras"),
+    "rapide":    ("groq", "gemini", "mistral", "openrouter", "cerebras", "nvidia"),
+    "equilibre": ("groq", "gemini", "mistral", "openrouter", "cerebras", "nvidia"),
+    "puissant":  ("gemini", "mistral", "groq", "openrouter", "cerebras", "nvidia"),
 }
 
 # Qui a répondu en dernier (par contexte async → sûr même avec plusieurs requêtes)
@@ -226,6 +232,7 @@ def _modele_impose(nom: str) -> str:
 _NOMS_FOURNISSEURS = {
     "nvidia": ("nvidia", "nim"), "groq": ("groq",), "gemini": ("gemini", "google ai"),
     "openrouter": ("openrouter", "open router"), "cerebras": ("cerebras",),
+    "mistral": ("mistral", "le chat"),
     "xai": ("xai", "grok"),
 }
 
@@ -274,9 +281,11 @@ def etat_fournisseurs() -> list:
         "gemini": getattr(config, "GEMINI_API_KEY", ""),
         "openrouter": getattr(config, "OPENROUTER_API_KEY", ""),
         "cerebras": config.CEREBRAS_API_KEY, "xai": getattr(config, "XAI_API_KEY", ""),
+        "mistral": getattr(config, "MISTRAL_API_KEY", ""),
     }
     jolis = {"nvidia": "NVIDIA", "groq": "Groq", "gemini": "Gemini",
-             "openrouter": "OpenRouter", "cerebras": "Cerebras", "xai": "Grok (xAI)"}
+             "openrouter": "OpenRouter", "cerebras": "Cerebras", "xai": "Grok (xAI)",
+             "mistral": "Mistral"}
     out = []
     for nom, cle in cles.items():
         # ⚠️ On stocke le DÉBUT de la sanction, pas sa fin : le temps restant se calcule
@@ -314,6 +323,7 @@ def _providers_disponibles(niveau: str = "equilibre", impose: str = ""):
         "groq":       (config.GROQ_API_KEY, _groq_chat),
         "gemini":     (getattr(config, "GEMINI_API_KEY", ""), _gemini_chat),
         "openrouter": (getattr(config, "OPENROUTER_API_KEY", ""), _openrouter_chat),
+        "mistral":    (getattr(config, "MISTRAL_API_KEY", ""), _mistral_chat),
         "cerebras":   (config.CEREBRAS_API_KEY, _cerebras_chat),
         "xai":        (getattr(config, "XAI_API_KEY", ""), _xai_chat),
     }
@@ -856,6 +866,38 @@ def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> 
         "Aucun modèle de vision disponible. Ajoute GROQ_API_KEY (gratuit sur console.groq.com) "
         "ou GEMINI_API_KEY (gratuit sur aistudio.google.com) dans les variables Render."
         + (f" Détails : {' | '.join(errors)}" if errors else ""))
+
+
+def _mistral_chat(messages: list, model: str, temperature: float) -> str:
+    """Mistral — API compatible OpenAI, offre gratuite sans carte bancaire.
+
+    Ajouté parce que NVIDIA ne répond plus depuis Render : mieux vaut une chaîne large
+    qu'un fournisseur de moins. Bonus : modèles entraînés en français, ce qui se voit
+    sur la qualité des réponses de Nova.
+    """
+    from openai import OpenAI
+
+    if not getattr(config, "MISTRAL_API_KEY", ""):
+        raise RuntimeError("MISTRAL_API_KEY absente — impossible d'appeler Mistral.")
+    client = OpenAI(api_key=config.MISTRAL_API_KEY,
+                    base_url="https://api.mistral.ai/v1",
+                    timeout=_timeout(TIMEOUT_LLM), max_retries=0)
+    candidats = [m for m in (model, _MODELES_OK.get("mistral"),
+                             "mistral-small-latest", "open-mistral-nemo",
+                             "mistral-medium-latest") if m]
+    derniere = None
+    for m in dict.fromkeys(candidats):
+        try:
+            r = client.chat.completions.create(
+                model=m, messages=messages, temperature=temperature)
+            _MODELES_OK["mistral"] = m
+            return (r.choices[0].message.content or "").strip()
+        except Exception as e:
+            derniere = e
+            # Modèle inconnu ou retiré : on essaie le suivant plutôt que d'abandonner.
+            if not any(k in str(e).lower() for k in ("404", "not found", "model")):
+                raise
+    raise derniere or RuntimeError("Mistral : aucun modèle disponible")
 
 
 def _cerebras_chat(messages: list, model: str, temperature: float) -> str:
