@@ -1455,11 +1455,50 @@ async function diagLLM(){
       else if(f.erreur) h+="<br><span style='opacity:.6;font-size:12px'>↳ "+esc(f.erreur.slice(0,140))+"</span>";
       h+="<br>";
     }
-    h+="<br><span style='opacity:.6;font-size:12px'>Délai appliqué : "
-      +(d.reglages&&d.reglages.LLM_TIMEOUT)+" s par fournisseur.</span>";
+    if(d.test) h+="<br><span style='opacity:.55;font-size:12px'>"+esc(d.test)+"</span>";
+    h+="<br><span style='opacity:.6;font-size:12px'>En usage normal : "
+      +(d.reglages&&d.reglages.delai_reel_1er_essai_s)+" s pour le 1er essai.</span>";
     b.innerHTML=h;
+
+    // ⚠️ Les diagnostics les plus importants n'étaient accessibles qu'en tapant une URL
+    // à la main. Or ce sont EUX qui disent si la mémoire tient et si les automatisations
+    // partent — les deux choses qu'on croyait réglées sans pouvoir le vérifier.
+    b.innerHTML += "<br><br>" + await diagReste();
   }catch(e){ b.innerHTML="❌ Diagnostic impossible : "+esc(String(e).slice(0,160)); }
   chat.scrollTop=chat.scrollHeight;
+}
+
+// ⚠️ esc() attend du TEXTE : lui passer un nombre levait une exception en plein milieu
+// du bloc, le rattrapage réécrivait l'en-tête, et « 🧠 Mémoire » s'affichait DEUX fois —
+// une version complète puis « ❌ illisible ». On convertit systématiquement.
+function txt(v){ return esc(v === null || v === undefined ? "" : String(v)); }
+
+async function diagBloc(titre, url, rendu){
+  // Chaque bloc est construit à part : un échec n'abîme jamais celui d'à côté.
+  try{
+    const d = await (await fetch(ORIGIN+url+"?key="+encodeURIComponent(KEY),{cache:"no-store"})).json();
+    return "<b>"+titre+"</b><br>" + rendu(d);
+  }catch(e){ return "<b>"+titre+"</b><br>❌ illisible ("+txt(String(e).slice(0,80))+")"; }
+}
+
+async function diagReste(){
+  const mem = await diagBloc("🧠 Mémoire", "/agent/diag/memoire", m => {
+    let h = txt(m.resume);
+    if(m.raison)   h += "<br><span style='opacity:.7;font-size:12.5px'>↳ "+txt(m.raison)+"</span>";
+    if(m.solution) h += "<br><span style='opacity:.75;font-size:13px'>👉 "+txt(m.solution)+"</span>";
+    return h + "<br><span style='opacity:.55;font-size:12px'>"+txt(m.faits_memorises)
+      +" fait(s), "+txt(m.messages_memorises)+" message(s) · "+txt(m.ou)+"</span>";
+  });
+  const auto = await diagBloc("🌙 Automatisations", "/agent/diag/automatisations", a => {
+    let h = txt(a.resume);
+    if(a.solution) h += "<br><span style='opacity:.75;font-size:13px'>👉 "+txt(a.solution)+"</span>";
+    h += "<br><span style='opacity:.55;font-size:12px'>"+txt(a.heure_utilisateur)
+      +" · fuseau "+txt(a.fuseau)+" · décalage serveur "+txt(a.decalage_avec_le_serveur_h)+" h</span>";
+    for(const p of (a.prochaines||[]))
+      h += "<br><span style='opacity:.6;font-size:12px'>· "+txt(p.titre)+" → "+txt(p.quand)+"</span>";
+    return h;
+  });
+  return mem + "<br><br>" + auto;
 }
 
 /* ═══ MOT-CLÉ « NOVA » (mains-libres, tant que la page est ouverte) ═══ */
