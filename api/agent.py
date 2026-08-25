@@ -806,6 +806,42 @@ def _corrige_par_suggestion(args: dict, obs: str) -> dict:
     return neuf if change else {}
 
 
+def _merite_une_reponse(message: str) -> bool:
+    """Cette demande garde-t-elle un sens si l'app ne répond pas ?
+
+    « ouvre mon tableur PEA » : non, sans Sheets il n'y a rien à dire.
+    « combien ça va me coûter en gazole et péage, et est-ce que ça vaut le coup ? » :
+    oui — c'est une question de fond, l'app n'était qu'un moyen. Nova rendait pourtant
+    le même constat d'échec dans les deux cas.
+    """
+    m = (message or "").strip()
+    # ⚠️ Un seuil de 12 mots écartait de vraies questions (« comment je peux organiser
+    # mon week-end entre trois villes ? » en fait 10). Ce n'est pas la longueur qui
+    # compte mais la présence d'une VRAIE question ; on garde juste un plancher bas
+    # pour ne pas confondre avec une consigne (« ouvre mon tableur PEA ? »).
+    if len(m.split()) < 7:
+        return False
+    # Une VRAIE question : elle demande un avis, un calcul, un conseil, un plan.
+    marques = ("?", "combien", "comment", "pourquoi", "que faire", "quoi faire",
+               "conseil", "vaut le coup", "vaut-il", "organise", "organiser",
+               "explique", "compare", "faut-il", "est-ce que", "aide-moi", "aide moi",
+               "propose", "planifie", "estime", "calcule")
+    bas = m.lower()
+    return any(x in bas for x in marques)
+
+
+def _consigne_sans_app(echec: str) -> str:
+    """Ce qu'on dit au modèle quand l'app a échoué mais que la question tient debout."""
+    return (
+        "⚠️ UNE APP N'A PAS RÉPONDU. Réponds quand même à la question sur le fond, avec "
+        "ce que tu sais — c'est ce qui est attendu de toi. Règles :\n"
+        "- Donne des ordres de grandeur utiles (distances, durées, coûts) et DIS que ce "
+        "sont des estimations, jamais des chiffres relevés.\n"
+        "- N'invente aucun horaire, prix ou trajet PRÉCIS : arrondis et annonce-le.\n"
+        "- Termine par UNE ligne disant ce que tu n'as pas pu vérifier et pourquoi.\n"
+        f"(Détail technique, à ne PAS recopier : {(echec or '')[:200]})")
+
+
 def _honest_no_access(action: str, obs: str) -> str:
     """Message honnête quand l'accès échoue — JAMAIS d'invention de données."""
     app = ("ton agenda Google" if "CALENDAR" in action else
@@ -1141,7 +1177,8 @@ def _direct_app_prepare_brut(message: str):
         slug = app_courante(message)      # tient compte de l'app dont on vient de parler
         if slug and slug not in ("googlecalendar", "gmail"):
             g = _generic_app_flow(message, slug)
-            return {"steps": g["steps"], "done_answer": g["done_answer"]}
+            return {"steps": g["steps"], "done_answer": g["done_answer"],
+                    "echec_app": g.get("echec_app", False)}
         return None
     slug = (action or "").split("_", 1)[0].lower()
     # ⚠️ Rien d'irréversible sans ton accord explicite.
@@ -1207,7 +1244,8 @@ def _direct_app_run_brut(message: str):
         slug = app_courante(message)      # tient compte de l'app dont on vient de parler
         if slug and slug not in ("googlecalendar", "gmail"):
             g = _generic_app_flow(message, slug)
-            return {"steps": g["steps"], "answer": g["done_answer"], "ok": True}
+            return {"steps": g["steps"], "answer": g["done_answer"], "ok": True,
+                    "echec_app": g.get("echec_app", False)}
         return None
     obs = _tool(action, args)   # identité résolue + activité enregistrée
     slug = (action or "").split("_", 1)[0].lower()
@@ -1697,12 +1735,32 @@ def _est_bouchon(v) -> bool:
 
 
 def _action_de_recherche(slug: str, actions: list) -> str:
-    """L'action de la même app qui sait CHERCHER un document par son nom."""
+    """L'action de la même app qui sait CHERCHER un document par son nom.
+
+    ⚠️ Elle était choisie sur une simple sous-chaîne, en n'excluant que DELETE. Sur une
+    app inconnue, « X_CREATE_SEARCH_INDEX » ou « X_ADD_TO_LIST » contiennent SEARCH et
+    LIST : Nova exécutait donc une action d'ÉCRITURE, toute seule, juste pour retrouver
+    un identifiant — sans confirmation, et sans que personne l'ait demandé. C'est le
+    pire effet de bord possible, et il devient probable dès qu'on connecte une app dont
+    on ne connaît pas la nomenclature.
+    """
+    def utilisable(n: str) -> bool:
+        N = (n or "").upper()
+        # Jamais une action qui modifie quoi que ce soit.
+        if _ecrit(N):
+            return False
+        # Une action à paramètres OBLIGATOIRES autres qu'une requête ne sait pas
+        # « lister » : elle attend déjà l'identifiant qu'on cherche justement.
+        spec = next((a for a in actions if a.get("name") == n), {})
+        requis = [str(r).lower() for r in (spec.get("required") or [])]
+        return not [r for r in requis
+                    if not re.search(r"(query|q|search|term|name|filter|keyword)", r)]
+
     noms = [a["name"] for a in actions]
     for motif in ("SEARCH_SPREADSHEET", "SEARCH_FILE", "SEARCH", "FIND", "LIST_FILE",
-                  "LIST_SPREADSHEET", "LIST"):
+                  "LIST_SPREADSHEET", "LIST", "GET_ALL", "FETCH_ALL", "BROWSE", "QUERY"):
         for n in noms:
-            if motif in n.upper() and "DELETE" not in n.upper():
+            if motif in n.upper() and utilisable(n):
                 return n
     return ""
 
@@ -1976,6 +2034,14 @@ def _action_douteuse(message: str, action: str) -> bool:
         autres = [f for _mots, fams in _OBJETS for f in fams if f not in vises]
         if any(f in objet for f in autres) and not any(f in objet for f in vises):
             return True
+    # 3) ⚠️ Le VERBE aussi doit correspondre. Le contrôle ne portait que sur l'objet :
+    # « montre-moi ma page Recettes » + NOTION_CREATE_NOTION_PAGE passait sans broncher
+    # (l'objet PAGE est bien visé), Nova créait une page VIDE et l'annonçait en succès.
+    # L'utilisateur croyait avoir lu son contenu et se retrouvait avec un doublon.
+    # Ni CREATE ni UPDATE ne passent par la confirmation : c'est ici qu'il faut arrêter.
+    familles = _familles_du_message(message)
+    if familles and _ecrit(N) and not any(f in _FAMILLES_ECRITURE for f in familles):
+        return True
     return False
 
 
@@ -1988,9 +2054,18 @@ _SUFFIXES_ROLE = re.compile(
     r"_AUTHENTICATED_USER|_FOR_ME\b", re.I)
 
 
+# ⚠️ Cette liste sert DEUX fois, et à chaque fois pour empêcher un dégât :
+#   - refuser qu'une demande de lecture déclenche une action d'écriture ;
+#   - refuser qu'une action d'écriture serve d'action de « recherche ».
+# Un verbe oublié ici, c'est une modification non demandée qui passe. GOOGLEDRIVE_UPLOAD_FILE
+# n'y figurait pas : « ouvre mon fichier budget » pouvait donc téléverser quelque chose.
 _FAMILLES_ECRITURE = ("CREATE", "ADD", "INSERT", "UPDATE", "PATCH", "EDIT", "DELETE",
                       "REMOVE", "TRASH", "SEND", "SHARE", "REPLY", "POST", "MOVE",
-                      "ARCHIVE", "MERGE", "PUBLISH", "INVITE", "TRANSFER", "REVOKE")
+                      "ARCHIVE", "MERGE", "PUBLISH", "INVITE", "TRANSFER", "REVOKE",
+                      "UPLOAD", "WRITE", "IMPORT", "APPEND", "SET_", "ASSIGN", "CLEAR",
+                      "RENAME", "DUPLICATE", "RESTORE", "CLOSE", "CANCEL", "APPROVE",
+                      "REJECT", "SUBMIT", "PUT_", "REPLACE", "UPSERT", "SYNC", "REVERT",
+                      "BAN", "KICK", "DEACTIVATE", "ENABLE", "DISABLE", "GRANT")
 
 
 def _ecrit(action: str) -> bool:
@@ -2765,7 +2840,11 @@ def _generic_app_flow(message: str, slug: str):
 
     if _looks_like_failure(obs):
         _A_RETENIR.pop(slug, None)      # l'appel a échoué : ce document ne s'apprend pas
-        return {"steps": steps, "done_answer": _honest_no_access(action, obs)}
+        # ⚠️ On SIGNALE que ce n'est qu'un constat d'échec. Sans ce drapeau, la panne
+        # d'une app mettait fin au tour : « je n'ai pas pu accéder à Maps » était la
+        # réponse ENTIÈRE à « combien ça va me coûter en gazole et péage ? ».
+        return {"steps": steps, "done_answer": _honest_no_access(action, obs),
+                "echec_app": True}
     # L'appel a RÉUSSI : maintenant seulement, on sait que ce document est le bon.
     appris = _A_RETENIR.pop(slug, None)
     if appris:
@@ -3134,6 +3213,24 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
                         yield sse({"type": "step", "kind": "obs", "tool": st["tool"],
                                    "agent": _agent_for_slug(st["tool"]), "text": apercu(st.get("text", ""), 140)})
                 if direct.get("done_answer") is not None:
+                    # ⚠️ Une app en panne n'est pas une raison de ne RIEN répondre. La
+                    # question « combien ça va me coûter en gazole et péage ? » se traite
+                    # très bien sans Maps : Nova répond avec ce qu'elle sait, et dit
+                    # honnêtement ce qu'elle n'a pas pu vérifier.
+                    from agent.core import run_agent_stream
+                    if direct.get("echec_app") and _merite_une_reponse(message):
+                        yield sse({"type": "step", "kind": "obs", "tool": "analyse",
+                                   "text": "l'app n'a pas répondu — je réponds avec ce que je sais"})
+                        cfg = _build_agent_cfg(message, "Nova")
+                        cfg["system"] = (cfg.get("system", "") + "\n\n" +
+                                         _consigne_sans_app(direct["done_answer"]))
+                        async for step in run_agent_stream(message, cfg, _PROFILE_ID):
+                            if step.get("type") == "final":
+                                yield sse({"type": "answer", "text": step.get("answer", "")})
+                            elif step.get("type") == "token":
+                                yield sse({"type": "token", "t": step.get("t", "")})
+                        yield sse({"type": "model", "name": _modele_utilise()})
+                        yield sse({"type": "done"}); return
                     yield sse({"type": "answer", "text": direct["done_answer"]})
                     yield sse({"type": "model", "name": _modele_utilise()})
                     yield sse({"type": "done"}); return
