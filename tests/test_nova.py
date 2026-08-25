@@ -2126,6 +2126,62 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_jamais_d_ecriture_non_demandee():
+    """Les deux chemins par lesquels Nova pouvait MODIFIER quelque chose sans que
+    personne l'ait demandé — et sans passer par la confirmation, puisque ni CREATE ni
+    UPDATE ne comptent comme « irréversibles »."""
+
+    # 47a. ⚠️ L'action de RECHERCHE était choisie sur une simple sous-chaîne, en
+    # n'excluant que DELETE. Sur une app inconnue, « X_CREATE_SEARCH_INDEX » et
+    # « X_ADD_TO_LIST » contiennent SEARCH et LIST : Nova exécutait une ÉCRITURE toute
+    # seule, juste pour retrouver un identifiant.
+    for actions, attendu in (
+            ([{"name": "X_CREATE_SEARCH_INDEX"}, {"name": "X_GET"}], ""),
+            ([{"name": "X_ADD_TO_LIST"}, {"name": "X_LIST_ALL"}], "X_LIST_ALL"),
+            ([{"name": "X_DELETE_QUERY"}, {"name": "X_FETCH"}], ""),
+            ([{"name": "X_ARCHIVE_LIST"}, {"name": "X_BROWSE"}], "X_BROWSE"),
+            ([{"name": "GOOGLESHEETS_SEARCH_SPREADSHEETS"},
+              {"name": "GOOGLESHEETS_BATCH_GET"}], "GOOGLESHEETS_SEARCH_SPREADSHEETS")):
+        trouvee = A._action_de_recherche("x", actions)
+        check(f"recherche sûre parmi {[a['name'] for a in actions]}", trouvee, attendu)
+        if trouvee:
+            check(f"…et elle n'écrit rien ({trouvee})", A._ecrit(trouvee), False)
+    # Une action qui exige déjà l'identifiant ne sait pas le CHERCHER
+    check("une action à identifiant obligatoire n'est pas une recherche",
+          A._action_de_recherche("x", [{"name": "X_LIST_CARDS", "required": ["board_id"]},
+                                       {"name": "X_SEARCH_ALL", "required": []}]),
+          "X_SEARCH_ALL")
+
+    # 47b. ⚠️ Le contrôle ne portait que sur l'OBJET, jamais sur le VERBE :
+    # « montre-moi ma page Recettes » + CREATE_NOTION_PAGE passait sans broncher.
+    # Nova créait une page VIDE et l'annonçait en succès.
+    for msg, act in (("montre-moi ma page Recettes", "NOTION_CREATE_NOTION_PAGE"),
+                     ("lis mon tableur", "GOOGLESHEETS_CREATE_SPREADSHEET"),
+                     ("consulte mes tickets", "LINEAR_CREATE_ISSUE"),
+                     ("ouvre mon fichier budget", "GOOGLEDRIVE_UPLOAD_FILE"),
+                     ("affiche mes mails", "GMAIL_SEND_EMAIL")):
+        check_true(f"lecture + écriture = contresens : {act[:30]}",
+                   A._action_douteuse(msg, act))
+    # …sans jamais bloquer une écriture RÉELLEMENT demandée
+    for msg, act in (("crée une page notion", "NOTION_CREATE_NOTION_PAGE"),
+                     ("envoie un mail à paul", "GMAIL_SEND_EMAIL"),
+                     ("supprime cette page", "NOTION_DELETE_BLOCK"),
+                     ("ajoute une ligne dans mon tableur", "GOOGLESHEETS_BATCH_UPDATE"),
+                     ("montre-moi ma page Recettes", "NOTION_FETCH_NOTION_PAGE"),
+                     ("liste mes dépôts github",
+                      "GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER")):
+        check(f"choix légitime préservé : {act[:34]}", A._action_douteuse(msg, act), False)
+
+    # 47c. La liste des verbes d'écriture sert aux DEUX gardes : un oubli = un dégât.
+    for act in ("GOOGLEDRIVE_UPLOAD_FILE", "X_WRITE_ROW", "X_APPEND_VALUES",
+                "X_RENAME_BOARD", "X_CLEAR_VALUES", "X_ASSIGN_TASK", "X_CLOSE_ISSUE",
+                "X_BAN_MEMBER", "X_GRANT_ACCESS", "X_REVOKE_TOKEN", "X_PUBLISH_POST"):
+        check_true(f"écriture reconnue : {act}", A._ecrit(act))
+    for act in ("GMAIL_FETCH_EMAILS", "GOOGLESHEETS_BATCH_GET", "NOTION_SEARCH_NOTION_PAGE",
+                "GITHUB_LIST_COMMITS", "X_GET_ASSET", "X_BROWSE_CARDS", "X_LIST_ALL"):
+        check(f"lecture non confondue : {act}", A._ecrit(act), False)
+
+
 def test_app_en_panne_repond_quand_meme():
     """Une app en panne mettait fin au tour. « combien ça va me coûter en gazole et
     péage, et est-ce que ça vaut le coup ? » recevait pour TOUTE réponse « je n'ai pas
@@ -3177,7 +3233,7 @@ if __name__ == "__main__":
                test_competences, test_apps_robustesse,
                test_choix_fournisseur, test_apps_inconnues,
                test_diag_patient, test_cours_persistants,
-               test_app_en_panne_repond_quand_meme):
+               test_app_en_panne_repond_quand_meme, test_jamais_d_ecriture_non_demandee):
         try:
             fn()
         except Exception as e:

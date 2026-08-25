@@ -1735,12 +1735,32 @@ def _est_bouchon(v) -> bool:
 
 
 def _action_de_recherche(slug: str, actions: list) -> str:
-    """L'action de la même app qui sait CHERCHER un document par son nom."""
+    """L'action de la même app qui sait CHERCHER un document par son nom.
+
+    ⚠️ Elle était choisie sur une simple sous-chaîne, en n'excluant que DELETE. Sur une
+    app inconnue, « X_CREATE_SEARCH_INDEX » ou « X_ADD_TO_LIST » contiennent SEARCH et
+    LIST : Nova exécutait donc une action d'ÉCRITURE, toute seule, juste pour retrouver
+    un identifiant — sans confirmation, et sans que personne l'ait demandé. C'est le
+    pire effet de bord possible, et il devient probable dès qu'on connecte une app dont
+    on ne connaît pas la nomenclature.
+    """
+    def utilisable(n: str) -> bool:
+        N = (n or "").upper()
+        # Jamais une action qui modifie quoi que ce soit.
+        if _ecrit(N):
+            return False
+        # Une action à paramètres OBLIGATOIRES autres qu'une requête ne sait pas
+        # « lister » : elle attend déjà l'identifiant qu'on cherche justement.
+        spec = next((a for a in actions if a.get("name") == n), {})
+        requis = [str(r).lower() for r in (spec.get("required") or [])]
+        return not [r for r in requis
+                    if not re.search(r"(query|q|search|term|name|filter|keyword)", r)]
+
     noms = [a["name"] for a in actions]
     for motif in ("SEARCH_SPREADSHEET", "SEARCH_FILE", "SEARCH", "FIND", "LIST_FILE",
-                  "LIST_SPREADSHEET", "LIST"):
+                  "LIST_SPREADSHEET", "LIST", "GET_ALL", "FETCH_ALL", "BROWSE", "QUERY"):
         for n in noms:
-            if motif in n.upper() and "DELETE" not in n.upper():
+            if motif in n.upper() and utilisable(n):
                 return n
     return ""
 
@@ -2014,6 +2034,14 @@ def _action_douteuse(message: str, action: str) -> bool:
         autres = [f for _mots, fams in _OBJETS for f in fams if f not in vises]
         if any(f in objet for f in autres) and not any(f in objet for f in vises):
             return True
+    # 3) ⚠️ Le VERBE aussi doit correspondre. Le contrôle ne portait que sur l'objet :
+    # « montre-moi ma page Recettes » + NOTION_CREATE_NOTION_PAGE passait sans broncher
+    # (l'objet PAGE est bien visé), Nova créait une page VIDE et l'annonçait en succès.
+    # L'utilisateur croyait avoir lu son contenu et se retrouvait avec un doublon.
+    # Ni CREATE ni UPDATE ne passent par la confirmation : c'est ici qu'il faut arrêter.
+    familles = _familles_du_message(message)
+    if familles and _ecrit(N) and not any(f in _FAMILLES_ECRITURE for f in familles):
+        return True
     return False
 
 
@@ -2026,9 +2054,18 @@ _SUFFIXES_ROLE = re.compile(
     r"_AUTHENTICATED_USER|_FOR_ME\b", re.I)
 
 
+# ⚠️ Cette liste sert DEUX fois, et à chaque fois pour empêcher un dégât :
+#   - refuser qu'une demande de lecture déclenche une action d'écriture ;
+#   - refuser qu'une action d'écriture serve d'action de « recherche ».
+# Un verbe oublié ici, c'est une modification non demandée qui passe. GOOGLEDRIVE_UPLOAD_FILE
+# n'y figurait pas : « ouvre mon fichier budget » pouvait donc téléverser quelque chose.
 _FAMILLES_ECRITURE = ("CREATE", "ADD", "INSERT", "UPDATE", "PATCH", "EDIT", "DELETE",
                       "REMOVE", "TRASH", "SEND", "SHARE", "REPLY", "POST", "MOVE",
-                      "ARCHIVE", "MERGE", "PUBLISH", "INVITE", "TRANSFER", "REVOKE")
+                      "ARCHIVE", "MERGE", "PUBLISH", "INVITE", "TRANSFER", "REVOKE",
+                      "UPLOAD", "WRITE", "IMPORT", "APPEND", "SET_", "ASSIGN", "CLEAR",
+                      "RENAME", "DUPLICATE", "RESTORE", "CLOSE", "CANCEL", "APPROVE",
+                      "REJECT", "SUBMIT", "PUT_", "REPLACE", "UPSERT", "SYNC", "REVERT",
+                      "BAN", "KICK", "DEACTIVATE", "ENABLE", "DISABLE", "GRANT")
 
 
 def _ecrit(action: str) -> bool:
