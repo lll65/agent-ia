@@ -806,6 +806,42 @@ def _corrige_par_suggestion(args: dict, obs: str) -> dict:
     return neuf if change else {}
 
 
+def _merite_une_reponse(message: str) -> bool:
+    """Cette demande garde-t-elle un sens si l'app ne répond pas ?
+
+    « ouvre mon tableur PEA » : non, sans Sheets il n'y a rien à dire.
+    « combien ça va me coûter en gazole et péage, et est-ce que ça vaut le coup ? » :
+    oui — c'est une question de fond, l'app n'était qu'un moyen. Nova rendait pourtant
+    le même constat d'échec dans les deux cas.
+    """
+    m = (message or "").strip()
+    # ⚠️ Un seuil de 12 mots écartait de vraies questions (« comment je peux organiser
+    # mon week-end entre trois villes ? » en fait 10). Ce n'est pas la longueur qui
+    # compte mais la présence d'une VRAIE question ; on garde juste un plancher bas
+    # pour ne pas confondre avec une consigne (« ouvre mon tableur PEA ? »).
+    if len(m.split()) < 7:
+        return False
+    # Une VRAIE question : elle demande un avis, un calcul, un conseil, un plan.
+    marques = ("?", "combien", "comment", "pourquoi", "que faire", "quoi faire",
+               "conseil", "vaut le coup", "vaut-il", "organise", "organiser",
+               "explique", "compare", "faut-il", "est-ce que", "aide-moi", "aide moi",
+               "propose", "planifie", "estime", "calcule")
+    bas = m.lower()
+    return any(x in bas for x in marques)
+
+
+def _consigne_sans_app(echec: str) -> str:
+    """Ce qu'on dit au modèle quand l'app a échoué mais que la question tient debout."""
+    return (
+        "⚠️ UNE APP N'A PAS RÉPONDU. Réponds quand même à la question sur le fond, avec "
+        "ce que tu sais — c'est ce qui est attendu de toi. Règles :\n"
+        "- Donne des ordres de grandeur utiles (distances, durées, coûts) et DIS que ce "
+        "sont des estimations, jamais des chiffres relevés.\n"
+        "- N'invente aucun horaire, prix ou trajet PRÉCIS : arrondis et annonce-le.\n"
+        "- Termine par UNE ligne disant ce que tu n'as pas pu vérifier et pourquoi.\n"
+        f"(Détail technique, à ne PAS recopier : {(echec or '')[:200]})")
+
+
 def _honest_no_access(action: str, obs: str) -> str:
     """Message honnête quand l'accès échoue — JAMAIS d'invention de données."""
     app = ("ton agenda Google" if "CALENDAR" in action else
@@ -1141,7 +1177,8 @@ def _direct_app_prepare_brut(message: str):
         slug = app_courante(message)      # tient compte de l'app dont on vient de parler
         if slug and slug not in ("googlecalendar", "gmail"):
             g = _generic_app_flow(message, slug)
-            return {"steps": g["steps"], "done_answer": g["done_answer"]}
+            return {"steps": g["steps"], "done_answer": g["done_answer"],
+                    "echec_app": g.get("echec_app", False)}
         return None
     slug = (action or "").split("_", 1)[0].lower()
     # ⚠️ Rien d'irréversible sans ton accord explicite.
@@ -1207,7 +1244,8 @@ def _direct_app_run_brut(message: str):
         slug = app_courante(message)      # tient compte de l'app dont on vient de parler
         if slug and slug not in ("googlecalendar", "gmail"):
             g = _generic_app_flow(message, slug)
-            return {"steps": g["steps"], "answer": g["done_answer"], "ok": True}
+            return {"steps": g["steps"], "answer": g["done_answer"], "ok": True,
+                    "echec_app": g.get("echec_app", False)}
         return None
     obs = _tool(action, args)   # identité résolue + activité enregistrée
     slug = (action or "").split("_", 1)[0].lower()
@@ -2765,7 +2803,11 @@ def _generic_app_flow(message: str, slug: str):
 
     if _looks_like_failure(obs):
         _A_RETENIR.pop(slug, None)      # l'appel a échoué : ce document ne s'apprend pas
-        return {"steps": steps, "done_answer": _honest_no_access(action, obs)}
+        # ⚠️ On SIGNALE que ce n'est qu'un constat d'échec. Sans ce drapeau, la panne
+        # d'une app mettait fin au tour : « je n'ai pas pu accéder à Maps » était la
+        # réponse ENTIÈRE à « combien ça va me coûter en gazole et péage ? ».
+        return {"steps": steps, "done_answer": _honest_no_access(action, obs),
+                "echec_app": True}
     # L'appel a RÉUSSI : maintenant seulement, on sait que ce document est le bon.
     appris = _A_RETENIR.pop(slug, None)
     if appris:
@@ -3134,6 +3176,24 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
                         yield sse({"type": "step", "kind": "obs", "tool": st["tool"],
                                    "agent": _agent_for_slug(st["tool"]), "text": apercu(st.get("text", ""), 140)})
                 if direct.get("done_answer") is not None:
+                    # ⚠️ Une app en panne n'est pas une raison de ne RIEN répondre. La
+                    # question « combien ça va me coûter en gazole et péage ? » se traite
+                    # très bien sans Maps : Nova répond avec ce qu'elle sait, et dit
+                    # honnêtement ce qu'elle n'a pas pu vérifier.
+                    from agent.core import run_agent_stream
+                    if direct.get("echec_app") and _merite_une_reponse(message):
+                        yield sse({"type": "step", "kind": "obs", "tool": "analyse",
+                                   "text": "l'app n'a pas répondu — je réponds avec ce que je sais"})
+                        cfg = _build_agent_cfg(message, "Nova")
+                        cfg["system"] = (cfg.get("system", "") + "\n\n" +
+                                         _consigne_sans_app(direct["done_answer"]))
+                        async for step in run_agent_stream(message, cfg, _PROFILE_ID):
+                            if step.get("type") == "final":
+                                yield sse({"type": "answer", "text": step.get("answer", "")})
+                            elif step.get("type") == "token":
+                                yield sse({"type": "token", "t": step.get("t", "")})
+                        yield sse({"type": "model", "name": _modele_utilise()})
+                        yield sse({"type": "done"}); return
                     yield sse({"type": "answer", "text": direct["done_answer"]})
                     yield sse({"type": "model", "name": _modele_utilise()})
                     yield sse({"type": "done"}); return

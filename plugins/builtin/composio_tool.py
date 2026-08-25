@@ -172,8 +172,20 @@ class ComposioPlugin(Plugin):
             # 404 / nom inconnu : le modèle a inventé une action. On lui donne la VRAIE
             # liste plutôt que de lui demander de deviner une deuxième fois.
             if r.status_code == 404 or "not found" in tl or "notfound" in tl:
+                dispo = catalogue(action)
+                # ⚠️ Le message se CONTREDISAIT : « GOOGLE_MAPS_GET_DIRECTION n'existe
+                # pas », suivi d'une liste où il figure. Quand le nom est bel et bien au
+                # catalogue, ce n'est pas une action inventée — c'est l'app qui refuse
+                # (droits manquants, API non activée côté Google, compte incomplet).
+                if action and action.upper() in (dispo or "").upper():
+                    return (f"🔒 **{action}** existe bien, mais l'application la refuse "
+                            f"(erreur 404 de son côté, pas du nôtre).\n"
+                            "C'est presque toujours une autorisation ou une API non "
+                            "activée sur le compte : reconnecte l'app sur composio.dev en "
+                            "acceptant TOUTES les autorisations, et vérifie que l'API "
+                            "correspondante est activée chez le fournisseur.")
                 return (f"❌ L'action « {action} » n'existe pas. Actions réellement "
-                        f"disponibles sur tes apps connectées :\n{catalogue(action)}\n"
+                        f"disponibles sur tes apps connectées :\n{dispo}\n"
                         "Relance connected_app avec l'un de ces noms exacts.")
             return (f"❌ Action Composio '{action}' échouée (HTTP {r.status_code}).\n{r.text[:220]}\n"
                     "Vérifie que l'app est connectée sur composio.dev et que le nom d'action est exact.")

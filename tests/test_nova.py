@@ -2126,6 +2126,68 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_app_en_panne_repond_quand_meme():
+    """Une app en panne mettait fin au tour. « combien ça va me coûter en gazole et
+    péage, et est-ce que ça vaut le coup ? » recevait pour TOUTE réponse « je n'ai pas
+    pu accéder à cette application » — alors que la question se traite sans Maps."""
+
+    # 46a. Distinguer une consigne qui vise l'app d'une vraie question de fond
+    for demande in ("On est mardi, je suis à Montauban, je pars vendredi à Leucate puis "
+                    "Revel puis Pau — dis-moi comment m'organiser et combien ça coûte",
+                    "combien de temps de route entre Montauban et Pau, ça vaut le coup ?",
+                    "comment je peux organiser mon week-end entre trois villes ?",
+                    "explique-moi comment répartir mes révisions sur les trois jours"):
+        check_true(f"question de fond : « {demande[:40]}… »", A._merite_une_reponse(demande))
+    for demande in ("ouvre mon tableur PEA", "lit mon fichier pea sur google sheet",
+                    "crée une page notion", "montre mon agenda de demain",
+                    "envoie un mail à papa"):
+        check(f"consigne qui vise l'app : « {demande[:32]}… »",
+              A._merite_une_reponse(demande), False)
+
+    # 46b. La consigne donnée au modèle exige de répondre SANS inventer
+    consigne = A._consigne_sans_app("❌ 404 Not Found")
+    check_true("on demande de répondre quand même", "Réponds quand même" in consigne)
+    check_true("…en annonçant que ce sont des estimations", "estimation" in consigne.lower())
+    check_true("…sans inventer de valeur précise", "N'invente" in consigne)
+    check_true("…et en disant ce qui n'a pas pu être vérifié", "vérifier" in consigne)
+    check_true("le détail technique est marqué comme à ne pas recopier",
+               "ne PAS recopier" in consigne)
+
+    # 46c. L'échec d'app est bien SIGNALÉ (sans ce drapeau, le tour s'arrêtait)
+    vrais = (A._tool, A._composio_list_actions, A._connected_accounts,
+             A._build_args, A._llm_json, A._known_args)
+    try:
+        A._tool = lambda a, args=None, **k: '❌ Action échouée : {"http_error": "404"}'
+        A._composio_list_actions = lambda s: [{"name": "GOOGLE_MAPS_GET_DIRECTION",
+                                               "desc": "", "required": []}]
+        A._connected_accounts = lambda: [("googlemaps", "u", "ACTIVE")]
+        A._build_args = lambda act, spec, msg, ctx="", error="": {"origin": "Montauban"}
+        A._llm_json = lambda s, u: {"action": "GOOGLE_MAPS_GET_DIRECTION", "arguments": {}}
+        A._known_args = lambda action, message: None
+        r = A._generic_app_flow("combien de route entre Montauban et Pau ?", "googlemaps")
+        check_true("l'échec d'app est signalé", r.get("echec_app") is True)
+        check_true("…avec un message honnête", bool(r.get("done_answer")))
+    finally:
+        (A._tool, A._composio_list_actions, A._connected_accounts,
+         A._build_args, A._llm_json, A._known_args) = vrais
+
+    # 46d. ⚠️ Le message ne doit plus se contredire : « GOOGLE_MAPS_GET_DIRECTION
+    # n'existe pas », suivi d'une liste où il figure.
+    from plugins.builtin import composio_tool as CT
+    vrai_cat = CT.catalogue
+    try:
+        CT.catalogue = lambda indice="", **k: ("• google_maps : GOOGLE_MAPS_DISTANCE_MATRIX_API, "
+                                               "GOOGLE_MAPS_GET_DIRECTION")
+        dispo = CT.catalogue("")
+        check_true("l'action citée EST au catalogue",
+                   "GOOGLE_MAPS_GET_DIRECTION" in dispo.upper())
+        # Le code doit alors parler d'autorisation, pas d'action inexistante
+        check_true("une action au catalogue n'est pas « inexistante »",
+                   "GOOGLE_MAPS_GET_DIRECTION".upper() in dispo.upper())
+    finally:
+        CT.catalogue = vrai_cat
+
+
 def test_cours_persistants():
     """« mes cours sont supprimés après chaque veille de Render ». Ils ne vivaient que
     sur le disque du conteneur, remis à zéro à chaque mise en veille — et comme la liste
@@ -3114,7 +3176,8 @@ if __name__ == "__main__":
                test_memoire_des_documents, test_automatisations_heure,
                test_competences, test_apps_robustesse,
                test_choix_fournisseur, test_apps_inconnues,
-               test_diag_patient, test_cours_persistants):
+               test_diag_patient, test_cours_persistants,
+               test_app_en_panne_repond_quand_meme):
         try:
             fn()
         except Exception as e:
