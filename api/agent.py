@@ -2220,7 +2220,8 @@ def _resoudre_identifiants(slug: str, action: str, args: dict, message: str, act
         if _est_champ_identifiant(r) and r not in args:
             args[r] = ""
     a_resoudre = [k for k, v in args.items()
-                  if _est_champ_identifiant(k) and _est_bouchon(v)]
+                  if _est_champ_identifiant(k) and _est_bouchon(v)
+                  and not _est_numerique(k, v, spec)]
     if not a_resoudre:
         return args, etapes, ""
     # ⚠️ Un identifiant FACULTATIF qu'on ne sait pas remplir doit être RETIRÉ, jamais
@@ -2271,6 +2272,15 @@ def _resoudre_identifiants(slug: str, action: str, args: dict, message: str, act
                        "text": f"aucun document trouvé pour « {quoi} »"})
         return args, etapes, _refus_sans_identifiant(slug, a_resoudre, [])
     ident, nom = _meilleur_document(candidats, quoi)
+    # ⚠️ On ne recopie JAMAIS un identifiant d'un objet sur un autre. Tous les champs à
+    # résoudre recevaient la même valeur : « déplace Releve_PEA dans le dossier Banque »
+    # donnait file_id == folder_id, donc le fichier était déplacé DANS LUI-MÊME — et
+    # GOOGLEDRIVE_MOVE_FILE n'est pas « irréversible », donc sans aucune confirmation.
+    # Même mécanique sur toute app : team_id + project_id, database_id + parent_id…
+    types = {k: _type_objet(k) for k in a_resoudre}
+    if len(set(types.values())) > 1:
+        return _resoudre_par_type(slug, action, args, message, candidats, types,
+                                  etapes, requis)
     # Un identifiant de PARENT n'est pas la cible de la demande, c'est juste l'endroit où
     # ranger ce qu'on crée. « vas-y crée un doc alors » ne nomme aucun parent : refuser
     # serait absurde. On prend le premier emplacement disponible et on le dit.
@@ -2298,6 +2308,113 @@ def _resoudre_identifiants(slug: str, action: str, args: dict, message: str, act
 
 # Document identifié pendant CE tour, en attente de la preuve qu'il s'ouvre vraiment.
 _A_RETENIR: dict = {}
+
+
+# Le TYPE d'objet que designe un champ : c'est lui qui interdit de recopier un
+# identifiant de fichier dans un champ de dossier.
+_TYPES_OBJET = ("spreadsheet", "sheet", "folder", "file", "document", "page", "database",
+                "parent", "team", "project", "board", "card", "list", "channel",
+                "workspace", "space", "issue", "task", "event", "calendar", "message",
+                "thread", "repository", "repo", "asset", "design", "playlist", "album")
+
+
+def _type_objet(cle: str) -> str:
+    """« folder_id » → « folder », « idBoard » → « board ». "" si indéterminé."""
+    # On sépare le camelCase AVANT de passer en minuscules : sinon « idBoard » devient
+    # « idboard » d'un seul tenant et le mot « board » n'y est plus reconnaissable.
+    k = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", cle or "")
+    k = re.sub(r"[^a-z]", " ", k.lower().replace("-", "_"))
+    for t in _TYPES_OBJET:
+        if re.search(r"(?<![a-z])" + t + r"(?![a-z])", k):
+            return t
+    return ""
+
+
+def _est_numerique(cle: str, valeur, spec: dict) -> bool:
+    """Ce champ attend-il un NOMBRE plutôt qu'un document à retrouver ?
+
+    ⚠️ `_est_bouchon` juge bouchon toute valeur de moins de 8 caractères : le gid d'un
+    onglet Google Sheets (souvent « 0 ») était donc pris pour un remplissage, et Nova
+    partait chercher un « document » qui n'existe pas. Un entier n'est pas un nom.
+    """
+    if isinstance(valeur, bool):
+        return False
+    if isinstance(valeur, int) or (isinstance(valeur, str) and valeur.strip().isdigit()):
+        return True
+    schema = (spec or {}).get("schema") or {}
+    champ = ((schema.get("properties") or {}).get(cle) or {})
+    return str(champ.get("type", "")).lower() in ("integer", "number")
+
+
+def _indice_pour_type(message: str, typ: str) -> str:
+    """Ce que l'utilisateur a nommé POUR CE TYPE : « dans le dossier Banque » → « Banque »."""
+    if not typ:
+        return ""
+    mots = {"folder": ("dossier", "folder", "répertoire", "repertoire"),
+            "parent": ("dossier", "page", "parent", "dans"),
+            "sheet": ("onglet", "feuille", "sheet", "tab"),
+            "spreadsheet": ("tableur", "classeur", "spreadsheet"),
+            "team": ("équipe", "equipe", "team"), "project": ("projet", "project"),
+            "board": ("tableau", "board"), "channel": ("canal", "salon", "channel"),
+            "database": ("base", "database"), "page": ("page",),
+            "file": ("fichier", "document", "file")}.get(typ, (typ,))
+    for m in mots:
+        g = re.search(r"(?<![\wÀ-ÿ])" + re.escape(m) + r"\s+(?:de\s+|du\s+|«\s*)?"
+                      r"([A-Za-zÀ-ÿ0-9][\wÀ-ÿ.'-]{1,40}(?:\s+[A-Za-zÀ-ÿ0-9][\wÀ-ÿ.'-]{1,40}){0,2})",
+                      message or "", re.I)
+        if g:
+            # On s'arrête à la première préposition : « l'onglet 2026 du tableur X »
+            # désigne l'onglet « 2026 », pas « 2026 du tableur ».
+            mots = []
+            for w in g.group(1).strip(" »").split():
+                if w.lower() in ("du", "de", "des", "dans", "sur", "au", "aux", "à", "a",
+                                 "vers", "et", "puis", "avec", "pour"):
+                    break
+                mots.append(w)
+            if mots:
+                return " ".join(mots)
+    return ""
+
+
+def _resoudre_par_type(slug, action, args, message, candidats, types, etapes, requis):
+    """Un identifiant PAR TYPE d'objet. Jamais de recopie d'un type sur un autre."""
+    # 1) Ce que l'utilisateur a nommé EXPLICITEMENT pour chaque type
+    #    (« dans le dossier Banque » → folder = « Banque »).
+    indices = {cle: _indice_pour_type(message, typ) for cle, typ in types.items()}
+    # 2) Pour les types SANS mention explicite, on prend le reste de la demande — privé
+    #    des mots déjà pris par les autres. Sans ça, « déplace Releve_PEA dans le dossier
+    #    Banque » laissait file_id introuvable : le nom du fichier n'est précédé d'aucun
+    #    mot de type, il est simplement… le reste.
+    pris = {m.lower() for v in indices.values() if v for m in re.split(r"\s+", v)}
+    reste = " ".join(w for w in re.split(r"\s+", _mots_cles_fichier(message))
+                     if w and w.lower() not in pris)
+    manquants = []
+    for cle, typ in types.items():
+        indice = indices.get(cle) or reste
+        ident, nom = _meilleur_document(candidats, indice) if indice else ("", "")
+        if ident and not _est_bouchon(ident):
+            args[cle] = ident
+            etapes.append({"kind": "obs", "tool": slug,
+                           "text": f"{typ or cle} → {nom or ident}"})
+        else:
+            manquants.append(cle)
+    # Deux champs ne doivent JAMAIS finir sur le même objet : c'était tout le problème.
+    vus = {}
+    for cle in list(types):
+        v = args.get(cle)
+        if v and not _est_bouchon(v):
+            if v in vus:
+                etapes.append({"kind": "obs", "tool": slug,
+                               "text": f"« {cle} » et « {vus[v]} » viseraient le même objet — j'arrête"})
+                manquants.append(cle)
+            else:
+                vus[v] = cle
+    if manquants:
+        # On ne devine PAS : mieux vaut demander que viser le mauvais objet.
+        etapes.append({"kind": "obs", "tool": slug,
+                       "text": f"je ne sais pas quel {', '.join(types[m] or m for m in manquants)} tu vises"})
+        return args, etapes, _refus_sans_identifiant(slug, manquants, candidats)
+    return args, etapes, ""
 
 
 def _document_connu(app: str, quoi: str) -> tuple:
