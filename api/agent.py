@@ -1082,8 +1082,18 @@ def _prose_seule(brut: str) -> str:
 # Une demande ambiguë a suffi à déclencher une création non voulue. Sur un mail ou une
 # suppression, la même ambiguïté serait sans retour : on demande donc confirmation
 # AVANT d'agir, en disant exactement ce qui va se passer.
+# ⚠️ Cherchés dans l'OBJET de l'action, jamais dans le nom complet : « DROP » est dans
+# DROPBOX et « SEND » dans SENDGRID, donc DROPBOX_LIST_FOLDER et SENDGRID_GET_STATS —
+# de simples LECTURES — demandaient une confirmation. Et à l'inverse, tout ce qui
+# partage, publie, fusionne, invite ou transfère passait sans rien demander.
 _IRREVERSIBLE = ("SEND", "DELETE", "REMOVE", "TRASH", "ARCHIVE", "REVOKE",
-                 "CLEAR", "DROP", "CANCEL", "REPLY", "FORWARD")
+                 "CLEAR", "DROP", "CANCEL", "REPLY", "FORWARD",
+                 "INVITE", "MERGE", "PUBLISH", "TRANSFER", "CLOSE", "BAN", "KICK",
+                 "DEACTIVATE", "SUSPEND", "UNSHARE", "LEAVE", "PURGE", "WIPE",
+                 "OVERWRITE", "DECLINE", "REJECT", "REVERT", "RESET")
+# Partager n'est irréversible que si c'est PUBLIC — partager avec une personne se défait.
+_IRREVERSIBLE_SI = {"SHARE": ("PUBLIC", "ANYONE", "WEB", "LINK"),
+                    "POST": ("PUBLIC", "CHANNEL", "TWEET", "STATUS")}
 _ATTENTE = {}                       # profil -> action en attente de confirmation
 _ATTENTE_TTL = 300.0                # 5 min : au-delà, on redemande
 
@@ -1094,8 +1104,17 @@ _MOTS_NON = ("non", "annule", "laisse", "stop", "surtout pas", "n'envoie pas", "
 
 def _est_irreversible(action: str) -> bool:
     """Cette action modifie-t-elle le monde extérieur sans retour possible ?"""
-    a = (action or "").upper()
-    return any(k in a for k in _IRREVERSIBLE)
+    objet = _objet_de_action(action)
+    if not objet:
+        return False
+    # Mot ENTIER dans l'objet : « SEND » ne doit pas se déclencher sur « SENDGRID ».
+    mots = set(re.split(r"[^A-Z0-9]+", objet))
+    if mots & set(_IRREVERSIBLE):
+        return True
+    for verbe, conditions in _IRREVERSIBLE_SI.items():
+        if verbe in mots and any(c in objet for c in conditions):
+            return True
+    return False
 
 
 def _resume_action(action: str, args: dict) -> str:
@@ -1126,9 +1145,25 @@ def _demande_confirmation(profil: str, slug: str, action: str, args: dict) -> st
 
 
 def _confirmation_donnee(message: str) -> bool:
-    m = (message or "").lower().strip(" .!?")
-    return any(re.fullmatch(re.escape(w) + r"[\s,.!]*.{0,24}", m) for w in _MOTS_OUI) or \
-        any(re.search(r"(?<![\wÀ-ÿ])" + re.escape(w) + r"(?![\wÀ-ÿ])", m) for w in _MOTS_OUI[:8])
+    """Un accord DOIT être court et sans ambiguïté. Rien d'autre ne vaut « oui ».
+
+    ⚠️ La règle précédente acceptait « oui » suivi de n'importe quoi (jusqu'à 24
+    caractères), et surtout cherchait « oui » N'IMPORTE OÙ dans la phrase. « oui je
+    voudrais savoir autre chose » ou « oui enfin bref, montre mon agenda » valaient donc
+    accord — et le mail partait, ou l'événement était supprimé. C'est précisément ce que
+    Lohan redoutait : « tu te rends compte s'il fait ça avec mes mails ! »
+    """
+    m = (message or "").lower().strip(" .!?…")
+    if not m:
+        return False
+    # Le moindre signe de refus l'emporte : dans le doute, on n'exécute pas.
+    if _refus_donne(m):
+        return False
+    # Un accord tient en quelques mots. Au-delà, c'est une nouvelle demande.
+    if len(m.split()) > 4:
+        return False
+    # …et la phrase doit COMMENCER par l'accord, pas le contenir au passage.
+    return any(re.match(r"^" + re.escape(w) + r"(?![\wÀ-ÿ])", m) for w in _MOTS_OUI)
 
 
 def _refus_donne(message: str) -> bool:

@@ -2126,6 +2126,73 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_garde_fou_irreversible_complet():
+    """« Tu te rends compte s'il fait ça avec mes mails ! » — audit du garde-fou.
+    Trois trous, tous vérifiés en exécutant le code."""
+    from plugins.builtin.composio_tool import ComposioPlugin
+
+    # 48a. ⚠️ Une phrase ORDINAIRE valait « oui ». La règle cherchait « oui » n'importe
+    # où dans le message : « oui je voudrais savoir autre chose » envoyait le mail.
+    for accord in ("oui", "oui vas-y", "ok", "d'accord", "vas-y", "confirme", "go",
+                   "valide", "c'est bon", "fais-le"):
+        check_true(f"accord reconnu : « {accord} »", A._confirmation_donnee(accord))
+    for pas_accord in ("oui je voudrais savoir autre chose",
+                       "oui enfin bref, montre mon agenda",
+                       "oui bien sûr que non", "d'accord mais annule",
+                       "ok donc comment ça marche exactement ?",
+                       "oui mais pas maintenant, montre-moi mon agenda d'abord",
+                       "ouais mais sinon tu peux faire quoi",
+                       "non", "annule", "laisse tomber", ""):
+        check(f"PAS un accord : « {pas_accord[:44]} »",
+              A._confirmation_donnee(pas_accord), False)
+    check_true("un refus reste un refus", A._refus_donne("annule"))
+    check_true("…même noyé dans une phrase", A._refus_donne("oui bien sûr que non"))
+
+    # 48b. ⚠️ Les verbes étaient cherchés dans le nom COMPLET : « DROP » dans DROPBOX et
+    # « SEND » dans SENDGRID faisaient demander confirmation pour de simples LECTURES.
+    # Et à l'inverse, publier / fusionner / inviter / transférer passaient sans rien.
+    for act in ("GMAIL_SEND_EMAIL", "GOOGLECALENDAR_DELETE_EVENT",
+                "SLACK_INVITE_USER_TO_WORKSPACE", "GITHUB_MERGE_PULL_REQUEST",
+                "X_PUBLISH_POST", "X_TRANSFER_OWNERSHIP", "X_CLOSE_ISSUE",
+                "NOTION_SHARE_PAGE_PUBLICLY", "X_BAN_MEMBER", "X_PURGE_HISTORY"):
+        check_true(f"irréversible : {act}", A._est_irreversible(act))
+    for act in ("DROPBOX_LIST_FOLDER", "SENDGRID_GET_STATS", "GMAIL_FETCH_EMAILS",
+                "GOOGLESHEETS_BATCH_GET", "X_SHARE_WITH_USER", "NOTION_SEARCH_NOTION_PAGE"):
+        check(f"pas irréversible : {act}", A._est_irreversible(act), False)
+
+    # 48c. ⚠️ LE trou le plus grave : le garde-fou ne vivait que sur les chemins
+    # « directs ». L'agent ReAct appelle le plugin LUI-MÊME et pouvait donc envoyer un
+    # mail ou supprimer un événement sans que personne ait rien confirmé.
+    from config import config as CFG
+    vraie_cle = getattr(CFG, "COMPOSIO_API_KEY", "")
+    try:
+        CFG.COMPOSIO_API_KEY = "ak_test"
+        p = ComposioPlugin()
+        for act, args in (("GMAIL_SEND_EMAIL", '{"to":"papa@exemple.fr","subject":"Salut"}'),
+                          ("GOOGLECALENDAR_DELETE_EVENT", '{"event_id":"evt_1"}'),
+                          ("SLACK_INVITE_USER_TO_WORKSPACE", '{"email":"x@y.fr"}'),
+                          ("GITHUB_MERGE_PULL_REQUEST", '{"number":7}')):
+            A._ATTENTE.clear()
+            r = p.run(command=act, arguments=args)
+            check_true(f"l'agent ne peut plus lancer {act[:28]}", r.startswith("⛔"))
+            check_true(f"…et l'action est mise en attente ({act[:20]})",
+                       bool(A._action_en_attente(A._PROFILE_ID)))
+        # La cible doit être visible : on ne confirme pas à l'aveugle
+        A._ATTENTE.clear()
+        r = p.run(command="GMAIL_SEND_EMAIL",
+                  arguments='{"to":"papa@exemple.fr","subject":"Salut"}')
+        check_true("le destinataire est montré avant d'accepter", "papa@exemple.fr" in r)
+        # …et une LECTURE ne doit jamais être bloquée
+        for act in ("GMAIL_FETCH_EMAILS", "GOOGLESHEETS_BATCH_GET",
+                    "DROPBOX_LIST_FOLDER", "SENDGRID_GET_STATS"):
+            A._ATTENTE.clear()
+            check(f"lecture non bloquée : {act}",
+                  p.run(command=act, arguments="{}").startswith("⛔"), False)
+    finally:
+        CFG.COMPOSIO_API_KEY = vraie_cle
+        A._ATTENTE.clear()
+
+
 def test_resultats_automatisations_remontent():
     """« J'ai fait une automatisation à 17h mais je reçois rien. » Elle s'exécutait bien :
     son résultat n'allait NULLE PART sans Telegram. Il fallait penser à ouvrir la fenêtre
@@ -3289,7 +3356,8 @@ if __name__ == "__main__":
                test_choix_fournisseur, test_apps_inconnues,
                test_diag_patient, test_cours_persistants,
                test_app_en_panne_repond_quand_meme, test_jamais_d_ecriture_non_demandee,
-               test_resultats_automatisations_remontent):
+               test_resultats_automatisations_remontent,
+               test_garde_fou_irreversible_complet):
         try:
             fn()
         except Exception as e:
