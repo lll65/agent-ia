@@ -135,9 +135,29 @@ class ComposioPlugin(Plugin):
                     "\n\nRelance connected_app avec la bonne action, par exemple :\n"
                     'PARAMS: {"command": "GOOGLESHEETS_BATCH_GET", "arguments": {}}')
         action = command
+        args = _to_dict(arguments)
+
+        # ⚠️ DERNIER VERROU. Le garde-fou des actions irréversibles ne vivait que sur les
+        # chemins « directs » (agenda, mails, app générique). Or l'agent ReAct appelle CE
+        # plugin lui-même : il pouvait donc lancer GMAIL_SEND_EMAIL ou
+        # GOOGLECALENDAR_DELETE_EVENT sans que personne ait rien confirmé. C'est
+        # exactement ce que l'utilisateur redoute pour ses mails, et c'était la seule
+        # porte restée ouverte.
+        try:
+            from api.agent import _est_irreversible, _demande_confirmation, _PROFILE_ID
+            if _est_irreversible(action):
+                # On MET EN ATTENTE et on refuse. Quand l'utilisateur répondra « oui »,
+                # c'est le chemin direct qui exécutera l'action mémorisée — il passe
+                # avant l'agent, donc il la reprendra sans que l'agent ait à insister.
+                slug = action.split("_", 1)[0].lower()
+                return ("⛔ ACTION SANS RETOUR — NE LA RELANCE PAS, et n'essaie aucune "
+                        "autre action à la place. Montre ceci TEL QUEL à l'utilisateur "
+                        "et attends sa réponse :\n\n"
+                        + _demande_confirmation(_PROFILE_ID, slug, action, args))
+        except ImportError:
+            pass          # hors application (tests unitaires) : rien à garder
 
         import requests
-        args = _to_dict(arguments)
         # Identité : celle résolue par l'appelant (compte réellement connecté), sinon la config.
         user = (user_id or "").strip() or getattr(config, "COMPOSIO_USER_ID", "default") or "default"
         # En-tête selon le TYPE de clé :
