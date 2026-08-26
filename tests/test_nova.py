@@ -2126,6 +2126,61 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_resultats_automatisations_remontent():
+    """« J'ai fait une automatisation à 17h mais je reçois rien. » Elle s'exécutait bien :
+    son résultat n'allait NULLE PART sans Telegram. Il fallait penser à ouvrir la fenêtre
+    Automatisations pour le découvrir — donc une automatisation ne servait à rien."""
+    from agent import automations as AU
+
+    vrais = (AU._load, AU._save)
+    stock = []
+    try:
+        AU._load = lambda: [dict(x) for x in stock]
+        AU._save = lambda items: (stock.clear(), stock.extend(dict(x) for x in items))
+
+        a = AU.add("Actu bourse du jour", "résume l'actu bourse", hour=17)
+        check("rien à signaler tant que ça n'a pas tourné", AU.non_lus(), [])
+
+        # On simule une exécution (sans appeler le modèle)
+        for it in stock:
+            if it["id"] == a["id"]:
+                it.update({"last_run": 1_700_000_000.0, "last_result": "CAC 40 : +0,8 %",
+                           "lu": False, "runs": 1})
+        nouveaux = AU.non_lus()
+        check("le résultat remonte comme non lu", len(nouveaux), 1)
+        check("…avec son titre", nouveaux[0]["titre"], "Actu bourse du jour")
+        check("…et son contenu", nouveaux[0]["resultat"], "CAC 40 : +0,8 %")
+        check_true("…et la date d'exécution", bool(nouveaux[0]["quand"]))
+
+        # Une fois vu, il ne doit plus revenir à chaque ouverture
+        check("marquage effectif", AU.marquer_lus(), 1)
+        check("il ne remonte plus", AU.non_lus(), [])
+        check("…et un second marquage ne fait rien", AU.marquer_lus(), 0)
+
+        # Une exécution SUIVANTE redevient non lue
+        for it in stock:
+            it.update({"last_result": "CAC 40 : -1,2 %", "lu": False})
+        check("la nouvelle exécution remonte", len(AU.non_lus()), 1)
+        check("…avec le contenu à jour", AU.non_lus()[0]["resultat"], "CAC 40 : -1,2 %")
+
+        # Un résultat VIDE ne doit rien afficher
+        for it in stock:
+            it.update({"last_result": "   ", "lu": False})
+        check("un résultat vide n'est pas présenté", AU.non_lus(), [])
+
+        # Marquage ciblé : une automatisation vue n'efface pas les autres
+        b = AU.add("Veille tech", "résume l'actu tech", hour=12)
+        for it in stock:
+            it.update({"last_result": "contenu", "lu": False})
+        check("deux résultats en attente", len(AU.non_lus()), 2)
+        check("marquage ciblé", AU.marquer_lus([a["id"]]), 1)
+        restants = AU.non_lus()
+        check("l'autre reste en attente", len(restants), 1)
+        check("…et c'est le bon", restants[0]["id"], b["id"])
+    finally:
+        (AU._load, AU._save) = vrais
+
+
 def test_jamais_d_ecriture_non_demandee():
     """Les deux chemins par lesquels Nova pouvait MODIFIER quelque chose sans que
     personne l'ait demandé — et sans passer par la confirmation, puisque ni CREATE ni
@@ -3233,7 +3288,8 @@ if __name__ == "__main__":
                test_competences, test_apps_robustesse,
                test_choix_fournisseur, test_apps_inconnues,
                test_diag_patient, test_cours_persistants,
-               test_app_en_panne_repond_quand_meme, test_jamais_d_ecriture_non_demandee):
+               test_app_en_panne_repond_quand_meme, test_jamais_d_ecriture_non_demandee,
+               test_resultats_automatisations_remontent):
         try:
             fn()
         except Exception as e:

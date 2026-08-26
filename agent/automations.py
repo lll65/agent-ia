@@ -153,6 +153,28 @@ def _jours(item: dict) -> list:
     return list(range(7)) if j is None else list(j)
 
 
+def non_lus() -> list:
+    """Les resultats produits pendant ton absence, jamais affiches."""
+    return [{"id": i["id"], "titre": i.get("titre", ""), "icon": i.get("icon", "⚡"),
+             "quand": i.get("last_run"), "resultat": i.get("last_result", "")}
+            for i in list_all()
+            if i.get("lu") is False and (i.get("last_result") or "").strip()]
+
+
+def marquer_lus(ids=None) -> int:
+    """Marque comme vus : ils ne seront plus represents a chaque ouverture."""
+    n = 0
+    with _LOCK:
+        items = _load()
+        for it in items:
+            if it.get("lu") is False and (ids is None or it["id"] in ids):
+                it["lu"] = True
+                n += 1
+        if n:
+            _save(items)
+    return n
+
+
 def prochaine_execution(item: dict) -> str:
     """Quand cette automatisation partira-t-elle, en heure de l'utilisateur ?"""
     from datetime import timedelta
@@ -222,6 +244,11 @@ async def run_one(item: dict) -> str:
                 it["last_run"] = time.time()
                 it["last_result"] = (answer or "")[:4000]
                 it["runs"] = int(it.get("runs", 0)) + 1
+                # ⚠️ Le resultat n'etait POUSSE nulle part sans Telegram : il fallait
+                # penser a ouvrir la fenetre Automatisations pour le decouvrir. Une
+                # automatisation que personne ne voit ne sert a rien. On le marque donc
+                # NON LU, et Nova le presente d'elle-meme a la prochaine ouverture.
+                it["lu"] = False
         _save(items)
     try:
         from agent.squad import record

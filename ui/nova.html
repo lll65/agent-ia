@@ -636,6 +636,32 @@ function toggleSidebar(){ const sb=document.getElementById("sidebar"), sc=docume
 function closeSidebar(){ document.getElementById("sidebar").classList.remove("show"); document.getElementById("scrim").classList.remove("show"); }
 
 /* Mémoire serveur (ce que Nova sait de toi) */
+/* ═══ CE QUE NOVA A FAIT PENDANT TON ABSENCE ═══
+   « J'ai fait une automatisation a 17h mais je recois rien » : elle s'executait bien,
+   mais son resultat n'allait NULLE PART sans Telegram — il fallait penser a ouvrir la
+   fenetre Automatisations pour le decouvrir. Nova le presente maintenant d'elle-meme. */
+async function nouveautes(){
+  if(!KEY) return;
+  try{
+    const d=await (await fetch(ORIGIN+"/agent/automations/nouveaux?key="+encodeURIComponent(KEY),
+      {cache:"no-store"})).json();
+    const n=(d.nouveaux||[]);
+    if(!n.length) return;
+    for(const x of n){
+      const quand = x.quand ? new Date(x.quand*1000).toLocaleString("fr-FR",
+        {weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}) : "";
+      addRow("ai", "<b>"+(x.icon||"⚡")+" "+esc(x.titre)+"</b>"
+        + (quand? " <span style='opacity:.55;font-size:11.5px'>· "+esc(quand)+"</span>":"")
+        + "<br><span style='opacity:.6;font-size:11.5px'>pendant ton absence</span><br><br>"
+        + fmt(x.resultat||""));
+    }
+    // On ne les represente pas a chaque ouverture.
+    fetch(ORIGIN+"/agent/automations/lus",{method:"POST",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify({key:KEY})}).catch(()=>{});
+    if(chat) chat.scrollTop=chat.scrollHeight;
+  }catch(e){}
+}
+
 /* ═══ CHOIX DU FOURNISSEUR ═══
    Le mecanisme existait deja (« reponds avec l'api nvidia » dans la phrase), mais rien
    ne permettait de le CHOISIR une fois pour toutes. */
@@ -1585,6 +1611,8 @@ async function wakeDevices(){ if(!KEY){ openCfg(); return; }
 /* Restaure les sessions au chargement */
 loadSessions(); renderChat(); renderSessions();
 document.getElementById("soundBtn").classList.toggle("on",SOUND);
+/* Ce que Nova a produit pendant ton absence s'affiche tout seul a l'ouverture. */
+setTimeout(nouveautes, 600);
 /* Lancement direct en mode vocal via ?voice=1 (raccourci Siri « Nova ») */
 if(new URLSearchParams(location.search).get("voice")==="1"){
   addEventListener("load",()=>setTimeout(()=>{ if(KEY && !voiceMode) toggleVoiceMode(); },300)); }

@@ -4058,6 +4058,26 @@ async def automations_run(req: AutoReq):
     return {"answer": await run_one(item)}
 
 
+@router.get("/automations/nouveaux")
+async def automations_nouveaux(key: str = ""):
+    """Ce que Nova a produit pendant ton absence et que tu n'as pas encore vu.
+
+    C'est la réponse à « j'ai fait une automatisation à 17h mais je reçois rien » :
+    elle s'exécutait bien, mais son résultat n'allait nulle part sans Telegram.
+    """
+    _check_key(key)
+    from agent.automations import non_lus
+    return {"nouveaux": non_lus()}
+
+
+@router.post("/automations/lus")
+async def automations_lus(req: AutoReq):
+    """Marque les résultats comme vus (pour ne pas les represents à chaque ouverture)."""
+    _check_key(req.key or "")
+    from agent.automations import marquer_lus
+    return {"ok": True, "marques": marquer_lus([req.id] if req.id else None)}
+
+
 @router.delete("/automations")
 async def automations_delete(id: str = "", key: str = ""):
     """Supprime une automatisation."""
