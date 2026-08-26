@@ -2126,6 +2126,79 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_identifiants_par_type():
+    """Défaut confirmé par l'audit, avec reproduction : tous les champs à résoudre
+    recevaient la MÊME valeur. « déplace Releve_PEA dans le dossier Banque » donnait
+    file_id == folder_id — le fichier était déplacé DANS LUI-MÊME. Et comme MOVE_FILE
+    n'est pas « irréversible », c'était exécuté sans aucune confirmation."""
+    FICH = [{"id": "1FILEabcdefGHIJKLmnop111", "name": "Releve_PEA.pdf"},
+            {"id": "1FOLDERabcdefGHIJKL222", "name": "Banque"}]
+    vrais = (A._tool, A._document_connu)
+    try:
+        A._document_connu = lambda app, quoi: ("", "")
+        A._tool = lambda a, args=None, **k: (
+            "✅ résultat :\n" + json.dumps({"data": {"files": FICH}})
+            if ("SEARCH" in a.upper() or "FIND" in a.upper()) else "✅ ok")
+
+        ACT = [{"name": "GOOGLEDRIVE_FIND_FILE", "required": ["query"]},
+               {"name": "GOOGLEDRIVE_MOVE_FILE", "required": ["file_id", "folder_id"]}]
+        args, _et, refus = A._resoudre_identifiants(
+            "googledrive", "GOOGLEDRIVE_MOVE_FILE",
+            {"file_id": "YOUR_FILE_ID", "folder_id": "FOLDER_ID"},
+            "déplace Releve_PEA dans le dossier Banque", ACT)
+        check_true("le fichier n'est plus déplacé dans lui-même",
+                   args["file_id"] != args["folder_id"])
+        check("le bon fichier est visé", args["file_id"], "1FILEabcdefGHIJKLmnop111")
+        check("le bon dossier aussi", args["folder_id"], "1FOLDERabcdefGHIJKL222")
+        check("rien n'empêche l'action", refus, "")
+
+        # 49b. Le type d'objet se déduit du nom du champ
+        for cle, typ in (("folder_id", "folder"), ("file_id", "file"), ("idBoard", "board"),
+                         ("spreadsheet_id", "spreadsheet"), ("sheet_id", "sheet"),
+                         ("team_id", "team"), ("database_id", "database"), ("truc", "")):
+            check(f"type de « {cle} »", A._type_objet(cle), typ)
+        # …et ce que l'utilisateur a nommé pour ce type
+        check("« dans le dossier Banque » → Banque",
+              A._indice_pour_type("déplace X dans le dossier Banque", "folder"), "Banque")
+        check("« l'onglet 2026 » → 2026",
+              A._indice_pour_type("supprime l'onglet 2026 du tableur X", "sheet"), "2026")
+
+        # 49c. ⚠️ Un gid NUMÉRIQUE n'est pas un document à chercher. _est_bouchon juge
+        # bouchon toute valeur de moins de 8 caractères : le gid d'un onglet (souvent 0)
+        # envoyait Nova chercher un « document » qui n'existe pas.
+        SPEC = {"name": "GOOGLESHEETS_DELETE_SHEET",
+                "required": ["spreadsheet_id", "sheet_id"],
+                "schema": {"properties": {"sheet_id": {"type": "integer"},
+                                          "spreadsheet_id": {"type": "string"}}}}
+        for valeur in (0, 12345, "0", "42"):
+            check_true(f"un nombre n'est pas un document ({valeur!r})",
+                       A._est_numerique("sheet_id", valeur, SPEC))
+        check("une chaîne reste un document",
+              A._est_numerique("spreadsheet_id", "YOUR_SPREADSHEET_ID", SPEC), False)
+        S = [{"id": "1PEAabcdefGHIJKLmnop1234", "name": "Suivi_PEA_Lohan"}]
+        A._tool = lambda a, args=None, **k: (
+            "✅ résultat :\n" + json.dumps({"data": {"files": S}})
+            if "SEARCH" in a.upper() else "✅ ok")
+        args, _et, _r = A._resoudre_identifiants(
+            "googlesheets", "GOOGLESHEETS_DELETE_SHEET",
+            {"spreadsheet_id": "YOUR_SPREADSHEET_ID", "sheet_id": 0},
+            "supprime l'onglet 2026 du tableur Suivi_PEA_Lohan",
+            [{"name": "GOOGLESHEETS_SEARCH_SPREADSHEETS", "required": []}, SPEC])
+        check("le tableur est résolu", args["spreadsheet_id"], "1PEAabcdefGHIJKLmnop1234")
+        check("le gid reste un nombre, il n'est pas écrasé", args["sheet_id"], 0)
+
+        # 49d. Le cas simple (un seul type) ne doit pas avoir régressé
+        args, _et, refus = A._resoudre_identifiants(
+            "googlesheets", "GOOGLESHEETS_BATCH_GET",
+            {"spreadsheet_id": "YOUR_SPREADSHEET_ID"}, "lit mon fichier pea",
+            [{"name": "GOOGLESHEETS_SEARCH_SPREADSHEETS", "required": []},
+             {"name": "GOOGLESHEETS_BATCH_GET", "required": ["spreadsheet_id"]}])
+        check("un seul type : inchangé", args["spreadsheet_id"], "1PEAabcdefGHIJKLmnop1234")
+        check("…et aucun refus", refus, "")
+    finally:
+        (A._tool, A._document_connu) = vrais
+
+
 def test_garde_fou_irreversible_complet():
     """« Tu te rends compte s'il fait ça avec mes mails ! » — audit du garde-fou.
     Trois trous, tous vérifiés en exécutant le code."""
@@ -3357,7 +3430,7 @@ if __name__ == "__main__":
                test_diag_patient, test_cours_persistants,
                test_app_en_panne_repond_quand_meme, test_jamais_d_ecriture_non_demandee,
                test_resultats_automatisations_remontent,
-               test_garde_fou_irreversible_complet):
+               test_garde_fou_irreversible_complet, test_identifiants_par_type):
         try:
             fn()
         except Exception as e:
