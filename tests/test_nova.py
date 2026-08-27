@@ -840,7 +840,21 @@ def test_requete_web():
                "neuf" not in requete_simple("quoi de neuf sur l'IA").lower())
     check("apostrophe typographique gérée",
           requete_simple("l’actu du jour"), f"actualité {date}")
-    check_true("« aujourd hui » sans apostrophe reconnu", veut_actualite("prix du bitcoin aujourd hui"))
+    # Ce test vérifiait la NORMALISATION (« aujourd hui » sans apostrophe), pas la
+    # politique de mode. On le vérifie donc sur une demande d'actualité franche.
+    check_true("« aujourd hui » sans apostrophe reconnu",
+               veut_actualite("quoi de neuf aujourd hui"))
+    # ⚠️ « maintenant » / « aujourd'hui » situent le MOMENT, pas le sujet. Une question
+    # qui NOMME quelque chose de précis n'est pas une demande d'actualité : Nova basculait
+    # en mode news pour « tu penses quoi d'acheter 2CRSI maintenant ? » et rendait… les
+    # titres politiques du jour.
+    for precise in ("tu penses quoi d'acheter 2CRSI maintenant",
+                    "le cours de LVMH maintenant", "prix du bitcoin aujourd hui",
+                    "quelle météo à Pau aujourd'hui", "combien ça coûte maintenant"):
+        check(f"pas de l'actualité : « {precise[:36]}… »", veut_actualite(precise), False)
+    for actu in ("résume l'actu tech du jour", "quoi de neuf aujourd'hui",
+                 "les news du jour", "dernières nouvelles", "que se passe-t-il en ce moment"):
+        check_true(f"actualité : « {actu[:32]}… »", veut_actualite(actu))
     # Les noms propres gardent leur casse
     check("noms propres préservés", requete_simple("rentrée UPPA Pau licence eco gestion"),
           "rentrée UPPA Pau licence eco gestion")
@@ -2126,6 +2140,37 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_sources_visibles():
+    """« Je veux voir les mêmes réflexions que Claude. » Nova montrait un extrait tronqué
+    du résultat (« Actualité — 6 articles récents 1. Présidentielle… ») : impossible de
+    savoir OÙ elle avait cherché, ni d'aller vérifier."""
+    BRUT = ("🔎 **Résultats web : action PEA small cap 2026** (3)\n\n"
+            "**1. Quelle action PEA acheter en 2026 ? Notre Top 4**\n"
+            "_www.cafedelabourse.com · 2026-08-20_\nNotre sélection.\n"
+            "🔗 https://www.cafedelabourse.com/top-pea-2026\n\n"
+            "**2. Small caps françaises IA : 10 valeurs PEA en Bourse 2026**\n"
+            "_pea.fr_\n🔗 https://pea.fr/small-caps-ia\n\n"
+            "**3. Meilleures actions PEA 2026 : 7 titres solides**\n"
+            "_www.seqooia.com_\n🔗 https://www.seqooia.com/actions-pea")
+    src = A._sources_trouvees(BRUT)
+    check("les trois sources sont extraites", len(src), 3)
+    check("le titre est lisible", src[0]["titre"], "Quelle action PEA acheter en 2026 ? Notre Top 4")
+    check("le domaine est propre (sans www)", src[0]["domaine"], "cafedelabourse.com")
+    check_true("le lien permet de vérifier", src[0]["url"].startswith("https://"))
+    check("un domaine court passe aussi", src[1]["domaine"], "pea.fr")
+    # Rien à afficher quand il n'y a pas de résultats
+    check("texte quelconque : aucune source", A._sources_trouvees("bonjour"), [])
+    check("texte vide", A._sources_trouvees(""), [])
+    check("résultat sans lien reste listé",
+          len(A._sources_trouvees("**1. Un titre sans lien**\n_source.fr_")), 1)
+    # Pas de doublon quand la même page revient
+    deux = ("**1. Même page**\n🔗 https://x.fr/a\n\n**2. Même page**\n🔗 https://x.fr/a")
+    check("les doublons sont écartés", len(A._sources_trouvees(deux)), 1)
+    # …et jamais une liste interminable
+    long = "\n\n".join(f"**{i}. Titre {i}**\n🔗 https://x{i}.fr/p" for i in range(1, 30))
+    check_true("la liste reste courte", len(A._sources_trouvees(long)) <= 10)
+
+
 def test_identifiants_par_type():
     """Défaut confirmé par l'audit, avec reproduction : tous les champs à résoudre
     recevaient la MÊME valeur. « déplace Releve_PEA dans le dossier Banque » donnait
@@ -3430,7 +3475,8 @@ if __name__ == "__main__":
                test_diag_patient, test_cours_persistants,
                test_app_en_panne_repond_quand_meme, test_jamais_d_ecriture_non_demandee,
                test_resultats_automatisations_remontent,
-               test_garde_fou_irreversible_complet, test_identifiants_par_type):
+               test_garde_fou_irreversible_complet, test_identifiants_par_type,
+               test_sources_visibles):
         try:
             fn()
         except Exception as e:

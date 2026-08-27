@@ -311,6 +311,17 @@
   /* Une automatisation qui vient d'être créée se signale d'elle-même. */
   @keyframes surligne{ 0%{ box-shadow:0 0 0 2px var(--neon2); } 100%{ box-shadow:0 0 0 0 transparent; } }
   .pitem.neuf{ animation:surligne 2.4s ease-out; }
+  /* Sources consultées : titre cliquable à gauche, domaine à droite, liste défilante. */
+  .srcs{ margin-top:6px; border:1px solid var(--stroke); border-radius:12px;
+         background:rgba(10,10,20,.5); max-height:190px; overflow-y:auto; }
+  .src{ display:flex; align-items:center; gap:10px; padding:8px 11px; font-size:12.5px;
+        border-bottom:1px solid rgba(255,255,255,.05); }
+  .src:last-child{ border-bottom:0 }
+  .src a{ color:var(--txt); text-decoration:none; flex:1; overflow:hidden;
+          text-overflow:ellipsis; white-space:nowrap; }
+  .src a:hover{ color:var(--neon2); text-decoration:underline }
+  .src .dom{ color:var(--dim); font-size:11px; flex:0 0 auto; max-width:42%;
+             overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   /* Aucun retour n'était donné après une action : on ne savait pas si ça avait marché. */
   #toast{ position:fixed; left:50%; transform:translateX(-50%) translateY(20px); z-index:30;
     bottom:calc(88px + env(safe-area-inset-bottom)); max-width:min(460px,92vw);
@@ -576,7 +587,9 @@ function attachModel(bubble){ if(!MODELE_UTILISE) return; const col=bubble.paren
 function attachReason(bubble,trace){ if(!trace||!trace.length) return; const col=bubble.parentElement;
   const steps=trace.map(s=>{ const d=_clean(s.detail);
     return '<div class="rstep"><span class="ri">'+s.icon+'</span><span><span class="rl">'+esc(s.label)+'</span>'
-      +(d?'<br><span class="rd">'+esc(d)+'</span>':'')+'</span></div>'; }).join("");
+      +(d?'<br><span class="rd">'+esc(d)+'</span>':'')
+      // Bloc riche (liste de sources cliquables) : déjà échappé à la construction.
+      +(s.html? s.html : '')+'</span></div>'; }).join("");
   const d=document.createElement("details"); d.className="reason";
   d.innerHTML='<summary>Raisonnement · '+trace.length+' étape'+(trace.length>1?'s':'')+'</summary><div class="rsteps">'+steps+'</div>';
   col.appendChild(d); chat.scrollTop=chat.scrollHeight; }
@@ -1255,6 +1268,21 @@ function ask(){
       }
       if(!answer&&!streamed){ bubble.innerHTML=thinkHTML("Analyse de ta demande","💭");
         pi=trace.length-1; chat.scrollTop=chat.scrollHeight; }
+      return; }
+    // Les SOURCES consultées, en clair et cliquables. Avant, on ne voyait qu'un extrait
+    // tronqué du résultat : impossible de savoir OU Nova avait cherche, ni de verifier.
+    if(d.type==="sources" && (d.items||[]).length){
+      const lignes=d.items.map(x=>{
+        const t=esc(x.titre||""), u=esc(x.url||""), dom=esc(x.domaine||"");
+        return '<div class="src">'
+          + (u? '<a href="'+u+'" target="_blank" rel="noopener">'+t+'</a>' : t)
+          + (dom? '<span class="dom">'+dom+'</span>' : '') + '</div>';
+      }).join("");
+      trace.push({icon:"🌐", label:d.items.length+" source"+(d.items.length>1?"s":"")+" consultée"
+        +(d.items.length>1?"s":""), detail:"", html:'<div class="srcs">'+lignes+'</div>'});
+      pi=trace.length-1;
+      if(!answer && !streamed){ bubble.innerHTML=thinkHTML(trace[pi].label,"🌐"); }
+      chat.scrollTop=chat.scrollHeight;
       return; }
     if(d.type==="step"){ const ai=agentInfo(d), ic=ai? ai.i : iconFor(d.kind,d.tool);
       graphAdd(ic, nodeLabel(d), d.q||d.text||"", d.agent||"");
