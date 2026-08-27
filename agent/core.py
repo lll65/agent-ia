@@ -712,10 +712,28 @@ def _normalise(t: str) -> str:
     return t
 
 
+# Une demande qui NOMME un sujet précis n'est pas une demande d'actualité générale.
+# « tu penses quoi d'acheter 2CRSI maintenant ? » contient « maintenant » : Nova basculait
+# donc en mode ACTUALITÉ et rendait… les titres politiques du jour. Le mot situait le
+# moment de la décision, pas le sujet de la recherche.
+_SUJETS_PRECIS = ("action", "actions", "titre", "bourse", "cours de", "cotation", "ticker",
+                  "etf", "pea", "crypto", "bitcoin", "dividende", "capitalisation",
+                  "acheter", "acheté", "achete", "vendre", "investir", "placement",
+                  "météo", "meteo", "recette", "traduis", "traduction", "définition",
+                  "definition", "calcule", "combien", "itinéraire", "itineraire")
+
+
 def veut_actualite(task: str) -> bool:
     """La demande porte-t-elle sur l'actualité ? (→ requête datée, résultats récents)"""
     m = _normalise(task).lower()
-    return any(k in m for k in _MOTS_DU_JOUR) or any(k in m for k in _MOTS_RECENT)
+    # Un mot d'ACTUALITÉ explicite (« actu », « news », « quoi de neuf ») tranche seul.
+    if any(k in m for k in _MOTS_RECENT):
+        return True
+    # « maintenant », « aujourd'hui »… ne suffisent pas : ils situent le MOMENT, pas le
+    # sujet. Ils ne basculent en mode actualité que si la demande ne nomme rien de précis.
+    if any(k in m for k in _MOTS_DU_JOUR):
+        return not any(k in m for k in _SUJETS_PRECIS)
+    return False
 
 
 def requete_simple(task: str, pour_actu: bool = False) -> str:

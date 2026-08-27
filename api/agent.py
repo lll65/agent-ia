@@ -1420,6 +1420,36 @@ def _toolkit_user_id(slug: str) -> str:
     return uid
 
 
+def _sources_trouvees(brut: str) -> list:
+    """Les pages réellement consultées, extraites du résultat de recherche.
+
+    Titre + domaine + lien : de quoi voir d'où vient l'information et aller vérifier.
+    On n'en montrait qu'un extrait tronqué (« Actualité — 6 articles récents
+    1. Présidentielle… »), impossible de savoir OÙ Nova avait cherché.
+    """
+    import re as _re
+    out, vus = [], set()
+    for bloc in _re.split(r"\n\s*\n", brut or ""):
+        titre = _re.search(r"\*\*\d+\.\s*(.+?)\*\*", bloc)
+        if not titre:
+            continue
+        lien = _re.search(r"🔗\s*(https?://\S+)", bloc)
+        url = lien.group(1) if lien else ""
+        if url and url in vus:
+            continue
+        vus.add(url)
+        dom = ""
+        if url:
+            d = _re.match(r"https?://(?:www\.)?([^/]+)", url)
+            dom = d.group(1) if d else ""
+        meta = _re.search(r"^_(.+?)_$", bloc, _re.M)
+        out.append({"titre": titre.group(1).strip()[:120], "url": url,
+                    "domaine": dom or (meta.group(1)[:40] if meta else "")})
+        if len(out) >= 10:
+            break
+    return out
+
+
 def _agent_pour_outil(outil: str) -> str:
     """Quel spécialiste de l'escouade est derrière cet outil (pour l'afficher au travail)."""
     o = (outil or "").lower()
