@@ -687,34 +687,63 @@ def _resolve_app_action(message: str):
     return None, None
 
 
+# Mots qui signalent un échec — cherchés UNIQUEMENT dans les champs d'enveloppe.
+_MOTS_ECHEC = ("not found", "introuvable", "no such", "does not exist", "denied",
+               "failed", "invalid", "unable to", "cannot ", "unauthorized", "forbidden",
+               "expired", "quota", "rate limit", "insufficient")
+
+
+def _enveloppe_en_echec(brut: str) -> bool:
+    """L'APPEL a-t-il échoué ? On regarde l'enveloppe, pas son contenu."""
+    import re as _re
+    m = _re.search(r"\{.*\}", brut or "", _re.S)
+    if not m:
+        return False
+    try:
+        data = json.loads(m.group(0))
+    except Exception:
+        # JSON illisible : seuls les marqueurs de HAUT niveau comptent.
+        return bool(_re.search(r'"(http_error|status_code)"\s*:\s*"?[45]\d\d',
+                               brut or "", _re.I))
+    if not isinstance(data, dict):
+        return False
+
+    def _echec(niveau: dict) -> bool:
+        if not isinstance(niveau, dict):
+            return False
+        if niveau.get("successful") is False or niveau.get("success") is False:
+            return True
+        for cle in ("error", "errors", "http_error"):
+            if niveau.get(cle) not in (None, "", [], {}, False):
+                return True
+        for cle in ("status_code", "status", "code"):
+            try:
+                if 400 <= int(niveau.get(cle)) < 600:
+                    return True
+            except (TypeError, ValueError):
+                pass
+        for cle in ("message", "detail", "reason"):
+            v = niveau.get(cle)
+            if isinstance(v, str) and any(w in v.lower() for w in _MOTS_ECHEC):
+                return True
+        return False
+
+    # Composio emboîte parfois une seconde enveloppe sous « data ».
+    return _echec(data) or _echec(data.get("data") if isinstance(data.get("data"), dict) else {})
+
+
 def _looks_like_failure(obs: str) -> bool:
     """True si l'observation Composio est un échec (et surtout PAS des données réelles)."""
     o = (obs or "").strip()
     if not o:
         return True
     low = o.lower()
-    if '"successful": false' in low or '"successful":false' in low:
-        return True
-    # ⚠️ Composio renvoie parfois HTTP 200 avec l'erreur DANS le payload
-    # (ex. {"http_error": "401 Client Error: Unauthorized for url: https://api.canva.com/..."}).
-    # Il faut donc inspecter le contenu même quand le plugin a préfixé un ✅.
-    embedded = ("http_error", '"error"', "client error", "unauthorized", "forbidden",
-                "invalid_grant", "token expired", "insufficient")
-    if any(b in low for b in embedded):
-        return True
-    # ⚠️ Un CODE DE STATUT d'échec dans le corps, quelle que soit son écriture.
-    # L'ancienne version cherchait la chaîne exacte « "status": 4 » : une réponse
-    # {"status_code": 404, "message": "Requested entity was not found."} y échappait,
-    # le ✅ du plugin la faisait passer pour un succès, et Nova mettait l'ERREUR en
-    # tableau comme si c'était le résultat demandé.
-    import re as _re
-    if _re.search(r'"status(?:_code)?"\s*:\s*[45]\d\d', low):
-        return True
-    # Message d'échec explicite renvoyé DANS la charge utile (Google Sheets répond
-    # « Sheet 'PEA' not found. Available sheets are [...] » avec un statut vide).
-    if _re.search(r'"(message|detail|reason)"\s*:\s*"[^"]*'
-                  r'(not found|introuvable|no such|does not exist|denied|failed|'
-                  r'invalid|unable to|cannot )', low):
+    # ⚠️ On juge l'ENVELOPPE, jamais ce qu'elle transporte. Chercher « invalid » ou
+    # « not found » n'importe où dans le JSON confondait le contenu avec le verdict :
+    # un commit GitHub intitulé « fix: invalid config, cannot open file » faisait jeter
+    # TOUTE la liste des commits et servir un message d'erreur inventé. Même piège pour
+    # un mail « Erreur 404 sur mon site » ou un fichier « Rapport not found.pdf ».
+    if _enveloppe_en_echec(o):
         return True
     if o.startswith("✅"):
         return False  # succès explicite du plugin (même si liste vide)
@@ -726,14 +755,23 @@ def _looks_like_failure(obs: str) -> bool:
 
 
 def _is_param_error(obs: str) -> bool:
-    """Erreur due aux PARAMÈTRES envoyés (400) — donc corrigeable automatiquement,
-    par opposition à un problème d'accès (401/403/404)."""
-    low = (obs or "").lower()
-    if "401" in low or "403" in low or "no connected account" in low:
+    """Erreur due aux PARAMÈTRES envoyés (400) — donc corrigeable automatiquement.
+
+    ⚠️ Jugée sur l'ENVELOPPE, jamais sur le contenu. Chercher « invalid » dans tout le
+    corps faisait relancer une action d'ÉCRITURE dès que le TEXTE DE L'UTILISATEUR
+    contenait ce mot : « crée une issue Linear : Fix invalid_grant sur le refresh
+    token » créait trois issues identiques, puis annonçait un échec.
+    """
+    if not _enveloppe_en_echec(obs):
         return False
-    return ("400" in low or "invalid_field" in low or "bad request" in low
-            or "must be defined" in low or "is required" in low or "missing" in low
-            or "invalid" in low or "validation" in low
+    # On ne regarde que le message d'erreur de l'enveloppe, pas les données.
+    msg = _erreur_lisible_app(obs).lower()
+    if any(k in msg for k in ("401", "403", "unauthorized", "forbidden",
+                              "no connected account", "permission")):
+        return False
+    return ("400" in msg or "invalid" in msg or "bad request" in msg
+            or "must be" in msg or "is required" in msg or "missing" in msg
+            or "validation" in msg or "expected" in msg or "type" in msg
             # L'API nomme la bonne valeur : c'est corrigeable, et sans deviner.
             or bool(_suggestions_api(obs)))
 
@@ -1015,7 +1053,11 @@ def _format_app_messages(message: str, action: str, obs: str, is_write: bool = F
             "date, heure, lieu ou personne. Si la liste est vide, dis simplement qu'il n'y a rien "
             "de prévu. Termine par au plus 2 suggestions utiles."
         )
-    user = f"Demande de l'utilisateur : {message}\n\nDONNÉES RÉELLES [{action}] :\n{obs[:3500]}"
+    # ⚠️ PAS de nouvelle troncature ici : elle recoupait au milieu d'un enregistrement le
+    # JSON que _reduit venait justement de rendre valide — le défaut « aucun document
+    # trouvé » réintroduit une couche plus haut. La taille est déjà bornée en amont, par
+    # le seul endroit qui sache couper sans casser la structure.
+    user = f"Demande de l'utilisateur : {message}\n\nDONNÉES RÉELLES [{action}] :\n{obs}"
     # ⚠️ Le modèle est INCAPABLE de dire quel jour tombe une date : il a produit un tableau
     # où le 14/08/2026 était « lundi » (c'est un vendredi) et pour la semaine du 14 au 20
     # alors qu'on était le 21. Ce que le code sait calculer, on ne le lui fait jamais deviner.
@@ -2548,7 +2590,11 @@ def _composio_list_actions(slug: str):
                 break
         except Exception:
             continue
-    _cache_put(_TOOLS_CACHE, slug, out)
+    # ⚠️ Ne mettre en cache QUE les succès. Une panne réseau passagère rendait [], gardé
+    # 10 minutes : pendant ce temps, quoi que fasse l'utilisateur — réessayer, reconnecter
+    # l'app, corriger sa clé — il recevait le même message l'accusant à tort.
+    if out:
+        _cache_put(_TOOLS_CACHE, slug, out)
     return out
 
 
@@ -3022,6 +3068,12 @@ def _generic_app_flow(message: str, slug: str):
     # qui la lit et corrige (jusqu'à 2 tentatives).
     tries = 0
     premiere_erreur = str(obs) if (_looks_like_failure(obs) and _is_param_error(obs)) else ""
+    # ⚠️ La relance ne doit partir QUE sur une erreur de PARAMÈTRE avérée (4xx de
+    # l'enveloppe) : dans ce cas l'app n'a rien créé, reprendre est sûr. Le danger était
+    # ailleurs — le mot « invalid » dans le CONTENU de l'utilisateur (« crée une issue :
+    # Fix invalid_grant… ») déclenchait la relance d'une écriture déjà partie, d'où trois
+    # pages Notion identiques. C'est _is_param_error qui jugeait le contenu ; c'est lui
+    # qui est corrigé, plutôt que d'interdire toute correction d'écriture.
     while _looks_like_failure(obs) and _is_param_error(obs) and tries < 2:
         tries += 1
         new_args = _build_args(action, spec, message, ctx, error=str(obs))

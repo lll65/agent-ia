@@ -2140,6 +2140,102 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_contenu_jamais_confondu_avec_le_verdict():
+    """Cinq défauts confirmés par l'audit, tous de la même famille : on jugeait le
+    CONTENU de la réponse au lieu de son enveloppe, ou on le tronquait de travers."""
+    from plugins.builtin.composio_tool import _fmt, _reduit
+
+    # 51a. ⚠️ Chercher « invalid » ou « not found » dans TOUT le JSON transformait de
+    # vraies données en échec : un commit « fix: invalid config », un mail « Erreur 404
+    # sur mon site », un fichier « Rapport not found.pdf ». Nova les jetait et servait
+    # un message d'erreur inventé. (Défaut introduit par une correction précédente.)
+    for nom, rep in (
+            ("commit « fix: invalid config »",
+             {"successful": True, "data": [{"sha": "a1b2",
+                                            "commit": {"message": "fix: invalid config, cannot open"}}]}),
+            ("mail « Erreur 404 sur mon site »",
+             {"successful": True, "data": {"messages": [{"subject": "Erreur 404 sur mon site"}]}}),
+            ("fichier « Rapport not found.pdf »",
+             {"successful": True, "data": {"files": [{"name": "Rapport not found.pdf"}]}}),
+            ("tableur ordinaire",
+             {"successful": True, "data": {"valueRanges": [["Lohan", 19, 6.94]]}}),
+            ("liste vide légitime", {"successful": True, "data": {"items": []}})):
+        check(f"données réelles, pas un échec : {nom}",
+              A._looks_like_failure(_fmt("X_GET", rep)), False)
+    for nom, rep in (
+            ("successful:false", {"successful": False, "error": "Insufficient permissions"}),
+            ("http_error 404", {"data": {"http_error": "404 Not Found"}}),
+            ("status_code 403", {"data": {"status_code": 403, "message": "denied"}}),
+            ("Sheet not found", {"data": {"message": "Sheet 'PEA' not found. "
+                                                     "Available sheets are ['Suivi_PEA']"}}),
+            ("erreur Google imbriquée",
+             {"error": {"code": 403, "message": "The caller does not have permission"}})):
+        check_true(f"vrai échec détecté : {nom}", A._looks_like_failure(_fmt("X_GET", rep)))
+
+    # 51b. ⚠️ Même piège pour la RELANCE : « crée une issue Linear : Fix invalid_grant
+    # sur le refresh token » contenait « invalid ». L'écriture était donc relancée alors
+    # qu'elle avait réussi → trois issues identiques, puis un message d'échec.
+    for nom, rep in (("issue « Fix invalid_grant… »",
+                      {"successful": True, "data": {"issue": {"title": "Fix invalid_grant"}}}),
+                     ("note « bad request à corriger »",
+                      {"successful": True, "data": {"page": {"title": "bad request à corriger"}}})):
+        check(f"le contenu ne relance rien : {nom}",
+              A._is_param_error(_fmt("X_CREATE", rep)), False)
+    for nom, rep in (("400 invalid parameter",
+                      {"successful": False, "error": "400 Bad Request: Invalid parameter"}),
+                     ("champ obligatoire manquant",
+                      {"successful": False, "error": "title is required"})):
+        check_true(f"vraie erreur de paramètre : {nom}",
+                   A._is_param_error(_fmt("X_CREATE", rep)))
+    for nom, rep in (("403 permission",
+                      {"successful": False, "error": "403 The caller does not have permission"}),
+                     ("401 unauthorized", {"successful": False, "error": "401 Unauthorized"})):
+        check(f"un refus d'accès n'est pas corrigeable : {nom}",
+              A._is_param_error(_fmt("X_GET", rep)), False)
+
+    # 51c. ⚠️ Une liste d'UN SEUL gros élément tombait à [] : le contenu réel
+    # disparaissait, et la réponse restait un « ✅ ».
+    # On force le dépassement : 200 lignes larges, bien au-delà du budget.
+    rows = [[f"2026-0{1 + i % 9}-1{i % 9}", f"Action {i} SA — libellé long pour peser",
+             str(100 + i), str(i * 3), f"{i * 1.5:.2f}%", "PEA Boursorama"]
+            for i in range(200)]
+    gros = {"spreadsheetId": "1AbCdEf",
+            "valueRanges": [{"range": "PEA!A1:F200", "values": rows}]}
+    check_true("le cas déborde bien la limite",
+               len(json.dumps(gros, ensure_ascii=False, indent=1)) > 8000)
+    reduit = _reduit(gros)
+    vr = reduit.get("valueRanges") or []
+    check_true("le bloc de données survit (au lieu de devenir [])", bool(vr))
+    check_true("…avec ses lignes", bool(vr and vr[0].get("values")))
+    check_true("…et la coupe est annoncée", "_note" in (vr[0] if vr else {}))
+    check_true("…et il en reste assez pour être utile",
+               len(vr[0].get("values", [])) >= 10)
+    # Un contenu qui TIENT ne doit pas être touché ni annoté
+    petit = {"valueRanges": [{"range": "A1:C3", "values": [["a", 1, 2], ["b", 3, 4]]}]}
+    check("un petit contenu passe intact", _reduit(petit), petit)
+
+    # 51d. ⚠️ Le prompt de mise en forme recoupait le JSON à 3500 caractères — le défaut
+    # « aucun document trouvé » réintroduit une couche au-dessus de _reduit.
+    gros = _fmt("GOOGLEDRIVE_FIND_FILE", {"successful": True, "data": {"files": [
+        {"id": f"1{chr(65 + i % 26)}{i:03d}" + "x" * 30, "name": f"Fichier {i}",
+         "mimeType": "application/pdf", "modifiedTime": "2026-08-20T10:00:00Z",
+         "webViewLink": f"https://drive.google.com/{i}"} for i in range(120)]}})
+    msgs = A._format_app_messages("liste mes fichiers", "GOOGLEDRIVE_FIND_FILE", gros, False)
+    corps = msgs[-1]["content"].split("résultat :", 1)[-1]
+    try:
+        json.loads(corps)
+        valide = True
+    except Exception:
+        valide = False
+    check_true("le JSON transmis au modèle reste valide", valide)
+
+    # 51e. ⚠️ Une panne réseau rendait [] , mis en cache 10 minutes : l'utilisateur ne
+    # pouvait plus rien débloquer pendant ce temps, même en reconnectant l'app.
+    import inspect
+    check_true("un résultat vide n'est jamais mis en cache",
+               "if out:" in inspect.getsource(A._composio_list_actions))
+
+
 def test_echec_composio_jamais_pris_pour_un_succes():
     """Deux défauts CRITIQUES confirmés par l'audit."""
     import time as _t
@@ -3604,7 +3700,8 @@ if __name__ == "__main__":
                test_resultats_automatisations_remontent,
                test_garde_fou_irreversible_complet, test_identifiants_par_type,
                test_sources_visibles, test_autocorrection_garde_identifiant,
-               test_echec_composio_jamais_pris_pour_un_succes):
+               test_echec_composio_jamais_pris_pour_un_succes,
+               test_contenu_jamais_confondu_avec_le_verdict):
         try:
             fn()
         except Exception as e:
