@@ -157,7 +157,7 @@ EXECUTIONS = []          # ce que Composio a REELLEMENT execute
 ARGS_EXECUTES = []       # …et AVEC QUOI : c'est là que se cachent les identifiants bouchons
 
 
-def faux_composio(action, args=None, **kw):
+def faux_composio(action, args=None, slug='', **kw):
     EXECUTIONS.append(action)
     ARGS_EXECUTES.append((action, dict(args or {})))
     a = (action or "").upper()

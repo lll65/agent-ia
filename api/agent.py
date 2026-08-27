@@ -942,8 +942,13 @@ def _honest_no_access(action: str, obs: str) -> str:
             f"_(Détail technique : {dbg})_"
         )
     # Cause : clé VALIDE mais sans permission d'exécution (403 tool_execution)
-    if ("tool_execution" in low or "toolexecution" in low.replace("_", "")
-            or "insufficientpermission" in low.replace("_", "") or "permission" in low):
+    # ⚠️ UNIQUEMENT quand c'est COMPOSIO qui refuse, en citant sa propre permission.
+    # Un 403 venu de l'API de l'app (« The caller does not have permission » de Google)
+    # faisait accuser la clé Composio et donnait quatre étapes de configuration
+    # inutiles — alors que la clé est parfaitement bonne et que c'est l'autorisation
+    # OAuth de l'app qui manque.
+    _sans_ = low.replace("_", "")
+    if ("toolexecution" in _sans_ or "insufficientpermission" in _sans_) and "api." not in low:
         return (
             f"🔑 Je n'ai pas pu accéder à {app} — **ta clé Composio est valide mais n'a pas le droit d'exécuter des outils**, donc je ne t'invente rien.\n\n"
             "**Ce qui manque :** la permission **`tool_execution`** (write) sur ta clé `ak_`. "
@@ -1275,7 +1280,7 @@ def _direct_app_prepare_brut(message: str):
         return {"steps": [{"kind": "action", "tool": slug, "label": f"{action} (en attente)"}],
                 "done_answer": _demande_confirmation(_PROFILE_ID, slug, action, args)}
     # ⚠️ Passe par _tool() : identité Composio résolue + activité enregistrée (constellation).
-    obs = _tool(action, args)
+    obs = _tool(action, args, slug)
     steps = [
         {"kind": "action", "tool": slug, "label": action},
         {"kind": "obs", "tool": slug, "text": str(obs)[:180]},
@@ -1336,8 +1341,10 @@ def _direct_app_run_brut(message: str):
             return {"steps": g["steps"], "answer": g["done_answer"], "ok": True,
                     "echec_app": g.get("echec_app", False)}
         return None
-    obs = _tool(action, args)   # identité résolue + activité enregistrée
+    # Le slug est déduit AVANT l'appel : sinon _tool doit le redeviner, et l'identité
+    # Composio se perd dès que le préfixe ne correspond pas à un slug connu.
     slug = (action or "").split("_", 1)[0].lower()
+    obs = _tool(action, args, slug)   # identité résolue + activité enregistrée
     steps = [
         {"kind": "action", "tool": slug, "label": action},
         {"kind": "obs", "tool": slug, "text": str(obs)[:180]},
@@ -1403,9 +1410,29 @@ def invalidate_caches(slug: str = "") -> None:
     _ACCOUNTS_CACHE["ts"] = 0.0
 
 
+# ⚠️ Une liste VIDE signifiait DEUX choses opposées : « aucune app connectée » et
+# « Composio ne répond pas ». Nova affirmait donc noir sur blanc qu'une app connectée ne
+# l'était pas — puis se contredisait au message suivant. On note la panne à part.
+_COMPTES_KO = {"quand": 0.0, "raison": ""}
+
+
+def _comptes_injoignables() -> str:
+    """La dernière lecture des comptes a-t-elle ÉCHOUÉ (et non « rien trouvé ») ?"""
+    import time as _t
+    if _COMPTES_KO["quand"] and _t.monotonic() - _COMPTES_KO["quand"] < 60:
+        return _COMPTES_KO["raison"]
+    return ""
+
+
+def _marque_comptes_ko(raison: str) -> None:
+    import time as _t
+    _COMPTES_KO.update(quand=_t.monotonic(), raison=raison[:200])
+
+
 def _connected_accounts():
     """Comptes réellement connectés sur Composio : [(toolkit_slug, user_id, status)]."""
     import requests
+    import time as _t
     ck = (getattr(config, "COMPOSIO_API_KEY", "") or "").strip()
     if not ck:
         return []
@@ -1413,6 +1440,7 @@ def _connected_accounts():
         r = requests.get("https://backend.composio.dev/api/v3/connected_accounts",
                          headers={"x-api-key": ck}, params={"limit": 100}, timeout=20)
         if r.status_code != 200:
+            _marque_comptes_ko(f"Composio a répondu {r.status_code}")
             return []
         data = r.json()
         items = data.get("items", data if isinstance(data, list) else []) or []
@@ -1422,8 +1450,10 @@ def _connected_accounts():
             slug = (tk.get("slug") if isinstance(tk, dict) else None) or it.get("toolkit_slug") or ""
             uid = it.get("user_id") or it.get("entity_id") or ""
             out.append((str(slug).lower(), str(uid), str(it.get("status", ""))))
+        _COMPTES_KO.update(quand=0.0, raison="")     # lecture réussie : on lève le doute
         return out
-    except Exception:
+    except Exception as e:
+        _marque_comptes_ko(f"{type(e).__name__}: {str(e)[:120]}")
         return []
 
 
@@ -2340,13 +2370,13 @@ def _resoudre_identifiants(slug: str, action: str, args: dict, message: str, act
             args[k] = connu_id
         return args, etapes, ""
     etapes.append({"kind": "action", "tool": slug, "label": f"{recherche} · « {quoi} »"})
-    brut = _tool(recherche, {"query": quoi} if "SEARCH" in recherche.upper() else {})
+    brut = _tool(recherche, {"query": quoi} if "SEARCH" in recherche.upper() else {}, slug)
     candidats = _identifiants_trouves(str(brut))
     # ⚠️ La recherche par mots-clés peut ne rien rendre (paramètre inattendu, nom
     # approximatif). On redemande alors la liste COMPLÈTE et on compare nous-mêmes :
     # c'est bien plus fiable que de dépendre du moteur de recherche de l'app.
     if not candidats:
-        brut = _tool(recherche, {})
+        brut = _tool(recherche, {}, slug)
         candidats = _identifiants_trouves(str(brut))
         if candidats:
             etapes.append({"kind": "obs", "tool": slug,
@@ -2932,12 +2962,24 @@ def _est_connectee(slug: str) -> bool:
         connected = {_norm_slug(s) for s, _u, _st in _connected_accounts() if s}
     except Exception:            # Composio injoignable : on ne bloque pas à tort
         return True
+    # ⚠️ Une liste vide APRÈS une panne ne veut pas dire « rien de connecté ». Conclure
+    # l'inverse revenait à affirmer qu'une app connectée ne l'était pas.
+    if not connected and _comptes_injoignables():
+        return True
     return not connected or _norm_slug(slug) in connected
 
 
 def _refus_app_non_connectee(slug: str) -> str:
     """Le dire simplement, et proposer ce qui EST connecté plutôt qu'une erreur d'API."""
     nice = _APP_FR.get(slug, slug.capitalize())
+    panne = _comptes_injoignables()
+    if panne:
+        # On ne l'accuse pas d'un problème de connexion quand c'est NOUS qui n'avons
+        # pas pu vérifier. Dire « je n'ai pas pu savoir » est la seule réponse honnête.
+        return (f"⏳ Je n'arrive pas à joindre Composio pour vérifier l'accès à "
+                f"**{nice}** — je ne peux donc pas te dire si c'est connecté ou non, et "
+                f"je préfère ne rien affirmer.\n\nRéessaie dans un instant.\n\n"
+                f"_Détail technique : {panne}_")
     # Le nom du toolkit chez Composio, pas la tournure familière : on écrit
     # « Toolkits → Googledrive », jamais « Toolkits → ton Drive ».
     catalogue_nom = slug.replace("_", " ").capitalize()
@@ -3041,7 +3083,7 @@ def _generic_app_flow(message: str, slug: str):
         steps[0]["label"] = f"{action} (en attente)"
         return {"steps": steps,
                 "done_answer": _demande_confirmation(_PROFILE_ID, slug, action, args)}
-    obs = _tool(action, args)
+    obs = _tool(action, args, slug)
     steps.append({"kind": "obs", "tool": slug, "text": str(obs)[:180]})
 
     # ── UN RACCOURCI PÉRIMÉ NE DOIT JAMAIS COINCER ───────────────────────────
@@ -3061,7 +3103,7 @@ def _generic_app_flow(message: str, slug: str):
             if refus2:
                 return {"steps": steps, "done_answer": refus2}
             args = args2
-            obs = _tool(action, args)
+            obs = _tool(action, args, slug)
             steps.append({"kind": "obs", "tool": slug, "text": str(obs)[:180]})
 
     # ── AUTO-CORRECTION : on renvoie l'erreur de l'API au constructeur d'arguments,
@@ -3098,7 +3140,7 @@ def _generic_app_flow(message: str, slug: str):
         if refus_corr:
             return {"steps": steps, "done_answer": refus_corr}
         steps.append({"kind": "action", "tool": slug, "label": f"{action} (correction {tries})"})
-        obs = _tool(action, args)
+        obs = _tool(action, args, slug)
         steps.append({"kind": "obs", "tool": slug, "text": str(obs)[:180]})
 
     if _looks_like_failure(obs):

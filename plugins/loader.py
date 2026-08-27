@@ -67,7 +67,36 @@ class PluginLoader:
         if not plugin:
             available = list(self._plugins.keys())
             return f"Plugin '{name}' inconnu. Disponibles: {available}"
-        return plugin.safe_run(**params)
+        return plugin.safe_run(**self._params_acceptes(plugin, params))
+
+    @staticmethod
+    def _params_acceptes(plugin, params: dict) -> dict:
+        """Ne transmet que les paramètres que l'outil sait recevoir.
+
+        ⚠️ Le modèle improvise volontiers un paramètre en plus — « region », « lang »,
+        « country ». Python levait alors « run() got an unexpected keyword argument
+        'region' », l'outil échouait TROIS fois de suite, et l'utilisateur voyait Nova
+        s'acharner sur une recherche qui ne partait jamais. Un paramètre en trop n'est
+        pas une raison de ne rien faire : on l'ignore et on exécute.
+        Correction faite ICI, dans l'appelant : chaque outil en bénéficie, y compris
+        ceux qui n'existent pas encore.
+        """
+        import inspect
+        params = dict(params or {})
+        try:
+            sig = inspect.signature(plugin.run)
+        except (TypeError, ValueError):
+            return params
+        # Un outil qui accepte **kwargs prend tout : rien à filtrer.
+        if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+            return params
+        connus = {n for n, p in sig.parameters.items()
+                  if n != "self" and p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                                                inspect.Parameter.KEYWORD_ONLY)}
+        ignores = [k for k in params if k not in connus]
+        if ignores:
+            logger.info(f"[plugins] {plugin.name} : paramètre(s) ignoré(s) — {', '.join(ignores)}")
+        return {k: v for k, v in params.items() if k in connus}
 
     def list_all(self) -> dict[str, str]:
         return {name: p.description for name, p in self._plugins.items()}

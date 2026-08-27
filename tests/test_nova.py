@@ -1744,7 +1744,7 @@ def test_enchainement_fichier():
     # 33c. L'enchaînement complet : chercher puis ouvrir le BON document
     appels = []
 
-    def faux_tool(action, args=None, **kw):
+    def faux_tool(action, args=None, slug='', **kw):
         appels.append((action, dict(args or {})))
         if "SEARCH" in action.upper() or "LIST" in action.upper():
             return "✅ résultat :\n" + json.dumps({"data": {"files": FICHIERS}})
@@ -1785,7 +1785,7 @@ def test_enchainement_fichier():
         # La recherche par mots-clés est muette → on redemande la liste complète
         appels.clear()
 
-        def recherche_muette(action, args=None, **kw):
+        def recherche_muette(action, args=None, slug='', **kw):
             appels.append((action, dict(args or {})))
             if (args or {}).get("query"):          # le moteur de l'app ne trouve rien
                 return "✅ résultat :\n" + json.dumps({"data": {"files": []}})
@@ -1802,7 +1802,7 @@ def test_enchainement_fichier():
         check("repli réussi : aucun refus", refus, "")
 
         # Aucun document trouvé : on le dit, on n'invente pas, on N'EXÉCUTE PAS
-        A._tool = lambda a, args=None, **k: "✅ résultat :\n" + json.dumps({"data": {"files": []}})
+        A._tool = lambda a, args=None, slug='', **k: "✅ résultat :\n" + json.dumps({"data": {"files": []}})
         args, etapes, refus = A._resoudre_identifiants(
             "googlesheets", "GOOGLESHEETS_BATCH_GET",
             {"spreadsheet_id": "<id>"}, "ouvre Inexistant", ACTIONS)
@@ -1813,7 +1813,7 @@ def test_enchainement_fichier():
         check_true("le bouchon n'est jamais exécuté", A._est_bouchon(args["spreadsheet_id"]))
 
         # Rien trouvé mais des documents existent : on les propose
-        A._tool = lambda a, args=None, **k: "✅ résultat :\n" + json.dumps({"data": {"files": FICHIERS}})
+        A._tool = lambda a, args=None, slug='', **k: "✅ résultat :\n" + json.dumps({"data": {"files": FICHIERS}})
         args, etapes, refus = A._resoudre_identifiants(
             "googlesheets", "GOOGLESHEETS_BATCH_GET",
             {"spreadsheet_id": "YOUR_SPREADSHEET_ID"}, "ouvre le fichier zzzzzzzz", ACTIONS)
@@ -1852,7 +1852,7 @@ def test_enchainement_fichier():
         check(f"emplacement ? {act} {champs}", A._est_emplacement(act, champs), attendu)
 
     # Bout en bout : créer sans nommer de parent doit ABOUTIR, pas refuser
-    A._tool = lambda a, args=None, **k: "✅ résultat :\n" + json.dumps({"data": {"files": FICHIERS}})
+    A._tool = lambda a, args=None, slug='', **k: "✅ résultat :\n" + json.dumps({"data": {"files": FICHIERS}})
     args, etapes, refus = A._resoudre_identifiants(
         "notion", "NOTION_CREATE_NOTION_PAGE",
         {"parent_page_id": "YOUR_PAGE_ID", "title": "agent ia"},
@@ -2047,7 +2047,7 @@ def test_garde_fou():
     executions = []
     vrais = (A._tool, A._resolve_app_action, A._complex_app_flow)
     try:
-        A._tool = lambda act, args=None, **k: executions.append(act) or "✅ ok"
+        A._tool = lambda act, args=None, slug='', **k: executions.append(act) or "✅ ok"
         A._complex_app_flow = lambda m: None
         A._resolve_app_action = lambda m: ("GMAIL_SEND_EMAIL",
                                            {"to": "papa@exemple.fr", "subject": "PEA"})
@@ -2140,6 +2140,75 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_derniers_defauts_audit():
+    """Les quatre derniers défauts confirmés, plus un trouvé dans une trace réelle."""
+    from plugins.builtin.composio_tool import _fmt
+    from plugins.loader import PluginLoader
+
+    # 52a. ⚠️ Un paramètre INVENTÉ par le modèle faisait échouer l'outil trois fois.
+    # « run() got an unexpected keyword argument 'region' » : Nova s'acharnait sur une
+    # recherche qui ne partait jamais. Corrigé dans l'APPELANT, donc valable pour tous
+    # les outils — y compris ceux qui n'existent pas encore.
+    loader = PluginLoader()
+    plug = loader.get("search_web")
+    if plug:
+        garde = loader._params_acceptes(plug, {"query": "x", "region": "fr-fr",
+                                               "lang": "fr", "max_results": 3})
+        check("le paramètre inventé est retiré", "region" in garde, False)
+        check("…et « lang » aussi", "lang" in garde, False)
+        check_true("les paramètres légitimes restent", "query" in garde)
+        check_true("…tous", "max_results" in garde)
+        r = loader.run("search_web", {"query": "test", "region": "fr-fr"})
+        check("l'outil ne plante plus", r.startswith("[Plugin"), False)
+    composio = loader.get("connected_app")
+    if composio:
+        # Un outil qui accepte **kwargs doit tout recevoir
+        tout = loader._params_acceptes(composio, {"command": "X", "truc": "machin"})
+        check_true("un outil ouvert reçoit tout", "truc" in tout)
+
+    # 52b. ⚠️ Un 403 venu de l'API de l'APP accusait la clé Composio et donnait quatre
+    # étapes de configuration inutiles — alors que la clé est bonne.
+    obs_app = _fmt("GOOGLEDRIVE_GET_FILE", {"successful": False, "error": {
+        "code": 403, "message": "The caller does not have permission",
+        "status": "PERMISSION_DENIED"}})
+    msg = A._honest_no_access("GOOGLEDRIVE_GET_FILE", obs_app)
+    check("un 403 de l'app n'accuse pas la clé Composio", "tool_execution" in msg, False)
+    # …mais un vrai refus de Composio doit rester expliqué
+    msg2 = A._honest_no_access("X_GET", '{"error":"insufficient_permission: tool_execution"}')
+    check_true("un refus de Composio reste expliqué", "tool_execution" in msg2)
+
+    # 52c. ⚠️ Le slug résolu doit circuler jusqu'à l'exécution : sinon _tool le redevine
+    # depuis le préfixe de l'action, et l'identité Composio se perd dès que ce préfixe
+    # ne correspond pas à un slug connu (google_maps vs googlemaps).
+    import inspect
+    for fn in (A._generic_app_flow, A._resoudre_identifiants, A._direct_app_prepare_brut):
+        src = inspect.getsource(fn)
+        appels = [l for l in src.splitlines() if "_tool(" in l and "def " not in l]
+        nus = [l.strip() for l in appels
+               if "_tool(action, args)" in l or "_tool(recherche, {})" in l]
+        check(f"{fn.__name__} transmet le slug", nus, [])
+
+    # 52d. ⚠️ Une liste vide signifiait DEUX choses opposées : « aucune app connectée »
+    # et « Composio ne répond pas ». Nova affirmait qu'une app connectée ne l'était pas.
+    vrai = A._connected_accounts
+    try:
+        A._connected_accounts = lambda: []
+        A._marque_comptes_ko("ConnectionError: timeout")
+        check_true("une panne ne bloque pas l'app", A._est_connectee("linear"))
+        rep = A._refus_app_non_connectee("linear")
+        check_true("…et on ne l'accuse pas d'être déconnectée", "n'arrive pas à joindre" in rep)
+        check("…on n'affirme surtout pas le contraire", "n'est pas connecté" in rep, False)
+        # Une VRAIE absence reste annoncée clairement
+        A._COMPTES_KO.update(quand=0.0, raison="")
+        A._connected_accounts = lambda: [("gmail", "u", "ACTIVE")]
+        check("une vraie absence est détectée", A._est_connectee("linear"), False)
+        check_true("…et dite clairement",
+                   "n'est pas connecté" in A._refus_app_non_connectee("linear"))
+    finally:
+        A._connected_accounts = vrai
+        A._COMPTES_KO.update(quand=0.0, raison="")
+
+
 def test_contenu_jamais_confondu_avec_le_verdict():
     """Cinq défauts confirmés par l'audit, tous de la même famille : on jugeait le
     CONTENU de la réponse au lieu de son enveloppe, ou on le tronquait de travers."""
@@ -2266,7 +2335,7 @@ def test_echec_composio_jamais_pris_pour_un_succes():
     appels = []
     vrai_tool = A._tool
     try:
-        A._tool = lambda a, args=None, **k: (appels.append(a) or "✅ ok")
+        A._tool = lambda a, args=None, slug='', **k: (appels.append(a) or "✅ ok")
         for accord in ("ok", "d'accord", "oui", "vas-y"):
             appels.clear(); A._ATTENTE.clear()
             A._ATTENTE[A._PROFILE_ID] = {
@@ -2301,7 +2370,7 @@ def test_autocorrection_garde_identifiant():
     vrais = (A._tool, A._composio_list_actions, A._connected_accounts, A._build_args,
              A._llm_json, A._known_args, A._format_app_result, A._document_connu)
     try:
-        def faux_tool(a, args=None, **k):
+        def faux_tool(a, args=None, slug='', **k):
             appels.append((a, dict(args or {})))
             if "SEARCH" in a.upper():
                 return "✅ résultat :\n" + json.dumps({"data": {"files": FICH}})
@@ -2337,7 +2406,7 @@ def test_autocorrection_garde_identifiant():
     import time as _t
     vrai_tool = A._tool
     try:
-        A._tool = lambda a, args=None, **k: "✅ fait"
+        A._tool = lambda a, args=None, slug='', **k: "✅ fait"
         A._ATTENTE[A._PROFILE_ID] = {
             "slug": "googlesheets", "action": "GOOGLESHEETS_DELETE_SHEET",
             "args": {"spreadsheet_id": "YOUR_SPREADSHEET_ID", "sheet_id": 0},
@@ -2404,7 +2473,7 @@ def test_identifiants_par_type():
     vrais = (A._tool, A._document_connu)
     try:
         A._document_connu = lambda app, quoi: ("", "")
-        A._tool = lambda a, args=None, **k: (
+        A._tool = lambda a, args=None, slug='', **k: (
             "✅ résultat :\n" + json.dumps({"data": {"files": FICH}})
             if ("SEARCH" in a.upper() or "FIND" in a.upper()) else "✅ ok")
 
@@ -2444,7 +2513,7 @@ def test_identifiants_par_type():
         check("une chaîne reste un document",
               A._est_numerique("spreadsheet_id", "YOUR_SPREADSHEET_ID", SPEC), False)
         S = [{"id": "1PEAabcdefGHIJKLmnop1234", "name": "Suivi_PEA_Lohan"}]
-        A._tool = lambda a, args=None, **k: (
+        A._tool = lambda a, args=None, slug='', **k: (
             "✅ résultat :\n" + json.dumps({"data": {"files": S}})
             if "SEARCH" in a.upper() else "✅ ok")
         args, _et, _r = A._resoudre_identifiants(
@@ -2676,7 +2745,7 @@ def test_app_en_panne_repond_quand_meme():
     vrais = (A._tool, A._composio_list_actions, A._connected_accounts,
              A._build_args, A._llm_json, A._known_args)
     try:
-        A._tool = lambda a, args=None, **k: '❌ Action échouée : {"http_error": "404"}'
+        A._tool = lambda a, args=None, slug='', **k: '❌ Action échouée : {"http_error": "404"}'
         A._composio_list_actions = lambda s: [{"name": "GOOGLE_MAPS_GET_DIRECTION",
                                                "desc": "", "required": []}]
         A._connected_accounts = lambda: [("googlemaps", "u", "ACTIVE")]
@@ -2970,7 +3039,7 @@ def test_apps_robustesse():
                 {"id": "2abcdefghijABCDEFGHIJ1234567890xyz", "name": "Journal"}]
     vrai_tool = A._tool
     try:
-        A._tool = lambda a, args=None, **k: (
+        A._tool = lambda a, args=None, slug='', **k: (
             "✅ résultat :\n" + json.dumps({"data": {"files": FICHIERS}})
             if "SEARCH" in a.upper() else "✅ ok")
 
@@ -3120,7 +3189,7 @@ def test_competences():
             return {"arguments": {"design_type": "doc", "title": "Affiche"}}   # la faute
         return {"action": "CANVA_CREATE_DESIGN", "arguments": {}}
 
-    def faux_tool(action, args=None, **kw):
+    def faux_tool(action, args=None, slug='', **kw):
         APPELS.append(dict(args or {}))
         if isinstance((args or {}).get("design_type"), str):
             return ('❌ Action échouée : {"message": "Invalid parameter: '
@@ -3318,7 +3387,7 @@ def test_memoire_des_documents():
                {"name": "GOOGLESHEETS_SEARCH_SPREADSHEETS", "desc": ""}]
     mort = {"on": False}
 
-    def faux_tool(action, args=None, **kw):
+    def faux_tool(action, args=None, slug='', **kw):
         APPELS.append(action)
         if "SEARCH" in action.upper():
             return "✅ résultat :\n" + json.dumps({"data": {"files": FICHIERS}})
@@ -3433,7 +3502,7 @@ def test_memoire_des_donnees():
         A._composio_list_actions = lambda s: [
             {"name": "GOOGLESHEETS_BATCH_GET", "desc": ""},
             {"name": "GOOGLESHEETS_SEARCH_SPREADSHEETS", "desc": ""}]
-        A._tool = lambda a, args=None, **k: (
+        A._tool = lambda a, args=None, slug='', **k: (
             "✅ résultat :\n" + json.dumps({"data": {"files": [
                 {"id": "11qGW0rhYzR4XWab0UKTLDVUU1S2_Mizn0eToOOZRph8",
                  "name": "Suivi_PEA_Lohan_Pere"}]}})
@@ -3701,7 +3770,8 @@ if __name__ == "__main__":
                test_garde_fou_irreversible_complet, test_identifiants_par_type,
                test_sources_visibles, test_autocorrection_garde_identifiant,
                test_echec_composio_jamais_pris_pour_un_succes,
-               test_contenu_jamais_confondu_avec_le_verdict):
+               test_contenu_jamais_confondu_avec_le_verdict,
+               test_derniers_defauts_audit):
         try:
             fn()
         except Exception as e:
