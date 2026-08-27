@@ -222,6 +222,32 @@ _CHAMPS_ESSENTIELS = ("id", "name", "title", "spreadsheetId", "spreadsheetTitle"
                       "summary", "subject", "email", "status", "url", "start", "end")
 
 
+def _raccourci(element, limite: int):
+    """Raccourcit UN enregistrement trop gros, sans le faire disparaître.
+
+    Mieux vaut la moitié d'un tableau que rien du tout : on coupe les listes internes,
+    et on le dit.
+    """
+    if not isinstance(element, dict):
+        if isinstance(element, list):
+            garde = list(element)
+            while len(garde) > 1 and len(json.dumps(garde, ensure_ascii=False)) > limite:
+                garde.pop()
+            return garde
+        return element
+    court = dict(element)
+    for k, v in list(court.items()):
+        if isinstance(v, list) and len(v) > 1:
+            garde = list(v)
+            while len(garde) > 1 and len(json.dumps({**court, k: garde},
+                                                    ensure_ascii=False)) > limite:
+                garde.pop()
+            if len(garde) < len(v):
+                court[k] = garde
+                court["_note"] = f"{len(v) - len(garde)} ligne(s) non affichée(s)"
+    return court
+
+
 def _essentiel(element):
     """Ne garde d'un enregistrement que de quoi le reconnaître et le rouvrir."""
     if not isinstance(element, dict):
@@ -259,8 +285,13 @@ def _reduit(payload, limite: int = _MAX_RESULTAT):
             # de place qu'à une réponse ordinaire — sinon un Drive un peu fourni faisait
             # disparaître le fichier cherché passé la 20e position.
             plafond = _MAX_LISTE if garde != payload[cle] else limite
-            while garde and taille({**payload, cle: garde}) > plafond:
+            # ⚠️ On garde TOUJOURS au moins un élément. Une liste d'un seul gros
+            # enregistrement (60 lignes de tableur dans un seul valueRanges) tombait à
+            # [] : le contenu réel disparaissait, et la réponse restait un « ✅ ».
+            while len(garde) > 1 and taille({**payload, cle: garde}) > plafond:
                 garde.pop()
+            if garde and taille({**payload, cle: garde}) > plafond:
+                garde = [_raccourci(garde[0], plafond)]
             reduit = {**payload, cle: garde}
             omis = len(payload[cle]) - len(garde)
             if omis > 0:
@@ -276,6 +307,16 @@ def _reduit(payload, limite: int = _MAX_RESULTAT):
 
 def _fmt(action: str, data) -> str:
     """Rend la réponse Composio lisible pour le LLM, SANS jamais casser le JSON."""
+    # ⚠️ Composio enveloppe sa réponse : {"successful": false, "error": "...", "data": {}}.
+    # On prenait directement `data` et on jetait l'enveloppe : un ECHEC ressortait en
+    # « ✅ résultat : {} ». Nova annoncait « c'est ajoute » alors que rien n'avait ete
+    # ecrit, memorisait le document, et enregistrait la forme d'appel comme une recette
+    # qui marche. Le mensonge le plus couteux du lot.
+    if isinstance(data, dict):
+        echec = data.get("successful") is False or data.get("error")
+        if echec:
+            raison = data.get("error") or data.get("message") or "échec non détaillé"
+            return f'❌ [{action}] échec : {{"error": {json.dumps(str(raison)[:400])}}}'
     try:
         payload = data.get("data", data) if isinstance(data, dict) else data
         txt = json.dumps(_reduit(payload), ensure_ascii=False, indent=1)

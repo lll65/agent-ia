@@ -687,34 +687,63 @@ def _resolve_app_action(message: str):
     return None, None
 
 
+# Mots qui signalent un échec — cherchés UNIQUEMENT dans les champs d'enveloppe.
+_MOTS_ECHEC = ("not found", "introuvable", "no such", "does not exist", "denied",
+               "failed", "invalid", "unable to", "cannot ", "unauthorized", "forbidden",
+               "expired", "quota", "rate limit", "insufficient")
+
+
+def _enveloppe_en_echec(brut: str) -> bool:
+    """L'APPEL a-t-il échoué ? On regarde l'enveloppe, pas son contenu."""
+    import re as _re
+    m = _re.search(r"\{.*\}", brut or "", _re.S)
+    if not m:
+        return False
+    try:
+        data = json.loads(m.group(0))
+    except Exception:
+        # JSON illisible : seuls les marqueurs de HAUT niveau comptent.
+        return bool(_re.search(r'"(http_error|status_code)"\s*:\s*"?[45]\d\d',
+                               brut or "", _re.I))
+    if not isinstance(data, dict):
+        return False
+
+    def _echec(niveau: dict) -> bool:
+        if not isinstance(niveau, dict):
+            return False
+        if niveau.get("successful") is False or niveau.get("success") is False:
+            return True
+        for cle in ("error", "errors", "http_error"):
+            if niveau.get(cle) not in (None, "", [], {}, False):
+                return True
+        for cle in ("status_code", "status", "code"):
+            try:
+                if 400 <= int(niveau.get(cle)) < 600:
+                    return True
+            except (TypeError, ValueError):
+                pass
+        for cle in ("message", "detail", "reason"):
+            v = niveau.get(cle)
+            if isinstance(v, str) and any(w in v.lower() for w in _MOTS_ECHEC):
+                return True
+        return False
+
+    # Composio emboîte parfois une seconde enveloppe sous « data ».
+    return _echec(data) or _echec(data.get("data") if isinstance(data.get("data"), dict) else {})
+
+
 def _looks_like_failure(obs: str) -> bool:
     """True si l'observation Composio est un échec (et surtout PAS des données réelles)."""
     o = (obs or "").strip()
     if not o:
         return True
     low = o.lower()
-    if '"successful": false' in low or '"successful":false' in low:
-        return True
-    # ⚠️ Composio renvoie parfois HTTP 200 avec l'erreur DANS le payload
-    # (ex. {"http_error": "401 Client Error: Unauthorized for url: https://api.canva.com/..."}).
-    # Il faut donc inspecter le contenu même quand le plugin a préfixé un ✅.
-    embedded = ("http_error", '"error"', "client error", "unauthorized", "forbidden",
-                "invalid_grant", "token expired", "insufficient")
-    if any(b in low for b in embedded):
-        return True
-    # ⚠️ Un CODE DE STATUT d'échec dans le corps, quelle que soit son écriture.
-    # L'ancienne version cherchait la chaîne exacte « "status": 4 » : une réponse
-    # {"status_code": 404, "message": "Requested entity was not found."} y échappait,
-    # le ✅ du plugin la faisait passer pour un succès, et Nova mettait l'ERREUR en
-    # tableau comme si c'était le résultat demandé.
-    import re as _re
-    if _re.search(r'"status(?:_code)?"\s*:\s*[45]\d\d', low):
-        return True
-    # Message d'échec explicite renvoyé DANS la charge utile (Google Sheets répond
-    # « Sheet 'PEA' not found. Available sheets are [...] » avec un statut vide).
-    if _re.search(r'"(message|detail|reason)"\s*:\s*"[^"]*'
-                  r'(not found|introuvable|no such|does not exist|denied|failed|'
-                  r'invalid|unable to|cannot )', low):
+    # ⚠️ On juge l'ENVELOPPE, jamais ce qu'elle transporte. Chercher « invalid » ou
+    # « not found » n'importe où dans le JSON confondait le contenu avec le verdict :
+    # un commit GitHub intitulé « fix: invalid config, cannot open file » faisait jeter
+    # TOUTE la liste des commits et servir un message d'erreur inventé. Même piège pour
+    # un mail « Erreur 404 sur mon site » ou un fichier « Rapport not found.pdf ».
+    if _enveloppe_en_echec(o):
         return True
     if o.startswith("✅"):
         return False  # succès explicite du plugin (même si liste vide)
@@ -726,14 +755,23 @@ def _looks_like_failure(obs: str) -> bool:
 
 
 def _is_param_error(obs: str) -> bool:
-    """Erreur due aux PARAMÈTRES envoyés (400) — donc corrigeable automatiquement,
-    par opposition à un problème d'accès (401/403/404)."""
-    low = (obs or "").lower()
-    if "401" in low or "403" in low or "no connected account" in low:
+    """Erreur due aux PARAMÈTRES envoyés (400) — donc corrigeable automatiquement.
+
+    ⚠️ Jugée sur l'ENVELOPPE, jamais sur le contenu. Chercher « invalid » dans tout le
+    corps faisait relancer une action d'ÉCRITURE dès que le TEXTE DE L'UTILISATEUR
+    contenait ce mot : « crée une issue Linear : Fix invalid_grant sur le refresh
+    token » créait trois issues identiques, puis annonçait un échec.
+    """
+    if not _enveloppe_en_echec(obs):
         return False
-    return ("400" in low or "invalid_field" in low or "bad request" in low
-            or "must be defined" in low or "is required" in low or "missing" in low
-            or "invalid" in low or "validation" in low
+    # On ne regarde que le message d'erreur de l'enveloppe, pas les données.
+    msg = _erreur_lisible_app(obs).lower()
+    if any(k in msg for k in ("401", "403", "unauthorized", "forbidden",
+                              "no connected account", "permission")):
+        return False
+    return ("400" in msg or "invalid" in msg or "bad request" in msg
+            or "must be" in msg or "is required" in msg or "missing" in msg
+            or "validation" in msg or "expected" in msg or "type" in msg
             # L'API nomme la bonne valeur : c'est corrigeable, et sans deviner.
             or bool(_suggestions_api(obs)))
 
@@ -904,8 +942,13 @@ def _honest_no_access(action: str, obs: str) -> str:
             f"_(Détail technique : {dbg})_"
         )
     # Cause : clé VALIDE mais sans permission d'exécution (403 tool_execution)
-    if ("tool_execution" in low or "toolexecution" in low.replace("_", "")
-            or "insufficientpermission" in low.replace("_", "") or "permission" in low):
+    # ⚠️ UNIQUEMENT quand c'est COMPOSIO qui refuse, en citant sa propre permission.
+    # Un 403 venu de l'API de l'app (« The caller does not have permission » de Google)
+    # faisait accuser la clé Composio et donnait quatre étapes de configuration
+    # inutiles — alors que la clé est parfaitement bonne et que c'est l'autorisation
+    # OAuth de l'app qui manque.
+    _sans_ = low.replace("_", "")
+    if ("toolexecution" in _sans_ or "insufficientpermission" in _sans_) and "api." not in low:
         return (
             f"🔑 Je n'ai pas pu accéder à {app} — **ta clé Composio est valide mais n'a pas le droit d'exécuter des outils**, donc je ne t'invente rien.\n\n"
             "**Ce qui manque :** la permission **`tool_execution`** (write) sur ta clé `ak_`. "
@@ -1015,7 +1058,11 @@ def _format_app_messages(message: str, action: str, obs: str, is_write: bool = F
             "date, heure, lieu ou personne. Si la liste est vide, dis simplement qu'il n'y a rien "
             "de prévu. Termine par au plus 2 suggestions utiles."
         )
-    user = f"Demande de l'utilisateur : {message}\n\nDONNÉES RÉELLES [{action}] :\n{obs[:3500]}"
+    # ⚠️ PAS de nouvelle troncature ici : elle recoupait au milieu d'un enregistrement le
+    # JSON que _reduit venait justement de rendre valide — le défaut « aucun document
+    # trouvé » réintroduit une couche plus haut. La taille est déjà bornée en amont, par
+    # le seul endroit qui sache couper sans casser la structure.
+    user = f"Demande de l'utilisateur : {message}\n\nDONNÉES RÉELLES [{action}] :\n{obs}"
     # ⚠️ Le modèle est INCAPABLE de dire quel jour tombe une date : il a produit un tableau
     # où le 14/08/2026 était « lundi » (c'est un vendredi) et pour la semaine du 14 au 20
     # alors qu'on était le 21. Ce que le code sait calculer, on ne le lui fait jamais deviner.
@@ -1233,7 +1280,7 @@ def _direct_app_prepare_brut(message: str):
         return {"steps": [{"kind": "action", "tool": slug, "label": f"{action} (en attente)"}],
                 "done_answer": _demande_confirmation(_PROFILE_ID, slug, action, args)}
     # ⚠️ Passe par _tool() : identité Composio résolue + activité enregistrée (constellation).
-    obs = _tool(action, args)
+    obs = _tool(action, args, slug)
     steps = [
         {"kind": "action", "tool": slug, "label": action},
         {"kind": "obs", "tool": slug, "text": str(obs)[:180]},
@@ -1294,8 +1341,10 @@ def _direct_app_run_brut(message: str):
             return {"steps": g["steps"], "answer": g["done_answer"], "ok": True,
                     "echec_app": g.get("echec_app", False)}
         return None
-    obs = _tool(action, args)   # identité résolue + activité enregistrée
+    # Le slug est déduit AVANT l'appel : sinon _tool doit le redeviner, et l'identité
+    # Composio se perd dès que le préfixe ne correspond pas à un slug connu.
     slug = (action or "").split("_", 1)[0].lower()
+    obs = _tool(action, args, slug)   # identité résolue + activité enregistrée
     steps = [
         {"kind": "action", "tool": slug, "label": action},
         {"kind": "obs", "tool": slug, "text": str(obs)[:180]},
@@ -1361,9 +1410,29 @@ def invalidate_caches(slug: str = "") -> None:
     _ACCOUNTS_CACHE["ts"] = 0.0
 
 
+# ⚠️ Une liste VIDE signifiait DEUX choses opposées : « aucune app connectée » et
+# « Composio ne répond pas ». Nova affirmait donc noir sur blanc qu'une app connectée ne
+# l'était pas — puis se contredisait au message suivant. On note la panne à part.
+_COMPTES_KO = {"quand": 0.0, "raison": ""}
+
+
+def _comptes_injoignables() -> str:
+    """La dernière lecture des comptes a-t-elle ÉCHOUÉ (et non « rien trouvé ») ?"""
+    import time as _t
+    if _COMPTES_KO["quand"] and _t.monotonic() - _COMPTES_KO["quand"] < 60:
+        return _COMPTES_KO["raison"]
+    return ""
+
+
+def _marque_comptes_ko(raison: str) -> None:
+    import time as _t
+    _COMPTES_KO.update(quand=_t.monotonic(), raison=raison[:200])
+
+
 def _connected_accounts():
     """Comptes réellement connectés sur Composio : [(toolkit_slug, user_id, status)]."""
     import requests
+    import time as _t
     ck = (getattr(config, "COMPOSIO_API_KEY", "") or "").strip()
     if not ck:
         return []
@@ -1371,6 +1440,7 @@ def _connected_accounts():
         r = requests.get("https://backend.composio.dev/api/v3/connected_accounts",
                          headers={"x-api-key": ck}, params={"limit": 100}, timeout=20)
         if r.status_code != 200:
+            _marque_comptes_ko(f"Composio a répondu {r.status_code}")
             return []
         data = r.json()
         items = data.get("items", data if isinstance(data, list) else []) or []
@@ -1380,8 +1450,10 @@ def _connected_accounts():
             slug = (tk.get("slug") if isinstance(tk, dict) else None) or it.get("toolkit_slug") or ""
             uid = it.get("user_id") or it.get("entity_id") or ""
             out.append((str(slug).lower(), str(uid), str(it.get("status", ""))))
+        _COMPTES_KO.update(quand=0.0, raison="")     # lecture réussie : on lève le doute
         return out
-    except Exception:
+    except Exception as e:
+        _marque_comptes_ko(f"{type(e).__name__}: {str(e)[:120]}")
         return []
 
 
@@ -2298,13 +2370,13 @@ def _resoudre_identifiants(slug: str, action: str, args: dict, message: str, act
             args[k] = connu_id
         return args, etapes, ""
     etapes.append({"kind": "action", "tool": slug, "label": f"{recherche} · « {quoi} »"})
-    brut = _tool(recherche, {"query": quoi} if "SEARCH" in recherche.upper() else {})
+    brut = _tool(recherche, {"query": quoi} if "SEARCH" in recherche.upper() else {}, slug)
     candidats = _identifiants_trouves(str(brut))
     # ⚠️ La recherche par mots-clés peut ne rien rendre (paramètre inattendu, nom
     # approximatif). On redemande alors la liste COMPLÈTE et on compare nous-mêmes :
     # c'est bien plus fiable que de dépendre du moteur de recherche de l'app.
     if not candidats:
-        brut = _tool(recherche, {})
+        brut = _tool(recherche, {}, slug)
         candidats = _identifiants_trouves(str(brut))
         if candidats:
             etapes.append({"kind": "obs", "tool": slug,
@@ -2548,7 +2620,11 @@ def _composio_list_actions(slug: str):
                 break
         except Exception:
             continue
-    _cache_put(_TOOLS_CACHE, slug, out)
+    # ⚠️ Ne mettre en cache QUE les succès. Une panne réseau passagère rendait [], gardé
+    # 10 minutes : pendant ce temps, quoi que fasse l'utilisateur — réessayer, reconnecter
+    # l'app, corriger sa clé — il recevait le même message l'accusant à tort.
+    if out:
+        _cache_put(_TOOLS_CACHE, slug, out)
     return out
 
 
@@ -2886,12 +2962,24 @@ def _est_connectee(slug: str) -> bool:
         connected = {_norm_slug(s) for s, _u, _st in _connected_accounts() if s}
     except Exception:            # Composio injoignable : on ne bloque pas à tort
         return True
+    # ⚠️ Une liste vide APRÈS une panne ne veut pas dire « rien de connecté ». Conclure
+    # l'inverse revenait à affirmer qu'une app connectée ne l'était pas.
+    if not connected and _comptes_injoignables():
+        return True
     return not connected or _norm_slug(slug) in connected
 
 
 def _refus_app_non_connectee(slug: str) -> str:
     """Le dire simplement, et proposer ce qui EST connecté plutôt qu'une erreur d'API."""
     nice = _APP_FR.get(slug, slug.capitalize())
+    panne = _comptes_injoignables()
+    if panne:
+        # On ne l'accuse pas d'un problème de connexion quand c'est NOUS qui n'avons
+        # pas pu vérifier. Dire « je n'ai pas pu savoir » est la seule réponse honnête.
+        return (f"⏳ Je n'arrive pas à joindre Composio pour vérifier l'accès à "
+                f"**{nice}** — je ne peux donc pas te dire si c'est connecté ou non, et "
+                f"je préfère ne rien affirmer.\n\nRéessaie dans un instant.\n\n"
+                f"_Détail technique : {panne}_")
     # Le nom du toolkit chez Composio, pas la tournure familière : on écrit
     # « Toolkits → Googledrive », jamais « Toolkits → ton Drive ».
     catalogue_nom = slug.replace("_", " ").capitalize()
@@ -2995,7 +3083,7 @@ def _generic_app_flow(message: str, slug: str):
         steps[0]["label"] = f"{action} (en attente)"
         return {"steps": steps,
                 "done_answer": _demande_confirmation(_PROFILE_ID, slug, action, args)}
-    obs = _tool(action, args)
+    obs = _tool(action, args, slug)
     steps.append({"kind": "obs", "tool": slug, "text": str(obs)[:180]})
 
     # ── UN RACCOURCI PÉRIMÉ NE DOIT JAMAIS COINCER ───────────────────────────
@@ -3015,13 +3103,19 @@ def _generic_app_flow(message: str, slug: str):
             if refus2:
                 return {"steps": steps, "done_answer": refus2}
             args = args2
-            obs = _tool(action, args)
+            obs = _tool(action, args, slug)
             steps.append({"kind": "obs", "tool": slug, "text": str(obs)[:180]})
 
     # ── AUTO-CORRECTION : on renvoie l'erreur de l'API au constructeur d'arguments,
     # qui la lit et corrige (jusqu'à 2 tentatives).
     tries = 0
     premiere_erreur = str(obs) if (_looks_like_failure(obs) and _is_param_error(obs)) else ""
+    # ⚠️ La relance ne doit partir QUE sur une erreur de PARAMÈTRE avérée (4xx de
+    # l'enveloppe) : dans ce cas l'app n'a rien créé, reprendre est sûr. Le danger était
+    # ailleurs — le mot « invalid » dans le CONTENU de l'utilisateur (« crée une issue :
+    # Fix invalid_grant… ») déclenchait la relance d'une écriture déjà partie, d'où trois
+    # pages Notion identiques. C'est _is_param_error qui jugeait le contenu ; c'est lui
+    # qui est corrigé, plutôt que d'interdire toute correction d'écriture.
     while _looks_like_failure(obs) and _is_param_error(obs) and tries < 2:
         tries += 1
         new_args = _build_args(action, spec, message, ctx, error=str(obs))
@@ -3046,7 +3140,7 @@ def _generic_app_flow(message: str, slug: str):
         if refus_corr:
             return {"steps": steps, "done_answer": refus_corr}
         steps.append({"kind": "action", "tool": slug, "label": f"{action} (correction {tries})"})
-        obs = _tool(action, args)
+        obs = _tool(action, args, slug)
         steps.append({"kind": "obs", "tool": slug, "text": str(obs)[:180]})
 
     if _looks_like_failure(obs):
@@ -3399,7 +3493,14 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
                 yield sse({"type": "step", "kind": "route", "tool": "analyse", "text": _b})
                 await asyncio.sleep(0.3)      # le temps de les lire défiler
             # 1) Chitchat / info personnelle → streamé directement (aucun outil)
-            if _is_smalltalk(message):
+            # ⚠️ SAUF si une action attend ton accord : « ok » et « d'accord » sont
+            # classés bavardage. Ton accord partait donc en discussion, l'action n'était
+            # PAS exécutée (tu croyais ton mail parti), et elle restait armée cinq
+            # minutes — pour se déclencher plus tard, silencieusement, sur une phrase
+            # sans rapport. Deux fautes symétriques, et la seconde est la pire.
+            if _action_en_attente(_PROFILE_ID) and _is_smalltalk(message):
+                pass                      # on laisse le chemin direct trancher
+            elif _is_smalltalk(message):
                 async for tok in _stream_llm(_smalltalk_messages(message), 0.6, niveau="rapide"):
                     yield sse({"type": "token", "t": tok})
                 yield sse({"type": "answer", "text": yield_acc[0], "final": True})
