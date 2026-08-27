@@ -2140,6 +2140,62 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_echec_composio_jamais_pris_pour_un_succes():
+    """Deux défauts CRITIQUES confirmés par l'audit."""
+    import time as _t
+    from plugins.builtin.composio_tool import _fmt
+
+    # 50a. ⚠️ Composio enveloppe sa réponse : {"successful": false, "error": "...",
+    # "data": {}}. On prenait directement `data` et on jetait l'enveloppe : un ÉCHEC
+    # ressortait en « ✅ résultat : {} ». Nova annonçait « c'est ajouté » alors que rien
+    # n'avait été écrit, mémorisait le document, et enregistrait la forme d'appel comme
+    # une recette qui marche. Le mensonge le plus coûteux du lot.
+    for rep in ({"successful": False, "error": "Insufficient permissions", "data": {}},
+                {"successful": False, "error": "Page not found"},
+                {"error": "quota exceeded"}):
+        sortie = _fmt("NOTION_CREATE_NOTION_PAGE", rep)
+        check_true(f"échec vu comme tel : {str(rep)[:40]}", A._looks_like_failure(sortie))
+        check_true("…et la raison est conservée",
+                   any(m in sortie for m in ("permission", "not found", "quota")))
+    # …et un vrai succès reste un succès
+    ok = _fmt("GOOGLESHEETS_BATCH_GET",
+              {"successful": True, "data": {"valueRanges": [["a", 1]]}})
+    check("un succès n'est pas pris pour un échec", A._looks_like_failure(ok), False)
+    check_true("…et les données sont là", "valueRanges" in ok)
+
+    # 50b. ⚠️ « ok » et « d'accord » sont classés BAVARDAGE. Ton accord partait donc en
+    # discussion, l'action n'était PAS exécutée (tu croyais ton mail parti), et elle
+    # restait armée cinq minutes — pour se déclencher plus tard, silencieusement.
+    check_true("« ok » est bien du bavardage en temps normal", A._is_smalltalk("ok"))
+    appels = []
+    vrai_tool = A._tool
+    try:
+        A._tool = lambda a, args=None, **k: (appels.append(a) or "✅ ok")
+        for accord in ("ok", "d'accord", "oui", "vas-y"):
+            appels.clear(); A._ATTENTE.clear()
+            A._ATTENTE[A._PROFILE_ID] = {
+                "slug": "gmail", "action": "GMAIL_SEND_EMAIL",
+                "args": {"to": "papa@exemple.fr"}, "t": _t.monotonic()}
+            A._direct_app_prepare_brut(accord)
+            check_true(f"« {accord} » exécute bien l'action en attente",
+                       any("SEND" in a for a in appels))
+            check_true(f"…et l'attente est vidée ({accord})",
+                       A._action_en_attente(A._PROFILE_ID) is None)
+        # …et une phrase SANS rapport ne doit surtout pas déclencher l'envoi
+        for autre in ("montre mon agenda", "bonjour", "oui je voudrais autre chose",
+                      "c'est quoi la météo"):
+            appels.clear(); A._ATTENTE.clear()
+            A._ATTENTE[A._PROFILE_ID] = {
+                "slug": "gmail", "action": "GMAIL_SEND_EMAIL",
+                "args": {"to": "papa@exemple.fr"}, "t": _t.monotonic()}
+            A._direct_app_prepare_brut(autre)
+            check(f"« {autre[:26]} » n'envoie rien",
+                  [a for a in appels if "SEND" in a], [])
+    finally:
+        A._tool = vrai_tool
+        A._ATTENTE.clear()
+
+
 def test_autocorrection_garde_identifiant():
     """Défaut confirmé par l'audit : l'auto-correction reconstruisait les arguments à
     zéro et JETAIT l'identifiant qu'on venait d'aller chercher. Mesuré : 2ᵉ appel avec
@@ -3547,7 +3603,8 @@ if __name__ == "__main__":
                test_app_en_panne_repond_quand_meme, test_jamais_d_ecriture_non_demandee,
                test_resultats_automatisations_remontent,
                test_garde_fou_irreversible_complet, test_identifiants_par_type,
-               test_sources_visibles, test_autocorrection_garde_identifiant):
+               test_sources_visibles, test_autocorrection_garde_identifiant,
+               test_echec_composio_jamais_pris_pour_un_succes):
         try:
             fn()
         except Exception as e:

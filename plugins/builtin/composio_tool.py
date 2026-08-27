@@ -276,6 +276,16 @@ def _reduit(payload, limite: int = _MAX_RESULTAT):
 
 def _fmt(action: str, data) -> str:
     """Rend la réponse Composio lisible pour le LLM, SANS jamais casser le JSON."""
+    # ⚠️ Composio enveloppe sa réponse : {"successful": false, "error": "...", "data": {}}.
+    # On prenait directement `data` et on jetait l'enveloppe : un ECHEC ressortait en
+    # « ✅ résultat : {} ». Nova annoncait « c'est ajoute » alors que rien n'avait ete
+    # ecrit, memorisait le document, et enregistrait la forme d'appel comme une recette
+    # qui marche. Le mensonge le plus couteux du lot.
+    if isinstance(data, dict):
+        echec = data.get("successful") is False or data.get("error")
+        if echec:
+            raison = data.get("error") or data.get("message") or "échec non détaillé"
+            return f'❌ [{action}] échec : {{"error": {json.dumps(str(raison)[:400])}}}'
     try:
         payload = data.get("data", data) if isinstance(data, dict) else data
         txt = json.dumps(_reduit(payload), ensure_ascii=False, indent=1)

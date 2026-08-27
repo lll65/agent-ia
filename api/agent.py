@@ -3399,7 +3399,14 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
                 yield sse({"type": "step", "kind": "route", "tool": "analyse", "text": _b})
                 await asyncio.sleep(0.3)      # le temps de les lire défiler
             # 1) Chitchat / info personnelle → streamé directement (aucun outil)
-            if _is_smalltalk(message):
+            # ⚠️ SAUF si une action attend ton accord : « ok » et « d'accord » sont
+            # classés bavardage. Ton accord partait donc en discussion, l'action n'était
+            # PAS exécutée (tu croyais ton mail parti), et elle restait armée cinq
+            # minutes — pour se déclencher plus tard, silencieusement, sur une phrase
+            # sans rapport. Deux fautes symétriques, et la seconde est la pire.
+            if _action_en_attente(_PROFILE_ID) and _is_smalltalk(message):
+                pass                      # on laisse le chemin direct trancher
+            elif _is_smalltalk(message):
                 async for tok in _stream_llm(_smalltalk_messages(message), 0.6, niveau="rapide"):
                     yield sse({"type": "token", "t": tok})
                 yield sse({"type": "answer", "text": yield_acc[0], "final": True})
