@@ -2140,6 +2140,77 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_autocorrection_garde_identifiant():
+    """Défaut confirmé par l'audit : l'auto-correction reconstruisait les arguments à
+    zéro et JETAIT l'identifiant qu'on venait d'aller chercher. Mesuré : 2ᵉ appel avec
+    le vrai « 1PEAabc… », 3ᵉ appel avec « YOUR_SPREADSHEET_ID »."""
+    FICH = [{"id": "1PEAabcdefGHIJKLmnop1234", "name": "Suivi_PEA"}]
+    appels = []
+    vrais = (A._tool, A._composio_list_actions, A._connected_accounts, A._build_args,
+             A._llm_json, A._known_args, A._format_app_result, A._document_connu)
+    try:
+        def faux_tool(a, args=None, **k):
+            appels.append((a, dict(args or {})))
+            if "SEARCH" in a.upper():
+                return "✅ résultat :\n" + json.dumps({"data": {"files": FICH}})
+            return ('❌ Action échouée : {"http_error":"400 Bad Request",'
+                    '"message":"Invalid range"}')
+        A._tool = faux_tool
+        A._composio_list_actions = lambda s: [
+            {"name": "GOOGLESHEETS_SEARCH_SPREADSHEETS", "desc": "", "required": []},
+            {"name": "GOOGLESHEETS_BATCH_UPDATE", "desc": "",
+             "required": ["spreadsheet_id", "values"]}]
+        A._connected_accounts = lambda: [("googlesheets", "u", "ACTIVE")]
+        # Le modèle reconstruit tout et remet un bouchon — c'est exactement le cas réel.
+        A._build_args = lambda act, spec, msg, ctx="", error="": {
+            "spreadsheet_id": "YOUR_SPREADSHEET_ID", "values": [["x"]]}
+        A._llm_json = lambda s, u: {"action": "GOOGLESHEETS_BATCH_UPDATE", "arguments": {}}
+        A._known_args = lambda a, m: None
+        A._format_app_result = lambda m, a, o, w: "ok"
+        A._document_connu = lambda app, quoi: ("", "")
+
+        A._generic_app_flow("ajoute une ligne dans mon tableur PEA", "googlesheets")
+        avec_id = [ar.get("spreadsheet_id") for _a, ar in appels if ar.get("spreadsheet_id")]
+        check_true("au moins un appel a été fait", bool(avec_id))
+        check("aucun appel ne part avec un bouchon",
+              [v for v in avec_id if A._est_bouchon(v)], [])
+        check_true("l'identifiant résolu est conservé",
+                   all(v == "1PEAabcdefGHIJKLmnop1234" for v in avec_id))
+    finally:
+        (A._tool, A._composio_list_actions, A._connected_accounts, A._build_args,
+         A._llm_json, A._known_args, A._format_app_result, A._document_connu) = vrais
+
+    # ⚠️ Une action CONFIRMÉE était exécutée telle quelle : si ses arguments avaient été
+    # mal résolus, l'accord portait sur une cible fausse et rien ne le rattrapait.
+    import time as _t
+    vrai_tool = A._tool
+    try:
+        A._tool = lambda a, args=None, **k: "✅ fait"
+        A._ATTENTE[A._PROFILE_ID] = {
+            "slug": "googlesheets", "action": "GOOGLESHEETS_DELETE_SHEET",
+            "args": {"spreadsheet_id": "YOUR_SPREADSHEET_ID", "sheet_id": 0},
+            "t": _t.monotonic()}
+        rep = (A._direct_app_prepare_brut("oui vas-y") or {}).get("done_answer", "")
+        check_true("un identifiant bouché arrête l'exécution", rep.startswith("🛑"))
+        check_true("…en disant lequel", "spreadsheet_id" in rep)
+        # …mais un gid numérique ne doit PAS bloquer
+        A._ATTENTE[A._PROFILE_ID] = {
+            "slug": "googlesheets", "action": "GOOGLESHEETS_DELETE_SHEET",
+            "args": {"spreadsheet_id": "1PEAabcdefGHIJKLmnop1234", "sheet_id": 0},
+            "t": _t.monotonic()}
+        rep = (A._direct_app_prepare_brut("oui vas-y") or {}).get("done_answer", "")
+        check("un gid numérique passe", rep.startswith("🛑"), False)
+        # …ni un mail ordinaire
+        A._ATTENTE[A._PROFILE_ID] = {
+            "slug": "gmail", "action": "GMAIL_SEND_EMAIL",
+            "args": {"to": "papa@exemple.fr", "subject": "Salut"}, "t": _t.monotonic()}
+        rep = (A._direct_app_prepare_brut("oui vas-y") or {}).get("done_answer", "")
+        check("un mail confirmé part bien", rep.startswith("🛑"), False)
+    finally:
+        A._tool = vrai_tool
+        A._ATTENTE.clear()
+
+
 def test_sources_visibles():
     """« Je veux voir les mêmes réflexions que Claude. » Nova montrait un extrait tronqué
     du résultat (« Actualité — 6 articles récents 1. Présidentielle… ») : impossible de
@@ -3476,7 +3547,7 @@ if __name__ == "__main__":
                test_app_en_panne_repond_quand_meme, test_jamais_d_ecriture_non_demandee,
                test_resultats_automatisations_remontent,
                test_garde_fou_irreversible_complet, test_identifiants_par_type,
-               test_sources_visibles):
+               test_sources_visibles, test_autocorrection_garde_identifiant):
         try:
             fn()
         except Exception as e:
