@@ -1194,6 +1194,18 @@ def _direct_app_prepare_brut(message: str):
             return {"steps": [], "done_answer": "👍 Annulé, je n'ai rien fait."}
         if _confirmation_donnee(message):
             _ATTENTE.pop(_PROFILE_ID, None)
+            # ⚠️ Une action confirmée était exécutée TELLE QUELLE. Si ses arguments
+            # avaient été mal résolus au moment de la demande, l'accord de l'utilisateur
+            # portait sur une cible fausse — et rien ne le rattrapait. On vérifie donc
+            # une dernière fois, juste avant d'agir : c'est le moment où ça compte.
+            bouches = [k for k, v in (attente.get("args") or {}).items()
+                       if _est_champ_identifiant(k) and _est_bouchon(v)
+                       and not _est_numerique(k, v, {})]
+            if bouches:
+                return {"steps": [], "done_answer": (
+                    "🛑 Je préfère ne pas le faire : je n'ai pas d'identifiant fiable pour "
+                    f"« {', '.join(bouches)} », et c'est une action sans retour. "
+                    "Redis-moi précisément sur quoi elle doit porter.")}
             obs = _tool(attente["action"], attente["args"])
             steps = [{"kind": "action", "tool": attente["slug"], "label": attente["action"]},
                      {"kind": "obs", "tool": attente["slug"], "text": str(obs)[:180]}]
@@ -3013,9 +3025,26 @@ def _generic_app_flow(message: str, slug: str):
     while _looks_like_failure(obs) and _is_param_error(obs) and tries < 2:
         tries += 1
         new_args = _build_args(action, spec, message, ctx, error=str(obs))
-        if not new_args or new_args == args:
+        if not new_args:
+            break
+        # ⚠️ Le modèle reconstruit TOUT à zéro et remet un bouchon à la place de
+        # l'identifiant qu'on venait d'aller chercher. Vérifié : 2e appel avec le vrai
+        # « 1PEAabc… », 3e appel avec « YOUR_SPREADSHEET_ID ». La correction annulait
+        # donc le travail de résolution et repartait dans le mur.
+        # On CONSERVE ce qui a déjà été résolu ; le modèle ne corrige que le reste.
+        for cle, val in args.items():
+            if (_est_champ_identifiant(cle) and not _est_bouchon(val)
+                    and _est_bouchon(new_args.get(cle))):
+                new_args[cle] = val
+        if new_args == args:
             break
         args = new_args
+        # …et on re-résout ce qui resterait bouché, plutôt que de l'envoyer tel quel.
+        args, etapes_corr, refus_corr = _resoudre_identifiants(slug, action, args,
+                                                               message, actions)
+        steps.extend(etapes_corr)
+        if refus_corr:
+            return {"steps": steps, "done_answer": refus_corr}
         steps.append({"kind": "action", "tool": slug, "label": f"{action} (correction {tries})"})
         obs = _tool(action, args)
         steps.append({"kind": "obs", "tool": slug, "text": str(obs)[:180]})
