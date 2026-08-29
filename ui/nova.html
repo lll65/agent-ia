@@ -1550,6 +1550,13 @@ async function diagReste(){
       +" · fuseau "+txt(a.fuseau)+" · décalage serveur "+txt(a.decalage_avec_le_serveur_h)+" h</span>";
     for(const p of (a.prochaines||[]))
       h += "<br><span style='opacity:.6;font-size:12px'>· "+txt(p.titre)+" → "+txt(p.quand)+"</span>";
+    // « J'en ai fait une à 17h et je ne reçois rien » : la réponse est ici. Sans ça,
+    // impossible de distinguer « elle n'a pas tourné » de « elle a tourné mais
+    // l'envoi Telegram a raté ».
+    if(a.telegram && a.telegram.resume)
+      h += "<br><span style='opacity:.75;font-size:13px'>📨 "+txt(a.telegram.resume)+"</span>";
+    for(const e of (a.derniers_envois||[]))
+      h += "<br><span style='opacity:.6;font-size:12px'>· "+txt(e.titre)+" → "+txt(e.issue)+"</span>";
     return h;
   });
   return mem + "<br><br>" + auto;
