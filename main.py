@@ -17,6 +17,8 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+import hmac
+
 from config import config
 from agent.memory import init_db
 
@@ -131,6 +133,43 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ═══ VERROU GLOBAL ═══════════════════════════════════════════════════════════
+# ⚠️ Seul /agent/* verifiait la cle. Tout le reste etait OUVERT sur l'URL publique
+# Render — dont POST /code/generate-and-run, qui fait EXECUTER du Python arbitraire
+# sur le serveur. Un visiteur pouvait donc lire os.environ et repartir avec TOUTES
+# les cles (Composio, Groq, l'URL Supabase avec son mot de passe).
+# On ferme par defaut et on n'ouvre que ce qui doit l'etre : les pages de l'interface
+# (elles demandent la cle cote navigateur) et le point de sante du reveil externe.
+_PUBLIC = (
+    "/", "/health", "/docs", "/redoc", "/openapi.json", "/favicon.ico",
+    "/nova", "/nova/brain", "/nova/cours", "/nova/manifest.webmanifest",
+    "/nova/icon.svg", "/sw.js",
+)
+
+
+@app.middleware("http")
+async def _verrou(request, call_next):
+    from fastapi.responses import JSONResponse
+    chemin = request.url.path.rstrip("/") or "/"
+    if request.method == "OPTIONS" or chemin in _PUBLIC:
+        return await call_next(request)
+    # Les routes /agent/* portent deja leur propre controle, plus precis (message clair,
+    # comparaison a temps constant) : on le laisse faire pour ne pas doubler les erreurs.
+    if chemin == "/agent" or chemin.startswith("/agent/"):
+        return await call_next(request)
+    attendue = (getattr(config, "AGENT_API_KEY", "") or "").strip()
+    if not attendue:
+        return JSONResponse(status_code=503, content={
+            "detail": "Serveur non securise : definis AGENT_API_KEY sur Render. "
+                      "Sans elle, ces routes resteraient ouvertes a tout le monde."})
+    fournie = (request.query_params.get("key")
+               or request.headers.get("x-api-key")
+               or request.headers.get("authorization", "").replace("Bearer ", "")).strip()
+    if not hmac.compare_digest(fournie.encode("utf-8"), attendue.encode("utf-8")):
+        return JSONResponse(status_code=401, content={"detail": "Cle requise."})
+    return await call_next(request)
+
+
 # Routes
 from api.llm import router as llm_router
 from api.agent import router as agent_router
@@ -166,6 +205,15 @@ def root():
             "ui": "/ui",
         },
     }
+
+
+@app.get("/health", tags=["Info"])
+def health():
+    """Point de réveil pour le cron externe (cron-job.org) qui empêche Render
+    de s'endormir — sinon les automatisations planifiées ne partent jamais.
+    Volontairement public ET muet : il ne révèle rien (pas de version, pas de
+    liste d'outils), il dit juste que le serveur répond."""
+    return {"status": "ok"}
 
 
 _NOCACHE = {"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"}

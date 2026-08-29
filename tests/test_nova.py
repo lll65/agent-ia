@@ -5,6 +5,7 @@ But : attraper les régressions avant le déploiement (routage, extraction, gest
 robustesse aux valeurs vides/None). Lancer avec :  python tests/test_nova.py
 """
 import json
+import re
 import sys
 import types
 from pathlib import Path
@@ -3822,6 +3823,178 @@ def test_catalogue_complet():
     check("plus de troncature du catalogue dans le prompt", "dispo[:1400]" in src, False)
 
 
+def test_aucune_route_ouverte():
+    """AUDIT — trou de securite critique.
+
+    Seules les routes /agent/* verifiaient la cle. Tout le reste etait OUVERT
+    sur l'URL publique Render, dont POST /code/generate-and-run qui EXECUTE du
+    Python arbitraire : n'importe qui pouvait lire os.environ et repartir avec
+    toutes les cles (Composio, Groq, l'URL Supabase et son mot de passe).
+    Ce test verrouille les deux sens : rien ne doit s'ouvrir sans cle, et les
+    pages de l'interface + le point de reveil doivent rester joignables.
+    """
+    import os as _os
+    _os.environ["AGENT_API_KEY"] = "cle-de-test-verrou"
+    _os.environ["DISABLE_UI"] = "true"
+    from importlib import reload, import_module
+    import config as _cfg_mod
+    reload(_cfg_mod)
+    from fastapi.testclient import TestClient
+    _main = import_module("main")
+    _main.config.AGENT_API_KEY = "cle-de-test-verrou"
+    _api_agent = import_module("api.agent")
+    _cle_avant = getattr(_api_agent.config, "AGENT_API_KEY", "")
+    _api_agent.config.AGENT_API_KEY = "cle-de-test-verrou"
+    c = TestClient(_main.app)
+
+    # 1. Ce qui doit etre ferme — sans cle, 401 et rien d'autre.
+    for methode, chemin in [
+            ("POST", "/code/generate-and-run"), ("POST", "/code/execute"),
+            ("POST", "/orchestrator/agents/create"), ("GET", "/orchestrator/agents"),
+            ("POST", "/orchestrator/supervisor/start"), ("GET", "/orchestrator/health"),
+            ("GET", "/video/list"), ("GET", "/project/list"), ("GET", "/status"),
+            ("GET", "/tools/stats"), ("GET", "/llm/status")]:
+        r = c.request(methode, chemin, json={})
+        check(f"verrou {methode} {chemin}", r.status_code, 401)
+
+    # Un chemin qui COMMENCE par /agent sans en etre : ne doit pas passer.
+    check("verrou /agentfoo (prefixe trompeur)", c.get("/agentfoo").status_code, 401)
+
+    # 2. Ce qui doit rester accessible — sinon l'app est inutilisable et le
+    #    cron de reveil externe ne peut plus empecher Render de s'endormir.
+    for chemin in ("/", "/health", "/nova", "/nova/brain", "/nova/cours",
+                   "/sw.js", "/nova/icon.svg", "/nova/manifest.webmanifest"):
+        check(f"public {chemin}", c.get(chemin).status_code, 200)
+
+    # Le point de reveil ne divulgue rien (ni version, ni liste d'outils).
+    check("/health muet", sorted(c.get("/health").json()), ["status"])
+
+    # 3. Les trois facons de donner la cle marchent toutes.
+    check("cle en parametre", c.get("/status", params={"key": "cle-de-test-verrou"}).status_code, 200)
+    check("cle en x-api-key",
+          c.get("/status", headers={"x-api-key": "cle-de-test-verrou"}).status_code, 200)
+    check("cle en Bearer",
+          c.get("/status", headers={"authorization": "Bearer cle-de-test-verrou"}).status_code, 200)
+    check("mauvaise cle refusee", c.get("/status", params={"key": "pas-la-bonne"}).status_code, 401)
+    check("cle vide refusee", c.get("/status", params={"key": ""}).status_code, 401)
+
+    # 4. /agent/* garde son propre controle, plus precis — on ne l'a pas casse.
+    check("/agent sans cle", c.get("/agent/apps").status_code, 401)
+    check("/agent avec cle", c.get("/agent/apps", params={"key": "cle-de-test-verrou"}).status_code, 200)
+    _api_agent.config.AGENT_API_KEY = _cle_avant   # on ne pollue pas les tests suivants
+
+    # 5. Chaque route /agent/* verifie la cle une par une : le contournement
+    #    du verrou global pour /agent n'est sur que si c'est vrai partout.
+    from pathlib import Path as _P
+    lignes = (_P(__file__).resolve().parents[1] / "api" / "agent.py").read_text(
+        encoding="utf-8").split("\n")
+    debuts = [i for i, l in enumerate(lignes)
+              if re.match(r"@router\.(get|post|put|delete|patch)", l)] + [len(lignes)]
+    sans = [lignes[a].strip() for a, b in zip(debuts, debuts[1:])
+            if "_check_key" not in "\n".join(lignes[a:b])]
+    check("aucune route /agent sans _check_key", sans, [])
+
+
+def test_telegram_prive_et_resultats_pousses():
+    """AUDIT — le bot Telegram repondait a N'IMPORTE QUI, et les resultats
+    d'automatisation ne partaient nulle part.
+
+    1. Securite : il suffisait de connaitre le @nom du bot pour dialoguer avec
+       l'agent COMPLET (mails, Drive, agenda connectes) et, pire, pour etre
+       enregistre comme cible de diffusion — l'inconnu aurait recu les resultats
+       d'automatisation et les alertes PEA.
+    2. Livraison : le push exigeait TELEGRAM_CHAT_ID, variable que personne ne
+       definit. Sans elle le resultat etait calcule puis jete, en silence.
+    3. Veille : la boucle n'acceptait que les 2 min suivant l'heure prevue. Une
+       instance endormie a 17h00 et reveillee a 17h20 ratait le rendez-vous pour
+       toujours.
+    """
+    import importlib, tempfile, time as _t
+    from pathlib import Path as _P
+    tp = importlib.import_module("bots.telegram_push")
+
+    # --- 1. Le premier venu devient proprietaire, les suivants sont refuses ---
+    with tempfile.TemporaryDirectory() as d:
+        tp._CHATS_FILE = _P(d) / "chats.json"
+        tp.config.TELEGRAM_CHAT_ID = ""
+        tp.config.SUPABASE_DB_URL = ""
+        check("1er chat = proprietaire", tp.est_proprietaire(111), True)
+        check("2e chat refuse", tp.est_proprietaire(222), False)
+        check("le proprietaire reste servi", tp.est_proprietaire(111), True)
+        check("proprietaire retenu", tp.proprietaire(), "111")
+        # L'inconnu ne doit surtout PAS avoir ete enregistre comme cible.
+        check("l'inconnu n'est pas une cible", tp._targets(), ["111"])
+        check("register_chat n'ajoute pas un inconnu",
+              (tp.register_chat(333), tp._targets())[1], ["111"])
+        # Sans jeton, on ne pretend jamais avoir envoye.
+        _tok = tp.config.TELEGRAM_TOKEN
+        tp.config.TELEGRAM_TOKEN = ""
+        check("sans jeton, envoi refuse", tp.send_message("coucou"), False)
+        check("diagnostic dit pourquoi", "TELEGRAM_TOKEN" in tp.diagnostic()["resume"], True)
+        tp.config.TELEGRAM_TOKEN = _tok
+
+    # La variable d'environnement prime : elle designe le proprietaire sans TOFU.
+    with tempfile.TemporaryDirectory() as d:
+        tp._CHATS_FILE = _P(d) / "chats.json"
+        tp.config.TELEGRAM_CHAT_ID = "999"
+        check("TELEGRAM_CHAT_ID prime", tp.proprietaire(), "999")
+        check("un autre chat est refuse malgre le fichier vide",
+              tp.est_proprietaire(111), False)
+        tp.config.TELEGRAM_CHAT_ID = ""
+
+    # --- 2. Le bot passe bien par ce filtre, sur TOUS ses points d'entree ---
+    src = (_P(__file__).resolve().parents[1] / "bots" / "telegram_bot.py").read_text(
+        encoding="utf-8")
+    for h in ("start", "watch_cmd", "help_cmd", "clear_cmd", "status_cmd", "handle_message"):
+        bloc = src.split(f"async def {h}(update", 1)[1][:400]
+        check(f"filtre proprietaire sur {h}", "_autorise(update)" in bloc, True)
+
+    # --- 3. L'envoi ne depend plus de TELEGRAM_CHAT_ID ---
+    auto_src = (_P(__file__).resolve().parents[1] / "agent" / "automations.py").read_text(
+        encoding="utf-8")
+    check("run_one n'exige plus TELEGRAM_CHAT_ID",
+          'getattr(config, "TELEGRAM_CHAT_ID", "")' in auto_src, False)
+    check("run_one passe par send_message", "from bots.telegram_push import send_message" in auto_src, True)
+    check("l'issue de l'envoi est enregistree", 'it["dernier_envoi"] = envoi' in auto_src, True)
+    brief_src = (_P(__file__).resolve().parents[1] / "agent" / "briefing.py").read_text(
+        encoding="utf-8")
+    check("le briefing n'exige plus TELEGRAM_CHAT_ID",
+          'getattr(config, "TELEGRAM_CHAT_ID", "")' in brief_src, False)
+
+    # --- 4. Rattrapage apres une veille de l'hebergeur -----------------------
+    auto = importlib.import_module("agent.automations")
+    check("fenetre de rattrapage large", auto.RATTRAPAGE >= 3600, True)
+
+    def part(retard_s, last=None, cree=None):
+        """Reproduit la decision de la boucle pour un retard donne."""
+        if not (0 <= retard_s < auto.RATTRAPAGE):
+            return False
+        if last and (_t.time() - last) < max(retard_s, 300):
+            return False
+        if not last and float(cree or 0) > _t.time() - retard_s:
+            return False
+        return True
+
+    check("a l'heure pile", part(5), True)
+    check("reveil 20 min apres → rattrapee", part(1200), True)
+    check("reveil 2 h apres → rattrapee", part(7200), True)
+    check("reveil 5 h apres → abandonnee", part(5 * 3600), False)
+    check("avant l'heure → non", part(-60), False)
+    check("deja lancee pour ce rendez-vous → pas de doublon",
+          part(1200, last=_t.time() - 600), False)
+    check("lancee hier → part quand meme",
+          part(1200, last=_t.time() - 86400), True)
+    check("creee APRES le rendez-vous → ne part pas aussitot",
+          part(7200, cree=_t.time() - 60), False)
+    check("creee AVANT le rendez-vous → part",
+          part(7200, cree=_t.time() - 86400), True)
+
+    # --- 5. Le diagnostic explique l'absence de message ----------------------
+    etat = auto.etat_planificateur()
+    check("le diagnostic parle de Telegram", "telegram" in etat, True)
+    check("le diagnostic liste les envois", "derniers_envois" in etat, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -3845,7 +4018,8 @@ if __name__ == "__main__":
                test_echec_composio_jamais_pris_pour_un_succes,
                test_contenu_jamais_confondu_avec_le_verdict,
                test_derniers_defauts_audit, test_aucune_cle_ne_sort,
-               test_protocole_decore):
+               test_protocole_decore, test_aucune_route_ouverte,
+               test_telegram_prive_et_resultats_pousses):
         try:
             fn()
         except Exception as e:

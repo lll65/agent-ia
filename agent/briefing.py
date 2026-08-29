@@ -87,13 +87,17 @@ async def morning_loop():
             await asyncio.sleep(max(60, (target - now).total_seconds()))
             loop = asyncio.get_running_loop()
             txt = await loop.run_in_executor(None, build_briefing)
-            if config.TELEGRAM_TOKEN and getattr(config, "TELEGRAM_CHAT_ID", ""):
-                import requests
+            # Même piège que pour les automatisations : exiger TELEGRAM_CHAT_ID faisait
+            # disparaître le briefing en silence. send_message vise le chat du
+            # propriétaire — avoir dit /start au bot une fois suffit.
+            if config.TELEGRAM_TOKEN:
+                from bots.telegram_push import send_message
                 from agent.core import _off
-                await _off(requests.post,
-                           f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}/sendMessage",
-                           json={"chat_id": config.TELEGRAM_CHAT_ID, "text": txt[:4000]}, timeout=20)
-                logger.info("[briefing] envoyé via Telegram.")
+                if await _off(send_message, txt[:4000]):
+                    logger.info("[briefing] envoyé via Telegram.")
+                else:
+                    logger.warning("[briefing] produit mais NON envoyé : aucun chat "
+                                   "Telegram connu (envoie /start au bot).")
         except asyncio.CancelledError:
             break
         except Exception as e:
