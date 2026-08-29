@@ -29,13 +29,17 @@ SYSTEM_TEMPLATE = """{master_directives}
 ## PROTOCOLE D'ACTION STRICT
 
 Pour utiliser un outil, réponds EXACTEMENT dans ce format :
-THOUGHT: [analyse en une phrase — pourquoi cet outil, quelles données tu attends]
-ACTION: [nom_exact_de_l_outil]
+THOUGHT: analyse en une phrase — pourquoi cet outil, quelles données tu attends
+ACTION: nom_exact_de_l_outil
 PARAMS: {{"param": "valeur"}}
 
+⚠️ Écris le nom de l'outil NU, sans crochets, sans guillemets, sans backticks, sans gras.
+Exemple correct :   ACTION: search_web
+Exemples à éviter : ACTION: [search_web] · ACTION: `search_web` · **ACTION:** search_web
+
 Pour donner la réponse finale (quand tu as toutes les informations nécessaires) :
-THOUGHT: [synthèse — que vas-tu livrer]
-FINAL: [réponse complète, structurée, actionnelle]
+THOUGHT: synthèse — que vas-tu livrer
+FINAL: réponse complète, structurée, actionnelle
 
 ## RÈGLES D'EXÉCUTION
 1. N'invente JAMAIS une observation — attends toujours l'OBSERVATION réelle de l'outil.
@@ -369,8 +373,17 @@ def parse_response(text: str) -> tuple:
         return None, None, final_m.group(1).strip()
 
     # ACTION + PARAMS
-    action_m = re.search(r"ACTION:\s*(\w+)", text, re.IGNORECASE)
-    params_m = re.search(r"PARAMS:\s*(\{.+?\})", text, re.DOTALL | re.IGNORECASE)
+    # ⚠️ Le modèle DÉCORE souvent le nom de l'outil — et c'est notre gabarit qui le lui
+    # apprend : il écrit lui-même « ACTION: [nom_exact_de_l_outil] ». Quand le modèle
+    # recopie la convention (« ACTION: [search_web] », « `search_web` », « **ACTION:** »),
+    # `\w+` ne matchait plus rien, on tombait dans le fourre-tout du bas, et le PROTOCOLE
+    # BRUT était affiché comme réponse — l'outil n'étant jamais lancé.
+    # Noter l'asymétrie qui avait laissé passer le bug : FINAL utilisait déjà `(.+)`,
+    # donc tolérait toute décoration ; ACTION non.
+    action_m = re.search(r"ACTION\s*\**\s*:\s*[\[`\"'*\s]*([A-Za-z_][\w.-]*)",
+                         text, re.IGNORECASE)
+    params_m = re.search(r"PARAMS\s*\**\s*:\s*[`\s]*(\{.+?\})", text,
+                         re.DOTALL | re.IGNORECASE)
 
     if action_m:
         action = action_m.group(1).strip()
@@ -385,8 +398,15 @@ def parse_response(text: str) -> tuple:
                     pass
         return action, params, None
 
-    # Si aucun format reconnu → traiter comme réponse finale
-    return None, None, text.strip()
+    # Si aucun format reconnu → traiter comme réponse finale.
+    # ⚠️ MAIS un texte qui contient encore ACTION:/PARAMS: n'est PAS une réponse : c'est
+    # du protocole que personne n'a su lire. L'afficher revenait à montrer la tuyauterie
+    # à l'utilisateur. _texte_lisible sait déjà le reconnaître — il n'était simplement
+    # jamais appelé sur ce chemin.
+    brut = text.strip()
+    if brut and not _texte_lisible(brut):
+        return None, None, None
+    return None, None, brut
 
 
 _STUB_KEYWORDS = (
