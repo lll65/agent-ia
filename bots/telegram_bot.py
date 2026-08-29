@@ -153,9 +153,31 @@ async def run_telegram_bot():
             logger.error(f"[Telegram finance] {e}")
             return f"❌ Erreur analyse: {e}"
 
+    # ── Filtre du propriétaire ────────────────────────────────────────────────
+    async def _autorise(update) -> bool:
+        """N'importe qui sur Telegram peut écrire à ce bot : il suffit de connaître
+        son @nom. Sans ce filtre, un inconnu obtenait une conversation avec l'agent
+        COMPLET — donc un accès aux mails, à Drive et à l'agenda connectés — et son
+        chat devenait une cible de diffusion pour les alertes et les résultats
+        d'automatisation. Seul le propriétaire est servi (voir bots/telegram_push)."""
+        from bots.telegram_push import est_proprietaire
+        chat = update.effective_chat
+        if chat is not None and est_proprietaire(chat.id):
+            return True
+        who = getattr(update.effective_user, "id", "?")
+        logger.warning(f"[Telegram] Message refusé — chat inconnu (user {who}).")
+        try:
+            await update.message.reply_text(
+                "Ce bot est personnel et ne répond qu'à son propriétaire.")
+        except Exception:
+            pass
+        return False
+
     # ── Commandes ─────────────────────────────────────────────────────────────
 
     async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        if not await _autorise(update):
+            return
         # Enregistre ce chat pour recevoir les alertes proactives (PEA Watcher)
         try:
             from bots.telegram_push import register_chat
@@ -173,6 +195,8 @@ async def run_telegram_bot():
 
     async def watch_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Déclenche un scan PEA immédiat et répond avec les alertes en cours."""
+        if not await _autorise(update):
+            return
         try:
             from bots.telegram_push import register_chat
             register_chat(update.effective_chat.id)
@@ -198,6 +222,8 @@ async def run_telegram_bot():
             await update.message.reply_text(f"❌ Erreur scan: {str(e)[:300]}")
 
     async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        if not await _autorise(update):
+            return
         from plugins import get_loader
         tools = list(get_loader().list_all().keys())
         txt = "🔧 Outils disponibles:\n" + "\n".join(f"  • {t}" for t in tools[:12])
@@ -206,6 +232,8 @@ async def run_telegram_bot():
         await update.message.reply_text(txt)
 
     async def clear_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        if not await _autorise(update):
+            return
         user_id = str(update.effective_user.id)
         _HISTORIES.pop(user_id, None)
         try:
@@ -216,6 +244,8 @@ async def run_telegram_bot():
         await update.message.reply_text("✅ Mémoire effacée.")
 
     async def status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        if not await _autorise(update):
+            return
         from agent.self_improve import get_stats
         stats = get_stats()
         msg = (
@@ -230,6 +260,8 @@ async def run_telegram_bot():
     # ── Gestion des messages ──────────────────────────────────────────────────
 
     async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        if not await _autorise(update):
+            return
         user_id  = str(update.effective_user.id)
         username = update.effective_user.username or user_id
         text     = (update.message.text or "").strip()

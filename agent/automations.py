@@ -107,7 +107,7 @@ def add(titre: str, prompt: str, hour: int = 8, days=None, icon: str = "⚡",
             "minute": max(0, min(59, int(minute or 0))),
             # `days or [...]` transformait une liste VIDE en « tous les jours ».
             "days": list(range(7)) if days is None else list(days),
-            "icon": icon, "active": True,
+            "icon": icon, "active": True, "cree": time.time(),
             "last_run": None, "last_result": "", "runs": 0}
     with _LOCK:
         items = _load()
@@ -214,7 +214,16 @@ def etat_planificateur() -> dict:
          "actives": sum(1 for i in items if i.get("active", True)),
          "dernier_battement_il_y_a_s": round(depuis) if depuis is not None else None,
          "prochaines": [{"titre": i.get("titre"), "quand": prochaine_execution(i)}
-                        for i in items if i.get("active", True)][:10]}
+                        for i in items if i.get("active", True)][:10],
+         # « J'en ai fait une a 17h et je ne recois rien » : sans ca, impossible de
+         # distinguer « elle n'a pas tourne » de « elle a tourne mais l'envoi a rate ».
+         "derniers_envois": [{"titre": i.get("titre"), "issue": i.get("dernier_envoi") or "—"}
+                             for i in items if i.get("last_run")][:10]}
+    try:
+        from bots.telegram_push import diagnostic as _diag_tg
+        d["telegram"] = _diag_tg()
+    except Exception as e:
+        d["telegram"] = {"resume": f"diagnostic Telegram indisponible ({type(e).__name__})"}
     if not BATTEMENT.get("demarre"):
         d["resume"] = "❌ Le planificateur n'a jamais démarré."
     elif depuis is None or depuis > 300:
@@ -237,11 +246,34 @@ async def run_one(item: dict) -> str:
         answer = await _ask_agent(item["prompt"])
     except Exception as e:
         answer = f"❌ Échec : {type(e).__name__}: {str(e)[:200]}"
+    # Notification Telegram. ⚠️ Ce push exigeait TELEGRAM_CHAT_ID, une variable que
+    # personne ne pense a definir : sans elle le resultat ne partait NULLE PART, en
+    # silence. On passe par send_message, qui sait aussi viser le chat du proprietaire
+    # (celui qui a parle au bot) — un /start suffit donc. Et on ENREGISTRE l'issue :
+    # une notification qui echoue doit se voir dans le diagnostic, pas disparaitre.
+    envoi = ""
+    if config.TELEGRAM_TOKEN:
+        try:
+            from bots.telegram_push import send_message, proprietaire
+            from agent.core import _off
+            if not proprietaire():
+                envoi = ("non envoye : Nova ne sait pas a quel chat Telegram ecrire. "
+                         "Envoie /start au bot une fois.")
+            elif await _off(send_message, f"⚡ {item['titre']}\n\n{(answer or '')[:3500]}"):
+                envoi = "envoye sur Telegram"
+            else:
+                envoi = "echec de l'envoi Telegram (voir les journaux)"
+        except Exception as e:
+            envoi = f"echec de l'envoi Telegram ({type(e).__name__})"
+    else:
+        envoi = "non envoye : TELEGRAM_TOKEN absent"
+
     with _LOCK:
         items = _load()
         for it in items:
             if it["id"] == item["id"]:
                 it["last_run"] = time.time()
+                it["dernier_envoi"] = envoi
                 it["last_result"] = (answer or "")[:4000]
                 it["runs"] = int(it.get("runs", 0)) + 1
                 # ⚠️ Le resultat n'etait POUSSE nulle part sans Telegram : il fallait
@@ -255,18 +287,7 @@ async def run_one(item: dict) -> str:
         record("nova", "", f"⚡ {item['titre']}")
     except Exception:
         pass
-    # Notification Telegram si configurée
-    if config.TELEGRAM_TOKEN and getattr(config, "TELEGRAM_CHAT_ID", ""):
-        try:
-            import requests
-            from agent.core import _off
-            await _off(requests.post,
-                       f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}/sendMessage",
-                       json={"chat_id": config.TELEGRAM_CHAT_ID,
-                             "text": f"⚡ {item['titre']}\n\n{answer[:3500]}"}, timeout=20)
-        except Exception:
-            pass
-    logger.info(f"[automations] '{item['titre']}' exécutée.")
+    logger.info(f"[automations] '{item['titre']}' exécutée — {envoi}.")
     return answer
 
 
@@ -275,6 +296,12 @@ async def run_one(item: dict) -> str:
 # dire, et les automatisations ne partent jamais. Ce battement est la seule preuve
 # vérifiable qu'elle tourne encore (voir /agent/diag/automatisations).
 BATTEMENT = {"ts": 0.0, "demarre": 0.0}
+
+# ⚠️ La boucle n'acceptait que les 2 minutes qui suivent l'heure prevue. Sur une offre
+# gratuite l'instance dort : elle se reveille a 17h20 pour un rendez-vous de 17h00, la
+# fenetre est passee, et l'automatisation ne part JAMAIS — sans le moindre message.
+# On rattrape donc jusqu'a 3 h de retard : mieux vaut un resultat en retard que rien.
+RATTRAPAGE = 3 * 3600
 
 
 async def scheduler_loop():
@@ -301,11 +328,22 @@ async def scheduler_loop():
                                     minute=int(it.get("minute", 0) or 0),
                                     second=0, microsecond=0)
                 retard = (now - cible).total_seconds()
-                if not (0 <= retard < 120):
+                if not (0 <= retard < RATTRAPAGE):
                     continue
                 last = it.get("last_run") or 0
-                if time.time() - last < 300:       # déjà lancée à l'instant
+                # Deja lancee pour CE rendez-vous ? `retard` et l'age du dernier
+                # lancement sont deux durees en secondes reelles : si le dernier
+                # lancement est plus recent que le rendez-vous, c'etait celui-ci.
+                # Le plancher de 300 s evite un doublon dans la minute qui suit.
+                if last and (time.time() - last) < max(retard, 300):
                     continue
+                # Rattrapage, mais pas de rendez-vous ANTERIEUR a la creation :
+                # une automatisation de 7h creee a 9h ne doit pas partir aussitot.
+                if not last and float(it.get("cree") or 0) > time.time() - retard:
+                    continue
+                if retard > 120:
+                    logger.info(f"[automations] '{it.get('titre')}' rattrapee avec "
+                                f"{round(retard / 60)} min de retard (instance endormie ?).")
                 await run_one(it)
         except asyncio.CancelledError:
             break
