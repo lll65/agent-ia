@@ -5,6 +5,7 @@ But : attraper les régressions avant le déploiement (routage, extraction, gest
 robustesse aux valeurs vides/None). Lancer avec :  python tests/test_nova.py
 """
 import json
+import re
 import sys
 import types
 from pathlib import Path
@@ -3822,6 +3823,78 @@ def test_catalogue_complet():
     check("plus de troncature du catalogue dans le prompt", "dispo[:1400]" in src, False)
 
 
+def test_aucune_route_ouverte():
+    """AUDIT — trou de securite critique.
+
+    Seules les routes /agent/* verifiaient la cle. Tout le reste etait OUVERT
+    sur l'URL publique Render, dont POST /code/generate-and-run qui EXECUTE du
+    Python arbitraire : n'importe qui pouvait lire os.environ et repartir avec
+    toutes les cles (Composio, Groq, l'URL Supabase et son mot de passe).
+    Ce test verrouille les deux sens : rien ne doit s'ouvrir sans cle, et les
+    pages de l'interface + le point de reveil doivent rester joignables.
+    """
+    import os as _os
+    _os.environ["AGENT_API_KEY"] = "cle-de-test-verrou"
+    _os.environ["DISABLE_UI"] = "true"
+    from importlib import reload, import_module
+    import config as _cfg_mod
+    reload(_cfg_mod)
+    from fastapi.testclient import TestClient
+    _main = import_module("main")
+    _main.config.AGENT_API_KEY = "cle-de-test-verrou"
+    _api_agent = import_module("api.agent")
+    _cle_avant = getattr(_api_agent.config, "AGENT_API_KEY", "")
+    _api_agent.config.AGENT_API_KEY = "cle-de-test-verrou"
+    c = TestClient(_main.app)
+
+    # 1. Ce qui doit etre ferme — sans cle, 401 et rien d'autre.
+    for methode, chemin in [
+            ("POST", "/code/generate-and-run"), ("POST", "/code/execute"),
+            ("POST", "/orchestrator/agents/create"), ("GET", "/orchestrator/agents"),
+            ("POST", "/orchestrator/supervisor/start"), ("GET", "/orchestrator/health"),
+            ("GET", "/video/list"), ("GET", "/project/list"), ("GET", "/status"),
+            ("GET", "/tools/stats"), ("GET", "/llm/status")]:
+        r = c.request(methode, chemin, json={})
+        check(f"verrou {methode} {chemin}", r.status_code, 401)
+
+    # Un chemin qui COMMENCE par /agent sans en etre : ne doit pas passer.
+    check("verrou /agentfoo (prefixe trompeur)", c.get("/agentfoo").status_code, 401)
+
+    # 2. Ce qui doit rester accessible — sinon l'app est inutilisable et le
+    #    cron de reveil externe ne peut plus empecher Render de s'endormir.
+    for chemin in ("/", "/health", "/nova", "/nova/brain", "/nova/cours",
+                   "/sw.js", "/nova/icon.svg", "/nova/manifest.webmanifest"):
+        check(f"public {chemin}", c.get(chemin).status_code, 200)
+
+    # Le point de reveil ne divulgue rien (ni version, ni liste d'outils).
+    check("/health muet", sorted(c.get("/health").json()), ["status"])
+
+    # 3. Les trois facons de donner la cle marchent toutes.
+    check("cle en parametre", c.get("/status", params={"key": "cle-de-test-verrou"}).status_code, 200)
+    check("cle en x-api-key",
+          c.get("/status", headers={"x-api-key": "cle-de-test-verrou"}).status_code, 200)
+    check("cle en Bearer",
+          c.get("/status", headers={"authorization": "Bearer cle-de-test-verrou"}).status_code, 200)
+    check("mauvaise cle refusee", c.get("/status", params={"key": "pas-la-bonne"}).status_code, 401)
+    check("cle vide refusee", c.get("/status", params={"key": ""}).status_code, 401)
+
+    # 4. /agent/* garde son propre controle, plus precis — on ne l'a pas casse.
+    check("/agent sans cle", c.get("/agent/apps").status_code, 401)
+    check("/agent avec cle", c.get("/agent/apps", params={"key": "cle-de-test-verrou"}).status_code, 200)
+    _api_agent.config.AGENT_API_KEY = _cle_avant   # on ne pollue pas les tests suivants
+
+    # 5. Chaque route /agent/* verifie la cle une par une : le contournement
+    #    du verrou global pour /agent n'est sur que si c'est vrai partout.
+    from pathlib import Path as _P
+    lignes = (_P(__file__).resolve().parents[1] / "api" / "agent.py").read_text(
+        encoding="utf-8").split("\n")
+    debuts = [i for i, l in enumerate(lignes)
+              if re.match(r"@router\.(get|post|put|delete|patch)", l)] + [len(lignes)]
+    sans = [lignes[a].strip() for a, b in zip(debuts, debuts[1:])
+            if "_check_key" not in "\n".join(lignes[a:b])]
+    check("aucune route /agent sans _check_key", sans, [])
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -3845,7 +3918,7 @@ if __name__ == "__main__":
                test_echec_composio_jamais_pris_pour_un_succes,
                test_contenu_jamais_confondu_avec_le_verdict,
                test_derniers_defauts_audit, test_aucune_cle_ne_sort,
-               test_protocole_decore):
+               test_protocole_decore, test_aucune_route_ouverte):
         try:
             fn()
         except Exception as e:
