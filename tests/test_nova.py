@@ -2140,6 +2140,47 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_protocole_decore():
+    """Défaut confirmé par l'audit du noyau : « ACTION: [search_web] » (avec crochets)
+    n'était pas reconnu. Le PROTOCOLE BRUT s'affichait alors comme réponse, et l'outil
+    n'était jamais lancé. Le comble : c'est notre propre gabarit qui enseignait les
+    crochets au modèle."""
+    from agent.core import parse_response, SYSTEM_TEMPLATE
+
+    # 53a. Toutes les décorations que le modèle produit doivent lancer l'outil
+    for texte, attendu in (
+            ('THOUGHT: je cherche.\nACTION: [search_web]\nPARAMS: {"query": "actu"}', "search_web"),
+            ('THOUGHT: ok\nACTION: `search_web`\nPARAMS: {"query": "x"}', "search_web"),
+            ('THOUGHT: ok\n**ACTION:** search_web\nPARAMS: {"query": "x"}', "search_web"),
+            ('THOUGHT: ok\nACTION: search_web\nPARAMS: {"query": "x"}', "search_web"),
+            ('ACTION: "connected_app"\nPARAMS: {"command": "X"}', "connected_app"),
+            ('ACTION:   [ connected_app ]\nPARAMS: {}', "connected_app"),
+            ("ACTION: 'search_web'\nPARAMS: {}", "search_web")):
+        outil, _p, _f = parse_response(texte)
+        check(f"outil reconnu : {texte.splitlines()[-2][:30]}", outil, attendu)
+    # …et les paramètres suivent
+    _o, params, _f = parse_response('ACTION: [search_web]\nPARAMS: {"query": "actu tech"}')
+    check("les paramètres sont lus", params, {"query": "actu tech"})
+    _o, params, _f = parse_response('ACTION: search_web\nPARAMS: ```{"query": "x"}```')
+    check("…même entourés de backticks", params, {"query": "x"})
+
+    # 53b. Une vraie réponse reste une réponse
+    for texte in ("FINAL: Voici tes 3 rendez-vous.", "Bonjour Lohan, comment vas-tu ?",
+                  "THOUGHT: je réfléchis.\nFINAL: La réponse est 42."):
+        _o, _p, final = parse_response(texte)
+        check_true(f"réponse préservée : {texte[:34]}", bool(final))
+
+    # 53c. ⚠️ Et du protocole que personne n'a su lire ne doit PLUS être affiché :
+    # Lohan voyait « THOUGHT: … ACTION: … PARAMS: {…} » dans son chat.
+    _o, _p, final = parse_response("THOUGHT: bla\nACTION:\nPARAMS: pas du json")
+    check("le protocole illisible n'est pas servi comme réponse", final, None)
+
+    # 53d. Le gabarit n'enseigne plus la forme qui casse
+    check("le gabarit ne montre plus de crochets",
+          "ACTION: [nom_exact_de_l_outil]" in SYSTEM_TEMPLATE, False)
+    check_true("…et met en garde explicitement", "sans crochets" in SYSTEM_TEMPLATE)
+
+
 def test_aucune_cle_ne_sort():
     """Une clé affichée est une clé compromise. Et Lohan colle ses conversations
     ailleurs pour les faire analyser : ce qui s'affiche sort du système."""
@@ -3803,7 +3844,8 @@ if __name__ == "__main__":
                test_sources_visibles, test_autocorrection_garde_identifiant,
                test_echec_composio_jamais_pris_pour_un_succes,
                test_contenu_jamais_confondu_avec_le_verdict,
-               test_derniers_defauts_audit, test_aucune_cle_ne_sort):
+               test_derniers_defauts_audit, test_aucune_cle_ne_sort,
+               test_protocole_decore):
         try:
             fn()
         except Exception as e:
