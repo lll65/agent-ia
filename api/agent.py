@@ -880,6 +880,27 @@ def _consigne_sans_app(echec: str) -> str:
         f"(Détail technique, à ne PAS recopier : {(echec or '')[:200]})")
 
 
+# Formes de clés connues, plus toute chaîne qui en a l'allure. ⚠️ Une clé peut arriver
+# dans le message d'erreur de l'API elle-même : on la relayait alors telle quelle à
+# l'utilisateur — qui colle ses conversations ailleurs. Une clé affichée est une clé
+# compromise, quelle que soit la raison de son affichage.
+_SECRETS = re.compile(
+    r"\b(?:ak|ck|gsk|sk|csk|xai|nvapi|hf|pplx)[_-][A-Za-z0-9_\-]{8,}"
+    # Google ne met AUCUN séparateur : « AIzaSyABC… ». Sans cette forme, la clé Gemini
+    # traversait le masque intacte.
+    r"|\bAIza[A-Za-z0-9_\-]{20,}"
+    r"|\bsk-(?:or-|proj-)?[A-Za-z0-9_\-]{12,}"
+    r"|postgres(?:ql)?://[^\s'\"]+", re.I)
+
+
+def sans_secrets(texte: str) -> str:
+    """Masque toute clé ou URL de base de données avant affichage. Jamais l'inverse."""
+    def _masque(m):
+        v = m.group(0)
+        return (v[:6] + "…" + v[-3:]) if len(v) > 14 else "…"
+    return _SECRETS.sub(_masque, texte or "")
+
+
 def _honest_no_access(action: str, obs: str) -> str:
     """Message honnête quand l'accès échoue — JAMAIS d'invention de données."""
     app = ("ton agenda Google" if "CALENDAR" in action else
@@ -997,6 +1018,7 @@ def _honest_no_access(action: str, obs: str) -> str:
             + (f"**Ce que {nice} répond :** {detail}\n\n" if detail else "")
             + "J'ai tenté de corriger automatiquement, sans succès. **Sois plus précis** et je réessaie "
               "(ex. « crée une **présentation** Canva intitulée Projet X », « crée un **document** Canva »).")
+    obs = sans_secrets(obs)
     nice = tk.capitalize() if tk else "cette application"
     # Cause : la CIBLE n'existe pas (404). Rien à voir avec la connexion — et pourtant
     # on affichait le JSON brut de l'API (« {"http_error": "404 …", "asset_not_found" } »),
@@ -3396,6 +3418,13 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
 
     async def gen():
         def sse(obj):
+            # ⚠️ Dernier filet : AUCUNE clé ne doit sortir, quelle que soit la branche
+            # qui a construit le message. Une clé affichée est une clé compromise —
+            # d'autant que l'utilisateur colle ses conversations ailleurs pour les
+            # faire analyser.
+            for _c in ("text", "answer", "t"):
+                if isinstance(obj.get(_c), str):
+                    obj[_c] = sans_secrets(obj[_c])
             return f"data: {_json.dumps(obj, ensure_ascii=False)}\n\n"
         if not message:
             yield sse({"type": "answer", "text": "Message vide."}); yield sse({"type": "done"}); return
