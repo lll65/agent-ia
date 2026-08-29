@@ -2140,6 +2140,35 @@ def test_calendrier_exact():
 
 
 # ── 37. Nova suit la conversation d'une phrase à l'autre ─────────────────────
+def test_aucune_cle_ne_sort():
+    """Une clé affichée est une clé compromise. Et Lohan colle ses conversations
+    ailleurs pour les faire analyser : ce qui s'affiche sort du système."""
+    for secret in ("ak_SECRET1234567890abcdef", "gsk_abcdefghijklmnop1234",
+                   "xai-abcdef1234567890", "nvapi-abcdefghij1234567890",
+                   "sk-or-v1-abcdef1234567890", "AIzaSyABCDEFGHIJKLMNOPqrstuvwx",
+                   "csk-abcdefghij1234567890",
+                   "postgresql://postgres:MonMotDePasse@db.abc.supabase.co:5432/postgres"):
+        masque = A.sans_secrets(f"erreur : {secret} refusée")
+        check_true(f"masquée : {secret[:14]}…", secret not in masque)
+        check_true("…mais le message reste lisible", "erreur" in masque)
+    # ⚠️ Et surtout : rien d'ordinaire ne doit être abîmé au passage.
+    for normal in ("Voici tes 3 rendez-vous de demain à 14h.",
+                   "Le CAC 40 est à 7 812 points (+0,8 %).",
+                   "Ton fichier Suivi_PEA_Lohan_Pere contient 12 lignes.",
+                   "Le sk de mon ami", "Le fichier AIzaBidule", ""):
+        check(f"intact : « {normal[:40]} »", A.sans_secrets(normal), normal)
+
+    # La clé peut arriver DANS le message d'erreur de l'API : on la relayait telle quelle.
+    msg = A._honest_no_access(
+        "GMAIL_SEND_EMAIL", '{"error":"auth failed for key ak_SECRET1234567890abcdef"}')
+    check_true("aucune clé dans un message d'échec",
+               "ak_SECRET1234567890abcdef" not in msg)
+    # …et le filet final couvre TOUTE sortie, quelle que soit la branche
+    import inspect
+    src = inspect.getsource(A.ask_stream)
+    check_true("le flux SSE est filtré à la sortie", "sans_secrets" in src)
+
+
 def test_derniers_defauts_audit():
     """Les quatre derniers défauts confirmés, plus un trouvé dans une trace réelle."""
     from plugins.builtin.composio_tool import _fmt
@@ -3286,13 +3315,16 @@ def test_automatisations_heure():
         dim = AU.add("Bilan", "bilan", hour=19, days=[6])
         q2 = AU.prochaine_execution(dim)
         check_true("le jour choisi est respecté", "à 19h" in q2)
-        jour = datetime.strptime(q2.split(" à ")[0].split(" ", 1)[1], "%d/%m")
-        # On revérifie le jour de la semaine en repartant de l'heure locale
+        # ⚠️ Ne PAS analyser la date affichée : l'étiquette dit « aujourd'hui » ou
+        # « demain » quand c'est le cas, et le test cassait un dimanche. On vérifie le
+        # jour de la semaine par le calcul, pas par la chaîne.
         cible = next(H.maintenant() + timedelta(days=d) for d in range(8)
                      if (H.maintenant() + timedelta(days=d)).weekday() == 6
                      and not ((H.maintenant() + timedelta(days=d)).date() == H.maintenant().date()
                               and H.maintenant().hour >= 19))
         check("c'est bien un dimanche", cible.weekday(), 6)
+        check_true("l'étiquette est lisible",
+                   any(x in q2 for x in ("dimanche", "aujourd'hui", "demain")))
 
         AU.update(a["id"], active=False)
         check("une automatisation éteinte le dit",
@@ -3771,7 +3803,7 @@ if __name__ == "__main__":
                test_sources_visibles, test_autocorrection_garde_identifiant,
                test_echec_composio_jamais_pris_pour_un_succes,
                test_contenu_jamais_confondu_avec_le_verdict,
-               test_derniers_defauts_audit):
+               test_derniers_defauts_audit, test_aucune_cle_ne_sort):
         try:
             fn()
         except Exception as e:
