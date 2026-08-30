@@ -319,7 +319,13 @@ def _repli_observations(observations: list, task: str = "", raison: str = "delai
     for o in observations:
         # Un message d'ERREUR ou de mode d'emploi n'est pas une trouvaille : il s'affichait
         # sous « voici ce que j'ai trouvé, sources à l'appui », ce qui était absurde.
-        if not o or not o.strip() or o.lstrip().startswith(("[Self-heal]", "⚠️", "❌", "🔑")):
+        # ⚠️ On filtrait sur des prefixes COSMETIQUES. « Plugin 'gmail' inconnu.
+        # Disponibles: [...] » (loader.py, quand le modele invente un nom d'outil) n'en
+        # portait aucun : il etait affiche comme une trouvaille « reelle et verifiable ».
+        # [ERREUR] est desormais pose a la source, et on refuse tout ce qui ressemble
+        # a un diagnostic interne plutot qu'a un resultat.
+        if not o or not o.strip() or o.lstrip().startswith(
+                ("[ERREUR]", "[Self-heal]", "[Plugin", "Plugin '", "⚠️", "❌", "🔑", "⛔")):
             continue
         # Deux recherches proches ramènent souvent les MÊMES pages : ne pas les répéter.
         empreinte = re.sub(r"\s+", " ", o)[:400]
@@ -361,6 +367,20 @@ def _temperature_for_role(agent_config: dict) -> float:
     return 0.7
 
 
+def _fin_de_reponse(txt: str) -> str:
+    """La prose apres FINAL:, coupee des lignes de protocole qui la suivraient.
+
+    `(.+)` avec DOTALL avale tout ce qui vient apres — y compris un « ACTION: … »
+    ecrit plus bas, qui se retrouvait affiche a l'utilisateur.
+    """
+    coupe = re.search(r"^[ \t]*\**\s*(?:ACTION|PARAMS|THOUGHT|OBSERVATION)\s*\**\s*:",
+                      txt, re.M | re.I)
+    txt = (txt[:coupe.start()] if coupe else txt).strip()
+    # « **FINAL:** Ma réponse » laisse les deux étoiles fermantes en tête. Une vraie
+    # mise en gras s'écrit « **mot** » sans espace : l'espace les distingue.
+    return re.sub(r"^\*+\s", "", txt).strip()
+
+
 def parse_response(text: str) -> tuple:
     """Extrait (action, params, final) depuis la réponse LLM."""
     # ⚠️ Le brouillon <think> est retiré AVANT toute analyse : un « ACTION: search_web »
@@ -368,9 +388,15 @@ def parse_response(text: str) -> tuple:
     # déclencherait sinon un vrai appel d'outil qu'il n'a jamais demandé.
     text = sans_raisonnement(text)
     # FINAL
-    final_m = re.search(r"FINAL:\s*(.+)", text, re.DOTALL | re.IGNORECASE)
-    if final_m:
-        return None, None, final_m.group(1).strip()
+    # ⚠️ Le motif n'etait pas ancre : n'importe quel « FINAL: » AU MILIEU du texte
+    # court-circuitait l'appel d'outil. Une question aussi banale que « que signifie
+    # FINAL: en anglais » passait dans PARAMS, et la reponse rendue devenait le
+    # fragment « en anglais"} ». Le moteur aggrave lui-meme le risque en ecrivant
+    # « reponds MAINTENANT avec FINAL: » dans ses relances, formule que les modeles
+    # recopient volontiers. On l'ancre donc en debut de ligne, et une ligne ACTION
+    # placee AVANT lui l'emporte : c'est un appel d'outil, pas une conclusion.
+    final_m = re.search(r"^[ \t]*\**\s*FINAL\s*\**\s*:\s*(.+)",
+                        text, re.M | re.DOTALL | re.IGNORECASE)
 
     # ACTION + PARAMS
     # ⚠️ Le modèle DÉCORE souvent le nom de l'outil — et c'est notre gabarit qui le lui
@@ -380,10 +406,13 @@ def parse_response(text: str) -> tuple:
     # BRUT était affiché comme réponse — l'outil n'étant jamais lancé.
     # Noter l'asymétrie qui avait laissé passer le bug : FINAL utilisait déjà `(.+)`,
     # donc tolérait toute décoration ; ACTION non.
-    action_m = re.search(r"ACTION\s*\**\s*:\s*[\[`\"'*\s]*([A-Za-z_][\w.-]*)",
-                         text, re.IGNORECASE)
+    action_m = re.search(r"^[ \t]*\**\s*ACTION\s*\**\s*:\s*[\[`\"'*\s]*([A-Za-z_][\w.-]*)",
+                         text, re.M | re.IGNORECASE)
     params_m = re.search(r"PARAMS\s*\**\s*:\s*[`\s]*(\{.+?\})", text,
                          re.DOTALL | re.IGNORECASE)
+
+    if final_m and not (action_m and action_m.start() < final_m.start()):
+        return None, None, _fin_de_reponse(final_m.group(1))
 
     if action_m:
         action = action_m.group(1).strip()
@@ -623,9 +652,16 @@ async def run_agent(
 
         iteration += 1
 
+    # ⚠️ On retombait sur `steps[-1]["llm_output"]` SANS filtrage : la dernière sortie
+    # brute du modèle, protocole compris. L'utilisateur lisait « THOUGHT: je consulte
+    # ton agenda / ACTION: connected_app / PARAMS: {…} » comme réponse, et ce texte
+    # repartait ensuite dans le contexte du tour suivant. Le chemin streamé, lui,
+    # affichait correctement un message d'excuse : les deux divergeaient sur le même
+    # cas. _texte_lisible existait déjà — il n'était simplement pas branché ici.
     last = _repli_observations(observations, task) or (
-        steps[-1].get("llm_output", "Limite d'itérations atteinte.") if steps
-        else "Limite d'itérations atteinte.")
+        _texte_lisible(steps[-1].get("llm_output", "")) if steps else "") or (
+        f"⚠️ Je n'ai pas réussi à aboutir en {config.MAX_ITERATIONS} étapes. "
+        "Reformule ta demande en une question plus précise et je repars dessus.")
     await _remember_safe(mem, agent_id, last)
     return {"answer": last, "steps": steps, "iterations": config.MAX_ITERATIONS}
 
@@ -1014,6 +1050,7 @@ async def run_agent_stream(
 
     # Plafond d'itérations : là encore, on rend les trouvailles plutôt qu'un message vide.
     last = _repli_observations(observations, task) or \
-        f"⚠️ Limite de {config.MAX_ITERATIONS} itérations atteinte."
+        (f"⚠️ Je n'ai pas réussi à aboutir en {config.MAX_ITERATIONS} étapes. "
+         "Reformule ta demande en une question plus précise et je repars dessus.")
     await _remember_safe(mem, agent_id, last)
     yield {"type": "final", "answer": last, "iterations": config.MAX_ITERATIONS}

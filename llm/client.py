@@ -531,6 +531,7 @@ def chat_stream(messages: list, temperature: float = 0.6, niveau: str = "equilib
             client = OpenAI(api_key=cles[nom], base_url=_BASES[nom],
                             timeout=_timeout(TIMEOUT_STREAM), max_retries=0)
             break
+    ecrits = 0          # caractères réellement envoyés à l'écran (voir plus bas)
     try:
         if client is None:
             # Aucun fournisseur « streamable » → réponse complète d'un coup
@@ -546,14 +547,39 @@ def chat_stream(messages: list, temperature: float = 0.6, niveau: str = "equilib
                 delta = None
             if delta:
                 total += 1
+                ecrits += len(delta.strip())
                 yield delta
         try:
             from llm.usage import record
             record(total, provider=provider)  # approx (tokens ≈ chunks)
         except Exception:
             pass
+        # ⚠️ Un flux qui se termine sans avoir rien écrit n'était pas une erreur : la
+        # boucle ne produisait rien, aucune exception n'était levée, la fonction
+        # rendait la main normalement. Nova affichait une bulle TOTALEMENT VIDE et se
+        # déclarait terminée. Cas courant chez Groq quand le modèle part sur un
+        # tool-call vide, ou quand le contenu est filtré. Le chemin non streamé se
+        # protège pourtant de ce cas depuis toujours (`if out and out.strip()`).
+        if ecrits == 0:
+            logger.warning(f"[chat_stream] {provider} n'a rien écrit → repli non-stream")
+            secours = chat(messages, temperature=temperature, niveau=niveau, impose=impose)
+            if secours and secours.strip():
+                yield secours
+            else:
+                yield ("⚠️ Le modèle n'a rien renvoyé cette fois — c'est un raté de son "
+                       "côté, pas de ta question. Redemande-moi.")
     except Exception as e:
         logger.warning(f"[chat_stream] échec streaming ({str(e)[:80]}) → repli non-stream")
+        # ⚠️ Ce repli ne savait pas que du texte était DÉJÀ parti à l'écran. Quand la
+        # connexion cassait en cours de route, il collait une réponse entièrement
+        # neuve derrière une phrase coupée au milieu : Lohan lisait « Le théorème de »
+        # suivi d'une seconde réponse repartant du début, souvent contradictoire — et
+        # c'est cette bouillie qui était mémorisée. On ne relance une réponse complète
+        # que si rien n'a encore été affiché.
+        if ecrits:
+            yield ("\n\n⚠️ _Ma réponse a été coupée en cours de route (connexion au "
+                   "modèle interrompue). Redemande-moi pour l'avoir en entier._")
+            return
         try:
             yield chat(messages, temperature=temperature, niveau=niveau, impose=impose)
         except Exception as e2:

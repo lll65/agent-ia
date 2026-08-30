@@ -65,8 +65,15 @@ class PluginLoader:
     def run(self, name: str, params: dict) -> str:
         plugin = self.get(name)
         if not plugin:
+            # ⚠️ Ce message ne portait AUCUNE marque d'echec. Il finissait donc empile
+            # dans les observations et, au moment du repli, presente a l'utilisateur
+            # sous « voici ce que j'ai trouve — les sources sont reelles et
+            # verifiables », catalogue complet des outils internes a l'appui (dont
+            # ceux d'auto-modification du code). Le prefixe [ERREUR] le disqualifie
+            # partout d'un coup ; la liste des outils reste pour le modele, jamais
+            # pour l'ecran (voir _repli_observations dans agent/core.py).
             available = list(self._plugins.keys())
-            return f"Plugin '{name}' inconnu. Disponibles: {available}"
+            return f"[ERREUR] Plugin '{name}' inconnu. Disponibles: {available}"
         return plugin.safe_run(**self._params_acceptes(plugin, params))
 
     @staticmethod

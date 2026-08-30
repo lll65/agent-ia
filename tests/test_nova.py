@@ -4139,6 +4139,155 @@ def test_une_panne_ne_peut_plus_effacer():
         AU._ENTREPOT = vrai_au
 
 
+def test_protocole_jamais_montre_ni_flux_casse():
+    """AUDIT — sept defauts du noyau, tous verifies a l'execution.
+
+    Ils ont un point commun : Nova rendait quelque chose d'incomprehensible ou de
+    faux, sans jamais dire que ca n'allait pas.
+    """
+    import sys as _s, types as _t, asyncio as _a
+    from agent.core import parse_response, _repli_observations
+
+    # --- 1. « FINAL: » n'importe ou coupait l'appel d'outil -------------------
+    # « que signifie FINAL: en anglais » passait dans PARAMS et la reponse rendue
+    # devenait le fragment « en anglais"} ».
+    a, p, f = parse_response(
+        'THOUGHT: je cherche.\nACTION: search_web\nPARAMS: {"query": "que signifie FINAL: en anglais"}')
+    check("FINAL dans les PARAMS ne conclut pas", (a, f), ("search_web", None))
+    a, p, f = parse_response(
+        'THOUGHT: je chercherai puis je donnerai FINAL: la synthese\n'
+        'ACTION: search_web\nPARAMS: {"query": "x"}')
+    check("FINAL dans le THOUGHT ne conclut pas", a, "search_web")
+    # Un vrai FINAL continue de marcher, decore ou non.
+    check("FINAL nu", parse_response("FINAL: Voici ta reponse.")[2], "Voici ta reponse.")
+    check("FINAL en gras", parse_response("**FINAL:** Voici ta reponse.")[2], "Voici ta reponse.")
+    check("FINAL apres un THOUGHT",
+          parse_response("THOUGHT: j'ai tout.\nFINAL: Le CAC 40 a gagne 0,8 %.")[2],
+          "Le CAC 40 a gagne 0,8 %.")
+    # Du protocole ecrit APRES le FINAL ne doit pas s'afficher.
+    check("le protocole residuel est coupe",
+          parse_response('FINAL: Reponse.\nACTION: search_web\nPARAMS: {}')[2], "Reponse.")
+    # ACTION decoree (defaut deja corrige — on le verrouille avec les autres).
+    for forme in ("[search_web]", "`search_web`", "search_web"):
+        check(f"ACTION {forme} lance l'outil",
+              parse_response(f'THOUGHT: ok\nACTION: {forme}\nPARAMS: {{"query": "x"}}')[0],
+              "search_web")
+
+    # --- 2. Un message d'erreur n'est pas une « source reelle et verifiable » --
+    from plugins import get_loader
+    obs = get_loader().run("gmail", {"x": 1})     # nom d'outil invente par le modele
+    check("l'echec est marque a la source", obs.startswith("[ERREUR]"), True)
+    repli = _repli_observations([obs], "regarde mes mails")
+    check("un message d'erreur n'est jamais presente comme une trouvaille", repli, "")
+    check("le catalogue des outils internes ne fuit pas", "read_own_code" in repli, False)
+    # Une vraie trouvaille passe toujours.
+    vrai = _repli_observations(["1. Le Monde\nhttps://lemonde.fr\nLe CAC 40 gagne 0,8 %."], "actu")
+    check("une vraie trouvaille est rendue", "lemonde.fr" in vrai, True)
+
+    # --- 3. Plafond d'iterations : jamais le protocole brut -------------------
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parents[1] / "agent" / "core.py").read_text(encoding="utf-8")
+    check("le plafond filtre la derniere sortie brute",
+          '_texte_lisible(steps[-1].get("llm_output", ""))' in src, True)
+    check("plus de llm_output rendu tel quel",
+          'steps[-1].get("llm_output", "Limite' in src, False)
+
+    # --- 4. Streaming : flux vide et flux coupe ------------------------------
+    etat = {}
+    faux_openai = _t.ModuleType("openai")
+    faux_openai.OpenAI = lambda **k: etat["c"]
+    avant = _s.modules.get("openai")
+    _s.modules["openai"] = faux_openai
+    import llm.client as C
+    vrai_chat, vraie_cle = C.chat, C.config.GROQ_API_KEY
+    try:
+        class _Chunk:
+            def __init__(self, t):
+                self.choices = [_t.SimpleNamespace(delta=_t.SimpleNamespace(content=t))]
+
+        def _faux(chunks, casse=None):
+            class Comp:
+                def create(self, **kw):
+                    def gen():
+                        for i, c in enumerate(chunks):
+                            if casse is not None and i == casse:
+                                raise RuntimeError("IncompleteRead")
+                            yield _Chunk(c)
+                    return gen()
+            return _t.SimpleNamespace(chat=_t.SimpleNamespace(completions=Comp()))
+
+        C.chat = lambda *a, **k: "REPONSE-DE-SECOURS"
+        C.config.GROQ_API_KEY = "x"
+        msg = [{"role": "user", "content": "x"}]
+
+        # Flux totalement vide : Nova affichait une bulle BLANCHE et se declarait finie.
+        etat["c"] = _faux([])
+        check("un flux vide bascule sur le repli",
+              "".join(C.chat_stream(msg)), "REPONSE-DE-SECOURS")
+
+        # Coupure APRES avoir affiche du texte : on collait une seconde reponse
+        # complete derriere une phrase coupee au milieu.
+        etat["c"] = _faux(["Le theoreme de ", "Pythagore"], casse=1)
+        r = "".join(C.chat_stream(msg))
+        check("pas de seconde reponse collee", "REPONSE-DE-SECOURS" in r, False)
+        check("le debut deja affiche est conserve", r.startswith("Le theoreme de"), True)
+        check("l'utilisateur est averti de la coupure", "coupée" in r, True)
+
+        # Coupure AVANT tout texte : la, le repli complet est legitime.
+        etat["c"] = _faux(["a"], casse=0)
+        check("coupure immediate → repli complet",
+              "".join(C.chat_stream(msg)), "REPONSE-DE-SECOURS")
+
+        # Cas normal : rien ne change.
+        etat["c"] = _faux(["Bonjour ", "Lohan."])
+        check("le cas normal est intact", "".join(C.chat_stream(msg)), "Bonjour Lohan.")
+    finally:
+        C.chat, C.config.GROQ_API_KEY = vrai_chat, vraie_cle
+        if avant is None:
+            _s.modules.pop("openai", None)
+        else:
+            _s.modules["openai"] = avant
+
+    # --- 5. Un <think> jamais referme ne doit pas vider la bulle -------------
+    api_src = (_P(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
+    check("une bulle vide declenche un message explicite",
+          'if not acc.strip():' in api_src, True)
+    check("les erreurs du worker ne passent plus par le filtre",
+          'push(("err", f"❌' in api_src, True)
+    # Le filtre jette bien un brouillon non referme — c'est ce qui vidait la bulle.
+    from agent.core import FiltreRaisonnement
+    fil = FiltreRaisonnement()
+    fil("<think>")
+    fil("L'utilisateur demande son agenda…")
+    check("un <think> non referme est jete", fil.reste(), "")
+
+    # --- 6. La reponse d'une app est memorisee, pas seulement ses echecs -----
+    check("la reponse app est memorisee",
+          "await _off(_remember_answer, yield_acc[0])" in api_src, True)
+
+    # --- 7. Le resume n'est plus refait avant chaque reponse -----------------
+    from memory.manager import MemoryManager
+    m = MemoryManager.__new__(MemoryManager)
+    m._summary_cache, m._summary_couvre = {}, {}
+    tailles = {"n": 0}
+    m._taille_historique = lambda aid: tailles["n"]
+    from config import config as _cfg
+    seuil = _cfg.SUMMARY_THRESHOLD
+    tailles["n"] = seuil - 1
+    check("sous le seuil, pas de resume", m.should_summarize("a"), False)
+    tailles["n"] = seuil
+    check("au seuil, un resume", m.should_summarize("a"), True)
+    m.cache_summary("a", "RESUME")
+    check("juste apres, on ne recommence pas", m.should_summarize("a"), False)
+    tailles["n"] = seuil + 3
+    check("trois messages de plus ne suffisent pas", m.should_summarize("a"), False)
+    tailles["n"] = seuil * 2
+    check("un palier complet plus tard, oui", m.should_summarize("a"), True)
+    # Et chaque message est borne dans le prompt de resume.
+    som = (_P(__file__).resolve().parents[1] / "memory" / "summarizer.py").read_text(encoding="utf-8")
+    check("les messages sont tronques dans le prompt de resume", "[:800]" in som, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -4164,7 +4313,8 @@ if __name__ == "__main__":
                test_derniers_defauts_audit, test_aucune_cle_ne_sort,
                test_protocole_decore, test_aucune_route_ouverte,
                test_telegram_prive_et_resultats_pousses,
-               test_une_panne_ne_peut_plus_effacer):
+               test_une_panne_ne_peut_plus_effacer,
+               test_protocole_jamais_montre_ni_flux_casse):
         try:
             fn()
         except Exception as e:
