@@ -10,7 +10,11 @@ async def summarize_messages(messages: list[dict], model: str | None = None) -> 
         return ""
 
     from llm.client import chat
-    conv = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in messages)
+    # ⚠️ Les messages partaient ENTIERS. Qu'un seul soit une transcription du Mode
+    # Cours ou un tableur collé, et le prompt de résumé pesait des dizaines de
+    # milliers de caractères — payés avant même que Nova commence à répondre.
+    conv = "\n".join(f"{m['role'].upper()}: {str(m.get('content') or '')[:800]}"
+                     for m in messages)
     prompt = (
         f"Voici une conversation:\n\n{conv}\n\n"
         f"Fais un résumé dense en 3-5 phrases: sujets, décisions, fichiers créés, tâches. "

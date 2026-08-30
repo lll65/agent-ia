@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from agent.horloge import maintenant
+from agent.entrepot import Entrepot
 from config import config
 
 logger = logging.getLogger(__name__)
@@ -40,57 +41,21 @@ TEMPLATES = [
 
 
 # ── Persistance ───────────────────────────────────────────────────────────────
-def _sb():
-    if not getattr(config, "SUPABASE_DB_URL", ""):
-        return None
-    try:
-        import psycopg2
-        conn = psycopg2.connect(config.SUPABASE_DB_URL, connect_timeout=10)
-        conn.autocommit = True
-        with conn.cursor() as c:
-            c.execute("CREATE TABLE IF NOT EXISTS automations "
-                      "(id text PRIMARY KEY, data jsonb)")
-        return conn
-    except Exception:
-        return None
+_ENTREPOT = Entrepot("automations", "data/automations.json", cle="id")
+
+
+def _charge() -> tuple[list, bool]:
+    """(éléments, lecture fiable ?) — voir agent/entrepot.py.
+
+    ⚠️ L'ancien couple _load/_save reconstruisait la table entière (DELETE puis
+    INSERT) a partir d'une lecture qui avait le droit d'echouer en silence : une
+    coupure Supabase de quelques secondes effacait tout, definitivement.
+    """
+    return _ENTREPOT.charge()
 
 
 def _load() -> list:
-    conn = _sb()
-    if conn:
-        try:
-            with conn.cursor() as c:
-                c.execute("SELECT data FROM automations")
-                rows = c.fetchall()
-            conn.close()
-            return [r[0] if isinstance(r[0], dict) else json.loads(r[0]) for r in rows]
-        except Exception:
-            pass
-    if _FILE.exists():
-        try:
-            return json.loads(_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return []
-    return []
-
-
-def _save(items: list) -> None:
-    try:
-        _FILE.parent.mkdir(parents=True, exist_ok=True)
-        _FILE.write_text(json.dumps(items, ensure_ascii=False, indent=1), encoding="utf-8")
-    except Exception:
-        pass
-    conn = _sb()
-    if conn:
-        try:
-            with conn.cursor() as c:
-                c.execute("DELETE FROM automations")
-                for it in items:
-                    c.execute("INSERT INTO automations (id, data) VALUES (%s, %s)",
-                              (it["id"], json.dumps(it, ensure_ascii=False)))
-            conn.close()
-        except Exception:
-            pass
+    return _charge()[0]
 
 
 # ── API interne ───────────────────────────────────────────────────────────────
@@ -110,19 +75,16 @@ def add(titre: str, prompt: str, hour: int = 8, days=None, icon: str = "⚡",
             "icon": icon, "active": True, "cree": time.time(),
             "last_run": None, "last_result": "", "runs": 0}
     with _LOCK:
-        items = _load()
-        items.append(item)
-        _save(items)
+        _ENTREPOT.ecrit_un(item)
     return item
 
 
 def update(aid: str, **changes) -> bool:
     with _LOCK:
-        items = _load()
-        for it in items:
+        for it in _load():
             if it["id"] == aid:
                 it.update({k: v for k, v in changes.items() if v is not None})
-                _save(items)
+                _ENTREPOT.ecrit_un(it)
                 return True
     return False
 
@@ -130,10 +92,9 @@ def update(aid: str, **changes) -> bool:
 def delete(aid: str) -> bool:
     with _LOCK:
         items = _load()
-        new = [i for i in items if i["id"] != aid]
-        if len(new) == len(items):
+        if not any(i["id"] == aid for i in items):
             return False
-        _save(new)
+        _ENTREPOT.supprime([aid])
         return True
 
 
@@ -165,13 +126,11 @@ def marquer_lus(ids=None) -> int:
     """Marque comme vus : ils ne seront plus represents a chaque ouverture."""
     n = 0
     with _LOCK:
-        items = _load()
-        for it in items:
+        for it in _load():
             if it.get("lu") is False and (ids is None or it["id"] in ids):
                 it["lu"] = True
+                _ENTREPOT.ecrit_un(it)
                 n += 1
-        if n:
-            _save(items)
     return n
 
 
@@ -269,8 +228,7 @@ async def run_one(item: dict) -> str:
         envoi = "non envoye : TELEGRAM_TOKEN absent"
 
     with _LOCK:
-        items = _load()
-        for it in items:
+        for it in _load():
             if it["id"] == item["id"]:
                 it["last_run"] = time.time()
                 it["dernier_envoi"] = envoi
@@ -281,7 +239,7 @@ async def run_one(item: dict) -> str:
                 # automatisation que personne ne voit ne sert a rien. On le marque donc
                 # NON LU, et Nova le presente d'elle-meme a la prochaine ouverture.
                 it["lu"] = False
-        _save(items)
+                _ENTREPOT.ecrit_un(it)
     try:
         from agent.squad import record
         record("nova", "", f"⚡ {item['titre']}")

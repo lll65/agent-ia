@@ -531,6 +531,7 @@ def chat_stream(messages: list, temperature: float = 0.6, niveau: str = "equilib
             client = OpenAI(api_key=cles[nom], base_url=_BASES[nom],
                             timeout=_timeout(TIMEOUT_STREAM), max_retries=0)
             break
+    ecrits = 0          # caractères réellement envoyés à l'écran (voir plus bas)
     try:
         if client is None:
             # Aucun fournisseur « streamable » → réponse complète d'un coup
@@ -546,14 +547,39 @@ def chat_stream(messages: list, temperature: float = 0.6, niveau: str = "equilib
                 delta = None
             if delta:
                 total += 1
+                ecrits += len(delta.strip())
                 yield delta
         try:
             from llm.usage import record
             record(total, provider=provider)  # approx (tokens ≈ chunks)
         except Exception:
             pass
+        # ⚠️ Un flux qui se termine sans avoir rien écrit n'était pas une erreur : la
+        # boucle ne produisait rien, aucune exception n'était levée, la fonction
+        # rendait la main normalement. Nova affichait une bulle TOTALEMENT VIDE et se
+        # déclarait terminée. Cas courant chez Groq quand le modèle part sur un
+        # tool-call vide, ou quand le contenu est filtré. Le chemin non streamé se
+        # protège pourtant de ce cas depuis toujours (`if out and out.strip()`).
+        if ecrits == 0:
+            logger.warning(f"[chat_stream] {provider} n'a rien écrit → repli non-stream")
+            secours = chat(messages, temperature=temperature, niveau=niveau, impose=impose)
+            if secours and secours.strip():
+                yield secours
+            else:
+                yield ("⚠️ Le modèle n'a rien renvoyé cette fois — c'est un raté de son "
+                       "côté, pas de ta question. Redemande-moi.")
     except Exception as e:
         logger.warning(f"[chat_stream] échec streaming ({str(e)[:80]}) → repli non-stream")
+        # ⚠️ Ce repli ne savait pas que du texte était DÉJÀ parti à l'écran. Quand la
+        # connexion cassait en cours de route, il collait une réponse entièrement
+        # neuve derrière une phrase coupée au milieu : Lohan lisait « Le théorème de »
+        # suivi d'une seconde réponse repartant du début, souvent contradictoire — et
+        # c'est cette bouillie qui était mémorisée. On ne relance une réponse complète
+        # que si rien n'a encore été affiché.
+        if ecrits:
+            yield ("\n\n⚠️ _Ma réponse a été coupée en cours de route (connexion au "
+                   "modèle interrompue). Redemande-moi pour l'avoir en entier._")
+            return
         try:
             yield chat(messages, temperature=temperature, niveau=niveau, impose=impose)
         except Exception as e2:
@@ -980,9 +1006,24 @@ def _gemini_chat(messages: list, model: str, temperature: float) -> str:
       - role 'user'      → 'user'
     """
     import requests
+    import time as _t
 
     if not config.GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY absente — impossible d'appeler Gemini.")
+
+    # ⚠️ Gemini etait le SEUL fournisseur reste hors du systeme de delais : requests
+    # recevait 20 s puis 120 s CODES EN DUR, qui ignorent _BUDGET_APPEL et TIMEOUT_LLM.
+    # Quand Google etait lent ou muet, un seul appel mangeait 1,7x le budget de toute
+    # la chaine : les fournisseurs suivants n'etaient jamais essayes, et Lohan lisait
+    # apres 90 s « Aucun modele disponible — renouvelle une cle gratuite » alors que
+    # Groq et Mistral repondaient parfaitement. Un diagnostic FAUX qui l'envoyait
+    # renouveler des cles saines. C'est exactement la panne que l'en-tete de ce
+    # fichier dit avoir corrigee pour NVIDIA.
+    _budget = _timeout(TIMEOUT_LLM)
+    _lim = float(getattr(_budget, "read", None) or getattr(_budget, "timeout", None)
+                 or (_budget if isinstance(_budget, (int, float)) else TIMEOUT_LLM))
+    _lim = max(5.0, min(_lim, TIMEOUT_LLM))
+    _echeance = _t.monotonic() + _lim
 
     system_parts: list[str] = []
     contents: list[dict] = []
@@ -1014,8 +1055,9 @@ def _gemini_chat(messages: list, model: str, temperature: float) -> str:
         if m and m not in candidats:
             candidats.append(m)
     try:
+        # Le catalogue est un CONFORT : il ne doit jamais manger le budget de la reponse.
         lst = requests.get("https://generativelanguage.googleapis.com/v1beta/models",
-                           headers=_gemini_auth(), timeout=20)
+                           headers=_gemini_auth(), timeout=min(8.0, _lim / 3))
         if lst.status_code == 200:
             for mo in (lst.json().get("models") or []):
                 nom = (mo.get("name") or "").replace("models/", "")
@@ -1026,10 +1068,18 @@ def _gemini_chat(messages: list, model: str, temperature: float) -> str:
 
     resp, derniere = None, ""
     for m in candidats:
+        # La BOUCLE aussi est bornee : essayer huit modeles a 120 s chacun revenait au
+        # meme probleme, une fois par candidat.
+        restant = _echeance - _t.monotonic()
+        if restant <= 2.0:
+            derniere = derniere or f"budget epuise apres {len(candidats)} candidat(s)"
+            break
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
-        r = requests.post(url, headers=_gemini_auth(), json=payload, timeout=120)
+        r = requests.post(url, headers=_gemini_auth(), json=payload, timeout=restant)
         if r.status_code in (400, 401, 403):          # repli : ancienne méthode ?key=
-            r = requests.post(url, params={"key": config.GEMINI_API_KEY}, json=payload, timeout=120)
+            restant = max(2.0, _echeance - _t.monotonic())
+            r = requests.post(url, params={"key": config.GEMINI_API_KEY}, json=payload,
+                              timeout=restant)
         if r.status_code == 200:
             _MODELES_OK["gemini"] = m
             resp = r

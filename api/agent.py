@@ -468,12 +468,25 @@ def _repere_temporel() -> str:
         return ""
 
 
+# ⚠️ SECURITE. Le contenu d'une page web ou d'un mail est verse dans la conversation
+# de l'agent. Une page hostile qui remonte dans une recherche peut donc glisser une
+# fausse consigne (voir contenu_externe dans agent/core.py, qui la neutralise). Ce
+# verrou-la est le second : meme si une consigne passait, ces outils-la ne sont plus
+# a portee. Ils REECRIVENT le code de Nova ou executent du Python arbitraire sur le
+# serveur — de quoi lire os.environ et repartir avec toutes les cles. Lohan ne les a
+# jamais demandes depuis le chat ; ils restent joignables par les routes dediees.
+_OUTILS_SENSIBLES = {
+    "apply_self_modification", "rollback_last_modification", "propose_code_diff",
+    "read_own_code", "self_modification_status", "exec_python", "write_file",
+}
+
+
 def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
     """Prépare la config de l'agent en priorisant le bon outil selon l'intention :
     - Intention app (agenda/mail/calendar/slack/notion) → connected_app en 1er, PAS de web.
     - Sinon question factuelle → recherche web forcée en 1er.
     - Outils finance masqués sauf demande explicite (anti-dérive bourse)."""
-    tools = list(get_loader().list_all().keys())
+    tools = [t for t in get_loader().list_all().keys() if t not in _OUTILS_SENSIBLES]
     app = _app_intent(message)
     fin = _finance_intent(message)
     if not fin:
@@ -3463,7 +3476,11 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
                                            impose=_impose):
                         push(("t", tok))
                 except Exception as e:
-                    push(("t", f"❌ {str(e)[:120]}"))
+                    # ⚠️ Poussé sur le canal « t », ce message passait par le filtre de
+                    # raisonnement : s'il arrivait alors que le filtre était « dedans »
+                    # (un <think> ouvert), il était AVALÉ. L'erreur réelle disparaissait.
+                    # Canal séparé : une erreur ne se filtre pas.
+                    push(("err", f"❌ {str(e)[:120]}"))
                 finally:
                     # Le nom du modèle est renseigné DANS ce thread : sans ce passage de
                     # relais, il ne remonte jamais à la coroutine et l'UI reste muette.
@@ -3492,11 +3509,27 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
                         from llm.client import DERNIER as _D
                         _D.set(val)
                     continue
+                if kind == "err":
+                    acc += val
+                    yield val
+                    continue
                 if kind == "end":
                     reste = filtre.reste()
                     if reste:
                         acc += reste
                         yield reste
+                    # ⚠️ Un brouillon <think> jamais refermé — flux coupé par max_tokens
+                    # ou par le fournisseur — fait rendre "" à filtre.reste() (« on le
+                    # jette »). `acc` restait donc VIDE : après « je regarde ton agenda »
+                    # et « ✅ 8 événements », Nova affichait une bulle totalement blanche
+                    # et rendait la main. Aucun message, rien à relire : impossible de
+                    # savoir si ça avait échoué ou si elle n'avait rien à dire.
+                    if not acc.strip():
+                        secours = ("⚠️ Ma réponse a été coupée avant d'être rédigée "
+                                   "(le modèle a été interrompu en pleine réflexion). "
+                                   "Redemande-moi, ça repart généralement du premier coup.")
+                        acc += secours
+                        yield secours
                     break
                 propre = filtre(val)
                 if propre:
@@ -3579,6 +3612,15 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
                 msgs = _format_app_messages(message, direct["action"], direct["obs"], direct["is_write"])
                 async for tok in _stream_llm(msgs, 0.2, niveau=_niveau_tache(message)):
                     yield sse({"type": "token", "t": tok})
+                # ⚠️ L'enveloppe _direct_app_prepare ne mémorise que la branche
+                # `done_answer`, c'est-à-dire uniquement les ÉCHECS, annulations et
+                # demandes de confirmation. Quand Google Calendar ou Gmail RÉPOND, on
+                # arrive ici : ni la question ni la réponse n'étaient écrites en
+                # mémoire. « Montre-moi mes mails » puis « réponds au deuxième » —
+                # Nova ne retrouvait ni la question ni la liste affichée et redemandait
+                # de quoi on parlait. Exactement ce que _remember_answer devait régler.
+                await _off(_remember_user, message)
+                await _off(_remember_answer, yield_acc[0])
                 yield sse({"type": "answer", "text": yield_acc[0], "final": True})
                 yield sse({"type": "model", "name": _modele_utilise()})
                 yield sse({"type": "done"}); return

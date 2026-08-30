@@ -31,3 +31,19 @@ data/uploads/
 data/documents.json
 data/profile.json
 data/competences.json
+
+# ── Donnees PERSONNELLES ecrites par l'application ────────────────────────────
+# ⚠️ data/automations.json etait SUIVI par git. Il est vide dans l'historique, mais
+# des que Nova enregistre une automatisation il contient le texte libre de Lohan —
+# « rappelle-moi le rendez-vous chez le Dr X », une adresse mail de proche, un
+# horaire. Le prochain `git add -A` l'aurait publie sur GitHub sans que personne ne
+# le remarque, puisqu'il etait deja versionne, et l'historique git garde tout.
+# Trois autres fichiers ecrits par l'app etaient dans le meme cas : le portefeuille
+# PEA (positions et montants), les lecons tirees des vraies conversations, et les
+# modifications de code generees.
+data/automations.json
+data/portfolios.json
+data/self_improve.json
+data/self_mods/
+data/activity.json
+data/voice_queue.json

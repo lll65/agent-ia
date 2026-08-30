@@ -41,6 +41,9 @@ class MemoryManager:
         self.backend = None     # SupabaseStore persistant (prioritaire)
         self.chroma = None      # ChromaDB local (fallback sémantique)
         self._summary_cache: dict[str, str] = {}
+        # Taille de l'historique au moment du dernier résumé : c'est ce qui
+        # permet de ne re-résumer que s'il s'est passé quelque chose depuis.
+        self._summary_couvre: dict[str, int] = {}
         self.echec_persistance = ""   # pourquoi la mémoire n'est pas persistante
 
         # 1. Tente le backend persistant Supabase
@@ -160,13 +163,39 @@ class MemoryManager:
 
     def cache_summary(self, agent_id: str, summary: str):
         self._summary_cache[agent_id] = summary
+        # On note COMBIEN de messages ce résumé couvre : sans ça, impossible de
+        # savoir s'il reste quelque chose de neuf à résumer.
+        self._summary_couvre[agent_id] = self._taille_historique(agent_id)
 
     def get_summary(self, agent_id: str) -> str | None:
         return self._summary_cache.get(agent_id)
 
+    def _taille_historique(self, agent_id: str) -> int:
+        try:
+            return len(self.recall_recent(agent_id, limit=10_000))
+        except Exception:
+            return 0
+
     def should_summarize(self, agent_id: str) -> bool:
-        history = self.recall_recent(agent_id, limit=config.SUMMARY_THRESHOLD + 1)
-        return len(history) >= config.SUMMARY_THRESHOLD
+        """Y a-t-il assez de NOUVEAU pour justifier un appel LLM de résumé ?
+
+        ⚠️ On répondait « oui » dès que l'historique atteignait 15 messages. Comme
+        l'historique ne diminue jamais, c'était vrai en PERMANENCE à partir du 8e
+        échange : un aller-retour LLM complet s'ajoutait avant CHAQUE réponse, pour
+        toujours. Sur téléphone, Lohan attendait ce résumé avant que Nova commence
+        seulement à réfléchir — et sur des offres gratuites saturées, ce doublement
+        d'appels épuisait le quota et faisait échouer la vraie réponse à cause d'un
+        résumé qui, en plus, ne portait que sur les messages déjà réinjectés en clair
+        juste en dessous.
+        """
+        taille = self._taille_historique(agent_id)
+        if taille < config.SUMMARY_THRESHOLD:
+            return False
+        deja = self._summary_couvre.get(agent_id)
+        if deja is None:
+            return True
+        # Un nouveau résumé seulement après un palier complet de messages en plus.
+        return taille - deja >= config.SUMMARY_THRESHOLD
 
     # ── Effacement ───────────────────────────────────────────────────────────
 
@@ -178,3 +207,4 @@ class MemoryManager:
             if self.chroma and self.chroma.available:
                 self.chroma.delete_collection(agent_id)
         self._summary_cache.pop(agent_id, None)
+        self._summary_couvre.pop(agent_id, None)
