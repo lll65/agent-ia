@@ -47,3 +47,6 @@ data/self_improve.json
 data/self_mods/
 data/activity.json
 data/voice_queue.json
+# Les valeurs suivies disent publiquement ce que Lohan suit en bourse. Le fichier
+# reste lisible par le PEA Watcher s'il existe, mais il ne part plus sur GitHub.
+data/watchlist.txt

@@ -475,10 +475,7 @@ def _repere_temporel() -> str:
 # a portee. Ils REECRIVENT le code de Nova ou executent du Python arbitraire sur le
 # serveur — de quoi lire os.environ et repartir avec toutes les cles. Lohan ne les a
 # jamais demandes depuis le chat ; ils restent joignables par les routes dediees.
-_OUTILS_SENSIBLES = {
-    "apply_self_modification", "rollback_last_modification", "propose_code_diff",
-    "read_own_code", "self_modification_status", "exec_python", "write_file",
-}
+from agent.core import OUTILS_SENSIBLES as _OUTILS_SENSIBLES
 
 
 def _build_agent_cfg(message: str, name: str = "Nova") -> dict:

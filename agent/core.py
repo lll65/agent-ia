@@ -283,6 +283,23 @@ class FiltreRaisonnement:
 
 
 
+# ── Outils hors de portee des conversations ───────────────────────────────────
+# ⚠️ Ces outils REECRIVENT le code de Nova ou executent du Python arbitraire sur le
+# serveur — de quoi lire os.environ et repartir avec toutes les cles. Ils n'ont rien
+# a faire dans un fil de discussion, d'autant que le contenu des pages web et des
+# mails y est verse (voir contenu_externe). Ils restent joignables par les routes
+# dediees, qui exigent la cle.
+OUTILS_SENSIBLES = {
+    "apply_self_modification", "rollback_last_modification", "propose_code_diff",
+    "read_own_code", "self_modification_status", "exec_python", "write_file",
+}
+
+
+def outils_pour_conversation(tous) -> list:
+    """Les outils qu'on accepte d'exposer dans un fil de discussion."""
+    return [t for t in tous if t not in OUTILS_SENSIBLES]
+
+
 # ── Contenu venu de l'exterieur ───────────────────────────────────────────────
 # ⚠️ DEFAUT CRITIQUE. Le resultat d'un outil etait insere dans la conversation avec
 # le role « user » — EXACTEMENT le meme role que les demandes de Lohan — sans le

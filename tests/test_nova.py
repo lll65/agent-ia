@@ -4307,11 +4307,13 @@ def test_injection_donnees_et_cours_complet():
                             capture_output=True, text=True).stdout.split()
     for interdit in ("data/automations.json", "data/portfolios.json",
                      "data/self_improve.json", "data/profile.json",
-                     "data/documents.json", "data/competences.json"):
+                     "data/documents.json", "data/competences.json",
+                     # La watchlist disait publiquement ce que Lohan suit en bourse.
+                     "data/watchlist.txt"):
         check(f"{interdit} n'est plus suivi par git", interdit in suivis, False)
     ignore = (racine / ".gitignore").read_text(encoding="utf-8")
     for regle in ("data/automations.json", "data/portfolios.json",
-                  "data/self_improve.json", "data/self_mods/"):
+                  "data/self_improve.json", "data/self_mods/", "data/watchlist.txt"):
         check(f"{regle} est dans .gitignore", regle in ignore, True)
 
     # --- 2. CRITIQUE : une page web ne pilote plus les outils ----------------
@@ -4464,6 +4466,66 @@ def test_injection_donnees_et_cours_complet():
           "timeout=120)" in src_llm.split("def _gemini_chat", 1)[1].split("def ", 1)[0], False)
 
 
+def test_discord_ferme_et_outils_dangereux_hors_de_portee():
+    """AUDIT — le bot Discord repondait a N'IMPORTE QUI, avec TOUS les outils.
+
+    Pire que Telegram : sa config d'agent etait `list(get_loader().list_all().keys())`,
+    donc exec_python (Python arbitraire sur le serveur, donc os.environ, donc toutes
+    les cles) et apply_self_modification (reecriture du code de Nova). N'importe quel
+    membre du serveur pouvait ecrire « !ia … » ou mentionner le bot ; « !outils »
+    listait tout l'outillage interne a qui le demandait. Sur un serveur public,
+    c'etait ouvert au monde entier.
+    """
+    import importlib, tempfile, pathlib
+    from pathlib import Path as _P
+    racine = _P(__file__).resolve().parents[1]
+    src = (racine / "bots" / "discord_bot.py").read_text(encoding="utf-8")
+
+    # 1. Chaque point d'entree passe par le filtre.
+    for entree in ("ask_agent", "clear_memory", "list_tools"):
+        bloc = src.split(f"async def {entree}(", 1)[1][:300]
+        check(f"filtre proprietaire sur !{entree}", "_autorise(ctx)" in bloc, True)
+    bloc_mention = src.split("async def on_message(", 1)[1][:600]
+    check("filtre proprietaire sur la mention", "_autorise(message)" in bloc_mention, True)
+
+    # 2. Le bot ne se donne plus tous les outils.
+    check("les outils ne sont plus pris en bloc",
+          '"tools": list(get_loader()' in src, False)
+    check("il passe par le filtre commun", "outils_pour_conversation(" in src, True)
+    from agent.core import outils_pour_conversation, OUTILS_SENSIBLES
+    from plugins import get_loader
+    permis = outils_pour_conversation(get_loader().list_all().keys())
+    for dangereux in ("exec_python", "apply_self_modification", "write_file",
+                      "read_own_code", "rollback_last_modification"):
+        check(f"{dangereux} hors de portee", dangereux in permis, False)
+    check("les outils utiles restent", "search_web" in permis, True)
+    # Et « !outils » ne liste plus que ce qui est reellement permis.
+    check("!outils ne divulgue plus l'outillage interne",
+          'if k in (DEFAULT_AGENT["tools"] or [])' in src, True)
+
+    # 3. Telegram et Discord ont chacun LEUR proprietaire.
+    # ⚠️ Sans separation, le premier chat Telegram devenait proprietaire de tout et
+    # le bot Discord aurait refuse Lohan lui-meme, pour toujours.
+    tp = importlib.import_module("bots.telegram_push")
+    with tempfile.TemporaryDirectory() as d:
+        tp._CHATS_FILE = pathlib.Path(d) / "chats.json"
+        tp.config.TELEGRAM_CHAT_ID = ""
+        tp.config.SUPABASE_DB_URL = ""
+        tp.config.DISCORD_OWNER_ID = ""
+        check("Telegram : le premier venu", tp.est_proprietaire(111), True)
+        check("Discord peut ENCORE se reclamer", tp.est_proprietaire("discord:777"), True)
+        check("…et un autre Discord est refuse", tp.est_proprietaire("discord:888"), False)
+        check("…et un autre Telegram aussi", tp.est_proprietaire(222), False)
+        check("proprietaire Telegram", tp.proprietaire("telegram"), "111")
+        check("proprietaire Discord", tp.proprietaire("discord"), "discord:777")
+        # Une diffusion ne part QUE vers Telegram : un id Discord n'est pas un chat_id.
+        check("la diffusion ne vise que Telegram", tp._targets(), ["111"])
+
+    # La variable de configuration existe pour fixer le proprietaire a la main.
+    from config import config as _cfg
+    check("DISCORD_OWNER_ID est configurable", hasattr(_cfg, "DISCORD_OWNER_ID"), True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -4491,7 +4553,8 @@ if __name__ == "__main__":
                test_telegram_prive_et_resultats_pousses,
                test_une_panne_ne_peut_plus_effacer,
                test_protocole_jamais_montre_ni_flux_casse,
-               test_injection_donnees_et_cours_complet):
+               test_injection_donnees_et_cours_complet,
+               test_discord_ferme_et_outils_dangereux_hors_de_portee):
         try:
             fn()
         except Exception as e:
