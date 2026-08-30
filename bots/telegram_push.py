@@ -98,46 +98,57 @@ def _ecrire(chats: list[dict]) -> None:
 
 
 # ── Propriétaire ──────────────────────────────────────────────────────────────
-def _configure() -> str:
+# Chaque messagerie a SON propriétaire. Un identifiant Discord est préfixé
+# « discord: » ; un identifiant Telegram est nu. ⚠️ Sans cette séparation, le premier
+# chat Telegram devenait propriétaire de tout, et le bot Discord ne pouvait plus
+# JAMAIS se réclamer : il aurait refusé Lohan lui-même.
+def _canal_de(chat_id) -> str:
+    return "discord" if str(chat_id or "").startswith("discord:") else "telegram"
+
+
+def _configure(canal: str = "telegram") -> str:
     """L'identifiant fixé à la main dans les variables d'environnement, s'il existe."""
-    for attr in ("TELEGRAM_OWNER_ID", "TELEGRAM_CHAT_ID"):
+    attrs = (("DISCORD_OWNER_ID",) if canal == "discord"
+             else ("TELEGRAM_OWNER_ID", "TELEGRAM_CHAT_ID"))
+    for attr in attrs:
         v = str(getattr(config, attr, "") or "").strip()
         if v:
-            return v
+            return f"discord:{v}" if canal == "discord" and not v.startswith("discord:") else v
     return ""
 
 
-def proprietaire() -> str:
-    """L'identifiant du seul chat autorisé, ou "" si personne n'a encore parlé."""
-    fixe = _configure()
+def proprietaire(canal: str = "telegram") -> str:
+    """L'identifiant du seul compte autorisé sur ce canal, ou "" si personne n'a parlé."""
+    fixe = _configure(canal)
     if fixe:
         return fixe
     for ch in _lire():
-        if ch.get("proprietaire"):
+        if ch.get("proprietaire") and _canal_de(ch["chat_id"]) == canal:
             return ch["chat_id"]
     return ""
 
 
 def est_proprietaire(chat_id) -> bool:
-    """Ce chat a-t-il le droit de parler au bot ET de recevoir les diffusions ?
+    """Ce compte a-t-il le droit de parler au bot ET de recevoir les diffusions ?
 
-    Premier venu = propriétaire (le bot n'est utilisable que par une personne).
-    Tous les suivants sont refusés — et surtout jamais enregistrés comme cible.
+    Premier venu = propriétaire de SON canal (le bot n'est utilisable que par une
+    personne). Tous les suivants sont refusés — et surtout jamais enregistrés
+    comme cible de diffusion.
     """
     if chat_id is None:
         return False
     cid = str(chat_id)
+    canal = _canal_de(cid)
     with _LOCK:
-        actuel = proprietaire()
+        actuel = proprietaire(canal)
         if actuel:
             return cid == actuel
-        # Personne n'est encore propriétaire : ce chat le devient.
-        chats = _lire()
-        chats = [c for c in chats if c["chat_id"] != cid]
+        # Personne n'est encore propriétaire de ce canal : ce compte le devient.
+        chats = [c for c in _lire() if c["chat_id"] != cid]
         chats.append({"chat_id": cid, "proprietaire": True})
         _ecrire(chats)
-        logger.info(f"[TelegramPush] Propriétaire du bot fixé : {cid}. "
-                    "Les autres chats seront refusés.")
+        logger.info(f"[TelegramPush] Propriétaire {canal} fixé : {cid}. "
+                    "Les autres comptes seront refusés.")
         return True
 
 
@@ -150,15 +161,17 @@ def register_chat(chat_id) -> None:
 
 # ── Envoi ─────────────────────────────────────────────────────────────────────
 def _targets() -> list[str]:
-    p = proprietaire()
+    """Les cibles d'une diffusion — Telegram uniquement : c'est l'API qu'on appelle."""
+    p = proprietaire("telegram")
     return [p] if p else []
 
 
 def diagnostic() -> dict:
     """Pourquoi les messages n'arrivent-ils pas ? Réponse vérifiable, pas une supposition."""
     d = {"token": bool(config.TELEGRAM_TOKEN),
-         "proprietaire": proprietaire(),
-         "source": "variable d'environnement" if _configure() else "premier venu (mémorisé)",
+         "proprietaire": proprietaire("telegram"),
+         "source": ("variable d'environnement" if _configure("telegram")
+                    else "premier venu (mémorisé)"),
          "persistance": "Supabase" if getattr(config, "SUPABASE_DB_URL", "") else "fichier local"}
     if not d["token"]:
         d["resume"] = ("❌ TELEGRAM_TOKEN n'est pas défini : Nova ne peut envoyer aucun "

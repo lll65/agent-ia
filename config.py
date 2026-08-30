@@ -120,6 +120,10 @@ class Config:
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")  # cible des alertes push (vide = tous les chats connus via /start)
     DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
     DISCORD_GUILD_ID = int(os.getenv("DISCORD_GUILD_ID") or "0")
+    # Le seul compte Discord servi par le bot. Vide = la première personne qui lui
+    # parle le devient (et le reste). Sans ce verrou, n'importe quel membre du
+    # serveur obtenait l'agent complet, mails et Drive compris.
+    DISCORD_OWNER_ID = os.getenv("DISCORD_OWNER_ID", "")
 
     # PEA Watcher — surveillance autonome + alertes Telegram
     WATCHER_ENABLED   = os.getenv("WATCHER_ENABLED", "false").lower() == "true"
