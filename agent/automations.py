@@ -202,7 +202,8 @@ async def run_one(item: dict) -> str:
     """Exécute une automatisation via l'agent complet (mêmes capacités que le chat)."""
     from api.agent import _ask_agent
     try:
-        answer = await _ask_agent(item["prompt"])
+        # Mode fond : personne ne regarde l'écran à 17 h, donc on cherche plus loin.
+        answer = await _ask_agent(item["prompt"], fond=True)
     except Exception as e:
         answer = f"❌ Échec : {type(e).__name__}: {str(e)[:200]}"
     # Notification Telegram. ⚠️ Ce push exigeait TELEGRAM_CHAT_ID, une variable que

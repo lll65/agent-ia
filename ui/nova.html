@@ -1535,6 +1535,19 @@ async function diagBloc(titre, url, rendu){
   }catch(e){ return "<b>"+titre+"</b><br>❌ illisible ("+txt(String(e).slice(0,80))+")"; }
 }
 
+async function testTelegram(btn){
+  const sortie = document.getElementById("tgTest");
+  btn.disabled = true; if(sortie) sortie.textContent = "envoi…";
+  try{
+    const r = await fetch(ORIGIN + "/agent/diag/telegram?envoyer=true&key="
+                          + encodeURIComponent(KEY), {cache:"no-store"});
+    const d = await r.json();
+    if(sortie) sortie.textContent = d.test || d.resume || "pas de réponse";
+  }catch(e){
+    if(sortie) sortie.textContent = "❌ " + String(e).slice(0,80);
+  }finally{ btn.disabled = false; }
+}
+
 async function diagReste(){
   const mem = await diagBloc("🧠 Mémoire", "/agent/diag/memoire", m => {
     let h = txt(m.resume);
@@ -1555,6 +1568,12 @@ async function diagReste(){
     // l'envoi Telegram a raté ».
     if(a.telegram && a.telegram.resume)
       h += "<br><span style='opacity:.75;font-size:13px'>📨 "+txt(a.telegram.resume)+"</span>";
+    // « J'ai envoyé /start et je ne reçois rien » ne se diagnostique pas en lisant du
+    // code : il faut essayer. Ce bouton envoie un vrai message et dit ce qui s'est passé.
+    h += "<br><button onclick=\"testTelegram(this)\" style=\"margin-top:6px;padding:6px 12px;"
+       + "border-radius:8px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);"
+       + "color:inherit;font-size:12.5px;cursor:pointer\">📨 Envoyer un message de test</button>"
+       + "<span id='tgTest' style='margin-left:8px;font-size:12.5px'></span>";
     for(const e of (a.derniers_envois||[]))
       h += "<br><span style='opacity:.6;font-size:12px'>· "+txt(e.titre)+" → "+txt(e.issue)+"</span>";
     return h;

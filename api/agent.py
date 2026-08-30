@@ -3376,9 +3376,14 @@ def _check_key(provided: str):
         raise HTTPException(status_code=401, detail="Clé invalide.")
 
 
-async def _ask_agent(message: str) -> str:
+async def _ask_agent(message: str, fond: bool = False) -> str:
     """Fait tourner l'agent complet (outils + mémoire persistante + recherche web forcée).
-    Robuste : toute erreur est renvoyée comme message lisible (jamais de 500)."""
+    Robuste : toute erreur est renvoyée comme message lisible (jamais de 500).
+
+    `fond=True` pour une automatisation : personne n'attend devant l'écran, donc on
+    cherche plus longtemps et plus large. Sans ça, « résume-moi l'actu bourse de la
+    journée » à 17 h était borné comme une question posée en direct — deux recherches,
+    75 s — et rendait un résultat superficiel."""
     import logging
     try:
         _log_activity(message)
@@ -3393,7 +3398,12 @@ async def _ask_agent(message: str) -> str:
         if direct is not None:
             return direct["answer"]
         cfg = _build_agent_cfg(message, "Nova")
-        result = await run_agent(message, cfg, _PROFILE_ID)
+        if fond:
+            cfg["system"] = (cfg.get("system", "") +
+                             " Tu travailles en FOND, personne n'attend : cherche à "
+                             "plusieurs endroits, recoupe, et rends une synthèse "
+                             "SUBSTANTIELLE et sourcée plutôt qu'un résumé en trois lignes.")
+        result = await run_agent(message, cfg, _PROFILE_ID, fond=fond)
         answer = (result or {}).get("answer", "") if isinstance(result, dict) else str(result)
         return answer or "(réponse vide)"
     except Exception as e:
@@ -4126,6 +4136,33 @@ async def diag_automatisations(key: str = ""):
     _check_key(key)
     from agent.automations import etat_planificateur
     return etat_planificateur()
+
+
+@router.get("/diag/telegram")
+async def diag_telegram(key: str = "", envoyer: bool = False):
+    """Le message part-il VRAIMENT sur Telegram ? Réponse vérifiable, pas une supposition.
+
+    « J'ai envoyé /start et je ne reçois toujours rien » ne peut pas se diagnostiquer
+    en lisant du code : il faut essayer. Avec ?envoyer=true, Nova envoie un message de
+    test tout de suite et dit exactement ce que Telegram a répondu.
+    """
+    _check_key(key)
+    from bots.telegram_push import diagnostic, send_message, proprietaire
+    d = dict(diagnostic())
+    if envoyer:
+        if not config.TELEGRAM_TOKEN:
+            d["test"] = "❌ Impossible : TELEGRAM_TOKEN n'est pas défini sur Render."
+        elif not proprietaire("telegram"):
+            d["test"] = ("❌ Impossible : personne n'a jamais parlé au bot. Envoie-lui "
+                         "/start une fois, puis relance ce test.")
+        else:
+            ok = await _off(send_message,
+                            "✅ Test Nova : si tu lis ce message, les résultats "
+                            "d'automatisation arriveront bien ici.")
+            d["test"] = ("✅ Message envoyé — regarde Telegram." if ok else
+                         "❌ Telegram a refusé l'envoi. Regarde les journaux Render : "
+                         "jeton révoqué, ou tu as bloqué le bot ?")
+    return d
 
 
 @router.get("/diag/composio")

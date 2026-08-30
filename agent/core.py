@@ -2,6 +2,7 @@
 Moteur ReAct — Reasoning + Acting loop avec mémoire et plugins.
 """
 import json
+import os
 import re
 import logging
 import asyncio
@@ -164,6 +165,16 @@ def _cle_requete(q: str) -> str:
 # Au-delà, on force la conclusion : le modèle relançait des recherches en boucle et
 # consommait tout le temps imparti sans jamais rédiger.
 MAX_RECHERCHES = 2
+
+# ── Mode FOND : personne n'attend devant l'écran ─────────────────────────────
+# ⚠️ Une automatisation qui part à 17 h était bornée EXACTEMENT comme une question
+# posée en direct : 75 s et deux recherches. C'est le bon réglage quand Lohan regarde
+# son téléphone — ça ne l'est pas du tout pour « résume-moi l'actu bourse de la
+# journée » à 17 h, où le résultat était donc superficiel : deux recherches, une
+# synthèse rapide, et fin. Là, personne n'attend : on peut chercher plus longtemps et
+# plus large. C'est le seul endroit où allonger le délai AMÉLIORE l'expérience.
+MAX_RECHERCHES_FOND = int(os.getenv("AGENT_RECHERCHES_FOND", "6"))
+AGENT_TIMEOUT_FOND = float(os.getenv("AGENT_TIMEOUT_FOND", "300"))
 
 
 def apercu(texte: str, n: int = 140) -> str:
@@ -525,7 +536,11 @@ async def run_agent(
     agent_id: str = "default",
     plugin_loader=None,
     memory_manager=None,
+    fond: bool = False,
 ) -> dict:
+    """`fond=True` : travail de fond (automatisation, briefing). Personne n'attend
+    devant l'écran, alors on cherche plus longtemps et plus large — voir
+    MAX_RECHERCHES_FOND et AGENT_TIMEOUT_FOND."""
     from plugins import get_loader
     from memory import get_memory
     from agent.self_heal import safe_tool_call, health_monitor
@@ -588,7 +603,13 @@ async def run_agent(
 
     # Forçage déterministe de search_web sur les questions factuelles (idem run_agent_stream)
     observations, deja_cherche = [], {}
-    _fin_pre = _tm.monotonic() + float(getattr(config, "AGENT_TIMEOUT", 75))
+    _budget = (AGENT_TIMEOUT_FOND if fond
+               else float(getattr(config, "AGENT_TIMEOUT", 75)))
+    _plafond_recherches = MAX_RECHERCHES_FOND if fond else MAX_RECHERCHES
+    if fond:
+        logger.info(f"[core] travail de fond : {int(_budget)} s et "
+                    f"{_plafond_recherches} recherches (personne n'attend).")
+    _fin_pre = _tm.monotonic() + _budget
     if agent_config.get("force_search") and "search_web" in required_tools:
         try:
             _q = await _off(search_query, task)
@@ -679,7 +700,7 @@ async def run_agent(
             if cle and cle in deja_cherche:
                 observation = deja_cherche[cle]
                 logger.info("[core] recherche identique déjà faite → résultat réutilisé")
-            elif cle and len(deja_cherche) >= MAX_RECHERCHES:
+            elif cle and len(deja_cherche) >= _plafond_recherches:
                 # Le modèle relançait des recherches jusqu'à épuiser le temps imparti sans
                 # jamais rédiger. On lui rend ce qu'il a déjà et on lui coupe l'échappatoire.
                 observation = ("\n\n".join(deja_cherche.values())[:1200] +
@@ -975,6 +996,8 @@ async def run_agent_stream(
 
     # ⏱️ Échéance globale, armée AVANT la recherche forcée : sinon une recherche lente
     # consommait déjà plusieurs minutes avant même que le chrono ne démarre.
+    # Le flux SSE, lui, est TOUJOURS interactif : quelqu'un regarde l'écran.
+    _plafond_recherches = MAX_RECHERCHES
     _fin = _tm.monotonic() + float(getattr(config, "AGENT_TIMEOUT", 75))
 
     # ── FORÇAGE DÉTERMINISTE DE search_web pour les questions factuelles ──────
@@ -1082,7 +1105,7 @@ async def run_agent_stream(
             if cle and cle in deja_cherche:
                 observation = deja_cherche[cle]
                 logger.info("[core] recherche identique déjà faite → résultat réutilisé")
-            elif cle and len(deja_cherche) >= MAX_RECHERCHES:
+            elif cle and len(deja_cherche) >= _plafond_recherches:
                 # Le modèle relançait des recherches jusqu'à épuiser le temps imparti sans
                 # jamais rédiger. On lui rend ce qu'il a déjà et on lui coupe l'échappatoire.
                 observation = ("\n\n".join(deja_cherche.values())[:1200] +
