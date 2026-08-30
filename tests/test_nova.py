@@ -4307,11 +4307,13 @@ def test_injection_donnees_et_cours_complet():
                             capture_output=True, text=True).stdout.split()
     for interdit in ("data/automations.json", "data/portfolios.json",
                      "data/self_improve.json", "data/profile.json",
-                     "data/documents.json", "data/competences.json"):
+                     "data/documents.json", "data/competences.json",
+                     # La watchlist disait publiquement ce que Lohan suit en bourse.
+                     "data/watchlist.txt"):
         check(f"{interdit} n'est plus suivi par git", interdit in suivis, False)
     ignore = (racine / ".gitignore").read_text(encoding="utf-8")
     for regle in ("data/automations.json", "data/portfolios.json",
-                  "data/self_improve.json", "data/self_mods/"):
+                  "data/self_improve.json", "data/self_mods/", "data/watchlist.txt"):
         check(f"{regle} est dans .gitignore", regle in ignore, True)
 
     # --- 2. CRITIQUE : une page web ne pilote plus les outils ----------------
