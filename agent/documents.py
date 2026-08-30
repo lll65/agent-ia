@@ -26,6 +26,7 @@ import time
 import unicodedata
 from pathlib import Path
 
+from agent.entrepot import Entrepot
 from config import config
 
 logger = logging.getLogger(__name__)
@@ -45,57 +46,21 @@ def _norme(t: str) -> str:
     return re.sub(r"\b(?:[a-z] ){1,}[a-z]\b", lambda m: m.group(0).replace(" ", ""), t)
 
 
-def _sb():
-    if not getattr(config, "SUPABASE_DB_URL", ""):
-        return None
-    try:
-        import psycopg2
-        conn = psycopg2.connect(config.SUPABASE_DB_URL, connect_timeout=10)
-        conn.autocommit = True
-        with conn.cursor() as c:
-            c.execute("CREATE TABLE IF NOT EXISTS documents_connus "
-                      "(cle text PRIMARY KEY, data jsonb)")
-        return conn
-    except Exception:
-        return None
+_ENTREPOT = Entrepot("documents_connus", "data/documents.json", cle="cle")
+
+
+def _charge() -> tuple[list, bool]:
+    """(éléments, lecture fiable ?) — voir agent/entrepot.py.
+
+    ⚠️ L'ancien couple _load/_save reconstruisait la table entière (DELETE puis
+    INSERT) a partir d'une lecture qui avait le droit d'echouer en silence : une
+    coupure Supabase de quelques secondes effacait tout, definitivement.
+    """
+    return _ENTREPOT.charge()
 
 
 def _load() -> list:
-    conn = _sb()
-    if conn:
-        try:
-            with conn.cursor() as c:
-                c.execute("SELECT data FROM documents_connus")
-                rows = c.fetchall()
-            conn.close()
-            return [r[0] if isinstance(r[0], dict) else json.loads(r[0]) for r in rows]
-        except Exception:
-            pass
-    if _FILE.exists():
-        try:
-            return json.loads(_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return []
-    return []
-
-
-def _save(items: list) -> None:
-    try:
-        _FILE.parent.mkdir(parents=True, exist_ok=True)
-        _FILE.write_text(json.dumps(items, ensure_ascii=False, indent=1), encoding="utf-8")
-    except Exception:
-        pass
-    conn = _sb()
-    if conn:
-        try:
-            with conn.cursor() as c:
-                c.execute("DELETE FROM documents_connus")
-                for it in items:
-                    c.execute("INSERT INTO documents_connus (cle, data) VALUES (%s, %s)",
-                              (it["cle"], json.dumps(it, ensure_ascii=False)))
-            conn.close()
-        except Exception:
-            pass
+    return _charge()[0]
 
 
 def _cle(app: str, quoi: str) -> str:
@@ -110,9 +75,8 @@ def retenir(app: str, quoi: str, ident: str, nom: str) -> dict:
     item = {"cle": _cle(app, quoi), "app": app, "quoi": quoi.strip()[:80],
             "id": ident[:200], "nom": (nom or "")[:160], "ts": time.time()}
     with _LOCK:
-        items = [x for x in _load() if x.get("cle") != item["cle"]]
-        items.append(item)
-        _save(items[-MAX_RACCOURCIS:])
+        _ENTREPOT.ecrit_un(item)
+        _elague()
     logger.info(f"[documents] retenu : {app} « {quoi} » → {nom or ident[:12]}")
     return item
 
@@ -150,8 +114,8 @@ def oublier(app: str = "", ident: str = "") -> int:
         garde = [x for x in items
                  if not ((not app or (x.get("app") or "").lower() == (app or "").lower())
                          and (not ident or x.get("id") == ident))]
-        if len(garde) != len(items):
-            _save(garde)
+        gardees = {x.get("cle") for x in garde}
+        _ENTREPOT.supprime([x.get("cle") for x in items if x.get("cle") not in gardees])
     n = len(items) - len(garde)
     if n:
         logger.info(f"[documents] {n} raccourci(s) oublié(s) ({app} {ident[:12]})")
@@ -165,4 +129,13 @@ def lister() -> list:
 
 def effacer_tout() -> None:
     with _LOCK:
-        _save([])
+        _ENTREPOT.vide()
+
+
+def _elague() -> None:
+    """Au-delà du plafond, on jette les raccourcis les PLUS ANCIENS — nommément."""
+    items, fiable = _charge()
+    if not fiable or len(items) <= MAX_RACCOURCIS:
+        return
+    items.sort(key=lambda x: float(x.get("ts") or 0))
+    _ENTREPOT.supprime([x.get("cle") for x in items[:-MAX_RACCOURCIS]])

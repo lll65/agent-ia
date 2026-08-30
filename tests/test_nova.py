@@ -37,6 +37,53 @@ from plugins.builtin.visual_maker import make_visual     # noqa: E402
 OK, KO = [], []
 
 
+
+class FauxEntrepot:
+    """Entrepôt en mémoire — les tests ne doivent toucher ni disque ni Supabase.
+
+    Il respecte le contrat d'agent/entrepot.Entrepot : `charge` dit si la lecture
+    est fiable, `ecrit_un`/`supprime` sont ciblés, `ecrit` ne supprime que ce
+    qu'on lui nomme. `panne` permet de rejouer une coupure Supabase.
+    """
+
+    def __init__(self, cle="id"):
+        self.cle, self.items, self.panne = cle, [], False
+
+    def configure(self):
+        return True
+
+    def charge(self):
+        if self.panne:
+            return ([], False)
+        return ([dict(x) for x in self.items], True)
+
+    def ecrit(self, items, supprimes=()):
+        if self.panne:
+            return False
+        ids = {str(i) for i in supprimes if i}
+        self.items = [dict(x) for x in items if str(x.get(self.cle) or "") not in ids]
+        return True
+
+    def ecrit_un(self, item):
+        if self.panne:
+            return False
+        k = str(item.get(self.cle) or "")
+        self.items = [x for x in self.items if str(x.get(self.cle) or "") != k]
+        self.items.append(dict(item))
+        return True
+
+    def supprime(self, ids):
+        if self.panne:
+            return False
+        ids = {str(i) for i in ids if i}
+        self.items = [x for x in self.items if str(x.get(self.cle) or "") not in ids]
+        return True
+
+    def vide(self):
+        self.items = []
+        return True
+
+
 def check(nom, got, want):
     (OK if got == want else KO).append((nom, got, want))
 
@@ -166,7 +213,7 @@ def test_visuels():
 # ── 7. Profil (mémoire structurée) ────────────────────────────────────────────
 def test_profil():
     from agent import profile as P
-    P._FILE = Path("/tmp/nova_test_profile.json")
+    P._ENTREPOT = FauxEntrepot("id")
     P.clear_all()
     P.add_fact("identite", "A 17 ans")
     P.add_fact("lieu", "Habite à Lyon")
@@ -247,8 +294,7 @@ def test_profil():
 # ── 8. Automatisations ────────────────────────────────────────────────────────
 def test_automatisations():
     from agent import automations as Au
-    Au._FILE = Path("/tmp/nova_test_auto.json")
-    Au._save([])
+    Au._ENTREPOT = FauxEntrepot("id")
     it = Au.add("Test", "Résume mes mails", 18)
     check("créée", it["hour"], 18)
     check_true("active par défaut", it["active"])
@@ -256,7 +302,6 @@ def test_automatisations():
     check("mise en pause", Au.list_all()[0]["active"], False)
     check_true("supprimée", Au.delete(it["id"]))
     check("suppression inconnue", Au.delete("zzz"), False)
-    Au._save([])
 
 
 # ── 9. Escouade ───────────────────────────────────────────────────────────────
@@ -2680,17 +2725,15 @@ def test_resultats_automatisations_remontent():
     Automatisations pour le découvrir — donc une automatisation ne servait à rien."""
     from agent import automations as AU
 
-    vrais = (AU._load, AU._save)
-    stock = []
+    vrai = AU._ENTREPOT
     try:
-        AU._load = lambda: [dict(x) for x in stock]
-        AU._save = lambda items: (stock.clear(), stock.extend(dict(x) for x in items))
+        AU._ENTREPOT = FauxEntrepot("id")
 
         a = AU.add("Actu bourse du jour", "résume l'actu bourse", hour=17)
         check("rien à signaler tant que ça n'a pas tourné", AU.non_lus(), [])
 
         # On simule une exécution (sans appeler le modèle)
-        for it in stock:
+        for it in AU._ENTREPOT.items:
             if it["id"] == a["id"]:
                 it.update({"last_run": 1_700_000_000.0, "last_result": "CAC 40 : +0,8 %",
                            "lu": False, "runs": 1})
@@ -2706,19 +2749,19 @@ def test_resultats_automatisations_remontent():
         check("…et un second marquage ne fait rien", AU.marquer_lus(), 0)
 
         # Une exécution SUIVANTE redevient non lue
-        for it in stock:
+        for it in AU._ENTREPOT.items:
             it.update({"last_result": "CAC 40 : -1,2 %", "lu": False})
         check("la nouvelle exécution remonte", len(AU.non_lus()), 1)
         check("…avec le contenu à jour", AU.non_lus()[0]["resultat"], "CAC 40 : -1,2 %")
 
         # Un résultat VIDE ne doit rien afficher
-        for it in stock:
+        for it in AU._ENTREPOT.items:
             it.update({"last_result": "   ", "lu": False})
         check("un résultat vide n'est pas présenté", AU.non_lus(), [])
 
         # Marquage ciblé : une automatisation vue n'efface pas les autres
         b = AU.add("Veille tech", "résume l'actu tech", hour=12)
-        for it in stock:
+        for it in AU._ENTREPOT.items:
             it.update({"last_result": "contenu", "lu": False})
         check("deux résultats en attente", len(AU.non_lus()), 2)
         check("marquage ciblé", AU.marquer_lus([a["id"]]), 1)
@@ -2726,7 +2769,7 @@ def test_resultats_automatisations_remontent():
         check("l'autre reste en attente", len(restants), 1)
         check("…et c'est le bon", restants[0]["id"], b["id"])
     finally:
-        (AU._load, AU._save) = vrais
+        AU._ENTREPOT = vrai
 
 
 def test_jamais_d_ecriture_non_demandee():
@@ -3343,11 +3386,9 @@ def test_automatisations_heure():
               "datetime.now()" in boucle, False)
 
     # 40c. La prochaine exécution est annoncée en heure locale, et respecte les jours
-    vrais = (AU._load, AU._save)
+    vrai = AU._ENTREPOT
     try:
-        stock = []
-        AU._load = lambda: list(stock)
-        AU._save = lambda items: (stock.clear(), stock.extend(items))
+        AU._ENTREPOT = FauxEntrepot("id")
 
         a = AU.add("Veille tech", "résume l'actu", hour=12)
         quand = AU.prochaine_execution(a)
@@ -3370,7 +3411,8 @@ def test_automatisations_heure():
 
         AU.update(a["id"], active=False)
         check("une automatisation éteinte le dit",
-              AU.prochaine_execution(AU.list_all()[0]), "désactivée")
+              AU.prochaine_execution(next(x for x in AU.list_all() if x["id"] == a["id"])),
+              "désactivée")
         check("aucun jour coché → rien n'est promis",
               AU.prochaine_execution({"active": True, "hour": 9, "days": []}),
               "aucune (aucun jour coché)")
@@ -3402,7 +3444,7 @@ def test_automatisations_heure():
         finally:
             AU.BATTEMENT.update(sauve)
     finally:
-        (AU._load, AU._save) = vrais
+        AU._ENTREPOT = vrai
 
 
 def test_memoire_des_documents():
@@ -3447,7 +3489,7 @@ def test_memoire_des_documents():
         D.retenir("googlesheets", "vieux", "1VIEUX" + "y" * 30, "Ancien")
         items = D._load()
         items[0]["ts"] = 0.0                       # comme s'il datait de 1970
-        D._save(items)
+        D._ENTREPOT.ecrit_un(items[0])
         check("un raccourci périmé est ignoré", D.retrouver("googlesheets", "vieux"), ("", ""))
     finally:
         D.effacer_tout()
@@ -3995,6 +4037,108 @@ def test_telegram_prive_et_resultats_pousses():
     check("le diagnostic liste les envois", "derniers_envois" in etat, True)
 
 
+def test_une_panne_ne_peut_plus_effacer():
+    """AUDIT — defaut CRITIQUE : une coupure Supabase effacait tout, definitivement.
+
+    Le profil, les competences, les raccourcis documents et les automatisations
+    sauvegardaient ainsi : lire la table (connexion n°1), modifier la liste,
+    DELETE la table entiere (connexion n°2), tout reinserer. Si la lecture
+    echouait — un hoquet du pooler gratuit suffit — elle rendait [] en silence,
+    et l'ecriture suivante effacait les 60 faits reels pour n'en garder qu'un.
+    Nova oubliait d'un coup l'age, la ville, l'allergie. Irrecuperable.
+    """
+    import importlib, tempfile, pathlib, time as _t
+    from agent.entrepot import Entrepot
+
+    # --- 1. L'entrepot ne fait JAMAIS de DELETE global sur une ecriture -------
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parents[1] / "agent" / "entrepot.py").read_text(encoding="utf-8")
+    corps_ecrit = src.split("def ecrit(", 1)[1].split("def vide(", 1)[0]
+    check("ecrit() ne fait pas de DELETE global",
+          "DELETE FROM {self.table}\"" in corps_ecrit or "DELETE FROM {self.table} WHERE" in corps_ecrit,
+          True)
+    check("ecrit() met a jour au lieu d'ecraser", "ON CONFLICT" in corps_ecrit, True)
+    # Plus aucun module ne reconstruit sa table.
+    for mod in ("profile", "documents", "competences", "automations"):
+        t = (_P(__file__).resolve().parents[1] / "agent" / f"{mod}.py").read_text(encoding="utf-8")
+        check(f"{mod}.py ne reconstruit plus sa table", "DELETE FROM" in t, False)
+
+    # --- 2. Une lecture ratee est SIGNALEE, pas maquillee en « c'est vide » ---
+    with tempfile.TemporaryDirectory() as d:
+        e = Entrepot("t_essai", str(pathlib.Path(d) / "t.json"))
+        e.configure = lambda: True
+        e._conn = lambda: None                 # Supabase injoignable
+        items, fiable = e.charge()
+        check("lecture injoignable = non fiable", fiable, False)
+        e.configure = lambda: False            # pas de Supabase du tout
+        check("sans Supabase, le local fait foi", e.charge()[1], True)
+
+    # --- 3. Le profil refuse d'ecrire pendant la panne ------------------------
+    P = importlib.import_module("agent.profile")
+    vrai = P._ENTREPOT
+    try:
+        P._ENTREPOT = FauxEntrepot("id")
+        for cat, t in (("identite", "A 17 ans"), ("lieu", "Habite à Montauban"),
+                       ("autre", "Aime la bourse")):
+            P.add_fact(cat, t)
+        check("trois faits memorises", len(P.list_facts()), 3)
+        P._ENTREPOT.panne = True
+        check("pendant la panne, add_fact refuse", P.add_fact("autre", "Aime le tennis"), {})
+        P._ENTREPOT.panne = False
+        check("rien n'a ete perdu", len(P.list_facts()), 3)
+
+        # --- 4. Un fait recent REMPLACE l'ancien sur le meme sujet ------------
+        P._ENTREPOT = FauxEntrepot("id")
+        P.add_fact("identite", "A 17 ans")
+        P.add_fact("identite", "A 18 ans")
+        bloc = P.context_block()
+        check("l'age perime a disparu", "17 ans" in bloc, False)
+        check("le nouvel age est la", "18 ans" in bloc, True)
+        P.add_fact("lieu", "Habite à Lyon")
+        P.add_fact("lieu", "Habite à Paris")
+        b = P.context_block()
+        check("l'ancienne ville a disparu", "Lyon" in b, False)
+        check("la nouvelle ville est la", "Paris" in b, True)
+        # Formulation longue : le prefixe de 28 caracteres ne suffisait pas non plus.
+        P._ENTREPOT = FauxEntrepot("id")
+        P.add_fact("identite", "Il a 17 ans et demi exactement")
+        P.add_fact("identite", "Il a 18 ans et demi exactement")
+        check("meme sur une phrase longue, un seul age",
+              P.context_block().count("ans et demi"), 1)
+        # Deux gouts differents doivent COEXISTER : on ne fusionne pas tout.
+        P._ENTREPOT = FauxEntrepot("id")
+        P.add_fact("gouts", "Aime le football")
+        P.add_fact("gouts", "Aime le tennis")
+        check("deux gouts distincts coexistent", len(P.list_facts()), 2)
+
+        # --- 5. Le fait le plus RECENT atteint le prompt ----------------------
+        P._ENTREPOT = FauxEntrepot("id")
+        for t in ("A un chien", "Aime le foot", "Joue de la guitare", "Fait du judo",
+                  "Aime les mangas", "Regarde du rugby", "Est allergique aux arachides"):
+            P.add_fact("autre", t)
+        bloc = P.context_block()
+        check("le fait le plus recent est dans le prompt", "arachides" in bloc, True)
+        check("et il vient en premier", bloc.split("💡 Autre : ")[1].startswith("Est allergique"), True)
+    finally:
+        P._ENTREPOT = vrai
+
+    # --- 6. Les automatisations survivent aussi a la panne --------------------
+    AU = importlib.import_module("agent.automations")
+    vrai_au = AU._ENTREPOT
+    try:
+        AU._ENTREPOT = FauxEntrepot("id")
+        a = AU.add("Actu bourse", "resume l'actu", hour=17)
+        b = AU.add("Veille tech", "resume la tech", hour=12)
+        AU._ENTREPOT.panne = True
+        AU.update(a["id"], active=False)       # doit echouer sans rien casser
+        AU._ENTREPOT.panne = False
+        check("les deux automatisations sont toujours la", len(AU.list_all()), 2)
+        check("suppression ciblee", AU.delete(a["id"]), True)
+        check("l'autre est intacte", [x["id"] for x in AU.list_all()], [b["id"]])
+    finally:
+        AU._ENTREPOT = vrai_au
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -4019,7 +4163,8 @@ if __name__ == "__main__":
                test_contenu_jamais_confondu_avec_le_verdict,
                test_derniers_defauts_audit, test_aucune_cle_ne_sort,
                test_protocole_decore, test_aucune_route_ouverte,
-               test_telegram_prive_et_resultats_pousses):
+               test_telegram_prive_et_resultats_pousses,
+               test_une_panne_ne_peut_plus_effacer):
         try:
             fn()
         except Exception as e:
