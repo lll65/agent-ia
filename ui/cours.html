@@ -213,6 +213,13 @@ const MAX_FILE   = 240;     // tranches en attente max (≈ 4 h) avant de préve
 let SID = null, stream = null, recA = null, timerRec = null, tick = null;
 let t0 = 0, ecoule = 0, enPause = false, fini = false;
 let file = [], envoiActif = false, echecs = 0, dur = 0;   // dur = échecs de transcription d'affilée
+// ⚠️ La promesse de l'envoi EN COURS. Sans elle, le bouton « Terminer » remettait
+// `envoiActif` à false de force et lançait une SECONDE boucle sur la même file
+// pendant que la première attendait encore sa réponse Whisper (3 à 15 s) : la
+// dernière tranche partait deux fois, et les tranches finales pouvaient être
+// recollées dans le désordre. C'est justement la conclusion du cours — le
+// « ça tombera au contrôle » et les devoirs.
+let envoiEnCours = null;
 let ac = null, analyser = null, vuRaf = null, wakeLock = null;
 let dernierSon = 0, silencePrevenu = false;
 
@@ -247,11 +254,20 @@ function md(src){
 }
 
 /* ── File d'envoi : increvable ───────────────────────────────────────────── */
-async function pousser(){
-  if(envoiActif || !file.length) return;
+function pousser(){
+  // Un seul envoi à la fois : on rend la promesse en cours plutôt que d'en démarrer
+  // une seconde. Attendre `pousser()` attend donc TOUJOURS la vraie fin.
+  if(envoiActif) return envoiEnCours || Promise.resolve();
+  if(!file.length) return Promise.resolve();
   envoiActif = true;
+  envoiEnCours = _pousser().finally(() => { envoiActif = false; envoiEnCours = null; });
+  return envoiEnCours;
+}
+
+async function _pousser(){
   while(file.length){
     const t = file[0];
+    const retirer = () => { const i = file.indexOf(t); if(i >= 0) file.splice(i, 1); };
     try{
       const fd = new FormData();
       fd.append("key", KEY); fd.append("id", SID);
@@ -268,13 +284,13 @@ async function pousser(){
                `<small>${esc(det).slice(0,180)}</small><br>` +
                `<b>Arrête l'enregistrement</b> : Nova ne pourra rien transcrire tant que ce ` +
                `problème dure.`, true);
-          file.shift();                       // inutile de garder une tranche irrécupérable
+          retirer();                          // inutile de garder une tranche irrécupérable
           continue;
         }
         throw new Error("HTTP " + r.status);
       }
       const d = await r.json();
-      file.shift(); echecs = 0; dur = 0;
+      retirer(); echecs = 0; dur = 0;
       $("sMots").textContent = d.mots || 0;
       $("sSeg").textContent  = d.segments || 0;
       if(d.apercu) $("apercu").textContent = "…" + d.apercu;
@@ -289,7 +305,6 @@ async function pousser(){
       $("sFile").textContent = file.length;
     }
   }
-  envoiActif = false;
   if(file.length && !fini) setTimeout(pousser, Math.min(30000, 2000 * Math.pow(2, Math.min(echecs,4))));
 }
 
@@ -310,7 +325,14 @@ function nouvelEnregistreur(){
     if(!morceaux.length) return;
     const blob = new Blob(morceaux, { type: mime || "audio/webm" });
     if(blob.size < 1200) return;                    // quasi vide : inutile de l'envoyer
-    if(file.length >= MAX_FILE){ file.shift(); }    // garde-fou mémoire, jamais atteint en pratique
+    if(file.length >= MAX_FILE){
+      // Garde-fou mémoire (≈ 4 h en attente). Rarissime, mais il JETAIT une tranche
+      // sans rien dire : on perdait une minute de cours en silence. Tant qu'à devoir
+      // en sacrifier une, autant que l'élève le sache et puisse réagir.
+      file.shift();
+      warn("liveWarn", "⚠️ Trop de tranches en attente (réseau coupé depuis longtemps) : " +
+           "la plus ancienne minute a dû être abandonnée. <b>Vérifie ta connexion.</b>", true);
+    }
     file.push({ blob, ext: extDe(mime), sec: (Date.now() - debut) / 1000 });
     $("sFile").textContent = file.length;
     pousser();
@@ -442,7 +464,7 @@ $("stop").onclick = async () => {
   // Toutes les tranches doivent être remontées, sinon la fin du cours manquerait.
   for(let essai = 0; file.length && essai < 40; essai++){
     $("workTxt").innerHTML = `Envoi des dernières tranches… <b>${file.length}</b> restante(s).`;
-    envoiActif = false; await pousser();
+    await pousser();          // ⚠️ plus jamais `envoiActif = false` de force ici
     if(file.length) await new Promise(r => setTimeout(r, 2500));
   }
   let perdues = file.length;

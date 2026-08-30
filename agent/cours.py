@@ -44,6 +44,10 @@ DUREE_MAX = 4 * 3600         # garde-fou : une session ne peut pas durer plus de
 # Personne ne regarde l'écran pendant une synthèse : si tous les modèles gratuits sont
 # momentanément à leur limite, mieux vaut attendre qu'ils se libèrent que d'échouer.
 PATIENCE = int(os.getenv("COURS_PATIENCE", "3"))
+# Ce qu'on envoie au modele en une passe de condensation. Le tampon peut depasser ce
+# volume quand les modeles gratuits sont satures : le surplus attend le tour suivant,
+# il n'est plus jete.
+_MAX_CONDENSE = 14000
 
 
 # ── Persistance ───────────────────────────────────────────────────────────────
@@ -82,7 +86,20 @@ def _sb():
 
 
 def _lire(sid: str) -> dict:
+    """La version la PLUS AVANCÉE de la session, disque ou base.
+
+    ⚠️ DÉFAUT CRITIQUE. On lisait la base EN PRIORITÉ, sans jamais comparer sa
+    fraîcheur au disque. Scénario vécu en classe : Supabase devient injoignable
+    5 minutes (saturation du pooler, pause du plan gratuit) → l'écriture en base est
+    « sautée avec un warning », les tranches ne vivent plus que sur le disque, ce qui
+    est correct. Puis la base revient : la tranche suivante lit la LIGNE FIGÉE d'il y
+    a 5 minutes, y ajoute son texte, et réécrit disque ET base avec cet état périmé.
+    Cinq minutes de cours effacées, des deux côtés, en silence — et l'audio est déjà
+    détruit. Chaque écriture porte donc un numéro de révision, et on garde la plus
+    haute.
+    """
     sid = _sid_sur(sid)
+    de_la_base = None
     conn = _sb()
     if conn:
         try:
@@ -91,16 +108,34 @@ def _lire(sid: str) -> dict:
                 row = c.fetchone()
             conn.close()
             if row:
-                return row[0] if isinstance(row[0], dict) else json.loads(row[0])
+                de_la_base = row[0] if isinstance(row[0], dict) else json.loads(row[0])
         except Exception as e:
             logger.warning(f"[cours] lecture persistante échouée ({e}) — disque local.")
+    du_disque = None
     p = _chemin(sid)
-    if not p.exists():
+    if p.exists():
+        try:
+            du_disque = json.loads(p.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning(f"[cours] fichier local illisible ({e}).")
+    if de_la_base is None and du_disque is None:
         raise KeyError("session inconnue")
-    return json.loads(p.read_text(encoding="utf-8"))
+    if de_la_base is None:
+        return du_disque
+    if du_disque is None:
+        return de_la_base
+    rb, rd = int(de_la_base.get("rev") or 0), int(du_disque.get("rev") or 0)
+    if rd > rb:
+        logger.warning(f"[cours] la base est en retard de {rd - rb} révision(s) sur le "
+                       "disque (coupure réseau pendant la séance) — on garde le disque.")
+        return du_disque
+    return de_la_base
 
 
 def _ecrire(s: dict) -> None:
+    # Numéro de révision : c'est lui qui permet à _lire de reconnaître une base en
+    # retard après une coupure, au lieu de repartir d'un état périmé.
+    s["rev"] = int(s.get("rev") or 0) + 1
     # Toujours sur le disque : c'est le plus rapide, et ça sert de cache pendant la séance.
     _DIR.mkdir(parents=True, exist_ok=True)
     p = _chemin(s["id"])
@@ -112,8 +147,12 @@ def _ecrire(s: dict) -> None:
     if conn:
         try:
             with conn.cursor() as c:
+                # Le WHERE refuse d'écraser une révision PLUS AVANCÉE : si deux écrivains
+                # se croisent, le retardataire ne fait plus reculer la transcription.
                 c.execute("INSERT INTO cours (id, data) VALUES (%s, %s) "
-                          "ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data",
+                          "ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data "
+                          "WHERE COALESCE((cours.data->>'rev')::int, 0) "
+                          "    < COALESCE((EXCLUDED.data->>'rev')::int, 0)",
                           (_sid_sur(s["id"]), json.dumps(s, ensure_ascii=False)))
             conn.close()
         except Exception as e:
@@ -406,15 +445,29 @@ def _condenser(sid: str) -> None:
     from llm.client import chat
     with _LOCK:
         s = _lire(sid)
-        brut = s["en_attente"].strip()
-        if len(brut) < 400:                 # trop court : on garde pour le prochain tour
+        attente = s["en_attente"].strip()
+        if len(attente) < 400:              # trop court : on garde pour le prochain tour
             return
-        s["en_attente"] = ""
+        # ⚠️ On vidait `en_attente` EN ENTIER, puis on n'envoyait au modèle que ses
+        # 14 000 premiers caractères. Normalement le tampon reste petit, mais chaque
+        # echec de condensation le reinjecte : modeles gratuits satures 30 min, et il
+        # depasse 20 000 caracteres. Au premier appel qui aboutit, tout etait vide et
+        # seul le premier tiers passait en notes — 20 minutes de cours disparaissaient
+        # de la synthese alors que le texte existait toujours. On ne retire donc QUE ce
+        # qu'on envoie, sur une frontiere de mot, et le reste attend le tour suivant.
+        brut, reste = attente[:_MAX_CONDENSE], attente[_MAX_CONDENSE:]
+        if reste:
+            coupe = brut.rfind(" ")
+            if coupe > _MAX_CONDENSE // 2:
+                brut, reste = brut[:coupe], brut[coupe:] + reste
+            logger.info(f"[cours] tampon de {len(attente)} car. : {len(brut)} condensés "
+                        f"maintenant, {len(reste)} gardés pour le tour suivant.")
+        s["en_attente"] = reste.strip()
         _ecrire(s)                          # on libère tout de suite : l'écoute continue
     try:
         notes = _propre(chat([
             {"role": "system", "content": _SYS_CONDENSE},
-            {"role": "user", "content": f"Transcription à mettre en notes :\n\n{brut[:14000]}"},
+            {"role": "user", "content": f"Transcription à mettre en notes :\n\n{brut}"},
         ], temperature=0.2, niveau="equilibre", patience=PATIENCE))
     except Exception:
         with _LOCK:                         # échec : on remet le texte en file, rien n'est perdu
@@ -429,7 +482,7 @@ def _condenser(sid: str) -> None:
     logger.info(f"[cours] condensé #{len(s['condenses'])} ({len(brut)} car.)")
 
 
-def _reduire(blocs: list) -> str:
+def _reduire(blocs: list) -> tuple:
     """Réduit les condensés jusqu'à tenir dans le budget d'entrée de la synthèse finale.
 
     Sans ça, un cours de 2 h dépasserait la fenêtre de contexte des modèles gratuits et la
@@ -474,7 +527,19 @@ def _reduire(blocs: list) -> str:
                 ], temperature=0.2, niveau="equilibre", patience=PATIENCE)) or morceau)
             except Exception:
                 textes.append(morceau[:BUDGET_FINAL // 2])   # repli : on tronque plutôt qu'échouer
-    return "\n\n".join(textes)[:BUDGET_FINAL]
+    complet = "\n\n".join(textes)
+    # ⚠️ On coupait ici a 12 000 caracteres SANS LE DIRE. Quand les modeles gratuits ne
+    # repondent qu'une fois sur deux — la situation meme que PATIENCE doit absorber —
+    # le volume ne converge pas en 4 passes, et un cours de 2 h partait a la synthese
+    # ampute des trois quarts. L'eleve recevait une synthese couvrant les premieres
+    # minutes, presentee comme le cours complet : aucun bandeau, aucune « zone a
+    # eclaircir », puisque le modele n'a jamais vu le reste. Une donnee fausse servie
+    # comme vraie, sur le document meme qui servira a reviser des mois plus tard.
+    perdu = max(0, len(complet) - BUDGET_FINAL)
+    if perdu:
+        logger.warning(f"[cours] reduction incomplete : {perdu} car. sur {len(complet)} "
+                       "ne tiennent pas dans le budget de synthese.")
+    return complet[:BUDGET_FINAL], round(100 * perdu / max(1, len(complet)))
 
 
 # ── Synthèse finale + fiches de révision (le « reduce ») ──────────────────────
@@ -598,7 +663,7 @@ def terminer(sid: str) -> dict:
     matiere = f" de {s['matiere']}" if s.get("matiere") else ""
 
     try:
-        base = _reduire(blocs)
+        base, perdu_pct = _reduire(blocs)
         synthese = _propre(chat([
             {"role": "system", "content": _SYS_SYNTHESE},
             {"role": "user", "content": f"Notes du cours{matiere} « {s['titre']} » :\n\n{base}"},
@@ -620,9 +685,20 @@ def terminer(sid: str) -> dict:
         raise RuntimeError("le modèle n'a rien renvoyé pour la synthèse")
 
     fiches = _fiches_depuis(synthese)
+    # Une synthese amputee doit le DIRE, en tete du document et dans les trous.
+    if perdu_pct:
+        synthese = (f"> ⚠️ **Cette synthèse est incomplète** : environ {perdu_pct} % du "
+                    "cours n'a pas pu être résumé (les modèles gratuits n'ont pas "
+                    "répondu assez souvent). La transcription complète, elle, est "
+                    "intacte — relance la synthèse plus tard pour l'avoir en entier.\n\n"
+                    + synthese)
 
     with _LOCK:
         s = _lire(sid)
+        if perdu_pct:
+            s["trous"] = (s.get("trous") or []) + [
+                {"t": time.time(), "quoi": f"synthèse incomplète : ~{perdu_pct} % du cours "
+                                           "n'a pas pu être résumé"}]
         s["synthese"] = synthese
         s["fiches"] = fiches
         s["etat"] = "termine"

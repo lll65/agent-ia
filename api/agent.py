@@ -468,12 +468,25 @@ def _repere_temporel() -> str:
         return ""
 
 
+# ⚠️ SECURITE. Le contenu d'une page web ou d'un mail est verse dans la conversation
+# de l'agent. Une page hostile qui remonte dans une recherche peut donc glisser une
+# fausse consigne (voir contenu_externe dans agent/core.py, qui la neutralise). Ce
+# verrou-la est le second : meme si une consigne passait, ces outils-la ne sont plus
+# a portee. Ils REECRIVENT le code de Nova ou executent du Python arbitraire sur le
+# serveur — de quoi lire os.environ et repartir avec toutes les cles. Lohan ne les a
+# jamais demandes depuis le chat ; ils restent joignables par les routes dediees.
+_OUTILS_SENSIBLES = {
+    "apply_self_modification", "rollback_last_modification", "propose_code_diff",
+    "read_own_code", "self_modification_status", "exec_python", "write_file",
+}
+
+
 def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
     """Prépare la config de l'agent en priorisant le bon outil selon l'intention :
     - Intention app (agenda/mail/calendar/slack/notion) → connected_app en 1er, PAS de web.
     - Sinon question factuelle → recherche web forcée en 1er.
     - Outils finance masqués sauf demande explicite (anti-dérive bourse)."""
-    tools = list(get_loader().list_all().keys())
+    tools = [t for t in get_loader().list_all().keys() if t not in _OUTILS_SENSIBLES]
     app = _app_intent(message)
     fin = _finance_intent(message)
     if not fin:

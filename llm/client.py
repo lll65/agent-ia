@@ -1006,9 +1006,24 @@ def _gemini_chat(messages: list, model: str, temperature: float) -> str:
       - role 'user'      → 'user'
     """
     import requests
+    import time as _t
 
     if not config.GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY absente — impossible d'appeler Gemini.")
+
+    # ⚠️ Gemini etait le SEUL fournisseur reste hors du systeme de delais : requests
+    # recevait 20 s puis 120 s CODES EN DUR, qui ignorent _BUDGET_APPEL et TIMEOUT_LLM.
+    # Quand Google etait lent ou muet, un seul appel mangeait 1,7x le budget de toute
+    # la chaine : les fournisseurs suivants n'etaient jamais essayes, et Lohan lisait
+    # apres 90 s « Aucun modele disponible — renouvelle une cle gratuite » alors que
+    # Groq et Mistral repondaient parfaitement. Un diagnostic FAUX qui l'envoyait
+    # renouveler des cles saines. C'est exactement la panne que l'en-tete de ce
+    # fichier dit avoir corrigee pour NVIDIA.
+    _budget = _timeout(TIMEOUT_LLM)
+    _lim = float(getattr(_budget, "read", None) or getattr(_budget, "timeout", None)
+                 or (_budget if isinstance(_budget, (int, float)) else TIMEOUT_LLM))
+    _lim = max(5.0, min(_lim, TIMEOUT_LLM))
+    _echeance = _t.monotonic() + _lim
 
     system_parts: list[str] = []
     contents: list[dict] = []
@@ -1040,8 +1055,9 @@ def _gemini_chat(messages: list, model: str, temperature: float) -> str:
         if m and m not in candidats:
             candidats.append(m)
     try:
+        # Le catalogue est un CONFORT : il ne doit jamais manger le budget de la reponse.
         lst = requests.get("https://generativelanguage.googleapis.com/v1beta/models",
-                           headers=_gemini_auth(), timeout=20)
+                           headers=_gemini_auth(), timeout=min(8.0, _lim / 3))
         if lst.status_code == 200:
             for mo in (lst.json().get("models") or []):
                 nom = (mo.get("name") or "").replace("models/", "")
@@ -1052,10 +1068,18 @@ def _gemini_chat(messages: list, model: str, temperature: float) -> str:
 
     resp, derniere = None, ""
     for m in candidats:
+        # La BOUCLE aussi est bornee : essayer huit modeles a 120 s chacun revenait au
+        # meme probleme, une fois par candidat.
+        restant = _echeance - _t.monotonic()
+        if restant <= 2.0:
+            derniere = derniere or f"budget epuise apres {len(candidats)} candidat(s)"
+            break
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
-        r = requests.post(url, headers=_gemini_auth(), json=payload, timeout=120)
+        r = requests.post(url, headers=_gemini_auth(), json=payload, timeout=restant)
         if r.status_code in (400, 401, 403):          # repli : ancienne méthode ?key=
-            r = requests.post(url, params={"key": config.GEMINI_API_KEY}, json=payload, timeout=120)
+            restant = max(2.0, _echeance - _t.monotonic())
+            r = requests.post(url, params={"key": config.GEMINI_API_KEY}, json=payload,
+                              timeout=restant)
         if r.status_code == 200:
             _MODELES_OK["gemini"] = m
             resp = r
