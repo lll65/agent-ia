@@ -4526,6 +4526,100 @@ def test_discord_ferme_et_outils_dangereux_hors_de_portee():
     check("DISCORD_OWNER_ID est configurable", hasattr(_cfg, "DISCORD_OWNER_ID"), True)
 
 
+def test_automatisations_fouillees_et_envoi_verifiable():
+    """« Je ne les recois pas sur Telegram » et « elles ne sont pas assez approfondies ».
+
+    1. Une automatisation etait bornee EXACTEMENT comme une question posee en direct :
+       75 s et deux recherches. C'est le bon reglage quand Lohan regarde son telephone,
+       pas du tout pour « resume-moi l'actu bourse de la journee » a 17 h, ou personne
+       n'attend. Resultat : deux recherches, une synthese rapide, et fin.
+    2. « Je ne recois rien » ne se diagnostique pas en lisant du code : il faut essayer.
+    """
+    import importlib, inspect
+    from pathlib import Path as _P
+    racine = _P(__file__).resolve().parents[1]
+    AC = importlib.import_module("agent.core")
+
+    # 1. Le mode fond existe et est plus genereux que le direct.
+    check("run_agent accepte le mode fond",
+          "fond" in inspect.signature(AC.run_agent).parameters, True)
+    check("plus de recherches en fond", AC.MAX_RECHERCHES_FOND > AC.MAX_RECHERCHES, True)
+    from config import config as _cfg
+    check("plus de temps en fond",
+          AC.AGENT_TIMEOUT_FOND > float(getattr(_cfg, "AGENT_TIMEOUT", 75)), True)
+    # Le flux SSE, lui, reste interactif : on n'a pas allonge l'attente devant l'ecran.
+    src = (racine / "agent" / "core.py").read_text(encoding="utf-8")
+    flux = src.split("async def run_agent_stream(", 1)[1]
+    check("le direct garde son plafond serre",
+          "_plafond_recherches = MAX_RECHERCHES" in flux, True)
+
+    # 2. Les automatisations l'utilisent VRAIMENT.
+    auto = (racine / "agent" / "automations.py").read_text(encoding="utf-8")
+    check("l'automatisation demande le mode fond",
+          '_ask_agent(item["prompt"], fond=True)' in auto, True)
+    api = (racine / "api" / "agent.py").read_text(encoding="utf-8")
+    check("_ask_agent transmet le mode fond",
+          "run_agent(message, cfg, _PROFILE_ID, fond=fond)" in api, True)
+    check("et demande une synthese substantielle", "SUBSTANTIELLE" in api, True)
+
+    # 3. Le test d'envoi Telegram repond VRAIMENT, sans supposer.
+    import os as _os
+    _os.environ["AGENT_API_KEY"] = "cle-de-test-verrou"
+    _os.environ["DISABLE_UI"] = "true"
+    from fastapi.testclient import TestClient
+    _main = importlib.import_module("main")
+    _main.config.AGENT_API_KEY = "cle-de-test-verrou"
+    A = importlib.import_module("api.agent")
+    cle_avant = getattr(A.config, "AGENT_API_KEY", "")
+    tok_avant = A.config.TELEGRAM_TOKEN
+    tp = importlib.import_module("bots.telegram_push")
+    try:
+        A.config.AGENT_API_KEY = "cle-de-test-verrou"
+        c = TestClient(_main.app)
+        check("la route exige la cle", c.get("/agent/diag/telegram").status_code, 401)
+
+        # Sans jeton : on le DIT, on ne pretend pas avoir envoye.
+        A.config.TELEGRAM_TOKEN = ""
+        d = c.get("/agent/diag/telegram", params={"key": "cle-de-test-verrou",
+                                                  "envoyer": "true"}).json()
+        check("sans jeton, le test le dit", "TELEGRAM_TOKEN" in d.get("test", ""), True)
+
+        # Avec jeton mais personne n'a parle au bot : on le DIT aussi.
+        A.config.TELEGRAM_TOKEN = "faux-jeton"
+        vrai_prop = tp.proprietaire
+        tp.proprietaire = lambda canal="telegram": ""
+        d = c.get("/agent/diag/telegram", params={"key": "cle-de-test-verrou",
+                                                  "envoyer": "true"}).json()
+        check("sans destinataire, le test le dit", "/start" in d.get("test", ""), True)
+
+        # Envoi reussi.
+        tp.proprietaire = lambda canal="telegram": "111"
+        vrai_envoi = tp.send_message
+        tp.send_message = lambda texte, chat_id=None: True
+        d = c.get("/agent/diag/telegram", params={"key": "cle-de-test-verrou",
+                                                  "envoyer": "true"}).json()
+        check("envoi reussi annonce", d.get("test", "").startswith("✅"), True)
+
+        # Envoi refuse par Telegram : on ne maquille pas en succes.
+        tp.send_message = lambda texte, chat_id=None: False
+        d = c.get("/agent/diag/telegram", params={"key": "cle-de-test-verrou",
+                                                  "envoyer": "true"}).json()
+        check("echec annonce comme echec", d.get("test", "").startswith("❌"), True)
+
+        # Sans ?envoyer, on ne spamme pas Telegram a chaque diagnostic.
+        d = c.get("/agent/diag/telegram", params={"key": "cle-de-test-verrou"}).json()
+        check("pas d'envoi sans le demander", "test" in d, False)
+        tp.send_message, tp.proprietaire = vrai_envoi, vrai_prop
+    finally:
+        A.config.AGENT_API_KEY = cle_avant
+        A.config.TELEGRAM_TOKEN = tok_avant
+
+    # 4. Le bouton existe dans l'interface : pas besoin de taper une URL.
+    ui = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+    check("le bouton de test est dans l'interface", "testTelegram(this)" in ui, True)
+    check("il appelle bien la route", "/agent/diag/telegram?envoyer=true" in ui, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -4554,7 +4648,8 @@ if __name__ == "__main__":
                test_une_panne_ne_peut_plus_effacer,
                test_protocole_jamais_montre_ni_flux_casse,
                test_injection_donnees_et_cours_complet,
-               test_discord_ferme_et_outils_dangereux_hors_de_portee):
+               test_discord_ferme_et_outils_dangereux_hors_de_portee,
+               test_automatisations_fouillees_et_envoi_verifiable):
         try:
             fn()
         except Exception as e:
