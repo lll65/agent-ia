@@ -3627,6 +3627,11 @@ def test_memoire_des_donnees():
         A._format_app_result = lambda msg, act, obs, w: PEA
 
         mem = get_memory()
+        # ⚠️ La base de test s'accumule d'une execution a l'autre. Passe 200 entrees,
+        # recall_recent ne rendait plus que les 200 DERNIERES : `avant` valait 200, la
+        # tranche `[avant:]` etait vide, et le test echouait sans qu'aucun code de
+        # production n'ait bouge. On repart d'un profil propre.
+        mem.clear(A._PROFILE_ID)
         avant = len(mem.recall_recent(A._PROFILE_ID, 200) or [])
         A._direct_app_prepare("lit mon fichier pea sur google sheet")
         garde = (mem.recall_recent(A._PROFILE_ID, 200) or [])[avant:]
@@ -4961,6 +4966,91 @@ def test_un_accord_ne_declenche_que_ce_qu_il_confirme():
     check("plus de cle globale par profil", "_ATTENTE[profil] = {" in src, False)
 
 
+def test_agenda_dit_la_vraie_date_et_ne_fusionne_plus():
+    """Capture reelle : Nova annonce « 01/09/2026 », l'agenda affiche « Monday 31 Aug ».
+
+    Trois defauts sur une seule demande, tous visibles sur la capture :
+    1. Le recapitulatif etait REDIGE PAR LE MODELE a partir d'un extrait de la reponse
+       JSON. Il a annonce une date que l'evenement n'avait pas. Une donnee fausse
+       affirmee comme vraie, sur la seule chose que Lohan ne va pas revenir verifier.
+    2. Le titre etait la PHRASE ENTIERE (« pour demain acheter du magret de canard a
+       faut que je l'achete Dans l'apres-midi donc mais a partir de et ensuite mets
+       pour mercredi matin … »).
+    3. La demande contenait DEUX rendez-vous (« … et ensuite mets pour mercredi … ») :
+       un seul a ete cree, le second perdu sans un mot.
+    """
+    import json as _j, importlib
+    A = importlib.import_module("api.agent")
+
+    # --- 1. La date affichee est LUE dans la reponse de Google ---------------
+    reponse = _j.dumps({"successful": True, "data": {"event": {
+        "created": "2026-08-31T11:39:07.000Z",
+        "summary": "Acheter du magret",
+        "start": {"dateTime": "2026-08-31T14:15:00+02:00"},
+        "end": {"dateTime": "2026-08-31T15:15:00+02:00"}}}})
+    r = A._recap_evenement(reponse)
+    check("la vraie date est annoncee", "31/08/2026" in r, True)
+    check("…avec le bon jour de la semaine", "lundi" in r, True)
+    check("…et la bonne heure", "14h15" in r, True)
+    check("le titre reel est repris", "Acheter du magret" in r, True)
+    # Un evenement sur la journee entiere n'invente pas d'heure.
+    r2 = A._recap_evenement(_j.dumps({"data": {"event": {
+        "summary": "Chez Nico", "start": {"date": "2026-09-02"}}}}))
+    check("journee entiere : la date sans heure", "mercredi 02/09/2026" in r2, True)
+    check("…et pas d'heure inventee", "h" in r2.split("02/09/2026")[1], False)
+    # Reponse illisible : on n'affirme RIEN plutot que d'inventer.
+    check("reponse illisible → aucun recap", A._recap_evenement("erreur reseau"), "")
+    check("reponse sans date → aucun recap",
+          A._recap_evenement(_j.dumps({"data": {"event": {"summary": "x"}}})), "")
+
+    # --- 2. Le recap passe AVANT la prose du modele --------------------------
+    vrai_chat = None
+    try:
+        import llm.client as LC
+        vrai_chat = LC.chat
+        # Le modele raconte une date FAUSSE, comme dans la capture.
+        LC.chat = lambda *a, **k: "Événement créé pour demain, le 01/09/2026."
+        sortie = A._format_app_result("ajoute...", "GOOGLECALENDAR_CREATE_EVENT", reponse, True)
+        check("la vraie date est en tete", sortie.startswith("✅ Créé dans ton agenda"), True)
+        check("…et elle est juste", "31/08/2026" in sortie.split("\n")[0], True)
+    finally:
+        if vrai_chat is not None:
+            LC.chat = vrai_chat
+
+    # --- 3. Deux demandes → deux evenements ---------------------------------
+    vrai_json = A._llm_json
+    try:
+        A._llm_json = lambda sys_, usr, temperature=0.1: {"evenements": [
+            {"titre": "Acheter du magret", "debut": "2026-09-01T14:15", "fin": "2026-09-01T15:15"},
+            {"titre": "Chez Nico", "debut": "2026-09-02T09:00", "fin": "2026-09-02T10:00"}]}
+        evts = A._evenements_demandes("ajoute pour demain ... et ensuite mets pour mercredi ...")
+        check("les deux evenements sont extraits", len(evts), 2)
+        check("le titre est court, pas la phrase entiere", evts[0]["titre"], "Acheter du magret")
+        check("la date est absolue", evts[0]["debut"], "2026-09-01T14:15")
+
+        act, args = A._resolve_app_action(
+            "ajoute dans mon agenda acheter du magret demain à 14h15 et mets pour mercredi chez Nico")
+        check("on passe par CREATE_EVENT, plus par Quick Add", act, "GOOGLECALENDAR_CREATE_EVENT")
+        check("avec le titre propre", args["summary"], "Acheter du magret")
+        check("et l'heure exacte", args["start_datetime"], "2026-09-01T14:15")
+        check("le second evenement suit", len(args.get("_autres_evenements") or []), 1)
+
+        # _tool les cree TOUS les deux.
+        vrai_call = A._tool_call
+        faits = []
+        A._tool_call = lambda cmd, a, sl: (faits.append(a.get("summary")), '{"data":{}}')[1]
+        A._tool(act, dict(args), "googlecalendar")
+        check("les deux sont reellement crees", faits, ["Acheter du magret", "Chez Nico"])
+        A._tool_call = vrai_call
+
+        # Extraction vide → on retombe sur Quick Add plutot que de ne rien faire.
+        A._llm_json = lambda sys_, usr, temperature=0.1: {"evenements": []}
+        act2, _ = A._resolve_app_action("ajoute un rdv dentiste demain à 10h")
+        check("repli sur Quick Add si l'extraction echoue", act2, "GOOGLECALENDAR_QUICK_ADD")
+    finally:
+        A._llm_json = vrai_json
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -4994,7 +5084,8 @@ if __name__ == "__main__":
                test_la_cle_ne_peut_pas_quitter_le_telephone,
                test_conversations_partagees_entre_appareils,
                test_une_tache_de_fond_ne_meurt_plus_en_silence,
-               test_un_accord_ne_declenche_que_ce_qu_il_confirme):
+               test_un_accord_ne_declenche_que_ce_qu_il_confirme,
+               test_agenda_dit_la_vraie_date_et_ne_fusionne_plus):
         try:
             fn()
         except Exception as e:

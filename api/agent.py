@@ -644,6 +644,49 @@ def _clean_event_text(message: str) -> str:
     return t.strip(" ,:\"'").strip() or message
 
 
+def _evenements_demandes(message: str) -> list:
+    """Les événements à créer, en date/heure ABSOLUES. Un par entrée.
+
+    ⚠️ On envoyait la phrase brute à Google Quick Add et on le laissait deviner. Sur
+    « ajoute pour demain acheter du magret à partir de 14 15 heures et ensuite mets
+    pour mercredi matin … », il a produit UN seul événement, titré avec la phrase
+    ENTIÈRE, et placé AUJOURD'HUI au lieu de demain. Deux demandes fusionnées, une
+    date fausse, un titre illisible. On extrait donc nous-mêmes, en donnant au modèle
+    la date du jour — sans elle, « demain » ne veut rien dire.
+    """
+    from agent.horloge import maintenant
+    now = maintenant()
+    ex = _llm_json(
+        "Extrais les événements d'agenda demandés. Il peut y en avoir PLUSIEURS dans "
+        "une même phrase (« … et ensuite mets pour mercredi … ») : rends-les tous.\n"
+        'JSON STRICT : {"evenements":[{"titre":"…","debut":"AAAA-MM-JJTHH:MM",'
+        '"fin":"AAAA-MM-JJTHH:MM"}]}\n'
+        "titre = 2 à 5 mots décrivant l'activité, sans verbe d'ajout, sans le mot "
+        "« agenda », première lettre en majuscule (« Acheter du magret », « Chez Nico »).\n"
+        "debut/fin = date et heure ABSOLUES, résolues par rapport à MAINTENANT. "
+        "Si l'heure de fin n'est pas dite, mets une heure après le début. "
+        "Si seul un moment de la journée est donné : matin = 09:00, "
+        "après-midi = 14:00, soir = 19:00.\n"
+        "N'invente aucun événement qui ne serait pas demandé.",
+        f"MAINTENANT : {now:%Y-%m-%dT%H:%M} ({_JOURS_FR_MIN[now.weekday()]}).\n"
+        f"Phrase : {message}")
+    sortie = []
+    for e in (ex.get("evenements") or [])[:4]:
+        titre = (e.get("titre") or "").strip(" .\"'")[:80]
+        debut = (e.get("debut") or "").strip()
+        if not titre or not re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", debut):
+            continue
+        fin = (e.get("fin") or "").strip()
+        if not re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", fin):
+            from datetime import datetime, timedelta
+            fin = (datetime.fromisoformat(debut[:16]) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
+        sortie.append({"titre": titre, "debut": debut[:16], "fin": fin[:16]})
+    return sortie
+
+
+_JOURS_FR_MIN = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
+
+
 def _event_text(message: str) -> str:
     """Titre + moment prêts pour Quick Add. Le LLM extrait l'essentiel (robuste à l'oral),
     avec repli sur le nettoyage par règles si l'extraction échoue."""
@@ -684,6 +727,20 @@ def _resolve_app_action(message: str):
 
     # ➕ CRÉATION d'événement → Quick Add (langage naturel). Exige un mot d'agenda OU une heure précise.
     if any(v in m for v in _CAL_CREATE) and (cal_ctx or has_clock):
+        # ⚠️ On laissait Google deviner à partir de la phrase brute. Sur une demande
+        # qui en contient DEUX (« … et ensuite mets pour mercredi … »), il n'en créait
+        # qu'un, titré avec la phrase entière, et au mauvais jour. On extrait donc les
+        # événements nous-mêmes, en dates absolues — voir _evenements_demandes. Quick
+        # Add reste le repli quand l'extraction ne donne rien d'exploitable.
+        evts = _evenements_demandes(message)
+        if evts:
+            e = evts[0]
+            args = {"calendar_id": "primary", "summary": e["titre"],
+                    "start_datetime": e["debut"], "event_duration_hour": 1,
+                    "event_duration_minutes": 0}
+            if len(evts) > 1:
+                args["_autres_evenements"] = evts[1:]     # créés à la suite (voir _tool)
+            return "GOOGLECALENDAR_CREATE_EVENT", args
         return "GOOGLECALENDAR_QUICK_ADD", {"calendar_id": "primary", "text": _event_text(message)}
 
     if cal_ctx:
@@ -1128,6 +1185,57 @@ def _calendrier_periode(message: str) -> str:
     return "\n".join(lignes[:35])
 
 
+def _recap_evenement(obs: str) -> str:
+    """Ce que Google a VRAIMENT créé, lu dans sa réponse — jamais ce qu'on espérait.
+
+    ⚠️ Le récapitulatif était écrit par le modèle à partir d'un extrait de la réponse
+    JSON. Résultat vu en vrai : Nova annonçait « créé pour demain … (01/09/2026) »
+    alors que l'événement était posé au 31/08 dans l'agenda. Une date fausse affirmée
+    comme vraie, sur la seule chose que Lohan ne va pas revérifier. La date affichée
+    est désormais LUE dans la réponse, ou pas affichée du tout.
+    """
+    import json as _j
+    m = re.search(r"\{.*\}", obs or "", re.S)
+    if not m:
+        return ""
+    try:
+        d = _j.loads(m.group(0))
+    except Exception:
+        return ""
+    # La charge utile peut être imbriquée sous data/response_data/event.
+    for _ in range(4):
+        if isinstance(d, dict) and not d.get("start"):
+            suite = None
+            for c in ("data", "response_data", "event", "result"):
+                if isinstance(d.get(c), dict):
+                    suite = d[c]
+                    break
+            if suite is None:
+                break
+            d = suite
+    if not isinstance(d, dict):
+        return ""
+    debut = d.get("start") or {}
+    quand = debut.get("dateTime") or debut.get("date") or ""
+    titre = (d.get("summary") or "").strip()
+    if not quand:
+        return ""
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(str(quand).replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            from agent.horloge import zone
+            z = zone()
+            if z is not None:
+                dt = dt.astimezone(z)
+            dt = dt.replace(tzinfo=None)
+        libelle = (f"{_JOURS_FR_MIN[dt.weekday()]} {dt:%d/%m/%Y à %Hh%M}"
+                   if len(str(quand)) > 10 else f"{_JOURS_FR_MIN[dt.weekday()]} {dt:%d/%m/%Y}")
+    except Exception:
+        libelle = str(quand)
+    return f"✅ Créé dans ton agenda : « {titre or 'sans titre'} » — {libelle}."
+
+
 def _format_app_result(message: str, action: str, obs: str, is_write: bool = False) -> str:
     """Met en forme les DONNÉES RÉELLES via le LLM — interdiction absolue d'inventer.
 
@@ -1141,6 +1249,15 @@ def _format_app_result(message: str, action: str, obs: str, is_write: bool = Fal
     except Exception:
         return f"Voici les données réelles récupérées :\n\n{obs[:2000]}"
     propre = _prose_seule(brut)
+    # ⚠️ Sur une CRÉATION d'événement, la date ne peut pas venir du modèle : il lisait
+    # un JSON tronqué et annonçait « 01/09 » pour un événement posé au 31/08. On lit la
+    # réponse de Google nous-mêmes et on met ce constat EN TÊTE.
+    if "CALENDAR" in (action or "").upper() and any(
+            k in (action or "").upper() for k in ("CREATE", "QUICK_ADD", "UPDATE", "PATCH")):
+        morceaux = str(obs).split("[ÉVÉNEMENT SUIVANT]")
+        recaps = [r for r in (_recap_evenement(x) for x in morceaux) if r]
+        if recaps:
+            return "\n".join(recaps) + (("\n\n" + propre) if propre else "")
     # Si le modèle n'a produit que du protocole, mieux vaut les données brutes que rien.
     return propre or f"Voici les données réelles récupérées :\n\n{obs[:2000]}"
 
@@ -1661,7 +1778,17 @@ def _tool(name_cmd: str, args: dict, slug: str = "") -> str:
         record(_agent_for_slug(slug), slug, name_cmd)
     except Exception:
         pass
-    return _tool_call(name_cmd, args, slug)
+    # ⚠️ Une phrase peut demander DEUX rendez-vous (« … et ensuite mets pour mercredi
+    # … »). Une seule création était faite, et le second était perdu sans un mot.
+    autres = (args or {}).pop("_autres_evenements", None) if isinstance(args, dict) else None
+    obs = _tool_call(name_cmd, args, slug)
+    for e in (autres or []):
+        suite = _tool_call(name_cmd, {"calendar_id": "primary", "summary": e["titre"],
+                                      "start_datetime": e["debut"],
+                                      "event_duration_hour": 1,
+                                      "event_duration_minutes": 0}, slug)
+        obs = str(obs) + "\n\n[ÉVÉNEMENT SUIVANT]\n" + str(suite)
+    return obs
 
 
 def _tool_call(name_cmd: str, args: dict, slug: str) -> str:
