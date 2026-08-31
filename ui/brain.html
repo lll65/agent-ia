@@ -270,7 +270,11 @@ async function tick(){
   try{ const u=await (await fetch(ORIGIN+"/agent/usage?"+K,{cache:"no-store"})).json();
     document.getElementById("sTok").textContent=fmtK((u.total||{}).used); }catch(e){}
 }
-function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+// Les guillemets aussi : sans eux, un texte pose dans un attribut HTML peut en
+// sortir et devenir du code (voir le defaut corrige dans ui/nova.html).
+function esc(s){ return String(s==null?"":s)
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+  .replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
 function fmtAgo(s){ s=+s||0; return s<60? Math.round(s)+"s" : Math.round(s/60)+"min"; }
 function fmtK(n){ n=+n||0; return n>=1e6?(n/1e6).toFixed(1)+"M":n>=1000?(n/1000).toFixed(1)+"k":""+n; }
 tick(); setInterval(tick,2000);

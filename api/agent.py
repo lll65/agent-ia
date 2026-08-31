@@ -4138,6 +4138,50 @@ async def diag_automatisations(key: str = ""):
     return etat_planificateur()
 
 
+@router.get("/diag/sessions")
+async def diag_sessions(key: str = ""):
+    """Les conversations sont-elles VRAIMENT les mêmes sur le téléphone et le PC ?"""
+    _check_key(key)
+    from agent.sessions import etat
+    return await _off(etat)
+
+
+# ── Conversations partagées entre appareils ──────────────────────────────────
+class SessionIn(BaseModel):
+    key: Optional[str] = None
+    session: dict = {}
+
+
+@router.get("/sessions")
+async def sessions_lister(key: str = ""):
+    """La liste des conversations — la MÊME sur le téléphone et sur l'ordinateur.
+
+    ⚠️ Elle vivait dans le localStorage du navigateur : chaque appareil avait la
+    sienne, et vider le cache effaçait tout.
+    """
+    _check_key(key)
+    from agent.sessions import lister, etat
+    return {"sessions": await _off(lister), "etat": await _off(etat)}
+
+
+@router.post("/sessions")
+async def sessions_enregistrer(req: SessionIn):
+    """Dépose une conversation (création ou mise à jour). Écriture ciblée."""
+    _check_key(req.key or "")
+    from agent.sessions import enregistrer
+    s = await _off(enregistrer, req.session or {})
+    if not s:
+        raise HTTPException(status_code=400, detail="Conversation sans identifiant.")
+    return {"ok": True, "id": s["id"]}
+
+
+@router.delete("/sessions")
+async def sessions_supprimer(id: str = "", key: str = ""):
+    _check_key(key)
+    from agent.sessions import supprimer
+    return {"ok": await _off(supprimer, id)}
+
+
 @router.get("/diag/telegram")
 async def diag_telegram(key: str = "", envoyer: bool = False):
     """Le message part-il VRAIMENT sur Telegram ? Réponse vérifiable, pas une supposition.
@@ -4148,7 +4192,19 @@ async def diag_telegram(key: str = "", envoyer: bool = False):
     """
     _check_key(key)
     from bots.telegram_push import diagnostic, send_message, proprietaire
+    from agent.taches import etat as _etat_tache
     d = dict(diagnostic())
+    # ⚠️ Le démarrage écrivait « Bot Telegram démarré » avant que la tâche ait rien
+    # fait : s'il mourait juste après (jeton révoqué, ou le « Conflict » de Telegram
+    # quand DEUX instances interrogent le même bot), rien ne le disait. Voici son
+    # état RÉEL.
+    t = _etat_tache("bot Telegram")
+    d["bot"] = t
+    if t.get("etat") == "echouee":
+        d["resume"] = f"❌ Le bot ne tourne plus. {t.get('erreur', '')}"
+    elif t.get("etat") == "jamais_lancee" and config.TELEGRAM_TOKEN:
+        d["resume"] = ("❌ Le bot n'a jamais démarré alors que le jeton est présent — "
+                       "regarde les journaux Render au démarrage.")
     if envoyer:
         if not config.TELEGRAM_TOKEN:
             d["test"] = "❌ Impossible : TELEGRAM_TOKEN n'est pas défini sur Render."

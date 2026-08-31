@@ -77,32 +77,39 @@ async def lifespan(app: FastAPI):
     supervisor = Supervisor(get_registry())
     supervisor.start(interval_seconds=60)
 
-    # Bots en tâches de fond
+    # Bots en tâches de fond.
+    # ⚠️ On écrivait « Bot Telegram démarré » AVANT que la tâche ait rien fait. Si elle
+    # mourait dans la seconde — jeton révoqué, ou le « Conflict » que Telegram renvoie
+    # quand deux instances interrogent le même bot (l'ancienne installation locale et
+    # Render) — l'exception partait dans une tâche que personne n'attend, et Python
+    # l'avalait. Les journaux affirmaient « démarré », rien n'arrivait, et rien ne
+    # disait pourquoi. `lancer` retient ce qui arrive à chaque tâche (agent/taches.py).
+    from agent.taches import lancer
     bot_tasks = []
     if config.TELEGRAM_TOKEN:
         from bots.telegram_bot import run_telegram_bot
-        bot_tasks.append(asyncio.create_task(run_telegram_bot()))
-        logger.info("Bot Telegram démarré.")
+        bot_tasks.append(lancer("bot Telegram", run_telegram_bot()))
+    else:
+        logger.info("Bot Telegram non lancé : TELEGRAM_TOKEN absent.")
     if config.DISCORD_TOKEN:
         from bots.discord_bot import run_discord_bot
-        bot_tasks.append(asyncio.create_task(run_discord_bot()))
-        logger.info("Bot Discord démarré.")
+        bot_tasks.append(lancer("bot Discord", run_discord_bot()))
 
     # Automatisations — Nova exécute seule les tâches planifiées (« pendant que tu dors »)
     from agent.automations import scheduler_loop
-    bot_tasks.append(asyncio.create_task(scheduler_loop()))
+    bot_tasks.append(lancer("planificateur", scheduler_loop()))
 
     # Briefing du matin proactif (agenda + mails + météo + actu) via Telegram
     if config.BRIEFING_ENABLED:
         from agent.briefing import morning_loop
-        bot_tasks.append(asyncio.create_task(morning_loop()))
+        bot_tasks.append(lancer("briefing du matin", morning_loop()))
         logger.info(f"Briefing du matin activé (envoi à {config.BRIEFING_HOUR}h via Telegram).")
 
     # PEA Watcher — surveillance autonome + alertes Telegram
     if config.WATCHER_ENABLED:
         if config.TELEGRAM_TOKEN:
             from agent.pea_watcher import watch_loop
-            bot_tasks.append(asyncio.create_task(watch_loop()))
+            bot_tasks.append(lancer("veille PEA", watch_loop()))
             logger.info("PEA Watcher démarré (alertes Telegram).")
         else:
             logger.warning("WATCHER_ENABLED=true mais TELEGRAM_TOKEN absent — watcher non démarré.")
