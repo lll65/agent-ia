@@ -12,6 +12,7 @@ OpenAI que Groq). Si les deux échouent, l'erreur est loggée clairement.
 """
 import logging
 import os
+import time as _t
 import re
 from config import config
 
@@ -206,6 +207,28 @@ _BUDGET_APPEL = contextvars.ContextVar("budget_appel_llm", default=0.0)
 # dont on ait la preuve qu'il fonctionne maintenant.
 _DERNIER_OK = {"nom": ""}
 
+# ⚠️ La chaîne mettait en tête « celui qui a RÉPONDU en dernier ». C'est bien pour
+# éviter un fournisseur en panne, mais ça ne dit rien de sa VITESSE : dès qu'un
+# fournisseur lent répondait une fois, il gardait la tête indéfiniment et CHAQUE
+# message payait son délai — y compris un « salut ». On retient donc combien de
+# temps chacun met réellement, et le plus rapide passe devant. Mêmes modèles,
+# même qualité : on demande juste d'abord à celui qui répond vite.
+from collections import deque as _deque
+_LATENCE = {}                       # nom -> dernières durées observées (secondes)
+
+
+def _note_latence(nom: str, secondes: float) -> None:
+    _LATENCE.setdefault(nom, _deque(maxlen=5)).append(max(0.0, secondes))
+
+
+def rapidite(nom: str) -> float:
+    """Temps de réponse habituel de ce fournisseur, ou l'infini s'il est inconnu."""
+    d = _LATENCE.get(nom)
+    if not d:
+        return float("inf")
+    v = sorted(d)
+    return v[len(v) // 2]           # médiane : un pic isolé ne fausse pas le choix
+
 
 def executer_et_capturer(fn, *a, **k):
     """Exécute `fn` DANS LE THREAD COURANT et rend (résultat, modèle réellement utilisé).
@@ -308,6 +331,7 @@ def etat_fournisseurs() -> list:
             "reprend_dans_s": reste,
             "modele": _MODELES_OK.get(nom, "") or MODELES.get(nom, {}).get("equilibre", ""),
             "dernier_ok": _DERNIER_OK["nom"] == nom,
+            "vitesse_s": (None if rapidite(nom) == float("inf") else round(rapidite(nom), 1)),
             "choisi": PREFERENCE.get("fournisseur") == nom,
         })
     return out
@@ -353,8 +377,16 @@ def _providers_disponibles(niveau: str = "equilibre", impose: str = ""):
     # 2) Celui qui a RÉPONDU en dernier passe devant : c'est le seul dont on ait la preuve
     #    qu'il marche à cet instant. Sans ça, chaque message repayait le délai plein du
     #    fournisseur en panne placé en tête par le routage théorique.
-    elif _DERNIER_OK["nom"] and not _fournisseur_hs(_DERNIER_OK["nom"]):
-        add(_DERNIER_OK["nom"])
+    else:
+        # Le plus RAPIDE parmi ceux qui ont déjà répondu et qui ne sont pas en panne.
+        connus = [n for n in tous
+                  if tous[n][0] and rapidite(n) < float("inf") and not _fournisseur_hs(n)]
+        if connus:
+            add(min(connus, key=rapidite))
+        # À défaut de mesure, celui qui a répondu en dernier : c'est le seul dont on
+        # ait la preuve qu'il marche à cet instant.
+        elif _DERNIER_OK["nom"] and not _fournisseur_hs(_DERNIER_OK["nom"]):
+            add(_DERNIER_OK["nom"])
     # 3) Puis l'ordre adapté au niveau de la tâche
     for nom in ORDRE.get(niveau, ORDRE["equilibre"]):
         add(nom)
@@ -468,12 +500,14 @@ def _une_passe(messages: list, temperature: float, num_ctx: int, niveau: str,
         a_venir = max(1, min(len(chaine) - i, MIN_ESSAIS))
         part = min(TIMEOUT_LLM, restant / a_venir)
         _BUDGET_APPEL.set(min(restant, max(_plancher(), part)))
+        _depart = _t.monotonic()
         try:
             try:      # certains fournisseurs exploitent le niveau pour choisir le modèle
                 out = fn(messages, modele or config.LLM_MODEL, temperature, niveau)
             except TypeError:
                 out = fn(messages, modele or config.LLM_MODEL, temperature)
             if out and out.strip():
+                _note_latence(nom, _t.monotonic() - _depart)
                 if soucis:
                     logger.warning(f"[LLM] bascule sur {nom} après : {' | '.join(soucis)}")
                 DERNIER.set(f"{nom} · {_MODELES_OK.get(nom) or modele}")

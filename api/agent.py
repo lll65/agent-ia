@@ -1250,8 +1250,10 @@ def _format_app_result(message: str, action: str, obs: str, is_write: bool = Fal
     s'affichait donc en entier sur toutes les réponses d'app (agenda, Sheets, Notion…).
     """
     from llm.client import chat
+    from agent.chrono import mesure
     try:
-        brut = chat(_format_app_messages(message, action, obs, is_write), temperature=0.2)
+        with mesure("modele"):
+            brut = chat(_format_app_messages(message, action, obs, is_write), temperature=0.2)
     except Exception:
         return f"Voici les données réelles récupérées :\n\n{obs[:2000]}"
     propre = _prose_seule(brut)
@@ -1802,6 +1804,12 @@ def _tool(name_cmd: str, args: dict, slug: str = "") -> str:
 def _tool_call(name_cmd: str, args: dict, slug: str) -> str:
     """Exécution + reprise automatique si l'identité en cache est périmée
     (cas typique : tu viens juste de connecter l'app)."""
+    from agent.chrono import mesure
+    with mesure("composio"):
+        return _tool_call_brut(name_cmd, args, slug)
+
+
+def _tool_call_brut(name_cmd: str, args: dict, slug: str) -> str:
     import json as _json
     from plugins import get_loader
     from agent.self_heal import safe_tool_call
@@ -3636,6 +3644,9 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
     message = (q or "").strip()
     # C'est le chat web : une confirmation armée ici ne peut être donnée qu'ici.
     _CANAL["actuel"] = "web"
+    # « Ça met 40 s » : on mesure au lieu de supposer (voir /agent/diag/vitesse).
+    from agent.chrono import demarre as _chrono_demarre, termine as _chrono_termine
+    _chrono_demarre(message)
 
     async def gen():
         def sse(obj):
@@ -3855,6 +3866,13 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
         except Exception as e:
             yield sse({"type": "answer", "text": f"❌ Erreur : {type(e).__name__}: {str(e)[:300]}"})
             yield sse({"type": "done"})
+        finally:
+            # Quelle que soit la branche prise — et il y en a huit — la mesure se
+            # referme ici. C'est la seule façon de ne pas en oublier une.
+            try:
+                _chrono_termine()
+            except Exception:
+                pass
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -4337,6 +4355,14 @@ async def diag_automatisations(key: str = ""):
     _check_key(key)
     from agent.automations import etat_planificateur
     return etat_planificateur()
+
+
+@router.get("/diag/vitesse")
+async def diag_vitesse(key: str = ""):
+    """Où passent les secondes ? Chiffres par étape, pas des hypothèses."""
+    _check_key(key)
+    from agent.chrono import etat
+    return etat()
 
 
 @router.get("/diag/reveil")

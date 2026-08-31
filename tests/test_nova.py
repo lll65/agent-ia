@@ -5142,6 +5142,101 @@ def test_reveil_mesure_et_accueil_honnete():
     R._PASSAGES.clear()
 
 
+def test_le_plus_rapide_repond_en_premier():
+    """« C'est lent partout, meme pour dire bonjour. »
+
+    La chaine mettait en tete « celui qui a REPONDU en dernier ». C'est bien pour
+    eviter un fournisseur en panne, mais ca ne dit rien de sa VITESSE : des qu'un
+    fournisseur lent repondait une fois, il gardait la tete indefiniment et CHAQUE
+    message payait son delai. Un « salut » attendait Gemini pendant que Groq, a
+    0,8 s, etait relegue en deuxieme.
+    """
+    import importlib
+    C = importlib.import_module("llm.client")
+    avant = (dict(C._LATENCE), C._DERNIER_OK["nom"], C.PREFERENCE.get("fournisseur", ""),
+             C.config.GROQ_API_KEY, C.config.GEMINI_API_KEY, C.config.MISTRAL_API_KEY)
+    try:
+        C._LATENCE.clear()
+        C._DERNIER_OK["nom"] = ""
+        C.PREFERENCE["fournisseur"] = ""
+        C.config.GROQ_API_KEY, C.config.GEMINI_API_KEY, C.config.MISTRAL_API_KEY = "g", "e", "m"
+
+        def tete():
+            return [n for n, _, _ in C._providers_disponibles("equilibre")][0]
+
+        # Sans aucune mesure : l'ordre theorique s'applique, comme avant.
+        check("sans mesure, l'ordre habituel", tete(), "groq")
+
+        # Gemini a repondu en dernier mais met 12 s : il ne doit PAS garder la tete
+        # une fois qu'on sait que Groq repond en 0,8 s.
+        C._DERNIER_OK["nom"] = "gemini"
+        C._note_latence("gemini", 12.0)
+        check("un lent qui vient de repondre prend la tete faute de mieux", tete(), "gemini")
+        for _ in range(3):
+            C._note_latence("groq", 0.8)
+        check("…mais le rapide la reprend des qu'on le mesure", tete(), "groq")
+
+        # Un pic isole ne doit pas faire tomber un fournisseur rapide : on prend la
+        # mediane, pas la derniere valeur.
+        C._note_latence("groq", 30.0)
+        check("un pic isole ne fausse pas le choix", tete(), "groq")
+        check("…la mediane reste basse", C.rapidite("groq") < 2, True)
+
+        # Un fournisseur en panne ne remonte pas, meme s'il est le plus rapide.
+        C._note_latence("mistral", 0.2)
+        C._marque_fournisseur_hs("mistral", RuntimeError("401 invalid api key"))
+        check("un fournisseur en panne ne prend pas la tete", tete() == "mistral", False)
+        C._FOURNISSEURS_KO.pop("mistral", None)
+
+        # Le choix explicite de l'utilisateur reste PRIORITAIRE sur la vitesse.
+        C.PREFERENCE["fournisseur"] = "gemini"
+        check("ton choix passe avant la vitesse", tete(), "gemini")
+        C.PREFERENCE["fournisseur"] = ""
+
+        # Et la vitesse observee est visible dans le diagnostic.
+        etat = C.etat_fournisseurs()
+        vus = {e["nom"]: e for e in etat} if isinstance(etat, list) else {}
+        if "groq" in vus:
+            check("la vitesse mesuree est exposee", vus["groq"].get("vitesse_s") is not None, True)
+    finally:
+        C._LATENCE.clear()
+        C._LATENCE.update(avant[0])
+        C._DERNIER_OK["nom"] = avant[1]
+        C.PREFERENCE["fournisseur"] = avant[2]
+        (C.config.GROQ_API_KEY, C.config.GEMINI_API_KEY, C.config.MISTRAL_API_KEY) = avant[3:]
+
+    # Le chronometre dit OU passent les secondes, au lieu de laisser supposer.
+    CH = importlib.import_module("agent.chrono")
+    CH._HISTORIQUE.clear()
+    check("sans mesure, il le dit", "Aucune demande" in CH.etat()["resume"], True)
+    CH.demarre("mes dispos de la semaine")
+    CH._COURANT["_t0"] -= 12          # la demande a bien dure 12 s en tout
+    CH.ajoute("composio", 3.0)
+    CH.ajoute("modele", 9.0)
+    fin = CH.termine()
+    check("le total est mesure", fin["total_s"] >= 0, True)
+    check("chaque etape est chiffree", fin["etapes"]["modele"]["s"], 9.0)
+    e = CH.etat()
+    check("le coupable est designe", "modèles" in e["resume"], True)
+    check("…avec quoi faire", "solution" in e, True)
+    # Un temps qu'aucune etape ne couvre est attribue au demarrage a froid, pas noye.
+    CH._HISTORIQUE.clear()
+    CH.demarre("x")
+    CH._COURANT["_t0"] -= 40                     # 40 s passees hors de toute etape
+    CH.ajoute("modele", 1.0)
+    fin = CH.termine()
+    check("le temps non explique est isole", fin["non_mesure_s"] >= 38, True)
+    check("…et attribue au reveil de Render",
+          "Render" in CH.etat().get("solution", ""), True)
+    CH._HISTORIQUE.clear()
+
+    # Le prechauffage evite de payer la decouverte a la premiere question.
+    from pathlib import Path as _P
+    m = (_P(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
+    check("les apps connectees sont chauffees au demarrage",
+          'lancer("préchauffage"' in m, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -5177,7 +5272,8 @@ if __name__ == "__main__":
                test_une_tache_de_fond_ne_meurt_plus_en_silence,
                test_un_accord_ne_declenche_que_ce_qu_il_confirme,
                test_agenda_dit_la_vraie_date_et_ne_fusionne_plus,
-               test_reveil_mesure_et_accueil_honnete):
+               test_reveil_mesure_et_accueil_honnete,
+               test_le_plus_rapide_repond_en_premier):
         try:
             fn()
         except Exception as e:
