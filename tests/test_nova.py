@@ -4700,6 +4700,94 @@ console.log(JSON.stringify(out));
         check(f"{page} echappe l'apostrophe", "&#39;" in bloc, True)
 
 
+def test_conversations_partagees_entre_appareils():
+    """« Les conv de mon tel ne sont pas reliees a mon PC ».
+
+    Les conversations vivaient dans le localStorage du navigateur. Un localStorage
+    appartient a UN navigateur sur UN appareil : l'iPhone et l'ordinateur avaient
+    chacun leur historique et ne voyaient jamais celui de l'autre ; vider le cache
+    effacait tout. A ne pas confondre avec la memoire de Nova, elle bien cote
+    serveur — ce qui explique qu'elle pouvait se souvenir d'un fait sans afficher
+    la conversation ou il avait ete dit.
+    """
+    import importlib, os as _os
+    from pathlib import Path as _P
+    racine = _P(__file__).resolve().parents[1]
+    SE = importlib.import_module("agent.sessions")
+    vrai = SE._ENTREPOT
+    try:
+        SE._ENTREPOT = FauxEntrepot("id")
+
+        # Le telephone depose deux conversations.
+        SE.enregistrer({"id": "s1", "title": "Cours de maths", "ts": 1000,
+                        "messages": [{"role": "me", "text": "explique les derivees"}]})
+        SE.enregistrer({"id": "s2", "title": "Actu bourse", "ts": 2000,
+                        "messages": [{"role": "me", "text": "le CAC aujourd'hui"}]})
+        # L'ordinateur les retrouve, la plus recente en tete.
+        vues = SE.lister()
+        check("les deux conversations sont partagees", [x["id"] for x in vues], ["s2", "s1"])
+        check("avec leur contenu", vues[1]["messages"][0]["text"], "explique les derivees")
+
+        # Une mise a jour depuis l'autre appareil ne duplique pas.
+        SE.enregistrer({"id": "s1", "title": "Cours de maths", "ts": 3000,
+                        "messages": [{"role": "me", "text": "explique les derivees"},
+                                     {"role": "ai", "text": "voila"}]})
+        vues = SE.lister()
+        check("pas de doublon apres mise a jour", len(vues), 2)
+        check("la version la plus recente gagne", vues[0]["id"], "s1")
+        check("le nouveau message est la", len(vues[0]["messages"]), 2)
+
+        # Une suppression est vraiment propagee.
+        check("suppression", SE.supprimer("s2"), True)
+        check("elle a disparu partout", [x["id"] for x in SE.lister()], ["s1"])
+        check("supprimer l'inconnu ne casse rien", SE.supprimer("zzz"), False)
+
+        # Une conversation sans identifiant est refusee, pas enregistree a moitie.
+        check("refus sans identifiant", SE.enregistrer({"title": "x"}), {})
+
+        # Le contenu est BORNE : le Mode Cours colle des transcriptions entieres.
+        gros = [{"role": "me", "text": "x" * 9000} for _ in range(300)]
+        SE.enregistrer({"id": "s3", "title": "Gros", "ts": 4000, "messages": gros})
+        garde = next(x for x in SE.lister() if x["id"] == "s3")
+        check("le nombre de messages est borne", len(garde["messages"]) <= SE.MAX_MESSAGES, True)
+        total = sum(len(m["text"]) for m in garde["messages"])
+        check("le volume est borne", total <= SE.MAX_CARACTERES + 8000, True)
+
+        # Une panne ne peut pas faire disparaitre les autres conversations.
+        SE._ENTREPOT.panne = True
+        check("pendant la panne, on ne supprime pas", SE.supprimer("s1"), False)
+        SE._ENTREPOT.panne = False
+        check("tout est intact", len(SE.lister()), 2)
+
+        # Le diagnostic DIT si c'est vraiment partage, il ne le suppose pas.
+        # Avec Supabase : il confirme, en donnant le nombre.
+        e = SE.etat()
+        check("avec Supabase, il confirme", e["resume"].startswith("✅"), True)
+        check("…et il compte", e["conversations"], 2)
+        # SANS Supabase : il PREVIENT au lieu de laisser croire que c'est partage.
+        SE._ENTREPOT.configure = lambda: False
+        e = SE.etat()
+        check("sans Supabase, il previent", e["resume"].startswith("⚠️"), True)
+        check("…et il dit quoi faire",
+              "SUPABASE_DB_URL" in e.get("solution", ""), True)
+        SE._ENTREPOT.configure = lambda: True
+    finally:
+        SE._ENTREPOT = vrai
+
+    # Les routes existent, exigent la cle, et l'interface les utilise.
+    api = (racine / "api" / "agent.py").read_text(encoding="utf-8")
+    for route in ('@router.get("/sessions")', '@router.post("/sessions")',
+                  '@router.delete("/sessions")', '@router.get("/diag/sessions")'):
+        check(f"route {route}", route in api, True)
+    ui = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+    check("l'interface fusionne avec le serveur", "async function syncSessions()" in ui, True)
+    check("elle depose ses conversations", '"/agent/sessions"' in ui, True)
+    check("elle propage les suppressions",
+          '/agent/sessions?key=' in ui and 'method:"DELETE"' in ui, True)
+    check("la fusion garde la version la plus recente",
+          "(s.ts||0) > (local.ts||0)" in ui, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -4730,7 +4818,8 @@ if __name__ == "__main__":
                test_injection_donnees_et_cours_complet,
                test_discord_ferme_et_outils_dangereux_hors_de_portee,
                test_automatisations_fouillees_et_envoi_verifiable,
-               test_la_cle_ne_peut_pas_quitter_le_telephone):
+               test_la_cle_ne_peut_pas_quitter_le_telephone,
+               test_conversations_partagees_entre_appareils):
         try:
             fn()
         except Exception as e:
