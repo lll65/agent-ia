@@ -845,6 +845,12 @@ def _is_param_error(obs: str) -> bool:
     return ("400" in msg or "invalid" in msg or "bad request" in msg
             or "must be" in msg or "is required" in msg or "missing" in msg
             or "validation" in msg or "expected" in msg or "type" in msg
+            # ⚠️ « Parent id 'c0f3…' is neither a page nor a database » (Notion) n'etait
+            # reconnu par aucun motif : Nova abandonnait sans meme essayer de retrouver
+            # une vraie page parente. C'est pourtant l'erreur de parametre par
+            # excellence — l'identifiant existe, mais ne designe pas ce qu'il faut.
+            or "is neither" in msg or "not a valid" in msg or "does not exist" in msg
+            or "could not find" in msg or "no such" in msg
             # L'API nomme la bonne valeur : c'est corrigeable, et sans deviner.
             or bool(_suggestions_api(obs)))
 
@@ -1270,6 +1276,25 @@ def _format_app_result(message: str, action: str, obs: str, is_write: bool = Fal
     return propre or f"Voici les données réelles récupérées :\n\n{obs[:2000]}"
 
 
+# ⚠️ Nova a repondu « Je ne parviens pas a creer la page Notion avec la syntaxe
+# PARAMS ». PARAMS est le nom d'un marqueur de SON protocole interne : ca ne veut rien
+# dire pour Lohan, et surtout ca deguise un vrai echec en probleme de syntaxe. Le
+# filtre existant ne retirait que les LIGNES commencant par « PARAMS: » ; une mention
+# au fil d'une phrase passait.
+# On ne remplace QUE le mot du protocole, pas ce qui le precede : sinon
+# « avec la syntaxe PARAMS » devenait « avec la page le format d'appel interne ».
+_JARGON = re.compile(
+    r"\b((?:syntaxe|format|structure|commande|balise|marqueur)s?)\s+"
+    r"(?:PARAMS|ACTION|THOUGHT|FINAL|OBSERVATION)\b", re.I)
+_JARGON_NU = re.compile(r"\b(?:PARAMS|THOUGHT|OBSERVATION)\b")
+
+
+def _sans_jargon(t: str) -> str:
+    """Enleve le vocabulaire du protocole interne d'une reponse destinee a l'utilisateur."""
+    t = _JARGON.sub(lambda m: m.group(1) + " interne", t or "")
+    return _JARGON_NU.sub("l'appel interne", t)
+
+
 def _prose_seule(brut: str) -> str:
     """Ne garde que la prose : ni brouillon <think>, ni marqueurs du protocole ReAct.
 
@@ -1279,7 +1304,7 @@ def _prose_seule(brut: str) -> str:
     from agent.core import sans_raisonnement
     t = sans_raisonnement(brut or "")
     t = re.sub(r"^\s*(THOUGHT|FINAL|ACTION|PARAMS)\s*:\s*", "", t, flags=re.M | re.I)
-    return t.strip()
+    return _sans_jargon(t).strip()
 
 
 # ── GARDE-FOU : rien d'irréversible sans ton accord ──────────────────────────

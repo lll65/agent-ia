@@ -5237,6 +5237,136 @@ def test_le_plus_rapide_repond_en_premier():
           'lancer("préchauffage"' in m, True)
 
 
+def test_aucun_chiffre_financier_invente():
+    """AUDIT — deux defauts CRITIQUES : des chiffres faux servis comme vrais, sur de
+    l'argent reel.
+
+    1. « Plus haut / plus bas 52 semaines » etait calcule sur SIX MOIS : la periode par
+       defaut d'analyze_stock est 6mo, donc tail(252) ne coupait rien. Un plus-bas
+       vieux de neuf mois disparaissait, et la « position 52s » affichait 100 % pour un
+       titre en realite 39 % au-dessus de son vrai plancher.
+    2. Quand yfinance echoue — Yahoo repond 401 aux adresses de centres de donnees
+       comme Render, c'est TRES courant — compare_stocks ecrivait « RSI 50,
+       volatilite 0.00 %/j, Sharpe 0.00 » EN DUR. Un titre qui perdait 2 EUR par jour
+       s'affichait donc « ✅ Neutre ».
+    """
+    import importlib
+    F = importlib.import_module("plugins.builtin.finance")
+
+    # --- 1. Les indicateurs de secours sont CALCULES, plus inventes ----------
+    chute = [100 - i * 2 for i in range(60)]
+    montee = [100 + i * 2 for i in range(60)]
+    calme = [100 + (0.1 if i % 2 else -0.1) for i in range(60)]
+    check("un titre qui chute n'est plus « neutre »", F._rsi_liste(chute) < 30, True)
+    check("un titre qui monte est reconnu suracheté", F._rsi_liste(montee) > 70, True)
+    check("la volatilite reelle n'est plus zero", F._volatilite_liste(chute) > 0, True)
+    check("un titre calme a bien une volatilite faible", F._volatilite_liste(calme) < 1, True)
+
+    # --- 2. Ce qu'on ne peut PAS calculer s'ecrit « N/D », jamais 50 ---------
+    check("serie trop courte → RSI inconnu", F._rsi_liste([1, 2, 3]), None)
+    check("serie trop courte → volatilite inconnue", F._volatilite_liste([1]), None)
+    check("aucune donnee → rien d'invente", F._rsi_liste([]), None)
+
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parents[1] / "plugins" / "builtin" / "finance.py").read_text(
+        encoding="utf-8")
+    check("plus de RSI 50 en dur", '"rsi": 50' in src, False)
+    check("plus de volatilite 0 en dur", '"vol": 0,' in src, False)
+    check("le tableau sait afficher N/D", 'return "N/D"' in src, True)
+    check("et signale les lignes de secours", "source de secours" in src, True)
+
+    # --- 3. L'etiquette « 52s » ne ment plus ---------------------------------
+    check("l'etiquette suit la fenetre reellement couverte",
+          'label52 = "52s" if len(fenetre) >= 200' in src, True)
+    check("plus d'etiquette 52s codee en dur dans le tableau",
+          "| Plus haut 52s |" in src, False)
+    check("ni dans les niveaux cles", "🔵 Plus bas 52 semaines" in src, False)
+    # Six mois de cotations ne peuvent pas s'appeler « 52 semaines ».
+    for n, attendu in ((126, "6 mois"), (63, "3 mois"), (252, "52s")):
+        mois = max(1, round(n / 21))
+        label = "52s" if n >= 200 else f"{mois} mois"
+        check(f"{n} seances → « {attendu} »", label, attendu)
+
+
+def test_telegram_notion_et_jargon():
+    """Trois defauts vus dans les conversations de Lohan.
+
+    1. « Envoie-moi salut sur Telegram » → « Je n'ai pas d'integration Telegram
+       disponible », suivi d'un tutoriel Make/Zapier. Nova affirmait ne pas savoir
+       faire une chose qu'elle fait tous les jours : c'est par ce bot qu'elle pousse
+       les resultats d'automatisation. L'outil manquait a son catalogue.
+    2. « Parent id 'c0f3…' is neither a page nor a database » : Nova abandonnait sans
+       meme essayer de retrouver une vraie page parente, parce que cette erreur
+       n'etait reconnue par aucun motif comme une erreur de PARAMETRE.
+    3. « Je ne parviens pas a creer la page Notion avec la syntaxe PARAMS » : PARAMS
+       est un marqueur de son protocole INTERNE. Ca ne veut rien dire pour Lohan, et
+       ca deguise un vrai echec en probleme de syntaxe.
+    """
+    import importlib
+    from plugins import get_loader
+    from agent.core import outils_pour_conversation
+
+    # --- 1. L'outil Telegram existe et reste reserve au proprietaire ---------
+    outils = get_loader().list_all()
+    check("l'outil Telegram existe", "envoyer_telegram" in outils, True)
+    check("…et le chat peut s'en servir",
+          "envoyer_telegram" in outils_pour_conversation(outils.keys()), True)
+    T = importlib.import_module("plugins.builtin.telegram_tool")
+    tp = importlib.import_module("bots.telegram_push")
+    vrais = (tp.proprietaire, tp.send_message)
+    try:
+        # Sans destinataire connu : on DIT quoi faire, on ne pretend pas avoir envoye.
+        tp.proprietaire = lambda canal="telegram": ""
+        r = T.TelegramPlugin().run(message="salut")
+        check("sans destinataire, c'est un echec explicite", r.startswith("[ERREUR]"), True)
+        check("…et il explique quoi faire", "/start" in r or "TELEGRAM_TOKEN" in r, True)
+        # Avec destinataire : ca part.
+        envoyes = []
+        tp.proprietaire = lambda canal="telegram": "111"
+        tp.send_message = lambda t, chat_id=None: (envoyes.append(t), True)[1]
+        check("avec destinataire, le message part",
+              T.TelegramPlugin().run(message="salut").startswith("✅"), True)
+        check("…avec le bon texte", envoyes, ["salut"])
+        # Refus de Telegram : on ne maquille pas en succes.
+        tp.send_message = lambda t, chat_id=None: False
+        check("un refus reste un echec",
+              T.TelegramPlugin().run(message="salut").startswith("[ERREUR]"), True)
+        # Message vide : rien ne part.
+        check("un message vide ne part pas",
+              T.TelegramPlugin().run(message="  ").startswith("[ERREUR]"), True)
+    finally:
+        tp.proprietaire, tp.send_message = vrais
+
+    # --- 2. L'erreur de parent Notion est reconnue comme corrigeable ---------
+    A = importlib.import_module("api.agent")
+    notion = ('{"successful": false, "error": "Parent id \'c0f3cb07\' is neither a '
+              'page nor a database"}')
+    check("l'erreur de parent est corrigeable", A._is_param_error(notion), True)
+    for msg in ('{"successful": false, "error": "could not find page abc"}',
+                '{"successful": false, "error": "database xyz does not exist"}'):
+        check("…comme les erreurs de cible voisines", A._is_param_error(msg), True)
+    # Un refus d'ACCES n'est PAS une erreur de parametre : relancer n'y changerait rien.
+    check("un 403 n'est pas relance",
+          A._is_param_error('{"successful": false, "error": "403 forbidden"}'), False)
+
+    # --- 3. Le jargon interne n'atteint plus l'ecran ------------------------
+    check("« syntaxe PARAMS » disparait",
+          "PARAMS" in A._prose_seule("Impossible avec la syntaxe PARAMS."), False)
+    check("…et la phrase reste lisible",
+          A._prose_seule("Impossible avec la syntaxe PARAMS."),
+          "Impossible avec la syntaxe interne.")
+    check("« le format ACTION » aussi",
+          A._prose_seule("Le format ACTION est invalide."), "Le format interne est invalide.")
+    check("un PARAMS nu aussi", "PARAMS" in A._prose_seule("PARAMS manquant."), False)
+    check("une reponse normale n'est pas abimee",
+          A._prose_seule("Voici tes trois rendez-vous de demain."),
+          "Voici tes trois rendez-vous de demain.")
+    # On ne casse pas un texte qui parle legitimement de parametres.
+    check("le mot « paramètres » en francais est intact",
+          A._prose_seule("Vérifie les paramètres de ton compte."),
+          "Vérifie les paramètres de ton compte.")
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -5273,7 +5403,9 @@ if __name__ == "__main__":
                test_un_accord_ne_declenche_que_ce_qu_il_confirme,
                test_agenda_dit_la_vraie_date_et_ne_fusionne_plus,
                test_reveil_mesure_et_accueil_honnete,
-               test_le_plus_rapide_repond_en_premier):
+               test_le_plus_rapide_repond_en_premier,
+               test_aucun_chiffre_financier_invente,
+               test_telegram_notion_et_jargon):
         try:
             fn()
         except Exception as e:
