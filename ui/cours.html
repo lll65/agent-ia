@@ -232,7 +232,11 @@ function warn(el, txt, grave){ const e=$(el);
   e.innerHTML = txt; e.classList.remove("hide"); e.classList.toggle("bad", !!grave); }
 
 /* Markdown minimal — pas de dépendance externe (la page doit marcher hors ligne) */
-function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+// Les guillemets aussi : sans eux, un texte pose dans un attribut HTML peut en
+// sortir et devenir du code (voir le defaut corrige dans ui/nova.html).
+function esc(s){ return String(s==null?"":s)
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+  .replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
 function md(src){
   const blocs=[]; let s=esc(src||"");
   s=s.replace(/```(\w*)\n([\s\S]*?)```/g,(m,l,c)=>{ blocs.push(c); return `@@BLOC${blocs.length-1}@@`; });

