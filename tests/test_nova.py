@@ -2095,7 +2095,7 @@ def test_garde_fou():
     vrais = (A._tool, A._resolve_app_action, A._complex_app_flow)
     try:
         A._tool = lambda act, args=None, slug='', **k: executions.append(act) or "✅ ok"
-        A._complex_app_flow = lambda m: None
+        A._complex_app_flow = lambda m, canal="web": None
         A._resolve_app_action = lambda m: ("GMAIL_SEND_EMAIL",
                                            {"to": "papa@exemple.fr", "subject": "PEA"})
         A._ATTENTE.clear()
@@ -2129,7 +2129,7 @@ def test_garde_fou():
         A._ATTENTE.clear(); executions.clear()
         A._resolve_app_action = lambda m: ("GMAIL_SEND_EMAIL", {"to": "x"})
         A._direct_app_prepare("envoie un mail")
-        A._ATTENTE[A._PROFILE_ID]["t"] -= 10_000
+        A._ATTENTE[(A._PROFILE_ID, "web")]["t"] -= 10_000
         A._direct_app_prepare("oui")
         check("une attente expirée n'envoie rien", "GMAIL_SEND_EMAIL" in executions, False)
 
@@ -2455,7 +2455,7 @@ def test_echec_composio_jamais_pris_pour_un_succes():
         A._tool = lambda a, args=None, slug='', **k: (appels.append(a) or "✅ ok")
         for accord in ("ok", "d'accord", "oui", "vas-y"):
             appels.clear(); A._ATTENTE.clear()
-            A._ATTENTE[A._PROFILE_ID] = {
+            A._ATTENTE[(A._PROFILE_ID, "web")] = {
                 "slug": "gmail", "action": "GMAIL_SEND_EMAIL",
                 "args": {"to": "papa@exemple.fr"}, "t": _t.monotonic()}
             A._direct_app_prepare_brut(accord)
@@ -2467,7 +2467,7 @@ def test_echec_composio_jamais_pris_pour_un_succes():
         for autre in ("montre mon agenda", "bonjour", "oui je voudrais autre chose",
                       "c'est quoi la météo"):
             appels.clear(); A._ATTENTE.clear()
-            A._ATTENTE[A._PROFILE_ID] = {
+            A._ATTENTE[(A._PROFILE_ID, "web")] = {
                 "slug": "gmail", "action": "GMAIL_SEND_EMAIL",
                 "args": {"to": "papa@exemple.fr"}, "t": _t.monotonic()}
             A._direct_app_prepare_brut(autre)
@@ -2524,7 +2524,7 @@ def test_autocorrection_garde_identifiant():
     vrai_tool = A._tool
     try:
         A._tool = lambda a, args=None, slug='', **k: "✅ fait"
-        A._ATTENTE[A._PROFILE_ID] = {
+        A._ATTENTE[(A._PROFILE_ID, "web")] = {
             "slug": "googlesheets", "action": "GOOGLESHEETS_DELETE_SHEET",
             "args": {"spreadsheet_id": "YOUR_SPREADSHEET_ID", "sheet_id": 0},
             "t": _t.monotonic()}
@@ -2532,14 +2532,14 @@ def test_autocorrection_garde_identifiant():
         check_true("un identifiant bouché arrête l'exécution", rep.startswith("🛑"))
         check_true("…en disant lequel", "spreadsheet_id" in rep)
         # …mais un gid numérique ne doit PAS bloquer
-        A._ATTENTE[A._PROFILE_ID] = {
+        A._ATTENTE[(A._PROFILE_ID, "web")] = {
             "slug": "googlesheets", "action": "GOOGLESHEETS_DELETE_SHEET",
             "args": {"spreadsheet_id": "1PEAabcdefGHIJKLmnop1234", "sheet_id": 0},
             "t": _t.monotonic()}
         rep = (A._direct_app_prepare_brut("oui vas-y") or {}).get("done_answer", "")
         check("un gid numérique passe", rep.startswith("🛑"), False)
         # …ni un mail ordinaire
-        A._ATTENTE[A._PROFILE_ID] = {
+        A._ATTENTE[(A._PROFILE_ID, "web")] = {
             "slug": "gmail", "action": "GMAIL_SEND_EMAIL",
             "args": {"to": "papa@exemple.fr", "subject": "Salut"}, "t": _t.monotonic()}
         rep = (A._direct_app_prepare_brut("oui vas-y") or {}).get("done_answer", "")
@@ -4874,6 +4874,93 @@ def test_une_tache_de_fond_ne_meurt_plus_en_silence():
     T.ETAT.clear()
 
 
+def test_un_accord_ne_declenche_que_ce_qu_il_confirme():
+    """AUDIT — defaut CRITIQUE, exactement ce que Lohan redoute avec ses mails.
+
+    L'action irreversible en attente etait rangee dans UNE variable commune a TOUS
+    les canaux, et seul le chat web la consultait. Deux fautes symetriques :
+
+    1. Confirmer « oui » depuis Siri, un webhook ou une automatisation ne declenchait
+       RIEN — /agent/ask ne lisait jamais l'attente, et « ok » partait dans le
+       smalltalk. Lohan croyait son mail parti alors que rien n'etait envoye.
+    2. L'action restait armee cinq minutes. Le premier « ok » tape ensuite dans le
+       chat web — pour tout AUTRE chose, sur un autre appareil — l'executait. Une
+       automatisation tournant la nuit pouvait armer un envoi vers son prof que son
+       premier « ok » du matin faisait partir.
+    """
+    import importlib
+    A = importlib.import_module("api.agent")
+    vrai_tool = A._tool
+    appels = []
+    try:
+        A._tool = lambda action, args=None, slug="", **k: (appels.append(action), "envoye")[1]
+        ARGS = {"recipient_email": "papa@x.fr", "subject": "s", "body": "b"}
+
+        # --- 1. Un accord donne sur la passerelle DECLENCHE vraiment --------
+        A._ATTENTE.clear(); appels.clear()
+        msg = A._demande_confirmation(A._PROFILE_ID, "gmail", "GMAIL_SEND_EMAIL",
+                                      ARGS, "passerelle")
+        check("la confirmation est demandee", "m'apprête" in msg, True)
+        check("rien n'est parti a ce stade", appels, [])
+        r = A._traite_attente("oui", "passerelle")
+        check("l'accord sur la passerelle execute", appels, ["GMAIL_SEND_EMAIL"])
+        check("…et rend bien l'action", (r or {}).get("action"), "GMAIL_SEND_EMAIL")
+
+        # --- 2. Un accord donne AILLEURS ne declenche pas ------------------
+        A._ATTENTE.clear(); appels.clear()
+        A._demande_confirmation(A._PROFILE_ID, "gmail", "GMAIL_SEND_EMAIL", ARGS, "passerelle")
+        check("un « ok » sur le web ne touche pas l'attente de la passerelle",
+              A._traite_attente("ok", "web"), None)
+        check("…et surtout n'envoie rien", appels, [])
+        check("l'attente d'origine est intacte",
+              bool(A._action_en_attente(A._PROFILE_ID, "passerelle")), True)
+
+        # --- 3. Une automatisation n'arme RIEN -----------------------------
+        # Personne n'est la pour confirmer : laisser une action chargee que le premier
+        # « ok » du matin ferait partir serait pire que de ne rien faire.
+        A._ATTENTE.clear(); appels.clear()
+        msg = A._demande_confirmation(A._PROFILE_ID, "gmail", "GMAIL_SEND_EMAIL",
+                                      {"recipient_email": "prof@lycee.fr",
+                                       "subject": "s", "body": "b"}, "fond")
+        check("en mode fond, Nova dit qu'elle n'a rien envoye", msg.startswith("🛑"), True)
+        check("…et n'arme aucune attente", dict(A._ATTENTE), {})
+        check("…donc le « ok » du lendemain n'envoie rien",
+              A._traite_attente("ok", "web"), None)
+        check("…vraiment rien", appels, [])
+
+        # --- 4. Un refus annule, et n'execute jamais -----------------------
+        A._ATTENTE.clear(); appels.clear()
+        A._demande_confirmation(A._PROFILE_ID, "gmail", "GMAIL_SEND_EMAIL", ARGS, "web")
+        r = A._traite_attente("non annule", "web")
+        check("un refus annule", "Annulé" in (r or {}).get("done_answer", ""), True)
+        check("…sans rien envoyer", appels, [])
+        check("…et l'attente est levee", dict(A._ATTENTE), {})
+
+        # --- 5. Ni oui ni non : on abandonne l'attente, on n'execute pas ----
+        A._ATTENTE.clear(); appels.clear()
+        A._demande_confirmation(A._PROFILE_ID, "gmail", "GMAIL_SEND_EMAIL", ARGS, "web")
+        check("une autre demande ne vaut pas accord",
+              A._traite_attente("quelle heure est-il ?", "web"), None)
+        check("…rien n'est parti", appels, [])
+        check("…et l'action ne reste pas chargee", dict(A._ATTENTE), {})
+    finally:
+        A._tool = vrai_tool
+        A._ATTENTE.clear()
+
+    # --- 6. Les deux chemins consultent VRAIMENT l'attente ------------------
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
+    run = src.split("def _direct_app_run_brut(", 1)[1][:900]
+    check("la passerelle consulte l'attente", "_traite_attente(message, canal)" in run, True)
+    prep = src.split("def _direct_app_prepare_brut(", 1)[1][:700]
+    check("le chat web aussi", "_traite_attente(message, canal)" in prep, True)
+    ask = src.split("async def _ask_agent(", 1)[1][:1400]
+    check("« ok » n'est plus avale par le smalltalk sur la passerelle",
+          "_action_en_attente(A_PROFILE, canal)".replace("A_PROFILE", "_PROFILE_ID") in ask, True)
+    check("l'attente est rangee par canal", "_ATTENTE[(profil, canal)]" in src, True)
+    check("plus de cle globale par profil", "_ATTENTE[profil] = {" in src, False)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -4906,7 +4993,8 @@ if __name__ == "__main__":
                test_automatisations_fouillees_et_envoi_verifiable,
                test_la_cle_ne_peut_pas_quitter_le_telephone,
                test_conversations_partagees_entre_appareils,
-               test_une_tache_de_fond_ne_meurt_plus_en_silence):
+               test_une_tache_de_fond_ne_meurt_plus_en_silence,
+               test_un_accord_ne_declenche_que_ce_qu_il_confirme):
         try:
             fn()
         except Exception as e:
