@@ -4192,7 +4192,19 @@ async def diag_telegram(key: str = "", envoyer: bool = False):
     """
     _check_key(key)
     from bots.telegram_push import diagnostic, send_message, proprietaire
+    from agent.taches import etat as _etat_tache
     d = dict(diagnostic())
+    # ⚠️ Le démarrage écrivait « Bot Telegram démarré » avant que la tâche ait rien
+    # fait : s'il mourait juste après (jeton révoqué, ou le « Conflict » de Telegram
+    # quand DEUX instances interrogent le même bot), rien ne le disait. Voici son
+    # état RÉEL.
+    t = _etat_tache("bot Telegram")
+    d["bot"] = t
+    if t.get("etat") == "echouee":
+        d["resume"] = f"❌ Le bot ne tourne plus. {t.get('erreur', '')}"
+    elif t.get("etat") == "jamais_lancee" and config.TELEGRAM_TOKEN:
+        d["resume"] = ("❌ Le bot n'a jamais démarré alors que le jeton est présent — "
+                       "regarde les journaux Render au démarrage.")
     if envoyer:
         if not config.TELEGRAM_TOKEN:
             d["test"] = "❌ Impossible : TELEGRAM_TOKEN n'est pas défini sur Render."

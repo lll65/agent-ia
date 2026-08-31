@@ -4788,6 +4788,92 @@ def test_conversations_partagees_entre_appareils():
           "(s.ts||0) > (local.ts||0)" in ui, True)
 
 
+def test_une_tache_de_fond_ne_meurt_plus_en_silence():
+    """« Mon bot Telegram marchait en local, la il marche pas » — et rien ne dit pourquoi.
+
+    Le demarrage ecrivait « Bot Telegram demarre » AVANT que la tache ait rien fait :
+
+        bot_tasks.append(asyncio.create_task(run_telegram_bot()))
+        logger.info("Bot Telegram demarre.")
+
+    Si le bot mourait dans la seconde — jeton revoque, dependance absente, ou surtout
+    le « Conflict: terminated by other getUpdates request » que Telegram renvoie quand
+    DEUX instances interrogent le meme bot (l'ancienne installation locale ET Render) —
+    l'exception partait dans une tache que personne n'attend. Python l'avale jusqu'au
+    ramasse-miettes. Les journaux affirmaient « demarre », Lohan ne recevait rien, et
+    absolument rien n'expliquait pourquoi.
+    """
+    import asyncio as _a, importlib
+    from pathlib import Path as _P
+    racine = _P(__file__).resolve().parents[1]
+    T = importlib.import_module("agent.taches")
+    T.ETAT.clear()
+
+    async def casse(msg):
+        raise RuntimeError(msg)
+
+    async def tourne():
+        await _a.sleep(5)
+
+    async def finit_seule():
+        return
+
+    vu = {}
+
+    async def scenario():
+        T.lancer("bot Telegram", casse("Conflict: terminated by other getUpdates request"))
+        T.lancer("planificateur", tourne())
+        T.lancer("veille PEA", finit_seule())
+        await _a.sleep(0.05)
+        # On regarde AVANT la fermeture de la boucle : asyncio.run annule les taches
+        # encore vivantes en sortant, et « planificateur » passerait donc a « arretee ».
+        vu["planificateur"] = T.resume("planificateur")
+        vu["veille PEA"] = T.etat("veille PEA")["etat"]
+
+    _a.run(scenario())
+
+    # 1. Une tache qui meurt est VUE, pas avalee.
+    e = T.etat("bot Telegram")
+    check("l'echec est retenu", e["etat"], "echouee")
+    check("le resume le dit", T.resume("bot Telegram").startswith("❌"), True)
+
+    # 2. Et l'erreur est TRADUITE en quelque chose d'actionnable.
+    check("le conflit de double instance est explique",
+          "AUTRE programme" in e["erreur"], True)
+    check("…avec la solution", "@BotFather" in e["erreur"], True)
+    T.ETAT.clear()
+    _a.run(T.surveille("bot Telegram", casse("Unauthorized: 401 invalid token")))
+    check("un jeton refuse est explique",
+          "jeton Telegram est refus" in T.etat("bot Telegram")["erreur"], True)
+    T.ETAT.clear()
+    _a.run(T.surveille("bot Telegram", casse("ModuleNotFoundError: No module named 'telegram'")))
+    check("une dependance absente est expliquee",
+          "pendance manque" in T.etat("bot Telegram")["erreur"], True)
+
+    # 3. Une tache qui tourne vraiment le dit aussi.
+    check("celle qui tourne est verte", vu["planificateur"].startswith("✅"), True)
+    # 4. Une boucle qui se termine TOUTE SEULE n'est pas un succes : une boucle de fond
+    #    ne doit jamais s'arreter d'elle-meme.
+    check("une boucle qui s'arrete seule est signalee", vu["veille PEA"], "arretee")
+    # 5. Une tache jamais lancee ne se fait pas passer pour vivante.
+    check("jamais lancee", T.etat("veille tech inexistante")["etat"], "jamais_lancee")
+
+    # 6. Le demarrage utilise bien la surveillance, plus asyncio.create_task nu.
+    m = (racine / "main.py").read_text(encoding="utf-8")
+    check("plus de create_task nu au demarrage", "asyncio.create_task(run_" in m, False)
+    for nom in ('lancer("bot Telegram"', 'lancer("planificateur"',
+                'lancer("briefing du matin"', 'lancer("veille PEA"'):
+        check(f"{nom} est surveillee", nom in m, True)
+    check("on ne pretend plus avoir demarre avant l'heure",
+          '"Bot Telegram démarré."' in m, False)
+
+    # 7. Le diagnostic Telegram remonte l'etat REEL du bot.
+    api = (racine / "api" / "agent.py").read_text(encoding="utf-8")
+    check("le diagnostic lit l'etat de la tache", 'etat as _etat_tache' in api, True)
+    check("et l'affiche", 'd["bot"] = t' in api, True)
+    T.ETAT.clear()
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -4819,7 +4905,8 @@ if __name__ == "__main__":
                test_discord_ferme_et_outils_dangereux_hors_de_portee,
                test_automatisations_fouillees_et_envoi_verifiable,
                test_la_cle_ne_peut_pas_quitter_le_telephone,
-               test_conversations_partagees_entre_appareils):
+               test_conversations_partagees_entre_appareils,
+               test_une_tache_de_fond_ne_meurt_plus_en_silence):
         try:
             fn()
         except Exception as e:
