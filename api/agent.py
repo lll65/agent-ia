@@ -1173,7 +1173,24 @@ _IRREVERSIBLE = ("SEND", "DELETE", "REMOVE", "TRASH", "ARCHIVE", "REVOKE",
 # Partager n'est irréversible que si c'est PUBLIC — partager avec une personne se défait.
 _IRREVERSIBLE_SI = {"SHARE": ("PUBLIC", "ANYONE", "WEB", "LINK"),
                     "POST": ("PUBLIC", "CHANNEL", "TWEET", "STATUS")}
-_ATTENTE = {}                       # profil -> action en attente de confirmation
+# ⚠️ DÉFAUT CRITIQUE. L'action irréversible en attente était rangée dans UNE variable
+# commune à TOUS les canaux et à toutes les conversations, et seul le chat web la
+# consultait. Deux fautes symétriques, toutes les deux sur les mails :
+#  (1) confirmer depuis Siri, un webhook ou une automatisation ne déclenchait RIEN —
+#      Nova répondait aimablement et Lohan croyait son mail parti ;
+#  (2) l'action restait armée cinq minutes, et le premier « ok » tapé ensuite dans le
+#      chat web — pour tout autre chose, sur un autre appareil — l'exécutait. Une
+#      automatisation qui tourne la nuit pouvait ainsi armer un envoi que le premier
+#      « ok » du matin faisait partir.
+# La clé porte donc le canal : un accord ne peut plus déclencher que ce qui a été
+# armé AU MÊME ENDROIT.
+_ATTENTE = {}                       # (profil, canal) -> action en attente de confirmation
+# Le canal du travail EN COURS. La boucle ReAct arme elle aussi des confirmations
+# (plugins/builtin/composio_tool.py) sans pouvoir recevoir le canal en paramètre.
+# ⚠️ Un dict de module, PAS un contextvar : les appels d'outils passent par
+# run_in_executor, et un contextvar ne franchit pas cette frontière de thread — piège
+# déjà rencontré ailleurs dans ce projet.
+_CANAL = {"actuel": "web"}
 _ATTENTE_TTL = 300.0                # 5 min : au-delà, on redemande
 
 _MOTS_OUI = ("oui", "ok", "d'accord", "daccord", "vas-y", "vas y", "confirme", "confirmé",
@@ -1211,10 +1228,22 @@ def _resume_action(action: str, args: dict) -> str:
     return quoi + ((" — " + " · ".join(details)) if details else "")
 
 
-def _demande_confirmation(profil: str, slug: str, action: str, args: dict) -> str:
-    """Met l'action en attente et rend le message à afficher."""
+def _demande_confirmation(profil: str, slug: str, action: str, args: dict,
+                          canal: str = "") -> str:
+    """Met l'action en attente SUR CE CANAL et rend le message à afficher.
+
+    En mode fond (automatisation), personne n'est là pour confirmer : on n'arme rien
+    du tout — laisser une action chargée que le premier « ok » du matin ferait partir
+    serait pire que de ne rien faire.
+    """
     import time as _t
-    _ATTENTE[profil] = {"slug": slug, "action": action, "args": dict(args or {}), "t": _t.monotonic()}
+    canal = canal or _CANAL.get("actuel", "web")
+    if canal == "fond":
+        return ("🛑 Je n'ai rien envoyé : cette action est sans retour et tu n'es pas là "
+                f"pour me le confirmer.\n\n> {_resume_action(action, args)}\n\n"
+                "Redemande-le-moi dans le chat quand tu veux que je le fasse.")
+    _ATTENTE[(profil, canal)] = {"slug": slug, "action": action,
+                                 "args": dict(args or {}), "t": _t.monotonic()}
     verbe = ("envoyer" if "SEND" in action.upper() or "REPLY" in action.upper()
              else "supprimer" if any(k in action.upper() for k in ("DELETE", "REMOVE", "TRASH"))
              else "effectuer")
@@ -1250,51 +1279,64 @@ def _refus_donne(message: str) -> bool:
     return any(re.search(r"(?<![\wÀ-ÿ])" + re.escape(w) + r"(?![\wÀ-ÿ])", m) for w in _MOTS_NON)
 
 
-def _action_en_attente(profil: str):
-    """L'action mise en attente, si elle n'a pas expiré."""
+def _action_en_attente(profil: str, canal: str = "web"):
+    """L'action mise en attente SUR CE CANAL, si elle n'a pas expiré."""
     import time as _t
-    p = _ATTENTE.get(profil)
+    p = _ATTENTE.get((profil, canal))
     if not p:
         return None
     if _t.monotonic() - p["t"] > _ATTENTE_TTL:
-        _ATTENTE.pop(profil, None)
+        _ATTENTE.pop((profil, canal), None)
         return None
     return p
 
 
-def _direct_app_prepare_brut(message: str):
+def _traite_attente(message: str, canal: str = "web"):
+    """Le message répond-il à une action en attente ? Rend un dict, ou None.
+
+    Partagé par les DEUX chemins — le flux du chat web et la passerelle /ask. C'est
+    justement parce que seul le premier le faisait qu'un accord donné depuis Siri ou
+    une automatisation n'envoyait rien.
+    """
+    attente = _action_en_attente(_PROFILE_ID, canal)
+    if not attente:
+        return None
+    if _refus_donne(message):
+        _ATTENTE.pop((_PROFILE_ID, canal), None)
+        return {"steps": [], "done_answer": "👍 Annulé, je n'ai rien fait."}
+    if _confirmation_donnee(message):
+        _ATTENTE.pop((_PROFILE_ID, canal), None)
+        # ⚠️ Une action confirmée était exécutée TELLE QUELLE. Si ses arguments avaient
+        # été mal résolus au moment de la demande, l'accord portait sur une cible
+        # fausse. On revérifie juste avant d'agir : c'est le moment où ça compte.
+        bouches = [k for k, v in (attente.get("args") or {}).items()
+                   if _est_champ_identifiant(k) and _est_bouchon(v)
+                   and not _est_numerique(k, v, {})]
+        if bouches:
+            return {"steps": [], "done_answer": (
+                "🛑 Je préfère ne pas le faire : je n'ai pas d'identifiant fiable pour "
+                f"« {', '.join(bouches)} », et c'est une action sans retour. "
+                "Redis-moi précisément sur quoi elle doit porter.")}
+        obs = _tool(attente["action"], attente["args"], attente["slug"])
+        steps = [{"kind": "action", "tool": attente["slug"], "label": attente["action"]},
+                 {"kind": "obs", "tool": attente["slug"], "text": str(obs)[:180]}]
+        if _looks_like_failure(obs):
+            return {"steps": steps, "done_answer": _honest_no_access(attente["action"], obs)}
+        return {"steps": steps, "action": attente["action"], "obs": obs, "is_write": True}
+    # Ni oui ni non : on abandonne l'attente et on traite la nouvelle demande.
+    _ATTENTE.pop((_PROFILE_ID, canal), None)
+    return None
+
+
+def _direct_app_prepare_brut(message: str, canal: str = "web"):
     """Comme _direct_app_run mais SANS formater (pour le streaming). Renvoie un dict :
     {steps, done_answer} si terminé (échec → message honnête), ou {steps, action, obs, is_write}."""
     # ── Une action irréversible attend-elle ton feu vert ? ────────────────────
-    attente = _action_en_attente(_PROFILE_ID)
-    if attente:
-        if _refus_donne(message):
-            _ATTENTE.pop(_PROFILE_ID, None)
-            return {"steps": [], "done_answer": "👍 Annulé, je n'ai rien fait."}
-        if _confirmation_donnee(message):
-            _ATTENTE.pop(_PROFILE_ID, None)
-            # ⚠️ Une action confirmée était exécutée TELLE QUELLE. Si ses arguments
-            # avaient été mal résolus au moment de la demande, l'accord de l'utilisateur
-            # portait sur une cible fausse — et rien ne le rattrapait. On vérifie donc
-            # une dernière fois, juste avant d'agir : c'est le moment où ça compte.
-            bouches = [k for k, v in (attente.get("args") or {}).items()
-                       if _est_champ_identifiant(k) and _est_bouchon(v)
-                       and not _est_numerique(k, v, {})]
-            if bouches:
-                return {"steps": [], "done_answer": (
-                    "🛑 Je préfère ne pas le faire : je n'ai pas d'identifiant fiable pour "
-                    f"« {', '.join(bouches)} », et c'est une action sans retour. "
-                    "Redis-moi précisément sur quoi elle doit porter.")}
-            obs = _tool(attente["action"], attente["args"])
-            steps = [{"kind": "action", "tool": attente["slug"], "label": attente["action"]},
-                     {"kind": "obs", "tool": attente["slug"], "text": str(obs)[:180]}]
-            if _looks_like_failure(obs):
-                return {"steps": steps, "done_answer": _honest_no_access(attente["action"], obs)}
-            return {"steps": steps, "action": attente["action"], "obs": obs, "is_write": True}
-        # Ni oui ni non : on abandonne l'attente et on traite la nouvelle demande
-        _ATTENTE.pop(_PROFILE_ID, None)
+    reponse = _traite_attente(message, canal)
+    if reponse is not None:
+        return reponse
 
-    cx = _complex_app_flow(message)
+    cx = _complex_app_flow(message, canal)
     if cx is not None:
         return {"steps": cx["steps"], "done_answer": cx["done_answer"]}
     action, args = _resolve_app_action(message)
@@ -1302,7 +1344,7 @@ def _direct_app_prepare_brut(message: str):
         # Autre app connectée (Linear, Canva, Notion, Slack…) → routeur générique
         slug = app_courante(message)      # tient compte de l'app dont on vient de parler
         if slug and slug not in ("googlecalendar", "gmail"):
-            g = _generic_app_flow(message, slug)
+            g = _generic_app_flow(message, slug, canal)
             return {"steps": g["steps"], "done_answer": g["done_answer"],
                     "echec_app": g.get("echec_app", False)}
         return None
@@ -1310,7 +1352,7 @@ def _direct_app_prepare_brut(message: str):
     # ⚠️ Rien d'irréversible sans ton accord explicite.
     if _est_irreversible(action):
         return {"steps": [{"kind": "action", "tool": slug, "label": f"{action} (en attente)"}],
-                "done_answer": _demande_confirmation(_PROFILE_ID, slug, action, args)}
+                "done_answer": _demande_confirmation(_PROFILE_ID, slug, action, args, canal)}
     # ⚠️ Passe par _tool() : identité Composio résolue + activité enregistrée (constellation).
     obs = _tool(action, args, slug)
     steps = [
@@ -1360,16 +1402,31 @@ def _composio_connect_link(app_slug: str):
         return None, f"link exception: {type(e).__name__}: {str(e)[:150]}"
 
 
-def _direct_app_run_brut(message: str):
-    """Chemin déterministe agenda/mail. Renvoie {'steps','answer','ok'} ou None si non concerné."""
-    cx = _complex_app_flow(message)
+def _direct_app_run_brut(message: str, canal: str = "passerelle"):
+    """Chemin déterministe agenda/mail. Renvoie {'steps','answer','ok'} ou None si non concerné.
+
+    ⚠️ Ce chemin — celui de /agent/ask, donc de Siri, des webhooks et des
+    automatisations — ne consultait JAMAIS l'action en attente. Confirmer « oui »
+    depuis Siri ne déclenchait rien : Nova répondait aimablement et Lohan croyait son
+    mail parti, pendant que l'action restait armée pour le premier « ok » venu.
+    """
+    reponse = _traite_attente(message, canal)
+    if reponse is not None:
+        # On rend la même forme que le reste de ce chemin.
+        if reponse.get("done_answer") is not None:
+            return {"steps": reponse["steps"], "answer": reponse["done_answer"], "ok": True}
+        return {"steps": reponse["steps"],
+                "answer": _format_app_result(message, reponse["action"], reponse["obs"],
+                                             reponse.get("is_write", False)),
+                "ok": True}
+    cx = _complex_app_flow(message, canal)
     if cx is not None:
         return {"steps": cx["steps"], "answer": cx["done_answer"], "ok": True}
     action, args = _resolve_app_action(message)
     if not action:
         slug = app_courante(message)      # tient compte de l'app dont on vient de parler
         if slug and slug not in ("googlecalendar", "gmail"):
-            g = _generic_app_flow(message, slug)
+            g = _generic_app_flow(message, slug, canal)
             return {"steps": g["steps"], "answer": g["done_answer"], "ok": True,
                     "echec_app": g.get("echec_app", False)}
         return None
@@ -1636,7 +1693,7 @@ def _tool_call(name_cmd: str, args: dict, slug: str) -> str:
     return safe_tool_call(get_loader(), "connected_app", params)
 
 
-def _gmail_send_flow(message: str):
+def _gmail_send_flow(message: str, canal: str = "web"):
     ex = _llm_json(
         "Extrais du message un email à envoyer. Réponds en JSON STRICT : "
         '{"to":"email ou nom","subject":"...","body":"..."}. '
@@ -1665,7 +1722,7 @@ def _gmail_send_flow(message: str):
         steps[0]["label"] = "GMAIL_SEND_EMAIL (en attente)"
         return {"steps": steps,
                 "done_answer": _demande_confirmation(_PROFILE_ID, "gmail",
-                                                     "GMAIL_SEND_EMAIL", args_envoi)}
+                                                     "GMAIL_SEND_EMAIL", args_envoi, canal)}
     obs = _tool("GMAIL_SEND_EMAIL", args_envoi)
     steps.append({"kind": "obs", "tool": "connected_app", "text": str(obs)[:160]})
     if _looks_like_failure(obs):
@@ -1808,16 +1865,16 @@ def _build_args(action: str, spec: dict, message: str, ctx: str = "", error: str
 # n'avait jamais vu ces données. Elle les avait lues : elle ne les gardait pas.
 # On enveloppe ICI, à la sortie du chemin app, pour que TOUS les chemins en profitent
 # (agenda, mails, Notion, Sheets…) et pas seulement celui qu'on venait de corriger.
-def _direct_app_prepare(message: str):
-    r = _direct_app_prepare_brut(message)
+def _direct_app_prepare(message: str, canal: str = "web"):
+    r = _direct_app_prepare_brut(message, canal)
     if r is not None and r.get("done_answer") is not None:
         _remember_user(message)
         _remember_answer(r["done_answer"])
     return r
 
 
-def _direct_app_run(message: str):
-    r = _direct_app_run_brut(message)
+def _direct_app_run(message: str, canal: str = "passerelle"):
+    r = _direct_app_run_brut(message, canal)
     if r is not None and r.get("answer") is not None:
         _remember_user(message)
         _remember_answer(r["answer"])
@@ -3029,7 +3086,7 @@ def _refus_app_non_connectee(slug: str) -> str:
     return msg
 
 
-def _generic_app_flow(message: str, slug: str):
+def _generic_app_flow(message: str, slug: str, canal: str = "web"):
     """Exécute une action sur N'IMPORTE QUELLE app connectée :
     1) découvre les actions réelles de l'app, 2) le LLM choisit l'action + arguments,
     3) exécution, 4) mise en forme des DONNÉES RÉELLES (jamais d'invention)."""
@@ -3114,7 +3171,7 @@ def _generic_app_flow(message: str, slug: str):
     if _est_irreversible(action):
         steps[0]["label"] = f"{action} (en attente)"
         return {"steps": steps,
-                "done_answer": _demande_confirmation(_PROFILE_ID, slug, action, args)}
+                "done_answer": _demande_confirmation(_PROFILE_ID, slug, action, args, canal)}
     obs = _tool(action, args, slug)
     steps.append({"kind": "obs", "tool": slug, "text": str(obs)[:180]})
 
@@ -3337,7 +3394,7 @@ def _wants_visual(message: str) -> bool:
     return bool(("visuel" in m or "image" in m) and any(v in m for v in ("cré", "cre", "fais", "génère", "genere")))
 
 
-def _complex_app_flow(message: str):
+def _complex_app_flow(message: str, canal: str = "web"):
     """Détecte et exécute les actions multi-étapes. Renvoie {steps, done_answer} ou None."""
     m = message.lower()
     if _wants_visual(message):
@@ -3347,7 +3404,7 @@ def _complex_app_flow(message: str):
     mail_verb = any(v in m for v in ("envoie", "envoyer", "écris", "ecris", "rédige", "redige", "réponds", "reponds"))
     if (("mail" in m or "email" in m or "e-mail" in m or "courriel" in m) and mail_verb) \
             or m.startswith("réponds à") or m.startswith("reponds a"):
-        return _gmail_send_flow(message)
+        return _gmail_send_flow(message, canal)
     cal_words = ("agenda", "rdv", "rendez-vous", "rendez vous", "réunion", "reunion",
                  "événement", "evenement", "calendrier", "meeting")
     if any(v in m for v in ("supprime", "annule", "efface", "retire")) and any(c in m for c in cal_words):
@@ -3385,16 +3442,23 @@ async def _ask_agent(message: str, fond: bool = False) -> str:
     journée » à 17 h était borné comme une question posée en direct — deux recherches,
     75 s — et rendait un résultat superficiel."""
     import logging
+    canal = "fond" if fond else "passerelle"
+    _CANAL["actuel"] = canal
     try:
         _log_activity(message)
-        if _is_smalltalk(message):
+        # ⚠️ « ok » partait dans le smalltalk AVANT tout le reste : un accord donné
+        # depuis Siri ou un webhook n'exécutait jamais l'action en attente. Le chat web
+        # avait déjà ce garde-fou (l. 3570) ; cette passerelle-ci, non.
+        if _action_en_attente(_PROFILE_ID, canal) and _is_smalltalk(message):
+            pass                                  # c'est peut-être un accord : on continue
+        elif _is_smalltalk(message):
             return _smalltalk_reply(message)
         loop = asyncio.get_running_loop()
         if _is_briefing(message):
             from agent.briefing import build_briefing
             return await loop.run_in_executor(None, build_briefing)
         # Agenda / mails → chemin déterministe (données réelles ou aveu honnête, jamais d'invention)
-        direct = await _off(_direct_app_run, message)
+        direct = await _off(_direct_app_run, message, canal)
         if direct is not None:
             return direct["answer"]
         cfg = _build_agent_cfg(message, "Nova")
@@ -3435,6 +3499,8 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
 
     _check_key(key)
     message = (q or "").strip()
+    # C'est le chat web : une confirmation armée ici ne peut être donnée qu'ici.
+    _CANAL["actuel"] = "web"
 
     async def gen():
         def sse(obj):
@@ -3567,7 +3633,7 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
             # PAS exécutée (tu croyais ton mail parti), et elle restait armée cinq
             # minutes — pour se déclencher plus tard, silencieusement, sur une phrase
             # sans rapport. Deux fautes symétriques, et la seconde est la pire.
-            if _action_en_attente(_PROFILE_ID) and _is_smalltalk(message):
+            if _action_en_attente(_PROFILE_ID, "web") and _is_smalltalk(message):
                 pass                      # on laisse le chemin direct trancher
             elif _is_smalltalk(message):
                 async for tok in _stream_llm(_smalltalk_messages(message), 0.6, niveau="rapide"):
