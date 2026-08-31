@@ -5367,6 +5367,42 @@ def test_telegram_notion_et_jargon():
           "Vérifie les paramètres de ton compte.")
 
 
+def test_actu_d_une_entreprise_pas_les_titres_du_jour():
+    """L'automatisation bourse de Lohan renvoyait des tests d'imprimantes 3D.
+
+    Sa demande : « resume du cours de 2CRSI et DBV Technologies … et un resume de
+    leur analyse, actualite et du forum ». Le mot « actualite » suffisait a basculer
+    en ACTUALITE GENERALE — le fil des medias — alors que la demande nommait deux
+    entreprises. Nova a repondu « Je n'ai pas trouve d'informations sur 2CRSI […] les
+    articles retournes concernent uniquement des tests tech grand public ».
+    """
+    from agent.core import veut_actualite, entite_nommee
+
+    # Une demande qui NOMME une entreprise veut l'actualite DE CETTE entreprise.
+    for q in ("resume l'actualite de 2CRSI",
+              "actualite de DBV Technologies",
+              "quoi de neuf sur AAPL ?",
+              "resume du cours de 2crsi et de leur actualite",
+              "les dernieres news du CAC40"):
+        check(f"« {q[:38]} » n'est pas de l'actu generale", veut_actualite(q), False)
+
+    # Une vraie demande d'actualite generale continue de marcher.
+    for q in ("actu du jour", "quoi de neuf ?", "les news tech",
+              "quoi de neuf en bourse", "resume-moi l'actualite"):
+        check(f"« {q[:38]} » reste de l'actu generale", veut_actualite(q), True)
+
+    # La detection d'entite ne se declenche pas sur des sigles courants du quotidien.
+    for q in ("mon PEA", "envoie un SMS", "ouvre le PDF", "prends RDV"):
+        check(f"« {q} » n'est pas une entreprise", entite_nommee(q), False)
+    for q in ("2CRSI", "MC.PA", "DBV Technologies", "CAC40"):
+        check(f"« {q} » est bien un sujet nomme", entite_nommee(q), True)
+
+    # Et « maintenant » seul ne bascule toujours pas quand un sujet est nomme
+    # (defaut corrige precedemment — on verifie qu'il ne revient pas).
+    check("« acheter 2CRSI maintenant » n'est pas de l'actu",
+          veut_actualite("tu penses quoi d'acheter 2CRSI maintenant ?"), False)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -5405,7 +5441,8 @@ if __name__ == "__main__":
                test_reveil_mesure_et_accueil_honnete,
                test_le_plus_rapide_repond_en_premier,
                test_aucun_chiffre_financier_invente,
-               test_telegram_notion_et_jargon):
+               test_telegram_notion_et_jargon,
+               test_actu_d_une_entreprise_pas_les_titres_du_jour):
         try:
             fn()
         except Exception as e:

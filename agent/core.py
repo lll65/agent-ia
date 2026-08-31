@@ -890,12 +890,37 @@ _SUJETS_PRECIS = ("action", "actions", "titre", "bourse", "cours de", "cotation"
                   "definition", "calcule", "combien", "itinéraire", "itineraire")
 
 
+# ⚠️ Un mot d'actualité suffisait à basculer en ACTU GÉNÉRALE, même quand la demande
+# nommait une entreprise précise. L'automatisation « résumé du cours de 2CRSI … et un
+# résumé de leur analyse, actualité et du forum » renvoyait donc des tests
+# d'imprimantes 3D et de jeux vidéo : les titres du jour, sans aucun rapport. Un nom
+# propre ou un code boursier change tout — on veut l'actualité DE CE SUJET.
+_ENTITE = re.compile(
+    r"\b\d+[A-Za-zÀ-ÿ]{2,}\b"          # « 2CRSI », « 3M »
+    r"|\b[A-Za-zÀ-ÿ]+\d+[A-Za-zÀ-ÿ]*\b"  # « CAC40 »
+    r"|\b[A-Z]{2,6}(?:\.[A-Z]{2})?\b")   # « AAPL », « MC.PA », « DBV »
+
+
+def entite_nommee(task: str) -> bool:
+    """La demande désigne-t-elle un sujet PRÉCIS (entreprise, code boursier) ?"""
+    t = task or ""
+    for m in _ENTITE.finditer(t):
+        mot = m.group(0)
+        # Un mot entièrement en majuscules qui est un mot courant n'est pas une entité.
+        if mot.upper() in ("OK", "PEA", "TVA", "SMS", "PDF", "URL", "IA", "RDV", "CAC"):
+            continue
+        return True
+    return False
+
+
 def veut_actualite(task: str) -> bool:
     """La demande porte-t-elle sur l'actualité ? (→ requête datée, résultats récents)"""
     m = _normalise(task).lower()
-    # Un mot d'ACTUALITÉ explicite (« actu », « news », « quoi de neuf ») tranche seul.
+    # Un mot d'ACTUALITÉ explicite (« actu », « news », « quoi de neuf »)… sauf si la
+    # demande nomme un sujet précis : c'est alors l'actualité DE CE SUJET qu'on veut,
+    # et le fil général des médias n'a rien à voir avec elle.
     if any(k in m for k in _MOTS_RECENT):
-        return True
+        return not entite_nommee(task)
     # « maintenant », « aujourd'hui »… ne suffisent pas : ils situent le MOMENT, pas le
     # sujet. Ils ne basculent en mode actualité que si la demande ne nomme rien de précis.
     if any(k in m for k in _MOTS_DU_JOUR):
