@@ -219,7 +219,15 @@ def health():
     """Point de réveil pour le cron externe (cron-job.org) qui empêche Render
     de s'endormir — sinon les automatisations planifiées ne partent jamais.
     Volontairement public ET muet : il ne révèle rien (pas de version, pas de
-    liste d'outils), il dit juste que le serveur répond."""
+    liste d'outils), il dit juste que le serveur répond.
+
+    ⚠️ On COMPTE les passages. « Je ne sais pas si le cron est bien branché » ne
+    peut pas se répondre en lisant du code : soit les appels arrivent, soit non.
+    Sans cette trace, impossible de distinguer « le cron ne tire pas » de « Render
+    s'endort quand même » — deux causes opposées pour le même symptôme.
+    """
+    from agent.reveil import note_passage
+    note_passage()
     return {"status": "ok"}
 
 

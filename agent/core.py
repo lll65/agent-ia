@@ -173,8 +173,12 @@ MAX_RECHERCHES = 2
 # journée » à 17 h, où le résultat était donc superficiel : deux recherches, une
 # synthèse rapide, et fin. Là, personne n'attend : on peut chercher plus longtemps et
 # plus large. C'est le seul endroit où allonger le délai AMÉLIORE l'expérience.
-MAX_RECHERCHES_FOND = int(os.getenv("AGENT_RECHERCHES_FOND", "6"))
-AGENT_TIMEOUT_FOND = float(os.getenv("AGENT_TIMEOUT_FOND", "300"))
+# ⚠️ Render endort l'instance apres ~15 min SANS REQUETE ENTRANTE. Une tache de fond
+# qui travaille ne compte PAS comme activite : c'est le reveil externe (cron sur
+# /health) qui la garde en vie pendant ce temps. Tant qu'il tire, une automatisation
+# peut donc travailler bien plus longtemps que ce qu'on lui accordait.
+MAX_RECHERCHES_FOND = int(os.getenv("AGENT_RECHERCHES_FOND", "10"))
+AGENT_TIMEOUT_FOND = float(os.getenv("AGENT_TIMEOUT_FOND", "1200"))
 
 
 def apercu(texte: str, n: int = 140) -> str:
@@ -530,6 +534,29 @@ def _is_stub_answer(text: str, tool_calls_made: int, needs_tools: bool = False) 
     return any(kw in t for kw in _STUB_KEYWORDS)
 
 
+def _avertit_si_pas_de_reveil(budget: float) -> None:
+    """Un long travail de fond n'a de sens que si l'instance reste eveillee.
+
+    Render endort apres ~15 min sans requete ENTRANTE, et une tache de fond n'en est
+    pas une : sans reveil externe, un travail de 20 min serait coupe en plein milieu.
+    On ne peut pas l'empecher d'ici, mais on peut le DIRE dans les journaux plutot que
+    de laisser Lohan chercher pourquoi son automatisation ne rend jamais rien.
+    """
+    if budget <= 840:                      # sous 14 min, la question ne se pose pas
+        return
+    try:
+        from agent.reveil import etat
+        e = etat()
+        recent = e.get("dernier_passage_il_y_a_s")
+        if recent is None or recent > 900:
+            logger.warning(
+                f"[core] travail de fond de {int(budget / 60)} min demande, mais aucun "
+                "reveil externe recent : Render risque d'endormir l'instance en plein "
+                "milieu. Verifie le cron sur /health (voir /agent/diag/reveil).")
+    except Exception:
+        pass
+
+
 async def run_agent(
     task: str,
     agent_config: dict,
@@ -607,6 +634,7 @@ async def run_agent(
                else float(getattr(config, "AGENT_TIMEOUT", 75)))
     _plafond_recherches = MAX_RECHERCHES_FOND if fond else MAX_RECHERCHES
     if fond:
+        _avertit_si_pas_de_reveil(_budget)
         logger.info(f"[core] travail de fond : {int(_budget)} s et "
                     f"{_plafond_recherches} recherches (personne n'attend).")
     _fin_pre = _tm.monotonic() + _budget

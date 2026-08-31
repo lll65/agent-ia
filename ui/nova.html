@@ -1686,7 +1686,21 @@ async function diagReste(){
     return h + "<br><span style='opacity:.55;font-size:12px'>"+txt(c.conversations)
       +" conversation(s) · "+txt(c.ou)+"</span>";
   });
-  return mem + "<br><br>" + conv + "<br><br>" + auto;
+  // ⚠️ « Je ne sais pas si le cron est bien branché » ne se répond qu'en comptant les
+  // passages réels : soit ils arrivent, soit non.
+  const rev = await diagBloc("⏰ Réveil de Render", "/agent/diag/reveil", r => {
+    let h = txt(r.resume);
+    if(r.solution) h += "<br><span style='opacity:.75;font-size:13px'>👉 "+txt(r.solution)+"</span>";
+    h += "<br><span style='opacity:.55;font-size:12px'>"+txt(r.passages_derniere_heure)
+      +" appel(s) la dernière heure · en ligne depuis "+txt(r.en_ligne_depuis_min)+" min";
+    if(r.plus_grand_trou_min !== undefined) h += " · plus grand trou "+txt(r.plus_grand_trou_min)+" min";
+    h += "</span>";
+    for(const [nom, t] of Object.entries(r.taches_de_fond || {}))
+      h += "<br><span style='opacity:.6;font-size:12px'>· "+txt(nom)+" : "+txt(t.etat)
+        + (t.erreur ? " — "+txt(String(t.erreur).slice(0,120)) : "")+"</span>";
+    return h;
+  });
+  return mem + "<br><br>" + conv + "<br><br>" + auto + "<br><br>" + rev;
 }
 
 /* ═══ MOT-CLÉ « NOVA » (mains-libres, tant que la page est ouverte) ═══ */

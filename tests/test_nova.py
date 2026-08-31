@@ -5051,6 +5051,97 @@ def test_agenda_dit_la_vraie_date_et_ne_fusionne_plus():
         A._llm_json = vrai_json
 
 
+def test_reveil_mesure_et_accueil_honnete():
+    """« Le bot m'annonce des alertes PEA que je n'ai pas activees » et « je ne sais
+    pas si le cron est bien branche ».
+
+    1. Le message d'accueil affirmait « Ce chat recevra les alertes PEA automatiques »
+       a tout le monde, alors que la veille PEA est DESACTIVEE par defaut. Lohan a cru
+       avoir une surveillance qu'il n'avait pas demandee — et qui n'existait pas.
+    2. « J'ai branche le cron » n'est pas une preuve : il peut viser la mauvaise URL,
+       ou avoir ete desactive automatiquement apres des echecs (ce qui arrive quand il
+       a tourne pendant que /health n'existait pas encore et renvoyait 404). On compte
+       donc les passages reels.
+    """
+    import importlib, time as _t
+    from pathlib import Path as _P
+    racine = _P(__file__).resolve().parents[1]
+
+    # --- 1. L'accueil ne promet que ce qui tourne ---------------------------
+    tg = (racine / "bots" / "telegram_bot.py").read_text(encoding="utf-8")
+    accueil = tg.split("async def start(", 1)[1].split("async def watch_cmd(", 1)[0]
+    check("plus de promesse d'alertes PEA inconditionnelle",
+          "🔔 Ce chat recevra" in accueil, False)
+    check("l'accueil regarde ce qui est reellement actif",
+          'getattr(config, "WATCHER_ENABLED", False)' in tg, True)
+    check("…et dit ce qui est eteint", 'eteints' in tg, True)
+    from config import config as _cfg
+    check("la veille PEA est bien eteinte par defaut",
+          getattr(_cfg, "WATCHER_ENABLED", False), False)
+
+    # --- 2. Le reveil est MESURE, pas suppose --------------------------------
+    R = importlib.import_module("agent.reveil")
+    R._PASSAGES.clear()
+    e = R.etat()
+    check("aucun passage → on le dit franchement", e["resume"].startswith("❌"), True)
+    check("…avec quoi verifier", "cron-job.org" in e.get("solution", ""), True)
+    check("…et le compteur est a zero", e["passages_derniere_heure"], 0)
+
+    # Un cron qui tire au bon rythme : verdict vert.
+    R._PASSAGES.clear()
+    R.DEMARRAGE = _t.time() - 7200                      # en ligne depuis 2 h
+    maintenant = _t.time()
+    for i in range(12, 0, -1):
+        R._PASSAGES.append(maintenant - i * 600)        # toutes les 10 min
+    e = R.etat()
+    check("un cron regulier est reconnu", e["resume"].startswith("✅"), True)
+    check("l'intervalle observe est juste", e["intervalle_moyen_min"], 10.0)
+
+    # Un cron qui a laisse un TROU assez grand pour que Render s'endorme.
+    R._PASSAGES.clear()
+    for t in (maintenant - 3000, maintenant - 1800, maintenant - 120):
+        R._PASSAGES.append(t)                            # trou de 20 min
+    e = R.etat()
+    check("un trou trop grand est signale", e["resume"].startswith("⚠️"), True)
+    check("…et chiffre", e["plus_grand_trou_min"] >= 14, True)
+
+    # Le cron tire, mais l'instance vient quand meme de redemarrer : elle a dormi.
+    R._PASSAGES.clear()
+    R.DEMARRAGE = _t.time() - 120
+    for i in range(8, 0, -1):
+        R._PASSAGES.append(maintenant - i * 300)
+    e = R.etat()
+    check("un redemarrage malgre le cron est signale", "redémarré" in e["resume"], True)
+    check("…avec la piste du quota", "750" in e.get("solution", ""), True)
+
+    # --- 3. /health compte VRAIMENT les passages ----------------------------
+    m = (racine / "main.py").read_text(encoding="utf-8")
+    check("/health note son passage", "note_passage()" in m, True)
+    R._PASSAGES.clear()
+    R.note_passage()
+    check("le compteur monte", R.etat()["passages_derniere_heure"], 1)
+
+    # --- 4. Le travail de nuit peut durer -----------------------------------
+    AC = importlib.import_module("agent.core")
+    check("le fond dispose de plus d'un quart d'heure", AC.AGENT_TIMEOUT_FOND > 900, True)
+    check("…et cherche plus large", AC.MAX_RECHERCHES_FOND >= 10, True)
+    src = (racine / "agent" / "core.py").read_text(encoding="utf-8")
+    check("un long travail sans reveil est signale dans les journaux",
+          "_avertit_si_pas_de_reveil" in src, True)
+
+    # --- 5. Aucun bot ne se donne les outils dangereux -----------------------
+    from agent.core import outils_pour_conversation, OUTILS_SENSIBLES
+    from plugins import get_loader
+    permis = outils_pour_conversation(get_loader().list_all().keys())
+    for outil in OUTILS_SENSIBLES:
+        check(f"{outil} hors des conversations", outil in permis, False)
+    for f in ("bots/telegram_bot.py", "bots/discord_bot.py", "api/agent.py"):
+        t = (racine / f).read_text(encoding="utf-8")
+        check(f"{f} ne prend plus tous les outils en bloc",
+              '"tools": list(get_loader().list_all().keys())' in t, False)
+    R._PASSAGES.clear()
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -5085,7 +5176,8 @@ if __name__ == "__main__":
                test_conversations_partagees_entre_appareils,
                test_une_tache_de_fond_ne_meurt_plus_en_silence,
                test_un_accord_ne_declenche_que_ce_qu_il_confirme,
-               test_agenda_dit_la_vraie_date_et_ne_fusionne_plus):
+               test_agenda_dit_la_vraie_date_et_ne_fusionne_plus,
+               test_reveil_mesure_et_accueil_honnete):
         try:
             fn()
         except Exception as e:

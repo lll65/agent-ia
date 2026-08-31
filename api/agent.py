@@ -659,10 +659,13 @@ def _evenements_demandes(message: str) -> list:
     ex = _llm_json(
         "Extrais les événements d'agenda demandés. Il peut y en avoir PLUSIEURS dans "
         "une même phrase (« … et ensuite mets pour mercredi … ») : rends-les tous.\n"
-        'JSON STRICT : {"evenements":[{"titre":"…","debut":"AAAA-MM-JJTHH:MM",'
-        '"fin":"AAAA-MM-JJTHH:MM"}]}\n'
+        'JSON STRICT : {"evenements":[{"titre":"…","details":"…",'
+        '"debut":"AAAA-MM-JJTHH:MM","fin":"AAAA-MM-JJTHH:MM"}]}\n'
         "titre = 2 à 5 mots décrivant l'activité, sans verbe d'ajout, sans le mot "
         "« agenda », première lettre en majuscule (« Acheter du magret », « Chez Nico »).\n"
+        "details = ce que la personne a dit sur CET événement précis, en une phrase "
+        "propre. C'est ce qui ira dans la description — le titre reste court, mais "
+        "rien de ce qui a été demandé ne doit être perdu.\n"
         "debut/fin = date et heure ABSOLUES, résolues par rapport à MAINTENANT. "
         "Si l'heure de fin n'est pas dite, mets une heure après le début. "
         "Si seul un moment de la journée est donné : matin = 09:00, "
@@ -680,7 +683,8 @@ def _evenements_demandes(message: str) -> list:
         if not re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", fin):
             from datetime import datetime, timedelta
             fin = (datetime.fromisoformat(debut[:16]) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
-        sortie.append({"titre": titre, "debut": debut[:16], "fin": fin[:16]})
+        sortie.append({"titre": titre, "debut": debut[:16], "fin": fin[:16],
+                       "details": (e.get("details") or "").strip()[:400]})
     return sortie
 
 
@@ -738,6 +742,8 @@ def _resolve_app_action(message: str):
             args = {"calendar_id": "primary", "summary": e["titre"],
                     "start_datetime": e["debut"], "event_duration_hour": 1,
                     "event_duration_minutes": 0}
+            if e.get("details"):
+                args["description"] = e["details"]
             if len(evts) > 1:
                 args["_autres_evenements"] = evts[1:]     # créés à la suite (voir _tool)
             return "GOOGLECALENDAR_CREATE_EVENT", args
@@ -1783,10 +1789,12 @@ def _tool(name_cmd: str, args: dict, slug: str = "") -> str:
     autres = (args or {}).pop("_autres_evenements", None) if isinstance(args, dict) else None
     obs = _tool_call(name_cmd, args, slug)
     for e in (autres or []):
-        suite = _tool_call(name_cmd, {"calendar_id": "primary", "summary": e["titre"],
-                                      "start_datetime": e["debut"],
-                                      "event_duration_hour": 1,
-                                      "event_duration_minutes": 0}, slug)
+        a = {"calendar_id": "primary", "summary": e["titre"],
+             "start_datetime": e["debut"], "event_duration_hour": 1,
+             "event_duration_minutes": 0}
+        if e.get("details"):
+            a["description"] = e["details"]
+        suite = _tool_call(name_cmd, a, slug)
         obs = str(obs) + "\n\n[ÉVÉNEMENT SUIVANT]\n" + str(suite)
     return obs
 
@@ -4331,6 +4339,17 @@ async def diag_automatisations(key: str = ""):
     return etat_planificateur()
 
 
+@router.get("/diag/reveil")
+async def diag_reveil(key: str = ""):
+    """Le cron externe empêche-t-il VRAIMENT Render de s'endormir ?"""
+    _check_key(key)
+    from agent.reveil import etat
+    from agent.taches import etat as _taches
+    d = dict(etat())
+    d["taches_de_fond"] = _taches()
+    return d
+
+
 @router.get("/diag/sessions")
 async def diag_sessions(key: str = ""):
     """Les conversations sont-elles VRAIMENT les mêmes sur le téléphone et le PC ?"""
@@ -5017,7 +5036,11 @@ async def chat(req: ChatRequest, request: Request):
     agent_id = req.agent_id or "default"
 
     if agent_id == "default":
-        agent_config = {**DEFAULT_AGENT, "tools": list(get_loader().list_all().keys())}
+        # Même filtre que le chat de l'interface : cette route est conversationnelle,
+        # et le contenu des pages web y arrive comme partout ailleurs.
+        from agent.core import outils_pour_conversation
+        agent_config = {**DEFAULT_AGENT,
+                        "tools": outils_pour_conversation(get_loader().list_all().keys())}
     else:
         from orchestrator import get_registry
         agent_config = get_registry().get(agent_id)

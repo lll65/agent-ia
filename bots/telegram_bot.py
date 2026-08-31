@@ -71,7 +71,7 @@ async def run_telegram_bot():
         return answer
 
     async def _agent_reply(text: str, user_id: str) -> str:
-        from agent.core import run_agent
+        from agent.core import run_agent, outils_pour_conversation
         from plugins import get_loader
         cfg = {
             "id": f"tg_{user_id}",
@@ -81,7 +81,10 @@ async def run_telegram_bot():
                 "Tu utilises tous les outils disponibles. "
                 "Réponds en français, en texte simple sans Markdown complexe."
             ),
-            "tools": list(get_loader().list_all().keys()),
+            # ⚠️ C'était TOUS les outils, exec_python et apply_self_modification
+            # compris : du Python arbitraire sur le serveur, donc os.environ et
+            # toutes les clés, depuis une simple conversation Telegram.
+            "tools": outils_pour_conversation(get_loader().list_all().keys()),
             "model": config.LLM_MODEL,
         }
         result = await run_agent(text, cfg, f"tg_{user_id}")
@@ -184,14 +187,32 @@ async def run_telegram_bot():
             register_chat(update.effective_chat.id)
         except Exception:
             pass
-        await update.message.reply_text(
-            "🤖 MasterAgent-Gros connecté!\n\n"
-            "Envoie n'importe quelle question.\n"
-            "Préfixe 'agent:' pour le mode complet avec outils.\n\n"
-            "📊 Questions financières → analyse automatique\n"
-            "🔔 Ce chat recevra les alertes PEA automatiques.\n\n"
-            "Commandes: /help /clear /status /watch"
-        )
+        # ⚠️ Ce message annonçait « Ce chat recevra les alertes PEA automatiques »
+        # à tout le monde, alors que la veille PEA est DÉSACTIVÉE par défaut
+        # (WATCHER_ENABLED=false). Lohan a donc cru avoir activé une surveillance
+        # qu'il n'avait pas demandée — et qui n'existait pas. On ne promet que ce qui
+        # est réellement en marche.
+        lignes = ["🤖 Nova est connectée à ce chat.", "",
+                  "Envoie-moi n'importe quelle question.",
+                  "Préfixe « agent: » pour le mode complet avec tes apps."]
+        actifs = []
+        if config.TELEGRAM_TOKEN:
+            actifs.append("• les résultats de tes automatisations arrivent ici")
+        if getattr(config, "WATCHER_ENABLED", False):
+            actifs.append("• les alertes PEA arrivent ici (WATCHER_ENABLED=true)")
+        if getattr(config, "BRIEFING_ENABLED", False):
+            actifs.append(f"• le briefing du matin arrive ici (à {config.BRIEFING_HOUR} h)")
+        if actifs:
+            lignes += ["", "Ce qui est ACTIF en ce moment :"] + actifs
+        eteints = []
+        if not getattr(config, "WATCHER_ENABLED", False):
+            eteints.append("veille PEA")
+        if not getattr(config, "BRIEFING_ENABLED", False):
+            eteints.append("briefing du matin")
+        if eteints:
+            lignes += ["", "Éteint : " + ", ".join(eteints) + "."]
+        lignes += ["", "Commandes : /help /clear /status /watch"]
+        await update.message.reply_text("\n".join(lignes))
 
     async def watch_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Déclenche un scan PEA immédiat et répond avec les alertes en cours."""
@@ -225,7 +246,10 @@ async def run_telegram_bot():
         if not await _autorise(update):
             return
         from plugins import get_loader
-        tools = list(get_loader().list_all().keys())
+        from agent.core import outils_pour_conversation
+        # On ne liste que ce que le bot accepte reellement d'utiliser : afficher
+        # l'outillage interne complet etait en soi une divulgation.
+        tools = outils_pour_conversation(get_loader().list_all().keys())
         txt = "🔧 Outils disponibles:\n" + "\n".join(f"  • {t}" for t in tools[:12])
         if len(tools) > 12:
             txt += f"\n  … +{len(tools) - 12} autres"
