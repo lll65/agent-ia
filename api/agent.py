@@ -1669,12 +1669,23 @@ def _marque_comptes_ko(raison: str) -> None:
 
 
 def _connected_accounts():
-    """Comptes réellement connectés sur Composio : [(toolkit_slug, user_id, status)]."""
+    """Comptes réellement connectés sur Composio : [(toolkit_slug, user_id, status)].
+
+    ⚠️ _ACCOUNTS_CACHE était DÉCLARÉ, remis à zéro par invalidate_caches()… et jamais
+    ni lu ni écrit. Chaque appel repartait donc en HTTP vers Composio, délai de 20 s
+    au compteur. Or _toolkit_user_id() l'appelle avant CHAQUE action sur une app :
+    lire l'agenda payait un aller-retour réseau supplémentaire, à chaque fois. Et
+    /agent/activity, interrogée toutes les 2 s par la page constellation, le refaisait
+    à chaque tic. C'était une des causes de « c'est lent partout ».
+    """
     import requests
     import time as _t
     ck = (getattr(config, "COMPOSIO_API_KEY", "") or "").strip()
     if not ck:
         return []
+    en_cache = _ACCOUNTS_CACHE.get("data")
+    if en_cache is not None and (_t.monotonic() - _ACCOUNTS_CACHE.get("ts", 0.0)) < _CACHE_TTL:
+        return en_cache
     try:
         r = requests.get("https://backend.composio.dev/api/v3/connected_accounts",
                          headers={"x-api-key": ck}, params={"limit": 100}, timeout=20)
@@ -1690,6 +1701,7 @@ def _connected_accounts():
             uid = it.get("user_id") or it.get("entity_id") or ""
             out.append((str(slug).lower(), str(uid), str(it.get("status", ""))))
         _COMPTES_KO.update(quand=0.0, raison="")     # lecture réussie : on lève le doute
+        _ACCOUNTS_CACHE["data"], _ACCOUNTS_CACHE["ts"] = out, _t.monotonic()
         return out
     except Exception as e:
         _marque_comptes_ko(f"{type(e).__name__}: {str(e)[:120]}")
@@ -4984,7 +4996,10 @@ async def activity(key: str = ""):
     snap = snapshot()
     try:
         # Même normalisation qu'ailleurs : « google_maps » et « googlemaps » sont la même app.
-        connected = {_norm_slug(s): s for s, _u, _st in _connected_accounts() if s}
+        # ⚠️ Appel SYNCHRONE dans une route async : requests bloque la boucle asyncio
+        # ENTIÈRE. La page constellation interroge cette route toutes les 2 s — pendant
+        # ce temps, plus un octet ne partait vers le chat.
+        connected = {_norm_slug(s): s for s, _u, _st in (await _off(_connected_accounts)) if s}
     except Exception:
         connected = {}
     assigned = set()
