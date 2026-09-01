@@ -188,6 +188,33 @@ def diagnostic() -> dict:
     return d
 
 
+_TITRE = __import__("re").compile(r"^[ \t]*#{1,6}[ \t]*(.+?)[ \t]*#*[ \t]*$", __import__("re").M)
+_GRAS = __import__("re").compile(r"\*\*(.+?)\*\*", __import__("re").S)
+_LIEN = __import__("re").compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+_PUCE = __import__("re").compile(r"^([ \t]*)[-*•][ \t]+", __import__("re").M)
+_BARRE = __import__("re").compile(r"^[ \t]*(?:---+|___+|\*\*\*+)[ \t]*$", __import__("re").M)
+
+
+def pour_telegram(texte: str) -> str:
+    """Rend le Markdown LISIBLE en texte brut.
+
+    ⚠️ On n'active pas le mode Markdown de Telegram : le modèle en produit
+    régulièrement d'invalide, et Telegram REJETTE alors le message entier — on
+    perdrait le résultat plutôt que de l'afficher imparfaitement. Mais envoyé tel
+    quel, le texte arrivait truffé de « ### », de « ** » et de liens en
+    « [titre](url) » : illisible sur un téléphone. On convertit donc nous-mêmes.
+    """
+    t = texte or ""
+    t = _BARRE.sub("──────────", t)
+    t = _TITRE.sub(lambda m: "\n▸ " + m.group(1).upper(), t)
+    t = _LIEN.sub(lambda m: f"{m.group(1)} : {m.group(2)}", t)
+    t = _GRAS.sub(r"\1", t)
+    t = _PUCE.sub(lambda m: m.group(1) + ("• " if not m.group(1) else "◦ "), t)
+    t = t.replace("**", "").replace("__", "")
+    import re as _r
+    return _r.sub(r"\n{3,}", "\n\n", t).strip()
+
+
 def send_message(text: str, chat_id=None) -> bool:
     """Envoie un message Telegram. Retourne True si l'envoi a réussi.
 
@@ -209,7 +236,8 @@ def send_message(text: str, chat_id=None) -> bool:
     url = f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}/sendMessage"
     ok_any = False
     # Telegram limite à 4096 caractères par message
-    body = text if len(text) <= 4000 else text[:3950] + "\n…(tronqué)"
+    lisible = pour_telegram(text)
+    body = lisible if len(lisible) <= 4000 else lisible[:3950] + "\n…(tronqué)"
     for cid in targets:
         try:
             r = requests.post(

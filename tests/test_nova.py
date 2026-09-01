@@ -5731,6 +5731,97 @@ def test_modifier_une_automatisation():
     check("le titre est borne a une ligne", "text-overflow:ellipsis" in ui, True)
 
 
+def test_resultat_lisible_et_sans_protocole():
+    """« C'est complique a lire quand je recois ca. Meme la mise en forme. »
+
+    Trois defauts sur la meme capture.
+    1. Le message Telegram commencait par « THOUGHT: J'ai les resultats de recherche
+       pour DBV Technologies… ». Le fourre-tout de parse_response renvoyait le texte
+       BRUT : _texte_lisible savait deja retirer ces marqueurs, on l'appelait juste
+       pour DECIDER, sans jamais utiliser son resultat.
+    2. Ni les titres « ### » ni les listes « - » n'etaient rendus : une reponse
+       structuree s'affichait en bouillie, le « : » et le tiret seuls sur leur ligne.
+    3. Le resultat d'une automatisation etait coupe a 900 caracteres — au milieu d'un
+       mot (« - Page d' »), sans aucun moyen de voir la suite.
+    """
+    import subprocess, tempfile, os, importlib
+    from pathlib import Path as _P
+    racine = _P(__file__).resolve().parents[1]
+
+    # --- 1. Plus de protocole dans la reponse rendue -------------------------
+    from agent.core import parse_response
+    brut = ("THOUGHT: J'ai les resultats de recherche pour DBV Technologies.\n\n"
+            "### DBV Technologies\n- Cours : 27,40 EUR")
+    _, _, final = parse_response(brut)
+    check("« THOUGHT: » ne sort plus", "THOUGHT" in (final or ""), False)
+    check("…mais le contenu est garde", "DBV Technologies" in (final or ""), True)
+    check("…et la structure aussi", "### DBV" in (final or ""), True)
+    # Un texte qui n'est QUE du protocole reste refuse.
+    check("du protocole pur n'est pas une reponse",
+          parse_response("ACTION: search_web\nPARAMS: {}")[2], None)
+
+    # --- 2. Titres, listes et separateurs sont rendus -----------------------
+    if shutil.which("node"):
+        src = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+        extrait = src[src.index("function esc(s)"):src.index("function addRow(")]
+        with tempfile.TemporaryDirectory() as d:
+            fjs = os.path.join(d, "f.js")
+            open(fjs, "w", encoding="utf-8").write(extrait)
+            harnais = ("var KEY='k', ORIGIN='https://x';\n"
+                       "eval(require('fs').readFileSync(%r,'utf8'));\n"
+                       "var m = ['### **DBV Technologies**',"
+                       "'- **Cours** : 27,400 €',"
+                       "'- **Actualites** :',"
+                       "'  - **Perte nette** : **98 MUSD** ([source](https://boursorama.com/a))',"
+                       "'','---','','### **2CRSI**'].join('\\n');\n"
+                       "console.log(fmt(m));\n" % fjs)
+            fh = os.path.join(d, "h.js")
+            open(fh, "w", encoding="utf-8").write(harnais)
+            r = subprocess.run(["node", fh], capture_output=True, text=True, timeout=60)
+            out = r.stdout.strip()
+        check("le titre devient un vrai titre", "<h4>" in out, True)
+        check("les puces deviennent une liste", "<ul>" in out and "<li>" in out, True)
+        check("la sous-puce est distinguee", "class='sous'" in out, True)
+        check("le separateur devient une barre", "<hr>" in out, True)
+        check("plus de « ### » a l'ecran", "###" in out, False)
+        check("plus de tiret orphelin", "<br>-" in out, False)
+        check("le lien reste cliquable", 'href="https://boursorama.com/a"' in out, True)
+        check("pas de ligne vide apres la barre", "<hr><br>" in out, False)
+
+    ui = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+    check("les blocs sont stylés", ".bubble h4{" in ui, True)
+    check("…et sortent du pre-wrap", "white-space:normal" in ui, True)
+
+    # --- 3. Le resultat n'est plus coupe ------------------------------------
+    check("plus de coupe a 900 caracteres", "coupeSure(it.last_result,900)" in ui, False)
+    check("il est affiche en entier", "fmt(it.last_result)" in ui, True)
+    check("…dans une zone qui defile", "max-height:60vh" in ui, True)
+    auto = (racine / "agent" / "automations.py").read_text(encoding="utf-8")
+    check("et le serveur en garde bien plus", '[:12000]' in auto, True)
+    check("plus de plafond a 4000", '(answer or "")[:4000]' in auto, False)
+
+    # --- 4. Sur Telegram aussi, le Markdown devient lisible ------------------
+    # On n'active PAS le mode Markdown de Telegram : le modele en produit
+    # regulierement d'invalide, et Telegram REJETTE alors le message entier — on
+    # perdrait le resultat plutot que de l'afficher imparfaitement. On convertit donc.
+    tp = importlib.import_module("bots.telegram_push")
+    rendu = tp.pour_telegram(
+        "### **DBV Technologies**\n"
+        "- **Cours** : 27,400 €\n"
+        "- **Actualites** :\n"
+        "  - **Perte** : **98 MUSD** ([source](https://boursorama.com/a))\n\n"
+        "---\n\n### **2CRSI**")
+    for reste in ("###", "**", "]("):
+        check(f"« {reste} » n'arrive plus sur Telegram", reste in rendu, False)
+    check("le titre est mis en avant", "▸ DBV TECHNOLOGIES" in rendu, True)
+    check("les puces sont lisibles", "• Cours" in rendu, True)
+    check("les sous-puces sont distinguees", "◦ Perte" in rendu, True)
+    check("le lien reste utilisable", "https://boursorama.com/a" in rendu, True)
+    check("…avec son libelle", "source : https://boursorama.com/a" in rendu, True)
+    check("le separateur devient une barre", "──" in rendu, True)
+    check("le texte utile est intact", "27,400 €" in rendu, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -5774,7 +5865,8 @@ if __name__ == "__main__":
                test_rien_ne_bloque_et_le_cache_sert_vraiment,
                test_diagnostic_ne_ment_pas_et_modele_adapte,
                test_actu_boursiere_ne_rend_plus_de_la_politique,
-               test_modifier_une_automatisation):
+               test_modifier_une_automatisation,
+               test_resultat_lisible_et_sans_protocole):
         try:
             fn()
         except Exception as e:
