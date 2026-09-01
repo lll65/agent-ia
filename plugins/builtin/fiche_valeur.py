@@ -114,6 +114,19 @@ class FicheValeurPlugin(Plugin):
                  if _pct(prix, veille) is not None else f"**{prix:,.2f} {devise}**")
         L.append("")
 
+        # Un schéma tracé à partir des VRAIS points : chaque pixel est une donnée.
+        # (Un modèle qui « dessinerait » cette courbe l'inventerait — jolie,
+        # plausible, et fausse.)
+        from agent.graphique import courbe_svg, sparkline_texte, en_image
+        img = en_image(courbe_svg(closes[-252:], f"{infos.get('nom', tk)} — 1 an", devise),
+                       f"Cours de {tk} sur 1 an")
+        if img:
+            L.append(img)
+            # Même information en texte : Telegram et les mails n'affichent pas
+            # les images encodées.
+            L.append(f"`{sparkline_texte(closes[-252:])}`")
+            L.append("")
+
         # ── 1. Ce qui est DATÉ et qui arrive ────────────────────────────────
         # Le rendez-vous connu à l'avance est ce qui déplace le plus un cours.
         L.append("### 📅 Ce qui arrive")
@@ -147,6 +160,12 @@ class FicheValeurPlugin(Plugin):
                 if ratio >= 1.8:
                     L.append("  - Un volume anormal veut dire qu'il se passe quelque chose. "
                              "Ça ne dit PAS dans quel sens.")
+                from agent.graphique import barre_svg, en_image as _img
+                b = _img(barre_svg([("aujourd'hui", vols[-1]), ("moyenne 20 j", moy)],
+                                   "Titres échangés"), "Volume du jour face à sa moyenne")
+                if b:
+                    L.append("")
+                    L.append(b)
         else:
             L.append("- Volume comparé à sa moyenne : **N/D**.")
 
@@ -191,6 +210,46 @@ class FicheValeurPlugin(Plugin):
                 L.append(f"- Objectif moyen des analystes : **{infos['objectif']:,.2f} {devise}** "
                          f"({e:+.0f} % vs le cours), d'après {n} analyste(s). "
                          "C'est un avis, pas une mesure.")
+
+        # ── 5. « En clair » : sans ca, une liste de chiffres ne sert a rien ────
+        # ⚠️ Lohan a 17 ans et apprend. Un tableau de RSI, de PER et de moyennes
+        # mobiles est illisible sans une phrase qui dit ce que ca veut dire.
+        L.append("")
+        L.append("### 💡 En clair")
+        clair = []
+        if infos.get("resultats"):
+            clair.append(f"La prochaine grosse date est le **{infos['resultats']}** "
+                         "(publication des comptes). C'est là que le cours réagit le plus, "
+                         "dans un sens ou dans l'autre.")
+        if len(vols) >= 21:
+            moy = sum(vols[-21:-1]) / 20
+            r = (vols[-1] / moy) if moy else 0
+            if r >= 1.8:
+                clair.append(f"Il s'échange **{r:.1f} fois plus de titres que d'habitude** "
+                             "aujourd'hui : quelque chose attire l'attention. Ça ne dit pas "
+                             "si c'est bon ou mauvais — c'est un signal à creuser.")
+            else:
+                clair.append("Les échanges sont **au niveau habituel** : rien d'inhabituel "
+                             "ne se passe sur le titre en ce moment.")
+        if haut != bas:
+            pos = (prix - bas) / (haut - bas) * 100
+            si = ("proche de son plus haut" if pos > 80 else
+                  "proche de son plus bas" if pos < 20 else "au milieu de sa fourchette")
+            clair.append(f"Le cours est **{si}** {etiq}. Être haut ne veut pas dire "
+                         "« trop cher », ni bas « bonne affaire » : ça situe, c'est tout.")
+        if rsi is not None:
+            if rsi > 70:
+                clair.append("Le **RSI** (un indicateur qui mesure si un titre a beaucoup "
+                             "monté d'un coup) est élevé : le titre a grimpé vite "
+                             "récemment. Souvent suivi d'une pause — pas toujours.")
+            elif rsi < 30:
+                clair.append("Le **RSI** (un indicateur qui mesure si un titre a beaucoup "
+                             "baissé d'un coup) est bas : il a chuté vite récemment.")
+        if infos.get("objectif"):
+            clair.append("L'**objectif des analystes** est une moyenne d'avis de "
+                         "professionnels. Ils se trompent souvent : à lire comme une "
+                         "opinion, pas comme une prévision.")
+        L.extend(f"- {c}" for c in clair)
 
         L.append("")
         L.append(f"_Source des cours : {source}. "
