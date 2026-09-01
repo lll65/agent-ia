@@ -192,6 +192,46 @@ class FicheValeurPlugin(Plugin):
                          f"({e:+.0f} % vs le cours), d'après {n} analyste(s). "
                          "C'est un avis, pas une mesure.")
 
+        # ── 5. « En clair » : sans ca, une liste de chiffres ne sert a rien ────
+        # ⚠️ Lohan a 17 ans et apprend. Un tableau de RSI, de PER et de moyennes
+        # mobiles est illisible sans une phrase qui dit ce que ca veut dire.
+        L.append("")
+        L.append("### 💡 En clair")
+        clair = []
+        if infos.get("resultats"):
+            clair.append(f"La prochaine grosse date est le **{infos['resultats']}** "
+                         "(publication des comptes). C'est là que le cours réagit le plus, "
+                         "dans un sens ou dans l'autre.")
+        if len(vols) >= 21:
+            moy = sum(vols[-21:-1]) / 20
+            r = (vols[-1] / moy) if moy else 0
+            if r >= 1.8:
+                clair.append(f"Il s'échange **{r:.1f} fois plus de titres que d'habitude** "
+                             "aujourd'hui : quelque chose attire l'attention. Ça ne dit pas "
+                             "si c'est bon ou mauvais — c'est un signal à creuser.")
+            else:
+                clair.append("Les échanges sont **au niveau habituel** : rien d'inhabituel "
+                             "ne se passe sur le titre en ce moment.")
+        if haut != bas:
+            pos = (prix - bas) / (haut - bas) * 100
+            si = ("proche de son plus haut" if pos > 80 else
+                  "proche de son plus bas" if pos < 20 else "au milieu de sa fourchette")
+            clair.append(f"Le cours est **{si}** {etiq}. Être haut ne veut pas dire "
+                         "« trop cher », ni bas « bonne affaire » : ça situe, c'est tout.")
+        if rsi is not None:
+            if rsi > 70:
+                clair.append("Le **RSI** (un indicateur qui mesure si un titre a beaucoup "
+                             "monté d'un coup) est élevé : le titre a grimpé vite "
+                             "récemment. Souvent suivi d'une pause — pas toujours.")
+            elif rsi < 30:
+                clair.append("Le **RSI** (un indicateur qui mesure si un titre a beaucoup "
+                             "baissé d'un coup) est bas : il a chuté vite récemment.")
+        if infos.get("objectif"):
+            clair.append("L'**objectif des analystes** est une moyenne d'avis de "
+                         "professionnels. Ils se trompent souvent : à lire comme une "
+                         "opinion, pas comme une prévision.")
+        L.extend(f"- {c}" for c in clair)
+
         L.append("")
         L.append(f"_Source des cours : {source}. "
                  "Ces chiffres décrivent le passé et le présent — **aucun ne prédit "

@@ -514,6 +514,24 @@ def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
                    "cours. Tu décris ce qu'il possède, tu ne lui dis pas quoi acheter ou "
                    "vendre. Ne réponds JAMAIS uniquement « consulte un conseiller financier » : "
                    "c'est une esquive, pas une réponse.")
+        # ⚠️ Une automatisation « actu bourse » a rendu des articles du 16 juillet et du
+        # 30 juin comme « actualités récentes » — deux mois plus tard. Une information
+        # périmée présentée comme fraîche est pire que pas d'information : elle fait
+        # croire qu'il ne s'est rien passé depuis. Et sans explication, une liste de
+        # chiffres ne sert à rien à quelqu'un qui apprend.
+        system += (
+            " FRAÎCHEUR : pour CHAQUE actualité, donne sa DATE et son ÂGE "
+            "(« 16 juillet — il y a 47 jours »). N'appelle « récent » que ce qui a "
+            "moins de 7 jours. Ce qui est plus vieux va dans une section « Plus "
+            "ancien, pour le contexte » — jamais mélangé au reste. Si tu n'as RIEN "
+            "de moins de 7 jours, dis-le franchement : « rien de neuf depuis X jours » "
+            "est une information utile, pas un échec."
+            " EXPLIQUE : termine par « **En clair** » — deux ou trois phrases simples, "
+            "sans jargon, qui disent ce que ces chiffres signifient concrètement et "
+            "ce qu'il y a à surveiller. L'utilisateur a 17 ans et apprend : un mot "
+            "technique employé doit être expliqué en trois mots entre parenthèses "
+            "(« le PER (le prix payé pour 1 € de bénéfice) »). Tu décris, tu "
+            "ne conseilles pas d'acheter ou de vendre.")
     if app and "connected_app" in tools:
         tools.remove("connected_app"); tools.insert(0, "connected_app")
         system += (" Pour l'agenda, le calendrier, les mails, les fichiers, Slack ou Notion, utilise "

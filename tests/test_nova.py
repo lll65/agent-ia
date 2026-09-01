@@ -5894,6 +5894,20 @@ def test_fiche_valeur_popup_et_edition_en_place():
         check("l'objectif analyste est relativise", "C'est un avis, pas une mesure" in f, True)
         # Et surtout : aucune prevision.
         check("aucune prediction n'est faite", "aucun ne prédit" in f, True)
+
+        # ⚠️ « Ca m'interesse pas des infos qui datent » et « je veux une petite
+        # explication simple ». Une liste de RSI, de PER et de moyennes mobiles est
+        # illisible a 17 ans sans une phrase qui dit ce que ca veut dire.
+        check("une explication simple est donnee", "### 💡 En clair" in f, True)
+        clair = f.split("### 💡 En clair", 1)[1]
+        check("…qui situe la prochaine date", "publication des comptes" in clair, True)
+        check("…qui explique le volume", "fois plus de titres que d'habitude" in clair, True)
+        check("…qui explique le RSI en mots simples",
+              "un indicateur qui mesure" in clair, True)
+        check("…qui relativise l'avis des analystes",
+              "Ils se trompent souvent" in clair, True)
+        check("…sans jamais dire quoi faire",
+              any(k in clair.lower() for k in ("achète", "vends", "il faut acheter")), False)
         for mot in ("va monter", "va baisser", "achetez", "vendez"):
             check(f"la fiche ne dit jamais « {mot} »", mot in f.lower(), False)
 
@@ -5914,6 +5928,18 @@ def test_fiche_valeur_popup_et_edition_en_place():
             _s.modules["yfinance"] = avant_yf
 
     ui = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+
+    # Une information PERIMEE presentee comme fraiche est pire que rien : elle fait
+    # croire qu'il ne s'est rien passe depuis. Une automatisation « actu bourse » a
+    # rendu des articles du 16 juillet et du 30 juin comme « actualites recentes ».
+    api = (racine / "api" / "agent.py").read_text(encoding="utf-8")
+    check("la fraicheur est exigee", "FRAÎCHEUR :" in api, True)
+    check("…avec l'age de chaque article", "son ÂGE" in api, True)
+    check("…un seuil clair", "moins de 7 jours" in api, True)
+    check("…et le vieux mis a part", "ancien, pour le contexte" in api, True)
+    check("« rien de neuf » est une reponse valable", "est une information utile" in api, True)
+    check("une explication simple est exigee", "**En clair**" in api, True)
+    check("…sans jargon non explique", "expliqué en trois mots" in api, True)
 
     # --- 2. L'edition se fait DANS la ligne ---------------------------------
     check("un editeur en place existe", 'className = "edit-auto"' in ui, True)
