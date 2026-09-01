@@ -5653,6 +5653,84 @@ def test_actu_boursiere_ne_rend_plus_de_la_politique():
           'elif not articles and theme != "general":' in src, True)
 
 
+def test_modifier_une_automatisation():
+    """« Je veux pouvoir modifier des automatisations. »
+
+    Il fallait la SUPPRIMER et la recreer pour changer une heure — en perdant au
+    passage son historique et ses resultats. Le moteur savait pourtant le faire
+    depuis toujours (`update`) : il manquait juste le chemin pour y arriver.
+    """
+    import importlib, os as _os
+    _os.environ["AGENT_API_KEY"] = "cle-de-test-verrou"
+    _os.environ["DISABLE_UI"] = "true"
+    from fastapi.testclient import TestClient
+    _main = importlib.import_module("main")
+    A = importlib.import_module("api.agent")
+    AU = importlib.import_module("agent.automations")
+    _main.config.AGENT_API_KEY = "cle-de-test-verrou"
+    cle_avant, vrai = getattr(A.config, "AGENT_API_KEY", ""), AU._ENTREPOT
+    try:
+        A.config.AGENT_API_KEY = "cle-de-test-verrou"
+        AU._ENTREPOT = FauxEntrepot("id")
+        c = TestClient(_main.app)
+        a = AU.add("Bourse", "resume l'actu boursiere", hour=17)
+
+        # Modification complete.
+        r = c.post("/agent/automations/modifier",
+                   json={"key": "cle-de-test-verrou", "id": a["id"],
+                         "titre": "Bourse du soir", "prompt": "resume l'actu du CAC 40",
+                         "hour": 18, "minute": 30, "days": [0, 1, 2, 3, 4]})
+        check("la modification passe", r.status_code, 200)
+        m = next(x for x in AU.list_all() if x["id"] == a["id"])
+        check("le titre change", m["titre"], "Bourse du soir")
+        check("la consigne aussi", m["prompt"], "resume l'actu du CAC 40")
+        check("l'heure aussi", (m["hour"], m["minute"]), (18, 30))
+        check("les jours aussi", m["days"], [0, 1, 2, 3, 4])
+        # Ce qu'on ne veut SURTOUT pas perdre en modifiant.
+        check("l'identifiant ne bouge pas", m["id"], a["id"])
+        check("l'historique est garde", "runs" in m, True)
+        check("la prochaine echeance est annoncee", bool(r.json().get("prochaine")), True)
+
+        # Une modification PARTIELLE ne doit pas effacer le reste.
+        r = c.post("/agent/automations/modifier",
+                   json={"key": "cle-de-test-verrou", "id": a["id"], "hour": 9})
+        m = next(x for x in AU.list_all() if x["id"] == a["id"])
+        check("changer l'heure seule", m["hour"], 9)
+        check("…ne touche pas au titre", m["titre"], "Bourse du soir")
+        check("…ni aux jours", m["days"], [0, 1, 2, 3, 4])
+
+        # Decocher TOUS les jours est une intention, pas une absence.
+        r = c.post("/agent/automations/modifier",
+                   json={"key": "cle-de-test-verrou", "id": a["id"], "days": []})
+        m = next(x for x in AU.list_all() if x["id"] == a["id"])
+        check("aucun jour coche est respecte", m["days"], [])
+        check("…et l'interface le dit", AU.prochaine_execution(m), "aucune (aucun jour coché)")
+
+        # Les refus.
+        check("identifiant inconnu → 404",
+              c.post("/agent/automations/modifier",
+                     json={"key": "cle-de-test-verrou", "id": "zzz", "titre": "x"}).status_code, 404)
+        check("sans identifiant → 400",
+              c.post("/agent/automations/modifier",
+                     json={"key": "cle-de-test-verrou", "titre": "x"}).status_code, 400)
+        check("sans cle → 401",
+              c.post("/agent/automations/modifier",
+                     json={"id": a["id"], "titre": "x"}).status_code, 401)
+    finally:
+        A.config.AGENT_API_KEY = cle_avant
+        AU._ENTREPOT = vrai
+
+    # L'interface offre bien le chemin.
+    from pathlib import Path as _P
+    ui = (_P(__file__).resolve().parents[1] / "ui" / "nova.html").read_text(encoding="utf-8")
+    check("le bouton modifier existe", "editAuto(" in ui, True)
+    check("il remplit le formulaire", 'document.getElementById("autoTitre").value = it.titre' in ui, True)
+    check("on peut annuler", "annulerEdition" in ui, True)
+    check("le formulaire vise la bonne route", '"/agent/automations/modifier"' in ui, True)
+    # Un titre long ne doit plus pousser l'heure a la ligne.
+    check("le titre est borne a une ligne", "text-overflow:ellipsis" in ui, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -5695,7 +5773,8 @@ if __name__ == "__main__":
                test_actu_d_une_entreprise_pas_les_titres_du_jour,
                test_rien_ne_bloque_et_le_cache_sert_vraiment,
                test_diagnostic_ne_ment_pas_et_modele_adapte,
-               test_actu_boursiere_ne_rend_plus_de_la_politique):
+               test_actu_boursiere_ne_rend_plus_de_la_politique,
+               test_modifier_une_automatisation):
         try:
             fn()
         except Exception as e:
