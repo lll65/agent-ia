@@ -305,6 +305,13 @@
   .scrim.show{ opacity:1; pointer-events:auto; }
   /* Modale mémoire (thème Nova) */
   .memb{ max-height:60vh; overflow-y:auto; margin-top:6px; display:flex; flex-direction:column; gap:8px; }
+  /* Édition d'une automatisation DANS sa ligne : plus besoin d'aller la chercher
+     tout en bas de la fenêtre en perdant de vue laquelle on modifie. */
+  .edit-auto{ margin-top:9px; padding-top:9px; border-top:1px solid var(--stroke); }
+  .edit-auto input{ width:100%; margin-bottom:6px; }
+  .edit-auto .e-jours button{ flex:1; padding:6px 0; font-size:11.5px; border-radius:8px;
+    border:1px solid var(--stroke); background:transparent; color:var(--dim); cursor:pointer; }
+  .edit-auto .e-jours button.on{ background:var(--neon); border-color:transparent; color:#fff; }
   .pitem{ padding:9px 11px; border-radius:11px; background:var(--glass); border:1px solid var(--stroke); line-height:1.45; word-break:break-word; font-size:13px; }
   .pitem b{ color:var(--neon2); font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; }
 
@@ -504,6 +511,16 @@
 
   <div id="toast"></div>
 
+  <div class="modal" id="novModal"><div class="card" style="max-width:520px">
+    <div class="chead"><h3>🌙 Pendant ton absence</h3>
+      <button class="ic" onclick="fermerNouveautes()" title="Fermer">✕</button></div>
+    <p>Ce que Nova a fait <b>toute seule</b> pendant que tu n'étais pas là.</p>
+    <div class="memb" id="novBody"></div>
+    <div style="margin-top:12px;display:flex;gap:8px">
+      <button onclick="fermerNouveautes()" style="flex:1">D'accord, c'est vu</button>
+    </div>
+  </div></div>
+
   <div class="modal" id="autoModal"><div class="card" style="max-width:520px">
     <div class="chead"><h3>🌙 Automatisations</h3><button class="ic" onclick="closeAuto()" title="Fermer">✕</button></div>
     <p>Ce que Nova fait <b>toute seule</b>, même quand tu dors.</p>
@@ -523,8 +540,6 @@
       <div id="autoDays" class="days"></div>
       <div id="autoQuand" class="quand"></div>
       <button id="autoBtn" onclick="addAuto()">＋ Créer l'automatisation</button>
-      <button id="autoAnnule" onclick="annulerEdition()" style="display:none;margin-top:6px;
-        background:transparent;border:1px solid rgba(255,255,255,.18)">Annuler la modification</button>
     </div>
   </div></div>
 
@@ -780,26 +795,79 @@ function closeSidebar(){ document.getElementById("sidebar").classList.remove("sh
    « J'ai fait une automatisation a 17h mais je recois rien » : elle s'executait bien,
    mais son resultat n'allait NULLE PART sans Telegram — il fallait penser a ouvrir la
    fenetre Automatisations pour le decouvrir. Nova le presente maintenant d'elle-meme. */
+/* ⚠️ Les résultats produits pendant l'absence étaient DÉVERSÉS en entier dans le
+   chat, les uns après les autres, avant même que Lohan ait dit quoi que ce soit. Un
+   résumé bourse de 3 000 caractères repoussait sa propre conversation hors de l'écran.
+   On annonce donc d'abord, en une ligne par tâche, et le détail ne s'ouvre que s'il
+   le demande. */
+function _apercuTexte(md, n){
+  // De quoi comprendre en un coup d'œil, sans le balisage.
+  const t = String(md || "")
+    .replace(/^[ \t]*#{1,6}[ \t]*/gm, "")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/^[ \t]*[-*•][ \t]+/gm, "")
+    .replace(/^[ \t]*(?:---+|___+)[ \t]*$/gm, " ")
+    .replace(/\s+/g, " ").trim();
+  return t.length > n ? t.slice(0, n).replace(/\s+\S*$/, "") + "…" : t;
+}
+
+let NOUVEAUTES = [];
+
 async function nouveautes(){
   if(!KEY) return;
   try{
     const d=await (await fetch(ORIGIN+"/agent/automations/nouveaux?key="+encodeURIComponent(KEY),
       {cache:"no-store"})).json();
-    const n=(d.nouveaux||[]);
-    if(!n.length) return;
-    for(const x of n){
+    NOUVEAUTES = d.nouveaux || [];
+    if(!NOUVEAUTES.length) return;
+    const corps = document.getElementById("novBody");
+    corps.innerHTML = NOUVEAUTES.map((x, i) => {
       const quand = x.quand ? new Date(x.quand*1000).toLocaleString("fr-FR",
-        {weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}) : "";
-      addRow("ai", "<b>"+(x.icon||"⚡")+" "+esc(x.titre)+"</b>"
-        + (quand? " <span style='opacity:.55;font-size:11.5px'>· "+esc(quand)+"</span>":"")
-        + "<br><span style='opacity:.6;font-size:11.5px'>pendant ton absence</span><br><br>"
-        + fmt(x.resultat||""));
-    }
-    // On ne les represente pas a chaque ouverture.
+        {weekday:"short", day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit"}) : "";
+      return '<div class="pitem" style="margin-bottom:8px">'
+        + '<div style="display:flex;align-items:center;gap:8px">'
+        +   '<span style="font-size:16px">'+(x.icon||"⚡")+'</span>'
+        +   '<b style="color:var(--txt);font-size:13px;text-transform:none;letter-spacing:0;'
+        +     'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1">'+esc(x.titre)+'</b>'
+        +   (quand ? '<span style="color:var(--dim);font-size:11px;white-space:nowrap">'+esc(quand)+'</span>' : '')
+        + '</div>'
+        + '<div style="color:var(--dim);font-size:12.5px;margin:6px 0 8px;line-height:1.45">'
+        +   esc(_apercuTexte(x.resultat, 170)) + '</div>'
+        + '<div style="display:flex;gap:8px">'
+        +   '<a onclick="detailNouveaute('+i+')" style="cursor:pointer;color:var(--neon2);font-size:12px">'
+        +     '📖 Voir en détail</a>'
+        + '</div>'
+        + '<div id="novD'+i+'" style="display:none;margin-top:9px;padding-top:9px;'
+        +   'border-top:1px solid var(--stroke);font-size:13px;line-height:1.5;'
+        +   'max-height:50vh;overflow:auto"></div>'
+        + '</div>';
+    }).join("");
+    document.getElementById("novModal").classList.add("show");
+    sndOpen && sndOpen();
+  }catch(e){}
+}
+
+function detailNouveaute(i){
+  const z = document.getElementById("novD"+i);
+  if(!z) return;
+  if(z.style.display === "none"){
+    // Rendu à la demande : inutile de mettre en forme cinq résultats que
+    // personne n'ouvrira peut-être.
+    if(!z.dataset.rendu){ z.innerHTML = fmt((NOUVEAUTES[i]||{}).resultat || ""); z.dataset.rendu = "1"; }
+    z.style.display = "";
+  } else z.style.display = "none";
+}
+
+function fermerNouveautes(){
+  document.getElementById("novModal").classList.remove("show");
+  // ⚠️ On ne les marque lus QUE quand il ferme : sinon un affichage qu'il n'a pas
+  // vu (onglet en arrière-plan, téléphone verrouillé) était perdu pour toujours.
+  if(NOUVEAUTES.length && KEY){
     fetch(ORIGIN+"/agent/automations/lus",{method:"POST",
       headers:{"Content-Type":"application/json"},body:JSON.stringify({key:KEY})}).catch(()=>{});
-    if(chat) chat.scrollTop=chat.scrollHeight;
-  }catch(e){}
+    NOUVEAUTES = [];
+  }
 }
 
 /* ═══ CHOIX DU FOURNISSEUR ═══
@@ -925,30 +993,73 @@ let AUTO_DAYS=[0,1,2,3,4,5,6];
 // ⚠️ Il fallait SUPPRIMER une automatisation et la recréer pour changer une heure —
 // en perdant son historique et ses résultats au passage. Le moteur savait pourtant la
 // modifier depuis toujours ; il manquait juste le chemin pour y arriver.
-let AUTO_EDIT = null, AUTO_ITEMS = [];
+let AUTO_ITEMS = [];
+
+/* ⚠️ La première version envoyait modifier tout en BAS de la fenêtre, dans le
+   formulaire de création : il fallait faire défiler, on perdait de vue la ligne qu'on
+   modifiait, et rien ne disait laquelle. On édite donc DANS la ligne, à sa place. */
+const JOURS_COURT = ["L","M","M","J","V","S","D"];
 
 function editAuto(id){
   const it = (AUTO_ITEMS || []).find(x => x.id === id);
-  if(!it) return;
-  AUTO_EDIT = id;
-  document.getElementById("autoTitre").value = it.titre || "";
-  document.getElementById("autoPrompt").value = it.prompt || "";
-  document.getElementById("autoHour").value = it.hour ?? 8;
-  document.getElementById("autoMin").value = it.minute ?? 0;
-  AUTO_DAYS = Array.isArray(it.days) ? [...it.days] : [0,1,2,3,4,5,6];
-  renderDays(); apercuQuand();
-  document.getElementById("autoBtn").textContent = "✏️ Enregistrer les modifications";
-  document.getElementById("autoAnnule").style.display = "";
-  document.getElementById("autoTitre").scrollIntoView({behavior:"smooth", block:"center"});
-  document.getElementById("autoTitre").focus();
+  const ligne = document.querySelector('.pitem[data-id="' + id + '"]');
+  if(!it || !ligne) return;
+  if(ligne.querySelector(".edit-auto")) return;          // déjà ouverte
+  const jours = Array.isArray(it.days) ? [...it.days] : [0,1,2,3,4,5,6];
+  const z = document.createElement("div");
+  z.className = "edit-auto";
+  z.innerHTML =
+      '<input class="e-titre" value="'+esc(it.titre||"")+'" placeholder="Titre">'
+    + '<input class="e-prompt" value="'+esc(it.prompt||"")+'" placeholder="Ce que Nova doit faire…">'
+    + '<div style="display:flex;gap:8px;align-items:center;margin:7px 0">'
+    +   '<span style="color:var(--dim);font-size:12px">à</span>'
+    +   '<input class="e-h" type="number" min="0" max="23" value="'+(it.hour ?? 8)+'" style="width:60px;text-align:center">'
+    +   '<span style="color:var(--dim)">h</span>'
+    +   '<input class="e-m" type="number" min="0" max="59" step="5" value="'+(it.minute ?? 0)+'" style="width:60px;text-align:center">'
+    + '</div>'
+    + '<div class="e-jours" style="display:flex;gap:5px;margin-bottom:9px">'
+    +   JOURS_COURT.map((d,i)=>'<button type="button" data-j="'+i+'" class="'
+    +     +(jours.includes(i)?"on":"")+'">'+d+'</button>').join("")
+    + '</div>'
+    + '<div style="display:flex;gap:8px">'
+    +   '<button class="e-ok" style="flex:1">Enregistrer</button>'
+    +   '<button class="e-non" style="flex:1;background:transparent;border:1px solid var(--stroke)">Annuler</button>'
+    + '</div>';
+  ligne.appendChild(z);
+  const sel = new Set(jours);
+  z.querySelectorAll(".e-jours button").forEach(b => b.onclick = () => {
+    const i = +b.dataset.j;
+    if(sel.has(i)) sel.delete(i); else sel.add(i);
+    b.classList.toggle("on", sel.has(i));
+  });
+  z.querySelector(".e-non").onclick = () => z.remove();
+  z.querySelector(".e-ok").onclick = () => enregistrerAuto(id, z, sel);
+  z.querySelector(".e-titre").focus();
+  z.scrollIntoView({behavior:"smooth", block:"nearest"});
 }
 
-function annulerEdition(){
-  AUTO_EDIT = null;
-  document.getElementById("autoTitre").value = "";
-  document.getElementById("autoPrompt").value = "";
-  document.getElementById("autoBtn").textContent = "＋ Créer l'automatisation";
-  document.getElementById("autoAnnule").style.display = "none";
+async function enregistrerAuto(id, z, sel){
+  const titre = z.querySelector(".e-titre").value.trim();
+  const prompt = z.querySelector(".e-prompt").value.trim();
+  if(!titre || !prompt){ alert("Donne un titre et ce que Nova doit faire."); return; }
+  const corps = {key:KEY, id, titre, prompt,
+                 hour:+z.querySelector(".e-h").value || 0,
+                 minute:+z.querySelector(".e-m").value || 0,
+                 days:[...sel].sort((a,b)=>a-b)};
+  const ok = z.querySelector(".e-ok");
+  ok.disabled = true; ok.textContent = "Enregistrement…";
+  try{
+    const r = await fetch(ORIGIN+"/agent/automations/modifier",{method:"POST",
+      headers:{"Content-Type":"application/json"}, body:JSON.stringify(corps)});
+    if(!r.ok) throw new Error((await r.json()).detail || ("HTTP "+r.status));
+    const d = await r.json();
+    z.remove();
+    await loadAuto(id);
+    toast("✅ « "+titre+" » modifiée"+(d.prochaine? " — prochaine : "+d.prochaine : ""));
+  }catch(e){
+    alert("Modification impossible : "+e);
+    ok.disabled = false; ok.textContent = "Enregistrer";
+  }
 }
 function renderDays(){ const z=document.getElementById("autoDays"); if(!z) return;
   z.innerHTML=JOURS_L.map((d,i)=>'<button type="button" class="'+(AUTO_DAYS.includes(i)?"on":"")
@@ -989,26 +1100,22 @@ async function addAuto(){ const titre=document.getElementById("autoTitre").value
     hour=+document.getElementById("autoHour").value||0, minute=+document.getElementById("autoMin").value||0;
   if(!titre||!prompt){ alert("Donne un titre et ce que Nova doit faire."); return; }
   if(!AUTO_DAYS.length){ alert("Coche au moins un jour, sinon elle ne partira jamais."); return; }
-  const modif = AUTO_EDIT;
   let cree=null;
   try{
-    const url = modif ? "/agent/automations/modifier" : "/agent/automations";
-    const corps = {key:KEY,titre,prompt,hour,minute,days:AUTO_DAYS};
-    if(modif) corps.id = modif;
-    const r = await fetch(ORIGIN+url,{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify(corps)});
+    const r = await fetch(ORIGIN+"/agent/automations",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({key:KEY,titre,prompt,hour,minute,days:AUTO_DAYS})});
     if(!r.ok) throw new Error((await r.json()).detail || ("HTTP "+r.status));
     cree = await r.json();
   }
-  catch(e){ alert((modif?"Modification":"Création")+" impossible : "+e); return; }
-  annulerEdition();
+  catch(e){ alert("Création impossible : "+e); return; }
+  document.getElementById("autoTitre").value=""; document.getElementById("autoPrompt").value="";
   sndReceive();
   // ⚠️ « Je ne sais pas où elle apparaît » : la nouvelle ligne était ajoutée en haut de
   // la fenêtre, hors de vue, sans un mot. On remonte dessus, on la surligne, et on dit
   // quand elle partira.
   await loadAuto(cree && cree.id);
-  if(cree && cree.prochaine)
-    toast("✅ « "+titre+" » "+(modif?"modifiée":"créée")+" — prochaine : "+cree.prochaine); }
+  if(cree && cree.prochaine) toast("✅ « "+titre+" » créée — prochaine : "+cree.prochaine); }
 async function toggleAuto(id,active){ await fetch(ORIGIN+"/agent/automations/toggle",{method:"POST",
   headers:{"Content-Type":"application/json"},body:JSON.stringify({key:KEY,id,active})}); loadAuto(); }
 async function delAuto(id){ if(!confirm("Supprimer cette automatisation ?")) return;
