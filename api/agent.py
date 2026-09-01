@@ -4787,6 +4787,43 @@ async def automations_add(req: AutoReq):
     return {**item, "prochaine": prochaine_execution(item)}
 
 
+@router.post("/automations/modifier")
+async def automations_modifier(req: AutoReq):
+    """Modifie une automatisation existante (titre, consigne, heure, jours).
+
+    ⚠️ Il fallait la SUPPRIMER et la recréer pour changer une heure — en perdant au
+    passage son historique et ses résultats. `update` existait déjà côté moteur ; il
+    n'y avait simplement aucun moyen de l'atteindre depuis l'interface.
+    """
+    _check_key(req.key or "")
+    from agent.automations import update, list_all, prochaine_execution
+    aid = (req.id or "").strip()
+    if not aid:
+        raise HTTPException(status_code=400, detail="Quelle automatisation ?")
+    changes = {}
+    if req.titre is not None and req.titre.strip():
+        changes["titre"] = req.titre.strip()[:80]
+    if req.prompt is not None and req.prompt.strip():
+        changes["prompt"] = req.prompt.strip()[:400]
+    if req.hour is not None:
+        changes["hour"] = max(0, min(23, int(req.hour)))
+    if req.minute is not None:
+        changes["minute"] = max(0, min(59, int(req.minute)))
+    if req.icon:
+        changes["icon"] = req.icon[:4]
+    # ⚠️ Une liste VIDE est une intention (« aucun jour »), pas une absence : sans ce
+    # test, décocher tous les jours ne changeait rien du tout.
+    if req.days is not None:
+        changes["days"] = [int(d) for d in req.days if str(d).isdigit() and 0 <= int(d) <= 6]
+    if not changes:
+        raise HTTPException(status_code=400, detail="Rien à modifier.")
+    if not update(aid, **changes):
+        raise HTTPException(status_code=404, detail="Automatisation introuvable.")
+    item = next((i for i in list_all() if i["id"] == aid), None)
+    return {"ok": True, **(item or {}),
+            "prochaine": prochaine_execution(item) if item else ""}
+
+
 @router.post("/automations/toggle")
 async def automations_toggle(req: AutoReq):
     """Active/désactive une automatisation."""

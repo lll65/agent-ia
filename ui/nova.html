@@ -511,7 +511,9 @@
       <div style="font-size:11px;letter-spacing:.14em;color:var(--dim);margin:10px 0 6px">QUELS JOURS</div>
       <div id="autoDays" class="days"></div>
       <div id="autoQuand" class="quand"></div>
-      <button onclick="addAuto()">＋ Créer l'automatisation</button>
+      <button id="autoBtn" onclick="addAuto()">＋ Créer l'automatisation</button>
+      <button id="autoAnnule" onclick="annulerEdition()" style="display:none;margin-top:6px;
+        background:transparent;border:1px solid rgba(255,255,255,.18)">Annuler la modification</button>
     </div>
   </div></div>
 
@@ -845,13 +847,19 @@ function closeAuto(){ document.getElementById("autoModal").classList.remove("sho
 async function loadAuto(idNeuf){ const body=document.getElementById("autoBody");
   body.innerHTML='<div class="pitem">Chargement…</div>';
   try{ const d=await (await fetch(ORIGIN+"/agent/automations?key="+encodeURIComponent(KEY),{cache:"no-store"})).json();
-    const items=d.items||[];
+    const items=d.items||[]; AUTO_ITEMS = items;
     body.innerHTML = items.length ? items.map(it=>{
       const when=it.last_run? "il y a "+fmtAgo((Date.now()/1000)-it.last_run) : "jamais lancée";
       return '<div class="pitem" data-id="'+it.id+'"><div style="display:flex;align-items:center;gap:8px">'
         +'<span style="font-size:16px">'+(it.icon||"⚡")+'</span>'
-        +'<b style="color:var(--txt);font-size:13px;text-transform:none;letter-spacing:0">'+esc(it.titre)+'</b>'
-        +'<span style="margin-left:auto;color:var(--dim);font-size:11px">'+hhmm(it)+'</span></div>'
+        // ⚠️ Un titre long (« Donne moi toutes les news de Dbv technologie (le cour en
+        // euro) et de 2crsi ») passait sur deux lignes et poussait l'heure a la ligne.
+        // On le borne a une ligne ; le survol montre le titre entier.
+        +'<b title="'+esc(it.titre)+'" style="color:var(--txt);font-size:13px;'
+          +'text-transform:none;letter-spacing:0;white-space:nowrap;overflow:hidden;'
+          +'text-overflow:ellipsis;min-width:0;flex:1">'+esc(it.titre)+'</b>'
+        +'<span style="margin-left:auto;color:var(--dim);font-size:11px;white-space:nowrap">'
+          +hhmm(it)+'</span></div>'
         +'<div style="color:var(--dim);font-size:11.5px;margin:5px 0">'+esc(it.prompt).slice(0,110)+'</div>'
         +(it.prochaine? '<div style="color:var(--neon2);font-size:11.5px;margin:-1px 0 5px">⏱️ prochaine : '
             +esc(it.prochaine)+'</div>' : '')
@@ -860,6 +868,7 @@ async function loadAuto(idNeuf){ const body=document.getElementById("autoBody");
         +'<span style="color:var(--dim)">· '+when+'</span>'
         +'<span style="color:var(--dim)">· '+esc(joursTxt(it.days))+'</span>'
         +'<span style="margin-left:auto;display:flex;gap:8px">'
+        +'<a onclick="editAuto(\''+it.id+'\')" style="cursor:pointer;color:var(--neon)">✏️ modifier</a>'
         +'<a onclick="runAuto(\''+it.id+'\')" style="cursor:pointer;color:var(--neon2)">▶ tester</a>'
         +'<a onclick="toggleAuto(\''+it.id+'\','+(!it.active)+')" style="cursor:pointer;color:var(--dim)">'+(it.active?"pause":"activer")+'</a>'
         +'<a onclick="delAuto(\''+it.id+'\')" style="cursor:pointer;color:var(--dim)">✕</a></span></div>'
@@ -884,6 +893,34 @@ function toast(txt, ms){ const t=document.getElementById("toast"); if(!t) return
 // jour ». Les sept pastilles, toutes cochées au départ, comblent ce manque.
 const JOURS_L=["L","M","M","J","V","S","D"], JOURS_N=["lundi","mardi","mercredi","jeudi","vendredi","samedi","dimanche"];
 let AUTO_DAYS=[0,1,2,3,4,5,6];
+// ⚠️ Il fallait SUPPRIMER une automatisation et la recréer pour changer une heure —
+// en perdant son historique et ses résultats au passage. Le moteur savait pourtant la
+// modifier depuis toujours ; il manquait juste le chemin pour y arriver.
+let AUTO_EDIT = null, AUTO_ITEMS = [];
+
+function editAuto(id){
+  const it = (AUTO_ITEMS || []).find(x => x.id === id);
+  if(!it) return;
+  AUTO_EDIT = id;
+  document.getElementById("autoTitre").value = it.titre || "";
+  document.getElementById("autoPrompt").value = it.prompt || "";
+  document.getElementById("autoHour").value = it.hour ?? 8;
+  document.getElementById("autoMin").value = it.minute ?? 0;
+  AUTO_DAYS = Array.isArray(it.days) ? [...it.days] : [0,1,2,3,4,5,6];
+  renderDays(); apercuQuand();
+  document.getElementById("autoBtn").textContent = "✏️ Enregistrer les modifications";
+  document.getElementById("autoAnnule").style.display = "";
+  document.getElementById("autoTitre").scrollIntoView({behavior:"smooth", block:"center"});
+  document.getElementById("autoTitre").focus();
+}
+
+function annulerEdition(){
+  AUTO_EDIT = null;
+  document.getElementById("autoTitre").value = "";
+  document.getElementById("autoPrompt").value = "";
+  document.getElementById("autoBtn").textContent = "＋ Créer l'automatisation";
+  document.getElementById("autoAnnule").style.display = "none";
+}
 function renderDays(){ const z=document.getElementById("autoDays"); if(!z) return;
   z.innerHTML=JOURS_L.map((d,i)=>'<button type="button" class="'+(AUTO_DAYS.includes(i)?"on":"")
     +'" title="'+JOURS_N[i]+'" onclick="toggleDay('+i+')">'+d+'</button>').join("");
@@ -923,17 +960,26 @@ async function addAuto(){ const titre=document.getElementById("autoTitre").value
     hour=+document.getElementById("autoHour").value||0, minute=+document.getElementById("autoMin").value||0;
   if(!titre||!prompt){ alert("Donne un titre et ce que Nova doit faire."); return; }
   if(!AUTO_DAYS.length){ alert("Coche au moins un jour, sinon elle ne partira jamais."); return; }
+  const modif = AUTO_EDIT;
   let cree=null;
-  try{ cree=await (await fetch(ORIGIN+"/agent/automations",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({key:KEY,titre,prompt,hour,minute,days:AUTO_DAYS})})).json(); }
-  catch(e){ alert("Création impossible : "+e); return; }
-  document.getElementById("autoTitre").value=""; document.getElementById("autoPrompt").value="";
+  try{
+    const url = modif ? "/agent/automations/modifier" : "/agent/automations";
+    const corps = {key:KEY,titre,prompt,hour,minute,days:AUTO_DAYS};
+    if(modif) corps.id = modif;
+    const r = await fetch(ORIGIN+url,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(corps)});
+    if(!r.ok) throw new Error((await r.json()).detail || ("HTTP "+r.status));
+    cree = await r.json();
+  }
+  catch(e){ alert((modif?"Modification":"Création")+" impossible : "+e); return; }
+  annulerEdition();
   sndReceive();
   // ⚠️ « Je ne sais pas où elle apparaît » : la nouvelle ligne était ajoutée en haut de
   // la fenêtre, hors de vue, sans un mot. On remonte dessus, on la surligne, et on dit
   // quand elle partira.
   await loadAuto(cree && cree.id);
-  if(cree && cree.prochaine) toast("✅ « "+titre+" » créée — prochaine : "+cree.prochaine); }
+  if(cree && cree.prochaine)
+    toast("✅ « "+titre+" » "+(modif?"modifiée":"créée")+" — prochaine : "+cree.prochaine); }
 async function toggleAuto(id,active){ await fetch(ORIGIN+"/agent/automations/toggle",{method:"POST",
   headers:{"Content-Type":"application/json"},body:JSON.stringify({key:KEY,id,active})}); loadAuto(); }
 async function delAuto(id){ if(!confirm("Supprimer cette automatisation ?")) return;
