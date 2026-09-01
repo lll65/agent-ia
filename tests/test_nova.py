@@ -5082,6 +5082,10 @@ def test_reveil_mesure_et_accueil_honnete():
     # --- 2. Le reveil est MESURE, pas suppose --------------------------------
     R = importlib.import_module("agent.reveil")
     R._PASSAGES.clear()
+    # ⚠️ Il faut laisser au cron le temps de tirer AU MOINS UNE FOIS : le compteur vit
+    # dans le processus, un redemarrage le remet a zero. Accuser dix secondes apres un
+    # demarrage, c'est accuser a tort (verifie sur le diagnostic reel de Lohan).
+    R.DEMARRAGE = _t.time() - 3600
     e = R.etat()
     check("aucun passage → on le dit franchement", e["resume"].startswith("❌"), True)
     check("…avec quoi verifier", "cron-job.org" in e.get("solution", ""), True)
@@ -5505,6 +5509,94 @@ def test_rien_ne_bloque_et_le_cache_sert_vraiment():
     check("on n'attend plus les flux restants", "ex.shutdown(wait=False)" in act_src, True)
 
 
+def test_diagnostic_ne_ment_pas_et_modele_adapte():
+    """Ce que le diagnostic REEL de Lohan a revele — trois defauts, dont deux que
+    j'avais moi-meme introduits en ajoutant ces diagnostics.
+
+    1. « ✅ groq · 0.9 s · allam-2-7b » : un modele ARABOPHONE de 7 milliards de
+       parametres repondait a un utilisateur qui parle francais. L'auto-guerison
+       acceptait n'importe quel modele du compte des lors qu'il ne levait pas
+       d'erreur — et le RETENAIT DEFINITIVEMENT. Un rate-limit de 60 secondes sur
+       llama-3.3 condamnait donc la qualite pour le reste de la journee.
+    2. « ❌ AUCUN appel a /health » alors que l'instance etait « en ligne depuis
+       0 min ». Le compteur vit dans le processus : un redemarrage le remet a zero.
+       Le diagnostic accusait donc le cron dix secondes apres un demarrage, sans
+       qu'il ait eu la moindre occasion de tirer.
+    3. « prechauffage : arretee — la tache s'est terminee d'elle-meme » : c'est un
+       travail PONCTUEL, il DOIT se terminer. Fausse alerte.
+    """
+    import importlib, time as _t, asyncio as _a
+    C = importlib.import_module("llm.client")
+
+    # --- 1. Aucun modele inadapte ne peut etre choisi tout seul --------------
+    for mauvais in ("allam-2-7b", "whisper-large-v3", "llama-guard-4-12b",
+                    "text-embedding-3", "compound-beta"):
+        check(f"« {mauvais} » est ecarte",
+              any(k in mauvais for k in C._MODELES_INADAPTES), True)
+    for bon in ("llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it",
+                "openai/gpt-oss-120b", "qwen/qwen3-32b"):
+        check(f"« {bon} » reste utilisable",
+              any(k in bon for k in C._MODELES_INADAPTES), False)
+    # Les familles connues passent AVANT un modele inconnu.
+    ordre = sorted(["inconnu-x", "gemma2-9b-it", "llama-3.3-70b-versatile"], key=C._rang_modele)
+    check("les familles sures d'abord", ordre[0], "llama-3.3-70b-versatile")
+    check("…et l'inconnu en dernier", ordre[-1], "inconnu-x")
+
+    # --- 2. Un repli n'est plus DEFINITIF -----------------------------------
+    C._MODELES_OK.pop("groq", None)
+    C._retenir_modele("groq", "gemma2-9b-it")
+    check("le repli est retenu pour un temps", C._modele_memorise("groq"), "gemma2-9b-it")
+    C._MODELES_OK_TS["groq"] = _t.monotonic() - (C._REPLI_TTL + 1)
+    check("…puis oublie, pour redonner sa chance au prefere",
+          C._modele_memorise("groq"), "")
+    check("…et il est bien retire de la memoire", "groq" in C._MODELES_OK, False)
+
+    # --- 3. Le reveil n'accuse plus a tort juste apres un demarrage ----------
+    R = importlib.import_module("agent.reveil")
+    R._PASSAGES.clear()
+    R.DEMARRAGE = _t.time()
+    e = R.etat()
+    check("juste apres un demarrage, on patiente", e["resume"].startswith("⏳"), True)
+    check("…sans accuser le cron", "ne tire pas" in e["resume"], False)
+    R.DEMARRAGE = _t.time() - 3600
+    e = R.etat()
+    check("une heure plus tard sans le moindre appel, on accuse",
+          e["resume"].startswith("❌"), True)
+    R._PASSAGES.clear()
+
+    # --- 4. Une tache ponctuelle qui se termine n'est pas une anomalie -------
+    T = importlib.import_module("agent.taches")
+    T.ETAT.clear()
+
+    async def _rien():
+        return
+
+    async def _scenario():
+        T.lancer("préchauffage", _rien(), ponctuelle=True)
+        T.lancer("planificateur", _rien())          # une BOUCLE, elle, ne doit pas finir
+        await _a.sleep(0.05)
+        return T.resume("préchauffage"), T.etat("planificateur")["etat"]
+
+    vu, etat_boucle = _a.run(_scenario())
+    check("le prechauffage termine est un succes", vu.startswith("✅"), True)
+    check("…et n'est plus signale comme arrete", "arretee" in vu, False)
+    check("une BOUCLE qui s'arrete reste une anomalie", etat_boucle, "arretee")
+    T.ETAT.clear()
+
+    # --- 5. Un constat d'envoi ancien est DATE, il ne passe plus pour actuel --
+    AU = importlib.import_module("agent.automations")
+    check("un envoi recent", AU._il_y_a(_t.time() - 30), "à l'instant")
+    check("un envoi d'il y a 3 h est date", AU._il_y_a(_t.time() - 10800), "il y a 3 h")
+    check("un envoi d'il y a 3 jours aussi", AU._il_y_a(_t.time() - 300000), "il y a 3 j")
+    from pathlib import Path as _P
+    racine = _P(__file__).resolve().parents[1]
+    check("le diagnostic joint la date a l'issue",
+          '"quand": _il_y_a(i.get("last_run"))' in
+          (racine / "agent" / "automations.py").read_text(encoding="utf-8"), True)
+    check("…et l'interface l'affiche",
+          "e.quand ?" in (racine / "ui" / "nova.html").read_text(encoding="utf-8"), True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -5545,7 +5637,8 @@ if __name__ == "__main__":
                test_aucun_chiffre_financier_invente,
                test_telegram_notion_et_jargon,
                test_actu_d_une_entreprise_pas_les_titres_du_jour,
-               test_rien_ne_bloque_et_le_cache_sert_vraiment):
+               test_rien_ne_bloque_et_le_cache_sert_vraiment,
+               test_diagnostic_ne_ment_pas_et_modele_adapte):
         try:
             fn()
         except Exception as e:
