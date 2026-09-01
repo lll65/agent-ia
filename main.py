@@ -95,6 +95,22 @@ async def lifespan(app: FastAPI):
         from bots.discord_bot import run_discord_bot
         bot_tasks.append(lancer("bot Discord", run_discord_bot()))
 
+    # ⚠️ La PREMIÈRE question posée après un démarrage payait la découverte complète :
+    # liste des comptes Composio, catalogue d'actions, identité de chaque app — trois
+    # allers-retours réseau avant même de commencer à réfléchir. Sur une instance qui
+    # se rendort souvent, c'était à chaque fois. On les chauffe en fond : personne
+    # n'attend pendant ce temps.
+    async def _prechauffe():
+        try:
+            from api.agent import _connected_accounts
+            from agent.core import _off
+            comptes = await _off(_connected_accounts)
+            logger.info(f"[prechauffage] {len(comptes or [])} app(s) connectée(s) en cache.")
+        except Exception as e:
+            logger.info(f"[prechauffage] ignoré ({type(e).__name__}).")
+
+    bot_tasks.append(lancer("préchauffage", _prechauffe()))
+
     # Automatisations — Nova exécute seule les tâches planifiées (« pendant que tu dors »)
     from agent.automations import scheduler_loop
     bot_tasks.append(lancer("planificateur", scheduler_loop()))
@@ -219,7 +235,15 @@ def health():
     """Point de réveil pour le cron externe (cron-job.org) qui empêche Render
     de s'endormir — sinon les automatisations planifiées ne partent jamais.
     Volontairement public ET muet : il ne révèle rien (pas de version, pas de
-    liste d'outils), il dit juste que le serveur répond."""
+    liste d'outils), il dit juste que le serveur répond.
+
+    ⚠️ On COMPTE les passages. « Je ne sais pas si le cron est bien branché » ne
+    peut pas se répondre en lisant du code : soit les appels arrivent, soit non.
+    Sans cette trace, impossible de distinguer « le cron ne tire pas » de « Render
+    s'endort quand même » — deux causes opposées pour le même symptôme.
+    """
+    from agent.reveil import note_passage
+    note_passage()
     return {"status": "ok"}
 
 

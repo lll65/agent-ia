@@ -659,10 +659,13 @@ def _evenements_demandes(message: str) -> list:
     ex = _llm_json(
         "Extrais les événements d'agenda demandés. Il peut y en avoir PLUSIEURS dans "
         "une même phrase (« … et ensuite mets pour mercredi … ») : rends-les tous.\n"
-        'JSON STRICT : {"evenements":[{"titre":"…","debut":"AAAA-MM-JJTHH:MM",'
-        '"fin":"AAAA-MM-JJTHH:MM"}]}\n'
+        'JSON STRICT : {"evenements":[{"titre":"…","details":"…",'
+        '"debut":"AAAA-MM-JJTHH:MM","fin":"AAAA-MM-JJTHH:MM"}]}\n'
         "titre = 2 à 5 mots décrivant l'activité, sans verbe d'ajout, sans le mot "
         "« agenda », première lettre en majuscule (« Acheter du magret », « Chez Nico »).\n"
+        "details = ce que la personne a dit sur CET événement précis, en une phrase "
+        "propre. C'est ce qui ira dans la description — le titre reste court, mais "
+        "rien de ce qui a été demandé ne doit être perdu.\n"
         "debut/fin = date et heure ABSOLUES, résolues par rapport à MAINTENANT. "
         "Si l'heure de fin n'est pas dite, mets une heure après le début. "
         "Si seul un moment de la journée est donné : matin = 09:00, "
@@ -680,7 +683,8 @@ def _evenements_demandes(message: str) -> list:
         if not re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", fin):
             from datetime import datetime, timedelta
             fin = (datetime.fromisoformat(debut[:16]) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
-        sortie.append({"titre": titre, "debut": debut[:16], "fin": fin[:16]})
+        sortie.append({"titre": titre, "debut": debut[:16], "fin": fin[:16],
+                       "details": (e.get("details") or "").strip()[:400]})
     return sortie
 
 
@@ -738,6 +742,8 @@ def _resolve_app_action(message: str):
             args = {"calendar_id": "primary", "summary": e["titre"],
                     "start_datetime": e["debut"], "event_duration_hour": 1,
                     "event_duration_minutes": 0}
+            if e.get("details"):
+                args["description"] = e["details"]
             if len(evts) > 1:
                 args["_autres_evenements"] = evts[1:]     # créés à la suite (voir _tool)
             return "GOOGLECALENDAR_CREATE_EVENT", args
@@ -839,6 +845,12 @@ def _is_param_error(obs: str) -> bool:
     return ("400" in msg or "invalid" in msg or "bad request" in msg
             or "must be" in msg or "is required" in msg or "missing" in msg
             or "validation" in msg or "expected" in msg or "type" in msg
+            # ⚠️ « Parent id 'c0f3…' is neither a page nor a database » (Notion) n'etait
+            # reconnu par aucun motif : Nova abandonnait sans meme essayer de retrouver
+            # une vraie page parente. C'est pourtant l'erreur de parametre par
+            # excellence — l'identifiant existe, mais ne designe pas ce qu'il faut.
+            or "is neither" in msg or "not a valid" in msg or "does not exist" in msg
+            or "could not find" in msg or "no such" in msg
             # L'API nomme la bonne valeur : c'est corrigeable, et sans deviner.
             or bool(_suggestions_api(obs)))
 
@@ -1244,8 +1256,10 @@ def _format_app_result(message: str, action: str, obs: str, is_write: bool = Fal
     s'affichait donc en entier sur toutes les réponses d'app (agenda, Sheets, Notion…).
     """
     from llm.client import chat
+    from agent.chrono import mesure
     try:
-        brut = chat(_format_app_messages(message, action, obs, is_write), temperature=0.2)
+        with mesure("modele"):
+            brut = chat(_format_app_messages(message, action, obs, is_write), temperature=0.2)
     except Exception:
         return f"Voici les données réelles récupérées :\n\n{obs[:2000]}"
     propre = _prose_seule(brut)
@@ -1262,6 +1276,25 @@ def _format_app_result(message: str, action: str, obs: str, is_write: bool = Fal
     return propre or f"Voici les données réelles récupérées :\n\n{obs[:2000]}"
 
 
+# ⚠️ Nova a repondu « Je ne parviens pas a creer la page Notion avec la syntaxe
+# PARAMS ». PARAMS est le nom d'un marqueur de SON protocole interne : ca ne veut rien
+# dire pour Lohan, et surtout ca deguise un vrai echec en probleme de syntaxe. Le
+# filtre existant ne retirait que les LIGNES commencant par « PARAMS: » ; une mention
+# au fil d'une phrase passait.
+# On ne remplace QUE le mot du protocole, pas ce qui le precede : sinon
+# « avec la syntaxe PARAMS » devenait « avec la page le format d'appel interne ».
+_JARGON = re.compile(
+    r"\b((?:syntaxe|format|structure|commande|balise|marqueur)s?)\s+"
+    r"(?:PARAMS|ACTION|THOUGHT|FINAL|OBSERVATION)\b", re.I)
+_JARGON_NU = re.compile(r"\b(?:PARAMS|THOUGHT|OBSERVATION)\b")
+
+
+def _sans_jargon(t: str) -> str:
+    """Enleve le vocabulaire du protocole interne d'une reponse destinee a l'utilisateur."""
+    t = _JARGON.sub(lambda m: m.group(1) + " interne", t or "")
+    return _JARGON_NU.sub("l'appel interne", t)
+
+
 def _prose_seule(brut: str) -> str:
     """Ne garde que la prose : ni brouillon <think>, ni marqueurs du protocole ReAct.
 
@@ -1271,7 +1304,7 @@ def _prose_seule(brut: str) -> str:
     from agent.core import sans_raisonnement
     t = sans_raisonnement(brut or "")
     t = re.sub(r"^\s*(THOUGHT|FINAL|ACTION|PARAMS)\s*:\s*", "", t, flags=re.M | re.I)
-    return t.strip()
+    return _sans_jargon(t).strip()
 
 
 # ── GARDE-FOU : rien d'irréversible sans ton accord ──────────────────────────
@@ -1783,10 +1816,12 @@ def _tool(name_cmd: str, args: dict, slug: str = "") -> str:
     autres = (args or {}).pop("_autres_evenements", None) if isinstance(args, dict) else None
     obs = _tool_call(name_cmd, args, slug)
     for e in (autres or []):
-        suite = _tool_call(name_cmd, {"calendar_id": "primary", "summary": e["titre"],
-                                      "start_datetime": e["debut"],
-                                      "event_duration_hour": 1,
-                                      "event_duration_minutes": 0}, slug)
+        a = {"calendar_id": "primary", "summary": e["titre"],
+             "start_datetime": e["debut"], "event_duration_hour": 1,
+             "event_duration_minutes": 0}
+        if e.get("details"):
+            a["description"] = e["details"]
+        suite = _tool_call(name_cmd, a, slug)
         obs = str(obs) + "\n\n[ÉVÉNEMENT SUIVANT]\n" + str(suite)
     return obs
 
@@ -1794,6 +1829,12 @@ def _tool(name_cmd: str, args: dict, slug: str = "") -> str:
 def _tool_call(name_cmd: str, args: dict, slug: str) -> str:
     """Exécution + reprise automatique si l'identité en cache est périmée
     (cas typique : tu viens juste de connecter l'app)."""
+    from agent.chrono import mesure
+    with mesure("composio"):
+        return _tool_call_brut(name_cmd, args, slug)
+
+
+def _tool_call_brut(name_cmd: str, args: dict, slug: str) -> str:
     import json as _json
     from plugins import get_loader
     from agent.self_heal import safe_tool_call
@@ -3628,6 +3669,9 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
     message = (q or "").strip()
     # C'est le chat web : une confirmation armée ici ne peut être donnée qu'ici.
     _CANAL["actuel"] = "web"
+    # « Ça met 40 s » : on mesure au lieu de supposer (voir /agent/diag/vitesse).
+    from agent.chrono import demarre as _chrono_demarre, termine as _chrono_termine
+    _chrono_demarre(message)
 
     async def gen():
         def sse(obj):
@@ -3847,6 +3891,13 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
         except Exception as e:
             yield sse({"type": "answer", "text": f"❌ Erreur : {type(e).__name__}: {str(e)[:300]}"})
             yield sse({"type": "done"})
+        finally:
+            # Quelle que soit la branche prise — et il y en a huit — la mesure se
+            # referme ici. C'est la seule façon de ne pas en oublier une.
+            try:
+                _chrono_termine()
+            except Exception:
+                pass
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -4329,6 +4380,25 @@ async def diag_automatisations(key: str = ""):
     _check_key(key)
     from agent.automations import etat_planificateur
     return etat_planificateur()
+
+
+@router.get("/diag/vitesse")
+async def diag_vitesse(key: str = ""):
+    """Où passent les secondes ? Chiffres par étape, pas des hypothèses."""
+    _check_key(key)
+    from agent.chrono import etat
+    return etat()
+
+
+@router.get("/diag/reveil")
+async def diag_reveil(key: str = ""):
+    """Le cron externe empêche-t-il VRAIMENT Render de s'endormir ?"""
+    _check_key(key)
+    from agent.reveil import etat
+    from agent.taches import etat as _taches
+    d = dict(etat())
+    d["taches_de_fond"] = _taches()
+    return d
 
 
 @router.get("/diag/sessions")
@@ -5017,7 +5087,11 @@ async def chat(req: ChatRequest, request: Request):
     agent_id = req.agent_id or "default"
 
     if agent_id == "default":
-        agent_config = {**DEFAULT_AGENT, "tools": list(get_loader().list_all().keys())}
+        # Même filtre que le chat de l'interface : cette route est conversationnelle,
+        # et le contenu des pages web y arrive comme partout ailleurs.
+        from agent.core import outils_pour_conversation
+        agent_config = {**DEFAULT_AGENT,
+                        "tools": outils_pour_conversation(get_loader().list_all().keys())}
     else:
         from orchestrator import get_registry
         agent_config = get_registry().get(agent_id)

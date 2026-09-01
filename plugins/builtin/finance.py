@@ -67,6 +67,43 @@ def _fetch_ticker_http(ticker: str, period: str = "1mo") -> dict:
 
 
 
+def _rsi_liste(closes, period=14):
+    """RSI en Python pur, sur une simple liste de cloturees.
+
+    ⚠️ Quand yfinance echoue — Yahoo repond 401 aux adresses de centres de donnees
+    comme Render, c'est TRES courant — le repli HTTP rendait quand meme les
+    cotations, mais on ecrivait « RSI 50, volatilite 0.00 %/j, Sharpe 0.00 » en dur.
+    Des chiffres INVENTES, presentes exactement comme des vrais, sur les
+    investissements de Lohan. Un titre qui perdait 2 EUR par jour s'affichait
+    « ✅ Neutre ». On calcule donc a partir de ce qu'on a, et on dit « N/D » quand
+    c'est trop court — jamais une valeur plausible sortie de nulle part.
+    """
+    if not closes or len(closes) < period + 1:
+        return None
+    gains, pertes = [], []
+    for a, b in zip(closes[-(period + 1):], closes[-period:]):
+        d = b - a
+        gains.append(max(0.0, d))
+        pertes.append(max(0.0, -d))
+    g = sum(gains) / period
+    pe = sum(pertes) / period
+    if pe == 0:
+        return 100.0 if g > 0 else None
+    return round(100 - 100 / (1 + g / pe), 1)
+
+
+def _volatilite_liste(closes):
+    """Ecart-type des variations quotidiennes, en %. None si indeterminable."""
+    if not closes or len(closes) < 3:
+        return None
+    var = [(b - a) / a for a, b in zip(closes, closes[1:]) if a]
+    if len(var) < 2:
+        return None
+    moy = sum(var) / len(var)
+    ecart = (sum((v - moy) ** 2 for v in var) / (len(var) - 1)) ** 0.5
+    return round(ecart * 100, 2)
+
+
 def _rsi(close, period=14):
     import pandas as pd
     delta = close.diff()
@@ -841,9 +878,17 @@ class StockAnalysisPlugin(Plugin):
             prev  = float(close.iloc[-2]) if len(close) > 1 else price
             chg   = (price - prev) / prev * 100
 
-            h52  = float(close.tail(252).max()) if len(close) >= 30 else float(close.max())
-            l52  = float(close.tail(252).min()) if len(close) >= 30 else float(close.min())
+            # ⚠️ On affichait « Plus haut / plus bas 52 semaines » alors que la periode
+            # par defaut est SIX MOIS : tail(252) ne coupait rien, et les extremes des six
+            # derniers mois sortaient sous une etiquette « 52s ». Un plus-bas vieux de neuf
+            # mois disparaissait, et la « position 52s » affichait 100 % alors que le titre
+            # etait en fait 39 % au-dessus de son vrai plancher. Sur de l'argent, c'est un
+            # chiffre faux servi comme vrai. On dit donc la fenetre REELLEMENT couverte.
+            fenetre = close.tail(252)
+            h52, l52 = float(fenetre.max()), float(fenetre.min())
             pos52 = (price - l52) / (h52 - l52) * 100 if h52 != l52 else 50
+            _mois = max(1, round(len(fenetre) / 21))
+            label52 = "52s" if len(fenetre) >= 200 else f"{_mois} mois"
             perf_1w = (price / float(close.iloc[-5]) - 1) * 100 if len(close) >= 5 else 0
             perf_1m = (price / float(close.iloc[-21]) - 1) * 100 if len(close) >= 21 else 0
 
@@ -966,8 +1011,8 @@ class StockAnalysisPlugin(Plugin):
             # Stats table 2 colonnes
             lines.append("| Métrique | Valeur | Métrique | Valeur |")
             lines.append("|---|---|---|---|")
-            lines.append(f"| Plus haut 52s | {h52:,.2f} | Plus bas 52s | {l52:,.2f} |")
-            lines.append(f"| Position 52s | {pos52:.0f}% | Volatilité ATR | {atr_pct:.1f}%/j |")
+            lines.append(f"| Plus haut {label52} | {h52:,.2f} | Plus bas {label52} | {l52:,.2f} |")
+            lines.append(f"| Position {label52} | {pos52:.0f}% | Volatilité ATR | {atr_pct:.1f}%/j |")
             lines.append(f"| Perf 1 semaine | {perf_1w:+.2f}% | Perf 1 mois | {perf_1m:+.2f}% |")
             if cap_fmt:
                 pe_str = f"{pe:.1f}" if pe else "—"
@@ -1018,7 +1063,7 @@ class StockAnalysisPlugin(Plugin):
             if sma200 and sma200 < price:
                 lines.append(f"| 🟡 SMA200 (support) | {sma200:.4f} | {(sma200/price-1)*100:+.2f}% |")
             lines.append(f"| 🟢 Support Bollinger | {bb_lo:.4f} | {(bb_lo/price-1)*100:+.2f}% |")
-            lines.append(f"| 🔵 Plus bas 52 semaines | {l52:.4f} | {(l52/price-1)*100:+.2f}% |")
+            lines.append(f"| 🔵 Plus bas {label52} | {l52:.4f} | {(l52/price-1)*100:+.2f}% |")
             lines.append("")
 
             # Recommandation
@@ -1221,8 +1266,16 @@ class MultiStockComparePlugin(Plugin):
                     if d and d.get("perf") is not None:
                         ret    = d["perf"]
                         icon   = "🟢" if ret > 5 else ("🔴" if ret < -5 else "⚪")
-                        rows.append({"ticker": sym, "ret": ret, "vol": 0,
-                                     "rsi": 50, "sharpe": 0, "icon": icon,
+                        # ⚠️ C'etait « vol: 0, rsi: 50, sharpe: 0 » EN DUR — des chiffres
+                        # inventes servis comme de vrais. Le repli rend pourtant les
+                        # cotations : on calcule, et on avoue « N/D » si c'est trop court.
+                        closes = d.get("closes") or []
+                        vol = _volatilite_liste(closes)
+                        rv = _rsi_liste(closes)
+                        sharpe = (ret / (vol * (len(closes) ** 0.5))
+                                  if vol and vol > 0 and closes else None)
+                        rows.append({"ticker": sym, "ret": ret, "vol": vol,
+                                     "rsi": rv, "sharpe": sharpe, "icon": icon,
                                      "http": True})
                     else:
                         rows.append({"ticker": sym, "error": True})
@@ -1238,18 +1291,38 @@ class MultiStockComparePlugin(Plugin):
         out.append("| # | Ticker | Retour | Volatilité | RSI | Sharpe | Signal |")
         out.append("|---|---|---|---|---|---|---|")
 
+        # ⚠️ « ✅ Neutre » etait affiche meme quand le RSI valait 50 parce qu'on l'avait
+        # invente. Un indicateur qu'on n'a pas s'ecrit « N/D » — pas une valeur au milieu
+        # de la fourchette, qui se lit comme une mesure rassurante.
+        def _n(v, fmt, suffixe=""):
+            return "N/D" if v is None else (format(v, fmt) + suffixe)
+
+        degrade = False
         for i, r in enumerate(valid, 1):
-            import pandas as pd
-            rsi_sig = "🔥 Survendu" if r["rsi"] < 30 else ("❄️ Suracheté" if r["rsi"] > 70 else "✅ Neutre")
+            rsi = r.get("rsi")
+            rsi_sig = ("N/D" if rsi is None else
+                       "🔥 Survendu" if rsi < 30 else
+                       "❄️ Suracheté" if rsi > 70 else "✅ Neutre")
+            marque = ""
+            if r.get("http"):
+                degrade = True
+                marque = " ⚠️"
             out.append(
-                f"| {i} | **{r['ticker']}** | {r['icon']} {r['ret']:+.2f}% "
-                f"| {r['vol']:.2f}%/j | {r['rsi']:.0f} | {r['sharpe']:.2f} | {rsi_sig} |"
+                f"| {i} | **{r['ticker']}**{marque} | {r['icon']} {r['ret']:+.2f}% "
+                f"| {_n(r.get('vol'), '.2f', '%/j')} | {_n(rsi, '.0f')} "
+                f"| {_n(r.get('sharpe'), '.2f')} | {rsi_sig} |"
             )
         for r in rows:
             if "error" in r:
                 out.append(f"| — | ❌ {r['ticker']} | — | — | — | — | Données indisponibles |")
 
         out.append("")
+        if degrade:
+            out.append("⚠️ Les lignes marquées viennent d'une source de secours "
+                       "(la source principale n'a pas répondu) : les indicateurs y sont "
+                       "calculés sur moins de données, et « N/D » signifie qu'ils n'ont "
+                       "pas pu l'être du tout.")
+            out.append("")
         out.append(f"**🏆 Meilleure performance :** {valid[0]['ticker']} ({valid[0]['ret']:+.2f}%)")
         out.append(f"**📉 Moins bonne :** {valid[-1]['ticker']} ({valid[-1]['ret']:+.2f}%)")
         return "\n".join(out)

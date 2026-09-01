@@ -5051,6 +5051,358 @@ def test_agenda_dit_la_vraie_date_et_ne_fusionne_plus():
         A._llm_json = vrai_json
 
 
+def test_reveil_mesure_et_accueil_honnete():
+    """« Le bot m'annonce des alertes PEA que je n'ai pas activees » et « je ne sais
+    pas si le cron est bien branche ».
+
+    1. Le message d'accueil affirmait « Ce chat recevra les alertes PEA automatiques »
+       a tout le monde, alors que la veille PEA est DESACTIVEE par defaut. Lohan a cru
+       avoir une surveillance qu'il n'avait pas demandee — et qui n'existait pas.
+    2. « J'ai branche le cron » n'est pas une preuve : il peut viser la mauvaise URL,
+       ou avoir ete desactive automatiquement apres des echecs (ce qui arrive quand il
+       a tourne pendant que /health n'existait pas encore et renvoyait 404). On compte
+       donc les passages reels.
+    """
+    import importlib, time as _t
+    from pathlib import Path as _P
+    racine = _P(__file__).resolve().parents[1]
+
+    # --- 1. L'accueil ne promet que ce qui tourne ---------------------------
+    tg = (racine / "bots" / "telegram_bot.py").read_text(encoding="utf-8")
+    accueil = tg.split("async def start(", 1)[1].split("async def watch_cmd(", 1)[0]
+    check("plus de promesse d'alertes PEA inconditionnelle",
+          "🔔 Ce chat recevra" in accueil, False)
+    check("l'accueil regarde ce qui est reellement actif",
+          'getattr(config, "WATCHER_ENABLED", False)' in tg, True)
+    check("…et dit ce qui est eteint", 'eteints' in tg, True)
+    from config import config as _cfg
+    check("la veille PEA est bien eteinte par defaut",
+          getattr(_cfg, "WATCHER_ENABLED", False), False)
+
+    # --- 2. Le reveil est MESURE, pas suppose --------------------------------
+    R = importlib.import_module("agent.reveil")
+    R._PASSAGES.clear()
+    e = R.etat()
+    check("aucun passage → on le dit franchement", e["resume"].startswith("❌"), True)
+    check("…avec quoi verifier", "cron-job.org" in e.get("solution", ""), True)
+    check("…et le compteur est a zero", e["passages_derniere_heure"], 0)
+
+    # Un cron qui tire au bon rythme : verdict vert.
+    R._PASSAGES.clear()
+    R.DEMARRAGE = _t.time() - 7200                      # en ligne depuis 2 h
+    maintenant = _t.time()
+    for i in range(12, 0, -1):
+        R._PASSAGES.append(maintenant - i * 600)        # toutes les 10 min
+    e = R.etat()
+    check("un cron regulier est reconnu", e["resume"].startswith("✅"), True)
+    check("l'intervalle observe est juste", e["intervalle_moyen_min"], 10.0)
+
+    # Un cron qui a laisse un TROU assez grand pour que Render s'endorme.
+    R._PASSAGES.clear()
+    for t in (maintenant - 3000, maintenant - 1800, maintenant - 120):
+        R._PASSAGES.append(t)                            # trou de 20 min
+    e = R.etat()
+    check("un trou trop grand est signale", e["resume"].startswith("⚠️"), True)
+    check("…et chiffre", e["plus_grand_trou_min"] >= 14, True)
+
+    # Le cron tire, mais l'instance vient quand meme de redemarrer : elle a dormi.
+    R._PASSAGES.clear()
+    R.DEMARRAGE = _t.time() - 120
+    for i in range(8, 0, -1):
+        R._PASSAGES.append(maintenant - i * 300)
+    e = R.etat()
+    check("un redemarrage malgre le cron est signale", "redémarré" in e["resume"], True)
+    check("…avec la piste du quota", "750" in e.get("solution", ""), True)
+
+    # --- 3. /health compte VRAIMENT les passages ----------------------------
+    m = (racine / "main.py").read_text(encoding="utf-8")
+    check("/health note son passage", "note_passage()" in m, True)
+    R._PASSAGES.clear()
+    R.note_passage()
+    check("le compteur monte", R.etat()["passages_derniere_heure"], 1)
+
+    # --- 4. Le travail de nuit peut durer -----------------------------------
+    AC = importlib.import_module("agent.core")
+    check("le fond dispose de plus d'un quart d'heure", AC.AGENT_TIMEOUT_FOND > 900, True)
+    check("…et cherche plus large", AC.MAX_RECHERCHES_FOND >= 10, True)
+    src = (racine / "agent" / "core.py").read_text(encoding="utf-8")
+    check("un long travail sans reveil est signale dans les journaux",
+          "_avertit_si_pas_de_reveil" in src, True)
+
+    # --- 5. Aucun bot ne se donne les outils dangereux -----------------------
+    from agent.core import outils_pour_conversation, OUTILS_SENSIBLES
+    from plugins import get_loader
+    permis = outils_pour_conversation(get_loader().list_all().keys())
+    for outil in OUTILS_SENSIBLES:
+        check(f"{outil} hors des conversations", outil in permis, False)
+    for f in ("bots/telegram_bot.py", "bots/discord_bot.py", "api/agent.py"):
+        t = (racine / f).read_text(encoding="utf-8")
+        check(f"{f} ne prend plus tous les outils en bloc",
+              '"tools": list(get_loader().list_all().keys())' in t, False)
+    R._PASSAGES.clear()
+
+
+def test_le_plus_rapide_repond_en_premier():
+    """« C'est lent partout, meme pour dire bonjour. »
+
+    La chaine mettait en tete « celui qui a REPONDU en dernier ». C'est bien pour
+    eviter un fournisseur en panne, mais ca ne dit rien de sa VITESSE : des qu'un
+    fournisseur lent repondait une fois, il gardait la tete indefiniment et CHAQUE
+    message payait son delai. Un « salut » attendait Gemini pendant que Groq, a
+    0,8 s, etait relegue en deuxieme.
+    """
+    import importlib
+    C = importlib.import_module("llm.client")
+    avant = (dict(C._LATENCE), C._DERNIER_OK["nom"], C.PREFERENCE.get("fournisseur", ""),
+             C.config.GROQ_API_KEY, C.config.GEMINI_API_KEY, C.config.MISTRAL_API_KEY)
+    try:
+        C._LATENCE.clear()
+        C._DERNIER_OK["nom"] = ""
+        C.PREFERENCE["fournisseur"] = ""
+        C.config.GROQ_API_KEY, C.config.GEMINI_API_KEY, C.config.MISTRAL_API_KEY = "g", "e", "m"
+
+        def tete():
+            return [n for n, _, _ in C._providers_disponibles("equilibre")][0]
+
+        # Sans aucune mesure : l'ordre theorique s'applique, comme avant.
+        check("sans mesure, l'ordre habituel", tete(), "groq")
+
+        # Gemini a repondu en dernier mais met 12 s : il ne doit PAS garder la tete
+        # une fois qu'on sait que Groq repond en 0,8 s.
+        C._DERNIER_OK["nom"] = "gemini"
+        C._note_latence("gemini", 12.0)
+        check("un lent qui vient de repondre prend la tete faute de mieux", tete(), "gemini")
+        for _ in range(3):
+            C._note_latence("groq", 0.8)
+        check("…mais le rapide la reprend des qu'on le mesure", tete(), "groq")
+
+        # Un pic isole ne doit pas faire tomber un fournisseur rapide : on prend la
+        # mediane, pas la derniere valeur.
+        C._note_latence("groq", 30.0)
+        check("un pic isole ne fausse pas le choix", tete(), "groq")
+        check("…la mediane reste basse", C.rapidite("groq") < 2, True)
+
+        # Un fournisseur en panne ne remonte pas, meme s'il est le plus rapide.
+        C._note_latence("mistral", 0.2)
+        C._marque_fournisseur_hs("mistral", RuntimeError("401 invalid api key"))
+        check("un fournisseur en panne ne prend pas la tete", tete() == "mistral", False)
+        C._FOURNISSEURS_KO.pop("mistral", None)
+
+        # Le choix explicite de l'utilisateur reste PRIORITAIRE sur la vitesse.
+        C.PREFERENCE["fournisseur"] = "gemini"
+        check("ton choix passe avant la vitesse", tete(), "gemini")
+        C.PREFERENCE["fournisseur"] = ""
+
+        # Et la vitesse observee est visible dans le diagnostic.
+        etat = C.etat_fournisseurs()
+        vus = {e["nom"]: e for e in etat} if isinstance(etat, list) else {}
+        if "groq" in vus:
+            check("la vitesse mesuree est exposee", vus["groq"].get("vitesse_s") is not None, True)
+    finally:
+        C._LATENCE.clear()
+        C._LATENCE.update(avant[0])
+        C._DERNIER_OK["nom"] = avant[1]
+        C.PREFERENCE["fournisseur"] = avant[2]
+        (C.config.GROQ_API_KEY, C.config.GEMINI_API_KEY, C.config.MISTRAL_API_KEY) = avant[3:]
+
+    # Le chronometre dit OU passent les secondes, au lieu de laisser supposer.
+    CH = importlib.import_module("agent.chrono")
+    CH._HISTORIQUE.clear()
+    check("sans mesure, il le dit", "Aucune demande" in CH.etat()["resume"], True)
+    CH.demarre("mes dispos de la semaine")
+    CH._COURANT["_t0"] -= 12          # la demande a bien dure 12 s en tout
+    CH.ajoute("composio", 3.0)
+    CH.ajoute("modele", 9.0)
+    fin = CH.termine()
+    check("le total est mesure", fin["total_s"] >= 0, True)
+    check("chaque etape est chiffree", fin["etapes"]["modele"]["s"], 9.0)
+    e = CH.etat()
+    check("le coupable est designe", "modèles" in e["resume"], True)
+    check("…avec quoi faire", "solution" in e, True)
+    # Un temps qu'aucune etape ne couvre est attribue au demarrage a froid, pas noye.
+    CH._HISTORIQUE.clear()
+    CH.demarre("x")
+    CH._COURANT["_t0"] -= 40                     # 40 s passees hors de toute etape
+    CH.ajoute("modele", 1.0)
+    fin = CH.termine()
+    check("le temps non explique est isole", fin["non_mesure_s"] >= 38, True)
+    check("…et attribue au reveil de Render",
+          "Render" in CH.etat().get("solution", ""), True)
+    CH._HISTORIQUE.clear()
+
+    # Le prechauffage evite de payer la decouverte a la premiere question.
+    from pathlib import Path as _P
+    m = (_P(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
+    check("les apps connectees sont chauffees au demarrage",
+          'lancer("préchauffage"' in m, True)
+
+
+def test_aucun_chiffre_financier_invente():
+    """AUDIT — deux defauts CRITIQUES : des chiffres faux servis comme vrais, sur de
+    l'argent reel.
+
+    1. « Plus haut / plus bas 52 semaines » etait calcule sur SIX MOIS : la periode par
+       defaut d'analyze_stock est 6mo, donc tail(252) ne coupait rien. Un plus-bas
+       vieux de neuf mois disparaissait, et la « position 52s » affichait 100 % pour un
+       titre en realite 39 % au-dessus de son vrai plancher.
+    2. Quand yfinance echoue — Yahoo repond 401 aux adresses de centres de donnees
+       comme Render, c'est TRES courant — compare_stocks ecrivait « RSI 50,
+       volatilite 0.00 %/j, Sharpe 0.00 » EN DUR. Un titre qui perdait 2 EUR par jour
+       s'affichait donc « ✅ Neutre ».
+    """
+    import importlib
+    F = importlib.import_module("plugins.builtin.finance")
+
+    # --- 1. Les indicateurs de secours sont CALCULES, plus inventes ----------
+    chute = [100 - i * 2 for i in range(60)]
+    montee = [100 + i * 2 for i in range(60)]
+    calme = [100 + (0.1 if i % 2 else -0.1) for i in range(60)]
+    check("un titre qui chute n'est plus « neutre »", F._rsi_liste(chute) < 30, True)
+    check("un titre qui monte est reconnu suracheté", F._rsi_liste(montee) > 70, True)
+    check("la volatilite reelle n'est plus zero", F._volatilite_liste(chute) > 0, True)
+    check("un titre calme a bien une volatilite faible", F._volatilite_liste(calme) < 1, True)
+
+    # --- 2. Ce qu'on ne peut PAS calculer s'ecrit « N/D », jamais 50 ---------
+    check("serie trop courte → RSI inconnu", F._rsi_liste([1, 2, 3]), None)
+    check("serie trop courte → volatilite inconnue", F._volatilite_liste([1]), None)
+    check("aucune donnee → rien d'invente", F._rsi_liste([]), None)
+
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parents[1] / "plugins" / "builtin" / "finance.py").read_text(
+        encoding="utf-8")
+    check("plus de RSI 50 en dur", '"rsi": 50' in src, False)
+    check("plus de volatilite 0 en dur", '"vol": 0,' in src, False)
+    check("le tableau sait afficher N/D", 'return "N/D"' in src, True)
+    check("et signale les lignes de secours", "source de secours" in src, True)
+
+    # --- 3. L'etiquette « 52s » ne ment plus ---------------------------------
+    check("l'etiquette suit la fenetre reellement couverte",
+          'label52 = "52s" if len(fenetre) >= 200' in src, True)
+    check("plus d'etiquette 52s codee en dur dans le tableau",
+          "| Plus haut 52s |" in src, False)
+    check("ni dans les niveaux cles", "🔵 Plus bas 52 semaines" in src, False)
+    # Six mois de cotations ne peuvent pas s'appeler « 52 semaines ».
+    for n, attendu in ((126, "6 mois"), (63, "3 mois"), (252, "52s")):
+        mois = max(1, round(n / 21))
+        label = "52s" if n >= 200 else f"{mois} mois"
+        check(f"{n} seances → « {attendu} »", label, attendu)
+
+
+def test_telegram_notion_et_jargon():
+    """Trois defauts vus dans les conversations de Lohan.
+
+    1. « Envoie-moi salut sur Telegram » → « Je n'ai pas d'integration Telegram
+       disponible », suivi d'un tutoriel Make/Zapier. Nova affirmait ne pas savoir
+       faire une chose qu'elle fait tous les jours : c'est par ce bot qu'elle pousse
+       les resultats d'automatisation. L'outil manquait a son catalogue.
+    2. « Parent id 'c0f3…' is neither a page nor a database » : Nova abandonnait sans
+       meme essayer de retrouver une vraie page parente, parce que cette erreur
+       n'etait reconnue par aucun motif comme une erreur de PARAMETRE.
+    3. « Je ne parviens pas a creer la page Notion avec la syntaxe PARAMS » : PARAMS
+       est un marqueur de son protocole INTERNE. Ca ne veut rien dire pour Lohan, et
+       ca deguise un vrai echec en probleme de syntaxe.
+    """
+    import importlib
+    from plugins import get_loader
+    from agent.core import outils_pour_conversation
+
+    # --- 1. L'outil Telegram existe et reste reserve au proprietaire ---------
+    outils = get_loader().list_all()
+    check("l'outil Telegram existe", "envoyer_telegram" in outils, True)
+    check("…et le chat peut s'en servir",
+          "envoyer_telegram" in outils_pour_conversation(outils.keys()), True)
+    T = importlib.import_module("plugins.builtin.telegram_tool")
+    tp = importlib.import_module("bots.telegram_push")
+    vrais = (tp.proprietaire, tp.send_message)
+    try:
+        # Sans destinataire connu : on DIT quoi faire, on ne pretend pas avoir envoye.
+        tp.proprietaire = lambda canal="telegram": ""
+        r = T.TelegramPlugin().run(message="salut")
+        check("sans destinataire, c'est un echec explicite", r.startswith("[ERREUR]"), True)
+        check("…et il explique quoi faire", "/start" in r or "TELEGRAM_TOKEN" in r, True)
+        # Avec destinataire : ca part.
+        envoyes = []
+        tp.proprietaire = lambda canal="telegram": "111"
+        tp.send_message = lambda t, chat_id=None: (envoyes.append(t), True)[1]
+        check("avec destinataire, le message part",
+              T.TelegramPlugin().run(message="salut").startswith("✅"), True)
+        check("…avec le bon texte", envoyes, ["salut"])
+        # Refus de Telegram : on ne maquille pas en succes.
+        tp.send_message = lambda t, chat_id=None: False
+        check("un refus reste un echec",
+              T.TelegramPlugin().run(message="salut").startswith("[ERREUR]"), True)
+        # Message vide : rien ne part.
+        check("un message vide ne part pas",
+              T.TelegramPlugin().run(message="  ").startswith("[ERREUR]"), True)
+    finally:
+        tp.proprietaire, tp.send_message = vrais
+
+    # --- 2. L'erreur de parent Notion est reconnue comme corrigeable ---------
+    A = importlib.import_module("api.agent")
+    notion = ('{"successful": false, "error": "Parent id \'c0f3cb07\' is neither a '
+              'page nor a database"}')
+    check("l'erreur de parent est corrigeable", A._is_param_error(notion), True)
+    for msg in ('{"successful": false, "error": "could not find page abc"}',
+                '{"successful": false, "error": "database xyz does not exist"}'):
+        check("…comme les erreurs de cible voisines", A._is_param_error(msg), True)
+    # Un refus d'ACCES n'est PAS une erreur de parametre : relancer n'y changerait rien.
+    check("un 403 n'est pas relance",
+          A._is_param_error('{"successful": false, "error": "403 forbidden"}'), False)
+
+    # --- 3. Le jargon interne n'atteint plus l'ecran ------------------------
+    check("« syntaxe PARAMS » disparait",
+          "PARAMS" in A._prose_seule("Impossible avec la syntaxe PARAMS."), False)
+    check("…et la phrase reste lisible",
+          A._prose_seule("Impossible avec la syntaxe PARAMS."),
+          "Impossible avec la syntaxe interne.")
+    check("« le format ACTION » aussi",
+          A._prose_seule("Le format ACTION est invalide."), "Le format interne est invalide.")
+    check("un PARAMS nu aussi", "PARAMS" in A._prose_seule("PARAMS manquant."), False)
+    check("une reponse normale n'est pas abimee",
+          A._prose_seule("Voici tes trois rendez-vous de demain."),
+          "Voici tes trois rendez-vous de demain.")
+    # On ne casse pas un texte qui parle legitimement de parametres.
+    check("le mot « paramètres » en francais est intact",
+          A._prose_seule("Vérifie les paramètres de ton compte."),
+          "Vérifie les paramètres de ton compte.")
+
+
+def test_actu_d_une_entreprise_pas_les_titres_du_jour():
+    """L'automatisation bourse de Lohan renvoyait des tests d'imprimantes 3D.
+
+    Sa demande : « resume du cours de 2CRSI et DBV Technologies … et un resume de
+    leur analyse, actualite et du forum ». Le mot « actualite » suffisait a basculer
+    en ACTUALITE GENERALE — le fil des medias — alors que la demande nommait deux
+    entreprises. Nova a repondu « Je n'ai pas trouve d'informations sur 2CRSI […] les
+    articles retournes concernent uniquement des tests tech grand public ».
+    """
+    from agent.core import veut_actualite, entite_nommee
+
+    # Une demande qui NOMME une entreprise veut l'actualite DE CETTE entreprise.
+    for q in ("resume l'actualite de 2CRSI",
+              "actualite de DBV Technologies",
+              "quoi de neuf sur AAPL ?",
+              "resume du cours de 2crsi et de leur actualite",
+              "les dernieres news du CAC40"):
+        check(f"« {q[:38]} » n'est pas de l'actu generale", veut_actualite(q), False)
+
+    # Une vraie demande d'actualite generale continue de marcher.
+    for q in ("actu du jour", "quoi de neuf ?", "les news tech",
+              "quoi de neuf en bourse", "resume-moi l'actualite"):
+        check(f"« {q[:38]} » reste de l'actu generale", veut_actualite(q), True)
+
+    # La detection d'entite ne se declenche pas sur des sigles courants du quotidien.
+    for q in ("mon PEA", "envoie un SMS", "ouvre le PDF", "prends RDV"):
+        check(f"« {q} » n'est pas une entreprise", entite_nommee(q), False)
+    for q in ("2CRSI", "MC.PA", "DBV Technologies", "CAC40"):
+        check(f"« {q} » est bien un sujet nomme", entite_nommee(q), True)
+
+    # Et « maintenant » seul ne bascule toujours pas quand un sujet est nomme
+    # (defaut corrige precedemment — on verifie qu'il ne revient pas).
+    check("« acheter 2CRSI maintenant » n'est pas de l'actu",
+          veut_actualite("tu penses quoi d'acheter 2CRSI maintenant ?"), False)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -5085,7 +5437,12 @@ if __name__ == "__main__":
                test_conversations_partagees_entre_appareils,
                test_une_tache_de_fond_ne_meurt_plus_en_silence,
                test_un_accord_ne_declenche_que_ce_qu_il_confirme,
-               test_agenda_dit_la_vraie_date_et_ne_fusionne_plus):
+               test_agenda_dit_la_vraie_date_et_ne_fusionne_plus,
+               test_reveil_mesure_et_accueil_honnete,
+               test_le_plus_rapide_repond_en_premier,
+               test_aucun_chiffre_financier_invente,
+               test_telegram_notion_et_jargon,
+               test_actu_d_une_entreprise_pas_les_titres_du_jour):
         try:
             fn()
         except Exception as e:

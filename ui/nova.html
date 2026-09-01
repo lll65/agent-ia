@@ -1686,7 +1686,32 @@ async function diagReste(){
     return h + "<br><span style='opacity:.55;font-size:12px'>"+txt(c.conversations)
       +" conversation(s) · "+txt(c.ou)+"</span>";
   });
-  return mem + "<br><br>" + conv + "<br><br>" + auto;
+  // ⚠️ « Je ne sais pas si le cron est bien branché » ne se répond qu'en comptant les
+  // passages réels : soit ils arrivent, soit non.
+  const rev = await diagBloc("⏰ Réveil de Render", "/agent/diag/reveil", r => {
+    let h = txt(r.resume);
+    if(r.solution) h += "<br><span style='opacity:.75;font-size:13px'>👉 "+txt(r.solution)+"</span>";
+    h += "<br><span style='opacity:.55;font-size:12px'>"+txt(r.passages_derniere_heure)
+      +" appel(s) la dernière heure · en ligne depuis "+txt(r.en_ligne_depuis_min)+" min";
+    if(r.plus_grand_trou_min !== undefined) h += " · plus grand trou "+txt(r.plus_grand_trou_min)+" min";
+    h += "</span>";
+    for(const [nom, t] of Object.entries(r.taches_de_fond || {}))
+      h += "<br><span style='opacity:.6;font-size:12px'>· "+txt(nom)+" : "+txt(t.etat)
+        + (t.erreur ? " — "+txt(String(t.erreur).slice(0,120)) : "")+"</span>";
+    return h;
+  });
+  // « Ça met 40 s » : on montre OU passent les secondes, au lieu d'en discuter.
+  const vit = await diagBloc("⚡ Vitesse de réponse", "/agent/diag/vitesse", v => {
+    let h = txt(v.resume);
+    if(v.solution) h += "<br><span style='opacity:.75;font-size:13px'>👉 "+txt(v.solution)+"</span>";
+    for(const [etape, sec] of Object.entries(v.temps_par_etape_s || {}))
+      h += "<br><span style='opacity:.6;font-size:12px'>· "+txt(etape)+" : "+txt(sec)+" s</span>";
+    for(const d of (v.dernieres || []).slice(0,3))
+      h += "<br><span style='opacity:.5;font-size:11.5px'>« "+txt(String(d.question).slice(0,44))
+        +" » → "+txt(d.total_s)+" s</span>";
+    return h;
+  });
+  return mem + "<br><br>" + conv + "<br><br>" + auto + "<br><br>" + rev + "<br><br>" + vit;
 }
 
 /* ═══ MOT-CLÉ « NOVA » (mains-libres, tant que la page est ouverte) ═══ */
