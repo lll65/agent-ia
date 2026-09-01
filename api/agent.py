@@ -161,10 +161,18 @@ def _has_invented_market_data(text: str) -> bool:
     return hit and bool(re.search(r"\d[\d\s.,]{2,}", t))
 
 
-def _remember_fact(message: str) -> None:
-    """Mémorise une info personnelle : fait structuré dans le profil + trace dans l'historique."""
+def _remember_fact(message: str) -> list:
+    """Mémorise une info personnelle : fait structuré dans le profil + trace dans l'historique.
+
+    ⚠️ N'était appelée QUE depuis la conversation légère. Dire « je suis en terminale »
+    en demandant un service — « mets ça dans mon agenda, je suis en terminale » — ne
+    laissait donc aucune trace : Nova n'apprenait que si on ne lui demandait rien.
+    Elle apprend maintenant sur TOUS les chemins, avec le même filtre strict, et rend
+    ce qu'elle a retenu pour que ce soit AFFICHÉ. Retenir en douce serait le contraire
+    de ce qu'on veut : l'utilisateur doit voir ce que Nova garde, et pouvoir l'enlever.
+    """
     if not _is_personal_fact(message):
-        return
+        return []
     try:
         get_memory().remember(_PROFILE_ID, "user", message.strip()[:200])
     except Exception:
@@ -182,10 +190,12 @@ def _remember_fact(message: str) -> None:
     if not faits:
         try:
             from agent.profile import add_fact
-            add_fact("autre", message.strip()[:160])
+            f = add_fact("autre", message.strip()[:160])
             logger.info("[profil] aucun modèle pour reformuler — phrase gardée telle quelle.")
+            faits = [f] if f.get("id") else []
         except Exception:
-            pass
+            faits = []
+    return [f for f in faits if isinstance(f, dict) and f.get("id")]
 
 
 def _smalltalk_reply(message: str) -> str:
@@ -498,6 +508,21 @@ def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
               # fuseau ? » elle répondait « UTC », alors qu'elle est réglée sur Europe/Paris
               # depuis que les automatisations ont été corrigées. Elle ne pouvait pas non
               # plus situer « demain » ou « la semaine prochaine ».
+
+              # ⚠️ Nova ne pouvait que RÉPONDRE. Quand une question aurait évité de
+              # deviner — « le résumé court ou détaillé ? », « laquelle des trois ? » —
+              # elle devinait, ou posait la question en texte et attendait qu'on retape
+              # la réponse. Le bloc CHOIX devient des boutons cliquables dans l'interface.
+              " QUESTION INTERACTIVE : quand deux ou trois chemins sont possibles et que "
+              "deviner risquerait de te faire travailler pour rien, propose un choix "
+              "AU LIEU de deviner. Format EXACT, à la fin de ta réponse :\n"
+              "CHOIX: ta question en une ligne\n"
+              "- première option\n"
+              "- deuxième option\n"
+              "Deux à quatre options, courtes (1 à 5 mots), qui s'excluent. N'en mets "
+              "PAS quand la demande est claire : une question inutile fait perdre du "
+              "temps. Jamais de CHOIX pour une action sans retour — un envoi ou une "
+              "suppression demande une confirmation écrite, pas un bouton."
               + _repere_temporel())
     if not fin:
         system += (" INTERDIT : ne parle pas de bourse, actions, crypto, marchés, investissement, "
@@ -3818,7 +3843,14 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
             # L'apprentissage ne tournait que sur la voie « discussion » : dès que la
             # phrase partait vers une app, une recherche ou l'agent, la confidence était
             # perdue. « mon père et moi on a un PEA » n'était jamais retenu.
-            await _off(_remember_fact, message)
+            _appris = await _off(_remember_fact, message)
+            # ⚠️ Retenir en douce serait le contraire de ce qu'on veut. Lohan doit VOIR
+            # ce que Nova garde de lui, et pouvoir l'enlever d'un clic — c'est ce qui
+            # rend acceptable qu'elle apprenne toute seule.
+            if _appris:
+                yield sse({"type": "appris",
+                           "faits": [{"id": f.get("id"), "texte": f.get("texte", "")}
+                                     for f in _appris]})
             # Le serveur annonce ses VRAIES décisions de routage → sous-bulles authentiques
             # (et non des mots-clés extraits de la question, qui simulaient un raisonnement).
             # Les décisions arrivent UNE PAR UNE, en français clair. Elles partaient

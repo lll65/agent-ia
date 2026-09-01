@@ -6053,6 +6053,98 @@ def test_schemas_traces_sur_les_vrais_chiffres():
     check("le message redevient court", len(r) < 200, True)
 
 
+def test_apprend_seule_mais_visible_et_pose_des_questions():
+    """« La memoire doit enregistrer des choses elle-meme, mais pas tout non plus » et
+    « j'aimerais qu'elle puisse me poser des questions interactives ».
+
+    1. L'apprentissage ne tournait QUE sur la voie « discussion legere ». Dire « je
+       suis en terminale » en demandant un service — « mets ca dans mon agenda, je
+       suis en terminale » — ne laissait aucune trace : Nova n'apprenait que si on ne
+       lui demandait rien.
+    2. Retenir en douce serait le contraire de ce qu'il demande (« pas tout non
+       plus ») : ce qui rend acceptable qu'elle apprenne seule, c'est que ce soit
+       VISIBLE et REVERSIBLE.
+    3. Nova ne pouvait que REPONDRE. Quand une question aurait evite de deviner, elle
+       devinait — ou posait la question en texte et attendait qu'on retape la reponse.
+    """
+    import importlib, subprocess, tempfile, os
+    from pathlib import Path as _P
+    racine = _P(__file__).resolve().parents[1]
+    A = importlib.import_module("api.agent")
+    P = importlib.import_module("agent.profile")
+
+    # --- 1. Ce qui est retenu est RENDU, pour pouvoir etre affiche ----------
+    vrai = P._ENTREPOT
+    vrai_json = A._llm_json
+    try:
+        P._ENTREPOT = FauxEntrepot("id")
+        A._llm_json = lambda sys_, usr, temperature=0.1: {
+            "faits": [{"cat": "travail", "texte": "Est en terminale"}]}
+        appris = A._remember_fact("au fait je suis en terminale cette annee")
+        check("le fait est retenu", len(appris), 1)
+        check("…avec son identifiant, pour pouvoir l'effacer",
+              bool(appris[0].get("id")), True)
+        check("…et son texte, pour pouvoir l'afficher", appris[0]["texte"], "Est en terminale")
+        # Une simple COMMANDE ne doit rien apprendre : « pas tout non plus ».
+        check("une commande n'apprend rien", A._remember_fact("ouvre mon agenda"), [])
+        check("une question banale non plus", A._remember_fact("quelle heure est-il ?"), [])
+        # Meme sans modele pour reformuler, la confidence n'est pas perdue.
+        A._llm_json = lambda sys_, usr, temperature=0.1: {}
+        secours = A._remember_fact("je suis allergique aux arachides")
+        check("sans modele, la phrase est gardee quand meme", len(secours), 1)
+    finally:
+        P._ENTREPOT = vrai
+        A._llm_json = vrai_json
+
+    api = (racine / "api" / "agent.py").read_text(encoding="utf-8")
+    check("l'apprentissage tourne sur tous les chemins",
+          "_appris = await _off(_remember_fact, message)" in api, True)
+    check("…et il est annonce a l'interface", '"type": "appris"' in api, True)
+
+    ui = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+    check("l'interface affiche ce qui est retenu", "function puceAppris(" in ui, True)
+    check("…et permet de l'oublier", "async function oublier(" in ui, True)
+    check("…via la vraie route de suppression", '"/agent/profile?id="' in ui, True)
+
+    # --- 2. Les questions interactives deviennent des boutons ---------------
+    check("Nova sait quand proposer un choix", "QUESTION INTERACTIVE" in api, True)
+    check("…et jamais pour une action sans retour",
+          "Jamais de CHOIX pour une action sans retour" in api, True)
+
+    if shutil.which("node"):
+        src = ui[ui.index("function esc(s)"):ui.index("function addRow(")]
+        with tempfile.TemporaryDirectory() as d:
+            fjs = os.path.join(d, "f.js")
+            open(fjs, "w", encoding="utf-8").write(src)
+            h = ("var KEY='k', ORIGIN='https://x';\n"
+                 "eval(require('fs').readFileSync(%r,'utf8'));\n"
+                 "var m = ['Deux facons.','', 'CHOIX: Court ou detaille ?',"
+                 "'- Court', '- Detaille avec sources', '', 'Dis-moi.'].join('\\n');\n"
+                 "console.log(fmt(m));\n" % fjs)
+            fh = os.path.join(d, "h.js")
+            open(fh, "w", encoding="utf-8").write(h)
+            r = subprocess.run(["node", fh], capture_output=True, text=True, timeout=60)
+            out = r.stdout.strip()
+        check("un bloc de choix est produit", 'class="choix"' in out, True)
+        check("la question est reprise", "Court ou detaille ?" in out, True)
+        check("chaque option devient un bouton", out.count("<button"), 2)
+        check("…qui repond au clic", 'onclick="repondre(this)"' in out, True)
+        check("le texte autour est preserve",
+              "Deux facons." in out and "Dis-moi." in out, True)
+        # Un texte SANS bloc CHOIX ne doit pas fabriquer de boutons.
+        with tempfile.TemporaryDirectory() as d:
+            fjs = os.path.join(d, "f.js")
+            open(fjs, "w", encoding="utf-8").write(src)
+            h = ("var KEY='k', ORIGIN='https://x';\n"
+                 "eval(require('fs').readFileSync(%r,'utf8'));\n"
+                 "console.log(fmt('Voici la liste :\\n- un\\n- deux'));\n" % fjs)
+            fh = os.path.join(d, "h.js")
+            open(fh, "w", encoding="utf-8").write(h)
+            r2 = subprocess.run(["node", fh], capture_output=True, text=True, timeout=60)
+        check("une liste ordinaire reste une liste", "<button" in r2.stdout, False)
+        check("…et rend bien des puces", "<li>" in r2.stdout, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -6099,7 +6191,8 @@ if __name__ == "__main__":
                test_modifier_une_automatisation,
                test_resultat_lisible_et_sans_protocole,
                test_fiche_valeur_popup_et_edition_en_place,
-               test_schemas_traces_sur_les_vrais_chiffres):
+               test_schemas_traces_sur_les_vrais_chiffres,
+               test_apprend_seule_mais_visible_et_pose_des_questions):
         try:
             fn()
         except Exception as e:
