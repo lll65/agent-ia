@@ -5403,6 +5403,108 @@ def test_actu_d_une_entreprise_pas_les_titres_du_jour():
           veut_actualite("tu penses quoi d'acheter 2CRSI maintenant ?"), False)
 
 
+def test_rien_ne_bloque_et_le_cache_sert_vraiment():
+    """AUDIT — deux causes directes de « c'est lent partout ».
+
+    1. _ACCOUNTS_CACHE etait DECLARE, remis a zero par invalidate_caches()… et jamais
+       ni lu ni ecrit. Chaque appel repartait en HTTP vers Composio, delai de 20 s au
+       compteur. Or _toolkit_user_id() l'appelle avant CHAQUE action sur une app :
+       lire l'agenda payait un aller-retour reseau EN PLUS, a chaque fois. Et
+       /agent/activity, interrogee toutes les 2 s par la page constellation, le
+       refaisait a chaque tic — en SYNCHRONE, ce qui gelait la boucle entiere.
+    2. Le delai des flux RSS etait un delai PAR OPERATION DE SOCKET, pas un delai
+       total : un serveur qui envoie ses en-tetes puis un octet toutes les 3 s ne le
+       declenchait JAMAIS. Un seul media poussif bloquait Nova bien au-dela de son
+       budget.
+    """
+    import importlib, time as _t, threading, http.server, socketserver
+    A = importlib.import_module("api.agent")
+
+    # --- 1. Le cache des comptes vit enfin ----------------------------------
+    import requests as _rq
+    vrai_get, vraie_cle = _rq.get, A.config.COMPOSIO_API_KEY
+    appels = {"n": 0}
+
+    class _Rep:
+        status_code = 200
+        def json(self):
+            return {"items": [{"toolkit": {"slug": "gmail"}, "user_id": "u",
+                               "status": "ACTIVE"}]}
+
+    try:
+        _rq.get = lambda url, **k: (appels.__setitem__("n", appels["n"] + 1), _Rep())[1]
+        A.config.COMPOSIO_API_KEY = "cle-de-test"
+        A._ACCOUNTS_CACHE.update(data=None, ts=0.0)
+        for _ in range(5):
+            A._connected_accounts()
+        check("cinq appels ne font qu'UNE requete reseau", appels["n"], 1)
+        check("…et rendent bien les comptes",
+              A._connected_accounts()[0][0], "gmail")
+        # L'invalidation reste possible : reconnecter une app doit se voir tout de suite.
+        A.invalidate_caches("")
+        A._connected_accounts()
+        check("apres invalidation, on redemande", appels["n"], 2)
+    finally:
+        _rq.get, A.config.COMPOSIO_API_KEY = vrai_get, vraie_cle
+        A._ACCOUNTS_CACHE.update(data=None, ts=0.0)
+
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
+    check("le cache est lu", 'en_cache = _ACCOUNTS_CACHE.get("data")' in src, True)
+    check("…et ecrit", '_ACCOUNTS_CACHE["data"], _ACCOUNTS_CACHE["ts"] = out' in src, True)
+    check("la route de la constellation ne gele plus la boucle",
+          "await _off(_connected_accounts)" in src, True)
+
+    # --- 2. Un flux poussif ne bloque plus ----------------------------------
+    if shutil.which("python3"):
+        ACT = importlib.import_module("plugins.builtin.actu_rss")
+        vrais_flux = (dict(ACT.FLUX))
+
+        class _Lent(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", "100000")
+                self.end_headers()
+                # Assez lent pour ne JAMAIS declencher le delai de socket, mais assez
+                # court pour que le thread meure vite : sinon c'est la SUITE DE TESTS
+                # qui attend a la sortie du processus.
+                for _ in range(5):
+                    try:
+                        self.wfile.write(b"x")
+                        self.wfile.flush()
+                    except Exception:
+                        return
+                    _t.sleep(2)
+            def log_message(self, *a):
+                pass
+
+        class _Srv(socketserver.ThreadingTCPServer):
+            daemon_threads = True
+            allow_reuse_address = True
+
+        srv = _Srv(("127.0.0.1", 0), _Lent)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            url = f"http://127.0.0.1:{srv.server_address[1]}/rss"
+            ACT.FLUX["tech"] = [("Lent1", url), ("Lent2", url)]
+            ACT.FLUX["general"] = [("Lent3", url)]
+            t0 = _t.monotonic()
+            ACT.recuperer("actu tech du jour", 6, _t.monotonic() + 8)
+            ecoule = _t.monotonic() - t0
+            check(f"le budget est tenu ({round(ecoule)} s)", ecoule < 20, True)
+        finally:
+            ACT.FLUX.clear()
+            ACT.FLUX.update(vrais_flux)
+            srv.shutdown()
+            srv.server_close()
+
+    act_src = (_P(__file__).resolve().parents[1] / "plugins" / "builtin"
+               / "actu_rss.py").read_text(encoding="utf-8")
+    check("la lecture est bornee en temps", "time.monotonic() > echeance" in act_src, True)
+    check("…et en taille", "4_000_000" in act_src, True)
+    check("on n'attend plus les flux restants", "ex.shutdown(wait=False)" in act_src, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -5442,7 +5544,8 @@ if __name__ == "__main__":
                test_le_plus_rapide_repond_en_premier,
                test_aucun_chiffre_financier_invente,
                test_telegram_notion_et_jargon,
-               test_actu_d_une_entreprise_pas_les_titres_du_jour):
+               test_actu_d_une_entreprise_pas_les_titres_du_jour,
+               test_rien_ne_bloque_et_le_cache_sert_vraiment):
         try:
             fn()
         except Exception as e:

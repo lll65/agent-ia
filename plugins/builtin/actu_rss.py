@@ -232,24 +232,62 @@ def recuperer(question: str, maxi: int = 8, fin: float = 0.0) -> list:
         nom, url = src
         if fin and time.monotonic() >= fin:
             return []
+        # ⚠️ `timeout=` est un délai PAR OPÉRATION DE SOCKET, pas un délai TOTAL. Un
+        # serveur qui envoie ses en-têtes puis un octet toutes les 3 secondes ne le
+        # déclenche JAMAIS : la lecture durait indéfiniment, et comme l'échéance
+        # n'était consultée qu'AVANT la requête, plus rien ne la bornait ensuite.
+        # Un seul média poussif suffisait donc à bloquer Nova bien au-delà de son
+        # budget. On lit maintenant par morceaux, avec une échéance ET un plafond
+        # de taille.
+        echeance = time.monotonic() + TIMEOUT_FLUX
+        if fin:
+            echeance = min(echeance, fin)
         try:
-            r = requests.get(url, timeout=TIMEOUT_FLUX, headers={"User-Agent": _UA})
+            r = requests.get(url, timeout=(3, TIMEOUT_FLUX), stream=True,
+                             headers={"User-Agent": _UA})
             if r.status_code != 200:
                 return []
-            return lire_flux(r.content, nom)
+            corps = bytearray()
+            for bloc in r.iter_content(65536):
+                if bloc:
+                    corps.extend(bloc)
+                if time.monotonic() > echeance or len(corps) > 4_000_000:
+                    logger.info(f"[actu] {nom} trop lent ou trop gros — on prend ce qu'on a.")
+                    break
+            return lire_flux(bytes(corps), nom)
         except Exception as e:
             logger.info(f"[actu] {nom} injoignable : {type(e).__name__}")
             return []
+        finally:
+            try:
+                r.close()
+            except Exception:
+                pass
 
     def lire_tout(liste):
         if not liste:
             return []
         got = []
         # En parallèle : le temps total est celui du flux le plus lent, pas la somme.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(6, len(liste)))) as ex:
-            for lot in ex.map(un, liste):
-                got.extend(lot)
+        # ⚠️ `with ThreadPoolExecutor` attend la fin de TOUS les threads en sortant :
+        # un média bloqué retenait la fonction entière. On récupère donc chaque
+        # résultat avec sa propre limite de temps, et on rend ce qu'on a.
+        reste = (fin - time.monotonic()) if fin else TIMEOUT_FLUX * 2
+        reste = max(1.0, min(reste, TIMEOUT_FLUX * 2))
+        ex = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(6, len(liste))))
+        try:
+            futurs = [ex.submit(un, src) for src in liste]
+            for f in futurs:
+                try:
+                    got.extend(f.result(timeout=max(0.1, reste - (time.monotonic() - _t0))))
+                except Exception:
+                    continue                 # ce média-là n'a pas répondu : tant pis
+        finally:
+            # On n'attend PAS les threads restants : ils finiront seuls, sans nous.
+            ex.shutdown(wait=False)
         return got
+
+    _t0 = time.monotonic()
 
     articles = lire_tout(sources)
     theme_reel = theme
