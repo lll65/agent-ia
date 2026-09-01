@@ -5724,8 +5724,11 @@ def test_modifier_une_automatisation():
     from pathlib import Path as _P
     ui = (_P(__file__).resolve().parents[1] / "ui" / "nova.html").read_text(encoding="utf-8")
     check("le bouton modifier existe", "editAuto(" in ui, True)
-    check("il remplit le formulaire", 'document.getElementById("autoTitre").value = it.titre' in ui, True)
-    check("on peut annuler", "annulerEdition" in ui, True)
+    # ⚠️ La premiere version renvoyait vers le formulaire tout en BAS de la fenetre :
+    # il fallait faire defiler, et on perdait de vue la ligne qu'on modifiait. On
+    # edite maintenant DANS la ligne.
+    check("l'edition se fait dans la ligne", 'ligne.appendChild(z)' in ui, True)
+    check("on peut annuler sans rien changer", 'querySelector(".e-non")' in ui, True)
     check("le formulaire vise la bonne route", '"/agent/automations/modifier"' in ui, True)
     # Un titre long ne doit plus pousser l'heure a la ligne.
     check("le titre est borne a une ligne", "text-overflow:ellipsis" in ui, True)
@@ -5822,6 +5825,118 @@ def test_resultat_lisible_et_sans_protocole():
     check("le texte utile est intact", "27,400 €" in rendu, True)
 
 
+def test_fiche_valeur_popup_et_edition_en_place():
+    """Trois demandes de Lohan.
+
+    1. « Il me faut les infos de base qui pourraient me permettre de m'informer avant
+       une baisse ou une hausse. » On ne PREDIT pas — personne ne sait le faire, et
+       une prediction habillee en chiffres serait exactement la « donnee fausse servie
+       comme vraie » qu'on traque, sauf qu'ici elle porterait sur son argent. On
+       rassemble les faits verifiables qui expliquent la plupart des mouvements.
+    2. « Pour modifier une auto c'est mal fait » : le bouton renvoyait tout en BAS de
+       la fenetre, dans le formulaire de creation — il fallait faire defiler et on
+       perdait de vue la ligne qu'on modifiait.
+    3. « Je veux un popup qui me dise un resume de ses actions » : les resultats
+       produits pendant l'absence etaient DEVERSES en entier dans le chat, les uns
+       apres les autres, avant meme qu'il ait dit quoi que ce soit.
+    """
+    import importlib, sys as _s, types as _t
+    from pathlib import Path as _P
+    racine = _P(__file__).resolve().parents[1]
+
+    # --- 1. La fiche dit des FAITS, jamais une prevision --------------------
+    from plugins import get_loader
+    from agent.core import outils_pour_conversation
+    outils = get_loader().list_all()
+    check("l'outil fiche existe", "fiche_valeur" in outils, True)
+    check("…et le chat peut s'en servir",
+          "fiche_valeur" in outils_pour_conversation(outils.keys()), True)
+
+    F = importlib.import_module("plugins.builtin.fiche_valeur")
+    FIN = importlib.import_module("plugins.builtin.finance")
+    vrai_http, avant_yf = FIN._fetch_ticker_http, _s.modules.get("yfinance")
+    try:
+        closes = [100 + i * 0.1 for i in range(250)]
+        vols = [1000.0] * 249 + [3200.0]          # volume du jour : 3,2x la moyenne
+        FIN._fetch_ticker_http = lambda t, p="1y": {"closes": closes, "currency": "EUR"}
+
+        class _Col(list):
+            def dropna(self): return self
+            def tolist(self): return list(self)
+
+        class _T:
+            def __init__(self, tk): pass
+            def history(self, period="1y"):
+                return {"Close": _Col(closes), "Volume": _Col(vols)}
+            def get_info(self):
+                return {"longName": "2CRSI SA", "currency": "EUR", "marketCap": 8.2e8,
+                        "trailingPE": 29.3, "targetMeanPrice": 34.0,
+                        "numberOfAnalystOpinions": 4}
+            def get_calendar(self):
+                from datetime import date, timedelta
+                return {"Earnings Date": [date.today() + timedelta(days=6)]}
+
+        faux = _t.ModuleType("yfinance"); faux.Ticker = _T
+        _s.modules["yfinance"] = faux
+        f = F.FicheValeurPlugin().run(ticker="AL2SI.PA")
+
+        # Ce qui permet de VOIR VENIR : la date des resultats et le volume anormal.
+        check("la date des prochains resultats est donnee", "Prochains résultats" in f, True)
+        check("…avec le compte a rebours", "dans 6 jours" in f, True)
+        check("le volume anormal est signale", "3.2× la moyenne" in f, True)
+        check("…et qualifie", "très inhabituel" in f, True)
+        check("…sans en deduire un sens", "Ça ne dit PAS dans quel sens" in f, True)
+        # Le contexte.
+        check("la fourchette de l'annee", "Fourchette sur 1 an" in f, True)
+        check("les moyennes mobiles", "Moyenne 200 séances" in f, True)
+        check("le RSI", "RSI" in f, True)
+        # L'avis des analystes est nomme comme un AVIS.
+        check("l'objectif analyste est relativise", "C'est un avis, pas une mesure" in f, True)
+        # Et surtout : aucune prevision.
+        check("aucune prediction n'est faite", "aucun ne prédit" in f, True)
+        for mot in ("va monter", "va baisser", "achetez", "vendez"):
+            check(f"la fiche ne dit jamais « {mot} »", mot in f.lower(), False)
+
+        # Ticker inconnu : on le dit, on n'invente pas une fiche.
+        FIN._fetch_ticker_http = lambda t, p="1y": {}
+        class _Vide(_T):
+            def history(self, period="1y"): return {"Close": _Col([]), "Volume": _Col([])}
+        faux.Ticker = _Vide
+        vide = F.FicheValeurPlugin().run(ticker="ZZZZ")
+        check("un titre introuvable est annonce", vide.startswith("[ERREUR]"), True)
+        check("…avec la piste du suffixe .PA", ".PA" in vide, True)
+        check("sans ticker, refus", F.FicheValeurPlugin().run(ticker=" ").startswith("[ERREUR]"), True)
+    finally:
+        FIN._fetch_ticker_http = vrai_http
+        if avant_yf is None:
+            _s.modules.pop("yfinance", None)
+        else:
+            _s.modules["yfinance"] = avant_yf
+
+    ui = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+
+    # --- 2. L'edition se fait DANS la ligne ---------------------------------
+    check("un editeur en place existe", 'className = "edit-auto"' in ui, True)
+    check("…avec ses styles", ".edit-auto{" in ui, True)
+    check("on n'envoie plus au formulaire du bas",
+          'document.getElementById("autoTitre").value = it.titre' in ui, False)
+    check("le bouton du bas ne sert plus qu'a creer",
+          'autoBtn").textContent = "✏️' in ui, False)
+    check("on peut annuler sans rien changer", 'querySelector(".e-non")' in ui, True)
+
+    # --- 3. Le retour d'absence passe par un popup --------------------------
+    check("le popup existe", 'id="novModal"' in ui, True)
+    check("il resume au lieu de tout deverser", "_apercuTexte(" in ui, True)
+    check("…et le detail est a la demande", "function detailNouveaute(" in ui, True)
+    check("plus de deversement direct dans le chat",
+          'addRow("ai", "<b>"+(x.icon||"⚡")' in ui, False)
+    # ⚠️ On ne marque lus QU'A la fermeture : sinon un affichage jamais vu
+    # (onglet en arriere-plan, telephone verrouille) etait perdu pour toujours.
+    ferme = ui.split("function fermerNouveautes()", 1)[1][:400]
+    check("les resultats ne sont marques lus qu'a la fermeture",
+          "/agent/automations/lus" in ferme, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -5866,7 +5981,8 @@ if __name__ == "__main__":
                test_diagnostic_ne_ment_pas_et_modele_adapte,
                test_actu_boursiere_ne_rend_plus_de_la_politique,
                test_modifier_une_automatisation,
-               test_resultat_lisible_et_sans_protocole):
+               test_resultat_lisible_et_sans_protocole,
+               test_fiche_valeur_popup_et_edition_en_place):
         try:
             fn()
         except Exception as e:
