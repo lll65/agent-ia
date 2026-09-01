@@ -191,6 +191,12 @@ def diagnostic() -> dict:
 _TITRE = __import__("re").compile(r"^[ \t]*#{1,6}[ \t]*(.+?)[ \t]*#*[ \t]*$", __import__("re").M)
 _GRAS = __import__("re").compile(r"\*\*(.+?)\*\*", __import__("re").S)
 _LIEN = __import__("re").compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+# ⚠️ Un schéma part sous forme d'image encodée en base64 — plusieurs milliers de
+# caractères. Telegram n'affiche pas ces images : le message serait rempli d'un
+# pavé illisible, et dépasserait la limite des 4 096 caractères. On garde le
+# LIBELLÉ de l'image (« Cours de AL2SI.PA sur 1 an ») ; la courbe en caractères de
+# bloc qui l'accompagne, elle, reste parfaitement lisible.
+_IMAGE_DATA = __import__("re").compile(r"!\[([^\]]*)\]\(data:[^)]*\)")
 _PUCE = __import__("re").compile(r"^([ \t]*)[-*•][ \t]+", __import__("re").M)
 _BARRE = __import__("re").compile(r"^[ \t]*(?:---+|___+|\*\*\*+)[ \t]*$", __import__("re").M)
 
@@ -205,6 +211,7 @@ def pour_telegram(texte: str) -> str:
     « [titre](url) » : illisible sur un téléphone. On convertit donc nous-mêmes.
     """
     t = texte or ""
+    t = _IMAGE_DATA.sub(lambda m: (f"[{m.group(1)}]" if m.group(1) else ""), t)
     t = _BARRE.sub("──────────", t)
     t = _TITRE.sub(lambda m: "\n▸ " + m.group(1).upper(), t)
     t = _LIEN.sub(lambda m: f"{m.group(1)} : {m.group(2)}", t)

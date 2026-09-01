@@ -5963,6 +5963,96 @@ def test_fiche_valeur_popup_et_edition_en_place():
           "/agent/automations/lus" in ferme, True)
 
 
+def test_schemas_traces_sur_les_vrais_chiffres():
+    """« J'aimerais qu'elle fasse des schemas ou des images pour mieux illustrer. »
+
+    ⚠️ PAS une image generee par un modele : un modele qui « dessine » une courbe
+    boursiere l'INVENTE. Elle serait jolie, plausible, et fausse — exactement le
+    defaut qu'on traque, sauf qu'ici elle illustrerait de l'argent. Chaque point du
+    dessin est donc une donnee reelle.
+    """
+    import importlib, base64 as _b64, re as _re, math, sys as _s, types as _t
+    G = importlib.import_module("agent.graphique")
+
+    # --- 1. La courbe SVG reflete VRAIMENT les valeurs ----------------------
+    montee = [10, 20, 30, 40, 50]
+    baisse = [50, 40, 30, 20, 10]
+    svg = G.courbe_svg(montee, "Test", "EUR")
+    check("un SVG est produit", svg.startswith("<svg") and svg.endswith("</svg>"), True)
+    check("les bornes reelles sont ecrites", "50.00" in svg and "10.00" in svg, True)
+    check("une hausse est verte", "#34d399" in svg, True)
+    check("une baisse est rouge", "#34d399" in G.courbe_svg(baisse), False)
+    check("moins de deux points → pas de dessin", G.courbe_svg([5]), "")
+    check("des valeurs toutes egales ne divisent pas par zero",
+          G.courbe_svg([7, 7, 7]).startswith("<svg"), True)
+
+    # --- 2. La version texte, lisible partout (Telegram, mail) --------------
+    check("la sparkline monte", G.sparkline_texte(montee)[0] < G.sparkline_texte(montee)[-1], True)
+    check("la sparkline descend", G.sparkline_texte(baisse)[0] > G.sparkline_texte(baisse)[-1], True)
+    check("elle est bornee en largeur", len(G.sparkline_texte(list(range(500)), 40)), 40)
+    check("valeurs plates → trait constant", len(set(G.sparkline_texte([3, 3, 3]))), 1)
+    check("rien a tracer → chaine vide", G.sparkline_texte([]), "")
+
+    # --- 3. L'image est autorisee par le rendu de l'interface ---------------
+    img = G.en_image(svg, "Cours")
+    check("c'est une image Markdown", img.startswith("![Cours](data:image/svg+xml;base64,"), True)
+    b64 = _re.search(r"base64,([A-Za-z0-9+/=]+)", img).group(1)
+    check("elle se decode en SVG valide",
+          _b64.b64decode(b64).decode("utf-8").startswith("<svg"), True)
+    # urlSure (ui/nova.html) autorise justement data:image/ — sinon l'image serait
+    # remplacee par « # » comme une adresse suspecte.
+    from pathlib import Path as _P
+    racine = _P(__file__).resolve().parents[1]
+    ui = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+    check("l'interface accepte data:image/", "data:image\\/" in ui, True)
+
+    # Un titre hostile ne peut pas casser le SVG.
+    piege = G.courbe_svg([1, 2], '<script>alert(1)</script>')
+    check("le titre est echappe", "<script>" in piege, False)
+
+    # --- 4. La fiche valeur en contient vraiment ----------------------------
+    F = importlib.import_module("plugins.builtin.fiche_valeur")
+    FIN = importlib.import_module("plugins.builtin.finance")
+    vrai_http, avant_yf = FIN._fetch_ticker_http, _s.modules.get("yfinance")
+    try:
+        closes = [100 + 10 * math.sin(i / 18) + i * 0.05 for i in range(250)]
+        vols = [1000.0] * 249 + [3200.0]
+        FIN._fetch_ticker_http = lambda t, p="1y": {"closes": closes, "currency": "EUR"}
+
+        class _Col(list):
+            def dropna(self): return self
+            def tolist(self): return list(self)
+
+        class _T:
+            def __init__(self, tk): pass
+            def history(self, period="1y"): return {"Close": _Col(closes), "Volume": _Col(vols)}
+            def get_info(self): return {"longName": "2CRSI SA", "currency": "EUR"}
+            def get_calendar(self): return {}
+
+        faux = _t.ModuleType("yfinance"); faux.Ticker = _T
+        _s.modules["yfinance"] = faux
+        f = F.FicheValeurPlugin().run(ticker="AL2SI.PA")
+        check("la fiche contient la courbe", "data:image/svg+xml" in f, True)
+        check("…et la barre de volume", f.count("data:image/svg+xml"), 2)
+        check("…et la version texte", any(c in f for c in G._BLOCS), True)
+    finally:
+        FIN._fetch_ticker_http = vrai_http
+        if avant_yf is None:
+            _s.modules.pop("yfinance", None)
+        else:
+            _s.modules["yfinance"] = avant_yf
+
+    # --- 5. Telegram ne recoit PAS le pave base64 --------------------------
+    tp = importlib.import_module("bots.telegram_push")
+    lourd = ("### **2CRSI**\n![Cours sur 1 an](data:image/svg+xml;base64," + "A" * 4000 + ")\n"
+             "`▂▃▄▅▆▇█`\n- **Cours** : 27,40 €")
+    r = tp.pour_telegram(lourd)
+    check("le base64 ne part pas sur Telegram", "base64" in r, False)
+    check("…mais le libelle de l'image reste", "[Cours sur 1 an]" in r, True)
+    check("…et la courbe texte aussi", "▂▃▄▅▆▇█" in r, True)
+    check("le message redevient court", len(r) < 200, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -6008,7 +6098,8 @@ if __name__ == "__main__":
                test_actu_boursiere_ne_rend_plus_de_la_politique,
                test_modifier_une_automatisation,
                test_resultat_lisible_et_sans_protocole,
-               test_fiche_valeur_popup_et_edition_en_place):
+               test_fiche_valeur_popup_et_edition_en_place,
+               test_schemas_traces_sur_les_vrais_chiffres):
         try:
             fn()
         except Exception as e:

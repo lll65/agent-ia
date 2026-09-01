@@ -114,6 +114,19 @@ class FicheValeurPlugin(Plugin):
                  if _pct(prix, veille) is not None else f"**{prix:,.2f} {devise}**")
         L.append("")
 
+        # Un schéma tracé à partir des VRAIS points : chaque pixel est une donnée.
+        # (Un modèle qui « dessinerait » cette courbe l'inventerait — jolie,
+        # plausible, et fausse.)
+        from agent.graphique import courbe_svg, sparkline_texte, en_image
+        img = en_image(courbe_svg(closes[-252:], f"{infos.get('nom', tk)} — 1 an", devise),
+                       f"Cours de {tk} sur 1 an")
+        if img:
+            L.append(img)
+            # Même information en texte : Telegram et les mails n'affichent pas
+            # les images encodées.
+            L.append(f"`{sparkline_texte(closes[-252:])}`")
+            L.append("")
+
         # ── 1. Ce qui est DATÉ et qui arrive ────────────────────────────────
         # Le rendez-vous connu à l'avance est ce qui déplace le plus un cours.
         L.append("### 📅 Ce qui arrive")
@@ -147,6 +160,12 @@ class FicheValeurPlugin(Plugin):
                 if ratio >= 1.8:
                     L.append("  - Un volume anormal veut dire qu'il se passe quelque chose. "
                              "Ça ne dit PAS dans quel sens.")
+                from agent.graphique import barre_svg, en_image as _img
+                b = _img(barre_svg([("aujourd'hui", vols[-1]), ("moyenne 20 j", moy)],
+                                   "Titres échangés"), "Volume du jour face à sa moyenne")
+                if b:
+                    L.append("")
+                    L.append(b)
         else:
             L.append("- Volume comparé à sa moyenne : **N/D**.")
 
