@@ -109,7 +109,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.info(f"[prechauffage] ignoré ({type(e).__name__}).")
 
-    bot_tasks.append(lancer("préchauffage", _prechauffe()))
+    bot_tasks.append(lancer("préchauffage", _prechauffe(), ponctuelle=True))
 
     # Automatisations — Nova exécute seule les tâches planifiées (« pendant que tu dors »)
     from agent.automations import scheduler_loop

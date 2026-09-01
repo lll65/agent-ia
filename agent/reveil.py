@@ -41,15 +41,31 @@ def etat() -> dict:
         d["intervalle_moyen_min"] = round(sum(ecarts) / len(ecarts) / 60, 1)
         d["plus_grand_trou_min"] = round(max(ecarts) / 60, 1)
 
-    if not _PASSAGES:
+    if not _PASSAGES and depuis_demarrage < 660:
+        # ⚠️ Le compteur vit DANS le processus : un redémarrage le remet à zéro. Accuser
+        # le cron dix secondes après un démarrage, c'est accuser à tort — il n'a pas
+        # encore eu l'occasion de tirer. On attend un intervalle complet (11 min).
+        d["resume"] = (f"⏳ L'instance vient de démarrer (il y a "
+                       f"{round(depuis_demarrage / 60)} min) : le réveil externe n'a pas "
+                       "encore eu l'occasion de passer. Reviens dans une dizaine de "
+                       "minutes pour savoir s'il tire vraiment.")
+    elif not _PASSAGES:
         d["resume"] = ("❌ AUCUN appel à /health depuis le démarrage : le réveil externe "
                        "ne tire pas. Render endormira l'instance et les automatisations "
                        "ne partiront pas.")
-        d["solution"] = ("Vérifie sur cron-job.org que le job vise bien "
-                         "https://TON-APP.onrender.com/health, qu'il est ACTIVÉ, et "
-                         "qu'il n'a pas été désactivé automatiquement après des échecs "
-                         "(c'est ce qui arrive s'il a tourné quand /health n'existait pas "
-                         "encore et renvoyait 404).")
+        # ⚠️ Le message donnait « https://TON-APP.onrender.com/health » en exemple.
+        # Lohan l'a recopié TEL QUEL dans cron-job.org : le job appelait donc une
+        # adresse qui n'existe pas, échouait à chaque fois, et le service a fini par
+        # le désactiver tout seul. Un exemple qui ressemble à une vraie adresse SERA
+        # recopié tel quel — on décrit donc l'adresse au lieu de l'écrire.
+        d["solution"] = (
+            "Sur cron-job.org, vérifie TROIS choses. "
+            "① L'ADRESSE : ce doit être exactement celle que tu tapes pour ouvrir Nova, "
+            "suivie de /health. Si tu y lis « ton-app » ou « TON-APP », c'est un exemple "
+            "recopié tel quel — remplace-le par le vrai nom de ton service Render. "
+            "② L'ÉTAT : si « Exécution suivante » affiche « Inactif », le job a été "
+            "désactivé automatiquement après des échecs — réactive-le. "
+            "③ L'INTERVALLE : 10 minutes maximum.")
     elif d["dernier_passage_il_y_a_s"] > 900:
         d["resume"] = (f"⚠️ Dernier appel à /health il y a "
                        f"{round(d['dernier_passage_il_y_a_s'] / 60)} min : c'est trop long, "

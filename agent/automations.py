@@ -157,6 +157,21 @@ def prochaine_execution(item: dict) -> str:
     return "aucune (aucun jour coché)"
 
 
+def _il_y_a(ts) -> str:
+    """« il y a 3 h » — sans ça, un constat ancien se lit comme l'état actuel."""
+    try:
+        ecart = time.time() - float(ts or 0)
+    except Exception:
+        return ""
+    if ecart < 120:
+        return "à l'instant"
+    if ecart < 7200:
+        return f"il y a {round(ecart / 60)} min"
+    if ecart < 172800:
+        return f"il y a {round(ecart / 3600)} h"
+    return f"il y a {round(ecart / 86400)} j"
+
+
 def etat_planificateur() -> dict:
     """Le planificateur tourne-t-il VRAIMENT, et à quelle heure ?
 
@@ -176,7 +191,14 @@ def etat_planificateur() -> dict:
                         for i in items if i.get("active", True)][:10],
          # « J'en ai fait une a 17h et je ne recois rien » : sans ca, impossible de
          # distinguer « elle n'a pas tourne » de « elle a tourne mais l'envoi a rate ».
-         "derniers_envois": [{"titre": i.get("titre"), "issue": i.get("dernier_envoi") or "—"}
+         # ⚠️ L'issue du dernier envoi s'affichait SANS DATE : un « non envoyé :
+         # TELEGRAM_TOKEN absent » vieux de plusieurs jours se lisait comme l'état
+         # actuel, et contredisait le bloc juste au-dessus qui disait « ✅ les
+         # résultats partent ». Deux affirmations opposées, aucune fausse : l'une
+         # décrivait le passé, l'autre le présent. On date donc le constat.
+         "derniers_envois": [{"titre": i.get("titre"),
+                              "issue": i.get("dernier_envoi") or "—",
+                              "quand": _il_y_a(i.get("last_run"))}
                              for i in items if i.get("last_run")][:10]}
     try:
         from bots.telegram_push import diagnostic as _diag_tg

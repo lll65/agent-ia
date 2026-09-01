@@ -44,14 +44,22 @@ def _lisible(nom: str, e: BaseException) -> str:
     return t[:400]
 
 
-async def surveille(nom: str, coro):
-    """Fait tourner une tâche de fond en RETENANT ce qui lui arrive."""
+async def surveille(nom: str, coro, ponctuelle: bool = False):
+    """Fait tourner une tâche de fond en RETENANT ce qui lui arrive.
+
+    `ponctuelle=True` pour un travail qui DOIT se terminer (le préchauffage) : sinon
+    on le signalait comme une anomalie, et le diagnostic affichait « arrêtée — la
+    tâche s'est terminée d'elle-même » pour quelque chose de parfaitement normal.
+    """
     ETAT[nom] = {"etat": "en_cours", "depuis": time.time(), "erreur": ""}
     try:
         await coro
-        ETAT[nom] = {"etat": "arretee", "depuis": time.time(),
-                     "erreur": "la tâche s'est terminée d'elle-même"}
-        logger.warning(f"[taches] « {nom} » s'est arrêtée toute seule.")
+        if ponctuelle:
+            ETAT[nom] = {"etat": "terminee", "depuis": time.time(), "erreur": ""}
+        else:
+            ETAT[nom] = {"etat": "arretee", "depuis": time.time(),
+                         "erreur": "la tâche s'est terminée d'elle-même"}
+            logger.warning(f"[taches] « {nom} » s'est arrêtée toute seule.")
     except asyncio.CancelledError:
         ETAT[nom] = {"etat": "arretee", "depuis": time.time(), "erreur": "arrêt du serveur"}
         raise
@@ -62,9 +70,9 @@ async def surveille(nom: str, coro):
         logger.error(f"[taches] « {nom} » a échoué — {msg}", exc_info=True)
 
 
-def lancer(nom: str, coro):
+def lancer(nom: str, coro, ponctuelle: bool = False):
     """Crée la tâche surveillée. À utiliser à la place d'asyncio.create_task."""
-    return asyncio.create_task(surveille(nom, coro), name=nom)
+    return asyncio.create_task(surveille(nom, coro, ponctuelle), name=nom)
 
 
 def etat(nom: str = "") -> dict:
@@ -79,6 +87,8 @@ def resume(nom: str) -> str:
     e = etat(nom)
     if e["etat"] == "en_cours":
         return f"✅ {nom} tourne depuis {round((time.time() - e['depuis']) / 60)} min."
+    if e["etat"] == "terminee":
+        return f"✅ {nom} : fait."
     if e["etat"] == "jamais_lancee":
         return f"❌ {nom} n'a jamais été lancée."
     return f"❌ {nom} ne tourne plus : {e.get('erreur') or 'raison inconnue'}"

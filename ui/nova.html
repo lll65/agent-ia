@@ -1675,7 +1675,8 @@ async function diagReste(){
        + "color:inherit;font-size:12.5px;cursor:pointer\">📨 Envoyer un message de test</button>"
        + "<span id='tgTest' style='margin-left:8px;font-size:12.5px'></span>";
     for(const e of (a.derniers_envois||[]))
-      h += "<br><span style='opacity:.6;font-size:12px'>· "+txt(e.titre)+" → "+txt(e.issue)+"</span>";
+      h += "<br><span style='opacity:.6;font-size:12px'>· "+txt(e.titre)+" → "+txt(e.issue)
+        + (e.quand ? " <i>("+txt(e.quand)+")</i>" : "")+"</span>";
     return h;
   });
   // ⚠️ Les conversations vivaient dans le navigateur : le téléphone et l'ordinateur

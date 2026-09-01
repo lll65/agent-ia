@@ -29,6 +29,50 @@ def _is_rate_limit(exc: Exception) -> bool:
 
 
 _MODELES_OK = {}   # fournisseur -> modèle qui a réellement fonctionné (mémorisé)
+# ⚠️ Ce souvenir était DÉFINITIF. Quand les modèles préférés étaient momentanément à
+# leur limite, Nova basculait sur un modèle de repli… et le gardait pour toujours.
+# Vu en vrai : Groq répondant avec « allam-2-7b », un modèle arabophone de 7 milliards
+# de paramètres, à un utilisateur qui parle français. Un rate-limit de 60 secondes
+# condamnait donc la qualité pour le reste de la journée. Le repli est maintenant
+# retenu 10 minutes, puis on redonne sa chance au modèle préféré.
+_MODELES_OK_TS = {}
+_REPLI_TTL = 600.0
+
+
+def _modele_memorise(fournisseur: str) -> str:
+    m = _MODELES_OK.get(fournisseur)
+    if not m:
+        return ""
+    if _t.monotonic() - _MODELES_OK_TS.get(fournisseur, 0.0) > _REPLI_TTL:
+        _MODELES_OK.pop(fournisseur, None)      # on retente le modèle préféré
+        return ""
+    return m
+
+
+def _retenir_modele(fournisseur: str, modele: str) -> None:
+    _MODELES_OK[fournisseur] = modele
+    _MODELES_OK_TS[fournisseur] = _t.monotonic()
+
+
+# Modèles à ne JAMAIS choisir tout seul : spécialisés dans une autre langue ou une
+# autre tâche. Ils « fonctionnent » (donc l'auto-guérison les acceptait), mais la
+# réponse est mauvaise — et c'est invisible, puisqu'il n'y a pas d'erreur.
+_MODELES_INADAPTES = ("allam", "arabic", "-ar-", "saba", "jais",
+                      "code-", "coder", "embed", "guard", "whisper", "tts",
+                      "vision", "ocr", "rerank", "moderation", "compound", "agent")
+
+# Familles connues pour bien répondre en français, dans l'ordre de préférence.
+_FAMILLES_SURES = ("llama-3.3", "llama-3.1", "llama-4", "gpt-oss", "mixtral",
+                   "mistral", "qwen", "gemma", "llama")
+
+
+def _rang_modele(mid: str) -> int:
+    """Plus c'est petit, mieux c'est. Un modèle inconnu passe après les familles sûres."""
+    bas = (mid or "").lower()
+    for i, f in enumerate(_FAMILLES_SURES):
+        if f in bas:
+            return i
+    return len(_FAMILLES_SURES)
 _MODELES_KO = {}   # (fournisseur, modèle) -> horodatage du dernier échec
 _KO_TTL = 3600.0   # on réessaie au bout d'une heure (au cas où ce soit passager)
 
@@ -627,23 +671,25 @@ def _groq_chat(messages: list, model: str, temperature: float) -> str:
     client = Groq(api_key=config.GROQ_API_KEY, timeout=_timeout(TIMEOUT_LLM), max_retries=0)
 
     candidats = []
-    for m in (_MODELES_OK.get("groq"), model, config.GROQ_MODEL,
+    for m in (_modele_memorise("groq"), model, config.GROQ_MODEL,
               "llama-3.3-70b-versatile", "llama-3.1-8b-instant",
               "meta-llama/llama-4-scout-17b-16e-instruct",
               "openai/gpt-oss-120b", "qwen/qwen3-32b", "gemma2-9b-it"):
         if m and m not in candidats:
             candidats.append(m)
     try:                                   # modèles réellement disponibles sur CE compte
+        decouverts = []
         for mo in _lister_modeles(client):
             mid = getattr(mo, "id", "") or ""
             bas = mid.lower()
-            # On exclut ce qui n'est pas un modèle de chat classique.
-            # « compound » = systèmes agentiques : ils refusent nos paramètres
-            # (« Tool choice is none, but mode… ») et cassaient la conversation.
-            if mid and mid not in candidats and not any(
-                    k in bas for k in ("whisper", "tts", "guard", "vision", "embed",
-                                       "compound", "agent", "rerank", "moderation")):
-                candidats.append(mid)
+            # On exclut ce qui n'est pas un modèle de chat GÉNÉRALISTE. « compound » =
+            # systèmes agentiques (ils refusent nos paramètres) ; « allam » et consorts
+            # sont spécialisés dans une autre langue — ils répondent sans erreur, mais
+            # mal, et c'était donc invisible.
+            if mid and mid not in candidats and not any(k in bas for k in _MODELES_INADAPTES):
+                decouverts.append(mid)
+        # Les familles connues d'abord : un modèle inconnu n'est essayé qu'en dernier.
+        candidats.extend(sorted(decouverts, key=_rang_modele))
     except Exception:
         pass
 
@@ -652,7 +698,7 @@ def _groq_chat(messages: list, model: str, temperature: float) -> str:
         try:
             resp = client.chat.completions.create(
                 model=m, messages=messages, temperature=temperature, max_tokens=4096)
-            _MODELES_OK["groq"] = m
+            _retenir_modele("groq", m)
             try:
                 from llm.usage import record
                 record(getattr(getattr(resp, "usage", None), "total_tokens", 0))
@@ -759,7 +805,7 @@ def _nvidia_chat(messages: list, model: str, temperature: float, niveau: str = "
         try:
             resp = client.chat.completions.create(
                 model=m, messages=messages, temperature=temperature, max_tokens=4096)
-            _MODELES_OK["nvidia"] = m
+            _retenir_modele("nvidia", m)
             try:
                 from llm.usage import record
                 record(getattr(getattr(resp, "usage", None), "total_tokens", 0), provider="nvidia")
@@ -804,7 +850,7 @@ def _openrouter_chat(messages: list, model: str, temperature: float) -> str:
             resp = client.chat.completions.create(
                 model=m, messages=messages, temperature=temperature, max_tokens=4096,
                 extra_headers={"X-Title": "Nova"})
-            _MODELES_OK["openrouter"] = m
+            _retenir_modele("openrouter", m)
             try:
                 from llm.usage import record
                 record(getattr(getattr(resp, "usage", None), "total_tokens", 0), provider="openrouter")
@@ -950,7 +996,7 @@ def _mistral_chat(messages: list, model: str, temperature: float) -> str:
         try:
             r = client.chat.completions.create(
                 model=m, messages=messages, temperature=temperature)
-            _MODELES_OK["mistral"] = m
+            _retenir_modele("mistral", m)
             return (r.choices[0].message.content or "").strip()
         except Exception as e:
             derniere = e
@@ -1115,7 +1161,7 @@ def _gemini_chat(messages: list, model: str, temperature: float) -> str:
             r = requests.post(url, params={"key": config.GEMINI_API_KEY}, json=payload,
                               timeout=restant)
         if r.status_code == 200:
-            _MODELES_OK["gemini"] = m
+            _retenir_modele("gemini", m)
             resp = r
             break
         derniere = f"{r.status_code}: {r.text[:200]}"
