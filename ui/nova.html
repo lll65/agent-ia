@@ -312,6 +312,24 @@
   .edit-auto .e-jours button{ flex:1; padding:6px 0; font-size:11.5px; border-radius:8px;
     border:1px solid var(--stroke); background:transparent; color:var(--dim); cursor:pointer; }
   .edit-auto .e-jours button.on{ background:var(--neon); border-color:transparent; color:#fff; }
+  /* Ce que Nova a retenu toute seule : discret, mais visible et effaçable. */
+  /* Questions interactives : Nova propose, un clic répond. */
+  .choix{ margin:10px 0; padding:11px 12px; border-radius:12px;
+          background:rgba(124,92,255,.08); border:1px solid rgba(124,92,255,.22);
+          white-space:normal; }
+  .choix .q{ font-size:13px; color:var(--txt); margin-bottom:8px; }
+  .choix button{ display:inline-block; width:auto; margin:0 6px 6px 0; padding:7px 13px;
+                 font-size:12.5px; border-radius:999px; border:1px solid var(--stroke);
+                 background:rgba(255,255,255,.05); color:var(--txt); cursor:pointer; }
+  .choix button:hover:not(:disabled){ background:var(--neon); border-color:transparent; }
+  .choix button:disabled{ opacity:.45; cursor:default; }
+  .choix button.on{ background:var(--neon); border-color:transparent; opacity:1; }
+  .appris{ margin-top:7px; font-size:11.5px; color:var(--dim); display:flex;
+           flex-wrap:wrap; gap:6px; align-items:center; }
+  .appris .fait{ background:rgba(124,92,255,.14); border:1px solid rgba(124,92,255,.3);
+                 border-radius:999px; padding:3px 9px; color:var(--txt); }
+  .appris .fait a{ cursor:pointer; opacity:.5; margin-left:3px; }
+  .appris .fait a:hover{ opacity:1; color:#f87171; }
   .pitem{ padding:9px 11px; border-radius:11px; background:var(--glass); border:1px solid var(--stroke); line-height:1.45; word-break:break-word; font-size:13px; }
   .pitem b{ color:var(--neon2); font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; }
 
@@ -626,10 +644,25 @@ function fmt(s){
   // structurée (celle d'une automatisation bourse, par exemple) s'affichait en
   // bouillie — le « : » et le tiret atterrissaient seuls sur leur ligne, et chaque
   // élément partait à la ligne sans hiérarchie. On les rend correctement.
+  // ⚠️ Nova ne pouvait que RÉPONDRE. Quand une question aurait évité de deviner
+  // (« tu veux le résumé court ou détaillé ? »), elle devait la poser en texte et
+  // attendre que Lohan retape la réponse. Un bloc CHOIX devient des boutons.
+  t = t.replace(/^[ \t]*CHOIX[ \t]*:[ \t]*(.+?)[ \t]*\n((?:[ \t]*[-•*][ \t]+.+\n?)+)/gim,
+    (m, question, options) => {
+      const opts = options.split("\n")
+        .map(l => l.replace(/^[ \t]*[-•*][ \t]+/, "").trim())
+        .filter(Boolean).slice(0, 5);
+      if(!opts.length) return m;
+      return '<div class="choix"><div class="q">' + question.trim() + '</div>'
+        + opts.map(o => '<button type="button" onclick="repondre(this)">' + o + '</button>').join("")
+        + '</div>\n';
+    });
   t = t.replace(/^[ \t]*#{1,3}[ \t]*(.+?)[ \t]*#*[ \t]*$/gm, "<h4>$1</h4>")
        .replace(/^[ \t]{2,}[-•*][ \t]+(.+)$/gm, "<li class='sous'>$1</li>")
        .replace(/^[ \t]*[-•*][ \t]+(.+)$/gm, "<li>$1</li>")
        .replace(/^[ \t]*(?:---|___|\*\*\*)[ \t]*$/gm, "<hr>");
+  // Les <li> ne doivent pas absorber les options deja transformees en boutons.
+  t = t.replace(/(<div class="choix">[\s\S]*?<\/div>)/g, m => m.replace(/<\/?li[^>]*>/g, ""));
   // Les <li> voisins sont regroupés dans une seule liste.
   t = t.replace(/(?:<li(?: class='sous')?>[\s\S]*?<\/li>\n?)+/g,
                 m => "<ul>" + m.replace(/\n/g, "") + "</ul>");
@@ -645,8 +678,18 @@ function fmt(s){
           .replace(/(?<!["'=(])(https?:\/\/[^\s<]+)/g,'<a href="$1" target="_blank">$1</a>')
           // Un <br> après un titre, une liste ou une barre ajoutait une ligne vide.
           .replace(/\n/g,"<br>")
-          .replace(/<br>\s*(<\/?(?:h4|ul|li|hr)\b)/g, "$1")
-          .replace(/(<\/(?:h4|ul)>|<hr>)\s*<br>/g, "$1"); }
+          .replace(/<br>\s*(<\/?(?:h4|ul|li|hr|div)\b)/g, "$1")
+          .replace(/(<\/(?:h4|ul|div)>|<hr>)\s*<br>/g, "$1"); }
+
+/* Un clic vaut une réponse tapée : on envoie le libellé du bouton. */
+function repondre(b){
+  const bloc = b.closest(".choix");
+  if(bloc){ bloc.querySelectorAll("button").forEach(x => { x.disabled = true; });
+            b.classList.add("on"); }
+  const inp = document.getElementById("in");
+  inp.value = b.textContent.trim();
+  ask();
+}
 function addRow(who,html){ if(hint)hint.remove(); const r=document.createElement("div"); r.className="row "+(who==="me"?"me":"ai");
   r.innerHTML = who==="ai"
     ? '<div class="avatar">🧠</div><div class="col"><div class="bubble">'+html+'</div></div>'
@@ -812,7 +855,34 @@ function _apercuTexte(md, n){
   return t.length > n ? t.slice(0, n).replace(/\s+\S*$/, "") + "…" : t;
 }
 
-let NOUVEAUTES = [];
+let NOUVEAUTES = [], APPRIS = [];
+
+/* ⚠️ Nova apprend d'elle-meme ce qui est durable. Pour que ce soit acceptable, il
+   faut que ce soit VISIBLE et REVERSIBLE : une puce discrete sous la reponse, et une
+   croix qui efface le fait pour de bon. */
+function puceAppris(col){
+  if(!APPRIS.length || !col) return;
+  const z = document.createElement("div");
+  z.className = "appris";
+  z.innerHTML = '<span style="opacity:.6">🧠 Retenu :</span> ' + APPRIS.map(f =>
+      '<span class="fait" data-id="'+esc(f.id)+'">'+esc(f.texte)
+    + ' <a onclick="oublier(this)" title="Oublier ça">✕</a></span>').join(" ");
+  col.appendChild(z);
+  APPRIS = [];
+}
+
+async function oublier(a){
+  const p = a.closest(".fait");
+  if(!p) return;
+  const id = p.dataset.id;
+  p.style.opacity = ".4";
+  try{
+    await fetch(ORIGIN+"/agent/profile?id="+encodeURIComponent(id)+"&key="+encodeURIComponent(KEY),
+                {method:"DELETE"});
+    p.remove();
+    toast("🧠 Oublié.");
+  }catch(e){ p.style.opacity = "1"; }
+}
 
 async function nouveautes(){
   if(!KEY) return;
@@ -1581,7 +1651,10 @@ function ask(){
       if(voiceMode){ vSet("Nova répond…", coupeSure(answer,240)); speak(answer, ()=>{ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }); }
       else if(TTS) speak(answer); }
     else if(d.type==="model"){ MODELE_UTILISE=d.name||""; }
-    else if(d.type==="done"){ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false; attachReason(bubble,trace); attachModel(bubble); sndReceive(); setTimeout(refreshUsage,900); }
+    // ⚠️ Nova apprend maintenant toute seule. Retenir en douce serait le contraire de
+    // ce qu'on veut : on affiche ce qu'elle garde, avec de quoi l'enlever d'un clic.
+    else if(d.type==="appris" && (d.faits||[]).length){ APPRIS = APPRIS.concat(d.faits); }
+    else if(d.type==="done"){ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false; attachReason(bubble,trace); attachModel(bubble); puceAppris(bubble.parentElement); sndReceive(); setTimeout(refreshUsage,900); }
   };
   es.onerror=()=>{ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false;
     if(!answer) bubble.innerHTML="⚠️ Connexion interrompue. Vérifie ta clé (⚙️) et réessaie."; else attachReason(bubble,trace); };
