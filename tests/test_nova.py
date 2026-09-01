@@ -5597,6 +5597,62 @@ def test_diagnostic_ne_ment_pas_et_modele_adapte():
           "e.quand ?" in (racine / "ui" / "nova.html").read_text(encoding="utf-8"), True)
 
 
+def test_actu_boursiere_ne_rend_plus_de_la_politique():
+    """L'automatisation de 17 h de Lohan (« resume l'actu boursiere sur pea ») rendait :
+    « Edouard Philippe evoque les 35h », « Frappes americaines en Iran », « Accident
+    mortel avec un TER ».
+
+    Deux causes. (1) `theme_de` compare des MOTS ENTIERS : « boursiere » ne
+    correspondait pas a « bourse », et « PEA » n'etait nulle part — la demande tombait
+    donc en actualite GENERALE. (2) Il n'existait aucun flux de marche, et quand un
+    theme ne rendait rien on servait l'actualite generale a la place.
+    """
+    import importlib
+    ACT = importlib.import_module("plugins.builtin.actu_rss")
+
+    # --- 1. La demande de Lohan vise bien la Bourse -------------------------
+    for q in ("resume l'actu boursiere sur pea",
+              "resume l'actu boursière sur PEA",
+              "quoi de neuf sur mon PEA",
+              "actu du CAC 40",
+              "les dividendes cette semaine",
+              "actualite des marches"):
+        check(f"« {q[:34]} » → bourse", ACT.theme_de(q), "bourse")
+
+    # Les autres themes ne sont pas absorbes au passage.
+    check("l'actu tech reste tech", ACT.theme_de("actu tech du jour"), "tech")
+    check("l'actu generale reste generale", ACT.theme_de("quoi de neuf ?"), "general")
+    check("le sport reste le sport", ACT.theme_de("les resultats de foot"), "sport")
+
+    # --- 2. Il existe de vraies sources de marche ---------------------------
+    check("un theme bourse existe", "bourse" in ACT.FLUX, True)
+    check("…avec plusieurs sources", len(ACT.FLUX["bourse"]) >= 3, True)
+    noms = " ".join(n for n, _ in ACT.FLUX["bourse"]).lower()
+    check("…qui parlent vraiment de Bourse",
+          any(k in noms for k in ("bourse", "boursorama", "tradingsat")), True)
+
+    # --- 3. Pas de politique servie sous le titre « actu boursiere » --------
+    vrais = dict(ACT.FLUX)
+    try:
+        ACT.FLUX["bourse"] = [("MortA", "http://127.0.0.1:9/rss"),
+                              ("MortB", "http://127.0.0.1:9/rss")]
+        ACT.FLUX["general"] = [("Politique", "http://127.0.0.1:9/rss")]
+        import time as _t
+        res = ACT.recuperer("resume l'actu boursiere sur pea", 5, _t.monotonic() + 5)
+        check("aucun media boursier joignable → on ne rend RIEN", res, [])
+    finally:
+        ACT.FLUX.clear()
+        ACT.FLUX.update(vrais)
+
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parents[1] / "plugins" / "builtin"
+           / "actu_rss.py").read_text(encoding="utf-8")
+    check("le repli general est interdit sur la bourse",
+          'if not articles and theme == "bourse":' in src, True)
+    check("…mais reste possible ailleurs",
+          'elif not articles and theme != "general":' in src, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -5638,7 +5694,8 @@ if __name__ == "__main__":
                test_telegram_notion_et_jargon,
                test_actu_d_une_entreprise_pas_les_titres_du_jour,
                test_rien_ne_bloque_et_le_cache_sert_vraiment,
-               test_diagnostic_ne_ment_pas_et_modele_adapte):
+               test_diagnostic_ne_ment_pas_et_modele_adapte,
+               test_actu_boursiere_ne_rend_plus_de_la_politique):
         try:
             fn()
         except Exception as e:

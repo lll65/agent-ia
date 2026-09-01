@@ -42,6 +42,16 @@ FLUX = {
         ("La Tribune", "https://www.latribune.fr/feed.xml"),
         ("Les Échos", "https://services.lesechos.fr/rss/les-echos-economie.xml"),
     ],
+    # ⚠️ Il n'existait AUCUN flux de marché. « résume l'actu boursière sur PEA »
+    # tombait donc en actualité générale, et l'automatisation de 17 h rendait
+    # Édouard Philippe, des frappes en Iran et un accident de TER. Voici des
+    # sources qui parlent réellement de la Bourse.
+    "bourse": [
+        ("BFM Bourse", "https://www.tradingsat.com/rss/actualites.xml"),
+        ("Boursorama", "https://www.boursorama.com/rss/actualites"),
+        ("Les Échos Bourse", "https://services.lesechos.fr/rss/les-echos-finance-marches.xml"),
+        ("La Tribune Bourse", "https://www.latribune.fr/rss/rubriques/entreprises-finance.html"),
+    ],
     "sport": [
         ("L'Équipe", "https://dwh.lequipe.fr/api/edito/rss?path=/"),
         ("France Info Sport", "https://www.francetvinfo.fr/sports.rss"),
@@ -62,7 +72,16 @@ _THEMES = (
               "android", "iphone", "logiciel", "internet", "web", "jeu vidéo", "gaming")),
     ("science", ("science", "scientifique", "espace", "astronomie", "biologie", "physique",
                  "recherche scientifique", "nasa", "climat")),
-    ("economie", ("économie", "economie", "économique", "bourse", "marché", "marches",
+    # ⚠️ La comparaison porte sur des MOTS ENTIERS : « boursière » ne correspondait
+    # pas à « bourse », et « PEA » n'était nulle part. La demande de Lohan
+    # (« résume l'actu boursière sur pea ») tombait donc en actualité générale.
+    # Le thème bourse passe AVANT l'économie : il est plus précis.
+    ("bourse", ("bourse", "boursier", "boursière", "boursiere", "boursiers", "boursières",
+                "boursieres", "pea", "cac", "cac40", "action", "actions", "titre",
+                "etf", "dividende", "dividendes", "cotation", "trading", "trader",
+                "portefeuille", "investissement", "investir", "marchés", "marches",
+                "nasdaq", "wall street", "crypto", "bitcoin")),
+    ("economie", ("économie", "economie", "économique", "marché",
                   "entreprise", "inflation", "finance")),
     ("sport", ("sport", "foot", "football", "rugby", "tennis", "basket", "jo ", "olympique",
                "ligue 1", "match")),
@@ -293,7 +312,13 @@ def recuperer(question: str, maxi: int = 8, fin: float = 0.0) -> list:
     theme_reel = theme
     # Aucun média du thème n'a répondu (panne, blocage) : mieux vaut l'actualité générale
     # que rien du tout. Mais seulement EN DERNIER RECOURS, jamais en mélange.
-    if not articles and theme != "general":
+    # ⚠️ Sur une demande FINANCIÈRE, l'actualité générale n'est pas un repli
+    # acceptable : c'est ce qui a fait rendre « Édouard Philippe évoque les 35 h » et
+    # « accident mortel avec un TER » sous le titre « actu boursière ». Mieux vaut ne
+    # rien rendre — Nova le dit alors franchement et va chercher sur le web.
+    if not articles and theme == "bourse":
+        logger.info("[actu] aucun média boursier joignable — on ne rend PAS l'actu générale.")
+    elif not articles and theme != "general":
         logger.info(f"[actu] aucun média « {theme} » joignable → repli sur l'actualité générale")
         articles = lire_tout(FLUX["general"])
         theme_reel = "general"      # ⚠️ ne JAMAIS étiqueter « tech » de l'actualité générale
