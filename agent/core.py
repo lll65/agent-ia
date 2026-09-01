@@ -507,10 +507,15 @@ def parse_response(text: str) -> tuple:
     # du protocole que personne n'a su lire. L'afficher revenait à montrer la tuyauterie
     # à l'utilisateur. _texte_lisible sait déjà le reconnaître — il n'était simplement
     # jamais appelé sur ce chemin.
+    # ⚠️ On renvoyait `brut` — AVEC son « THOUGHT: » en tête. Vu en vrai dans un
+    # message Telegram : « ⚡ Suivi action / THOUGHT: J'ai les résultats de recherche
+    # pour DBV Technologies… ». _texte_lisible savait déjà retirer ces marqueurs ; on
+    # l'appelait juste pour DÉCIDER, sans jamais utiliser son résultat.
     brut = text.strip()
-    if brut and not _texte_lisible(brut):
+    propre = _texte_lisible(brut)
+    if brut and not propre:
         return None, None, None
-    return None, None, brut
+    return None, None, propre or brut
 
 
 _STUB_KEYWORDS = (

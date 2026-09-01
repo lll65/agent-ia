@@ -45,6 +45,17 @@
   .bubble{ max-width:100%; padding:13px 16px; border-radius:18px; line-height:1.5; font-size:15px; border:1px solid var(--stroke); backdrop-filter:blur(12px); white-space:pre-wrap; word-wrap:break-word; }
   .me .bubble{ max-width:82%; background:linear-gradient(135deg,var(--neon),#5b46d6); border:none; border-radius:18px 18px 5px 18px; box-shadow:0 8px 26px rgba(124,92,255,.35); }
   .ai .bubble{ background:var(--glass); border-radius:18px 18px 18px 5px; }
+  /* ⚠️ Une réponse structurée s'affichait en bouillie : ni titres ni listes n'étaient
+     rendus, et `white-space:pre-wrap` ajoutait ses propres sauts de ligne par-dessus
+     les <br>. On rend donc ces blocs en flux normal, avec une vraie hiérarchie. */
+  .bubble h4{ white-space:normal; margin:14px 0 6px; font-size:14.5px; font-weight:700;
+              color:var(--neon2); letter-spacing:.2px; }
+  .bubble h4:first-child{ margin-top:0; }
+  .bubble ul{ white-space:normal; margin:6px 0; padding-left:18px; }
+  .bubble li{ white-space:normal; margin:3px 0; line-height:1.45; }
+  .bubble li.sous{ margin-left:14px; list-style:circle; opacity:.9; }
+  .bubble hr{ border:none; border-top:1px solid var(--stroke); margin:12px 0; }
+  .bubble a{ word-break:break-word; }
   /* Menu déroulant : raisonnement de Nova */
   .mdl{ font-size:10.5px; color:var(--dim); opacity:.55; letter-spacing:.04em; padding:1px 4px; }
   .mdl::before{ content:'⚡ '; }
@@ -596,6 +607,17 @@ function fmt(s){
     return '<a href="'+a+'" target="_blank" class="imgw"><img src="'+a+'" alt="visuel"></a>'; });
   t=t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m,txt,u)=>
     '<a href="'+urlSure(u)+'" target="_blank">'+txt+'</a>');                  // liens markdown
+  // ⚠️ Ni les titres « ### », ni les listes « - » n'étaient gérés : une réponse
+  // structurée (celle d'une automatisation bourse, par exemple) s'affichait en
+  // bouillie — le « : » et le tiret atterrissaient seuls sur leur ligne, et chaque
+  // élément partait à la ligne sans hiérarchie. On les rend correctement.
+  t = t.replace(/^[ \t]*#{1,3}[ \t]*(.+?)[ \t]*#*[ \t]*$/gm, "<h4>$1</h4>")
+       .replace(/^[ \t]{2,}[-•*][ \t]+(.+)$/gm, "<li class='sous'>$1</li>")
+       .replace(/^[ \t]*[-•*][ \t]+(.+)$/gm, "<li>$1</li>")
+       .replace(/^[ \t]*(?:---|___|\*\*\*)[ \t]*$/gm, "<hr>");
+  // Les <li> voisins sont regroupés dans une seule liste.
+  t = t.replace(/(?:<li(?: class='sous')?>[\s\S]*?<\/li>\n?)+/g,
+                m => "<ul>" + m.replace(/\n/g, "") + "</ul>");
   return t.replace(/\*\*(.+?)\*\*/g,"<b>$1</b>")
           // *italique* à une astérisque : les modèles l'utilisent autant que _ceci_
           // et il s'affichait avec ses astérisques (« *Mario Kart World* »).
@@ -606,7 +628,10 @@ function fmt(s){
           // et s'affichaient avec leurs tirets bas.
           .replace(/(^|[\s(>])_([^_\n]{1,80})_(?=$|[\s.,;:!?)<])/g,"$1<i>$2</i>")
           .replace(/(?<!["'=(])(https?:\/\/[^\s<]+)/g,'<a href="$1" target="_blank">$1</a>')
-          .replace(/\n/g,"<br>"); }
+          // Un <br> après un titre, une liste ou une barre ajoutait une ligne vide.
+          .replace(/\n/g,"<br>")
+          .replace(/<br>\s*(<\/?(?:h4|ul|li|hr)\b)/g, "$1")
+          .replace(/(<\/(?:h4|ul)>|<hr>)\s*<br>/g, "$1"); }
 function addRow(who,html){ if(hint)hint.remove(); const r=document.createElement("div"); r.className="row "+(who==="me"?"me":"ai");
   r.innerHTML = who==="ai"
     ? '<div class="avatar">🧠</div><div class="col"><div class="bubble">'+html+'</div></div>'
@@ -873,7 +898,11 @@ async function loadAuto(idNeuf){ const body=document.getElementById("autoBody");
         +'<a onclick="toggleAuto(\''+it.id+'\','+(!it.active)+')" style="cursor:pointer;color:var(--dim)">'+(it.active?"pause":"activer")+'</a>'
         +'<a onclick="delAuto(\''+it.id+'\')" style="cursor:pointer;color:var(--dim)">✕</a></span></div>'
         +(it.last_result? '<details class="reason" style="margin-top:7px"><summary>Dernier résultat</summary>'
-            +'<div class="rsteps" style="font-size:12px">'+fmt(coupeSure(it.last_result,900))+'</div></details>':'')
+            // ⚠️ Le résultat était coupé à 900 caractères — au milieu d'un mot, sans
+            // aucun moyen de voir la suite (« on voit pas la suite »). On le rend en
+            // entier, dans une zone qui défile et qui reste lisible.
+            +'<div class="rsteps" style="font-size:13px;line-height:1.5;max-height:60vh;'
+              +'overflow:auto;padding-right:6px">'+fmt(it.last_result)+'</div></details>':'')
         +'</div>'; }).join("")
       : '<div class="pitem">Aucune automatisation. Choisis un modèle ci-dessous 👇</div>';
     // On remonte sur la nouvelle ligne et on la surligne : sinon elle apparaissait

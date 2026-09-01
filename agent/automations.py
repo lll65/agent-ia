@@ -255,7 +255,10 @@ async def run_one(item: dict) -> str:
             if it["id"] == item["id"]:
                 it["last_run"] = time.time()
                 it["dernier_envoi"] = envoi
-                it["last_result"] = (answer or "")[:4000]
+                # ⚠️ 4 000 caractères coupaient une synthèse bourse en plein milieu.
+                # Le travail de fond peut désormais durer 20 min : autant en garder le
+                # résultat entier. (Telegram, lui, reste borné par son propre plafond.)
+                it["last_result"] = (answer or "")[:12000]
                 it["runs"] = int(it.get("runs", 0)) + 1
                 # ⚠️ Le resultat n'etait POUSSE nulle part sans Telegram : il fallait
                 # penser a ouvrir la fenetre Automatisations pour le decouvrir. Une
