@@ -822,7 +822,13 @@ def _resolve_app_action(message: str):
             "maxResults": 25, "singleEvents": True, "orderBy": "startTime",
         }
     if any(h in m for h in mail):
-        return "GMAIL_FETCH_EMAILS", {"maxResults": 10, "query": "in:inbox"}
+        # ⚠️ On rendait la liste BRUTE des sujets. Résultat vu en vrai : dix
+        # notifications Instagram alignées dans un tableau, avec « Alerte de
+        # sécurité » noyée en 3ᵉ position — donc l'inverse d'un service. La demande
+        # de mails passe désormais par le rapport trié (agent/rapport_mail.py), qui
+        # sépare « à répondre », « important » et « ignorés » et prépare les
+        # brouillons. Cette action-ci ne sert plus qu'au repli.
+        return "__RAPPORT_MAILS__", {"combien": 25}
     return None, None
 
 
@@ -1044,6 +1050,18 @@ def sans_secrets(texte: str) -> str:
         v = m.group(0)
         return (v[:6] + "…" + v[-3:]) if len(v) > 14 else "…"
     return _SECRETS.sub(_masque, texte or "")
+
+
+def _rapport_mails(args: dict) -> str:
+    """Le tri des mails — jamais la liste brute des sujets."""
+    try:
+        from plugins.builtin.mails_tool import RapportMailsPlugin
+        return RapportMailsPlugin().run(combien=int((args or {}).get("combien") or 25),
+                                        non_lus=False)
+    except Exception as e:
+        logger.warning(f"[mails] rapport impossible : {type(e).__name__}: {e}")
+        obs = _tool("GMAIL_FETCH_EMAILS", {"maxResults": 10, "query": "in:inbox"}, "gmail")
+        return _format_app_result("mes mails", "GMAIL_FETCH_EMAILS", str(obs), False)
 
 
 def _honest_no_access(action: str, obs: str) -> str:
@@ -1572,6 +1590,9 @@ def _direct_app_prepare_brut(message: str, canal: str = "web"):
             return {"steps": g["steps"], "done_answer": g["done_answer"],
                     "echec_app": g.get("echec_app", False)}
         return None
+    if action == "__RAPPORT_MAILS__":
+        return {"steps": [{"kind": "action", "tool": "gmail", "label": "Tri de tes mails"}],
+                "done_answer": _rapport_mails(args)}
     slug = (action or "").split("_", 1)[0].lower()
     # ⚠️ Rien d'irréversible sans ton accord explicite.
     if _est_irreversible(action):
@@ -1654,6 +1675,11 @@ def _direct_app_run_brut(message: str, canal: str = "passerelle"):
             return {"steps": g["steps"], "answer": g["done_answer"], "ok": True,
                     "echec_app": g.get("echec_app", False)}
         return None
+    if action == "__RAPPORT_MAILS__":
+        # Même tri que dans le chat : Siri et les automatisations n'ont pas droit à
+        # une version dégradée.
+        return {"steps": [{"kind": "action", "tool": "gmail", "label": "Tri de tes mails"}],
+                "answer": _rapport_mails(args), "ok": True}
     # Le slug est déduit AVANT l'appel : sinon _tool doit le redeviner, et l'identité
     # Composio se perd dès que le préfixe ne correspond pas à un slug connu.
     slug = (action or "").split("_", 1)[0].lower()

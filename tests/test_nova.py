@@ -6369,6 +6369,92 @@ def test_rapport_de_mails_ne_peut_pas_envoyer():
         A._tool, C.chat = vrai_tool, vrai_chat
 
 
+def test_mails_tries_et_tableaux_rendus():
+    """« Vu comment c'est redige, comment veux-tu que je lise jusqu'au bout ? Y a rien
+    qui attire l'attention, c'est une liste de course, police plate. »
+
+    Il avait raison sur DEUX points a la fois.
+
+    1. Le rapport de mails trie que je venais de construire n'etait PAS utilise :
+       « lis mes mails » partait sur le chemin direct, qui rend la liste BRUTE des
+       sujets. Resultat vu en vrai : dix notifications Instagram alignees, avec
+       « Alerte de securite » noyee en 3e position. L'inverse d'un service.
+    2. Les TABLEAUX Markdown n'etaient pas rendus du tout : « | N° | Sujet | » et sa
+       ligne de tirets s'affichaient tels quels, barres verticales comprises. Ce
+       n'etait pas une « police plate » — c'etait litteralement du texte brut.
+    """
+    import importlib, json as _j, subprocess, tempfile, os
+    from pathlib import Path as _P
+    racine = _P(__file__).resolve().parents[1]
+    A = importlib.import_module("api.agent")
+
+    # --- 1. Une demande de mails passe par le TRI --------------------------
+    act, _ = A._resolve_app_action("lit mes mails d'aujourdhui")
+    check("la demande part vers le rapport trie", act, "__RAPPORT_MAILS__")
+    for phrase in ("resume mes mails", "mes mails", "regarde ma boite mail"):
+        check(f"« {phrase} » aussi", A._resolve_app_action(phrase)[0], "__RAPPORT_MAILS__")
+
+    import llm.client as C
+    vrai_tool, vrai_chat = A._tool, C.chat
+    try:
+        spam = [{"id": str(i), "subject": "pixglow.app, see what's been happening on Instagram",
+                 "from": "Instagram <no-reply@mail.instagram.com>",
+                 "snippet": "Voir le fil"} for i in range(8)]
+        vrais = [{"id": "9", "subject": "Alerte de sécurité",
+                  "from": "Google <no-reply@google.com>",
+                  "snippet": "Une connexion inhabituelle a été détectée sur ton compte."},
+                 {"id": "10", "subject": "Devoir de maths",
+                  "from": "M. Durand <durand@lycee.fr>",
+                  "snippet": "Bonjour Lohan, peux-tu me dire si tu as fini l'exercice 4 ?"}]
+        A._tool = lambda a, args=None, slug="", **k: _j.dumps({"data": {"messages": spam + vrais}})
+        C.chat = lambda *a, **k: "Bonjour monsieur, oui j'ai termine l'exercice 4."
+        r = A._direct_app_prepare_brut("lit mes mails d'aujourdhui")
+        rep = r["done_answer"]
+
+        check("ce qui demande une reponse est EN TETE",
+              rep.index("À répondre") < rep.index("Ignorés"), True)
+        check("le devoir de maths remonte", "Devoir de maths" in rep, True)
+        check("…avec un brouillon pret", "Réponse proposée" in rep, True)
+        check("l'alerte de securite n'est plus noyee", "Alerte de sécurité" in rep, True)
+        check("…et elle est classee importante",
+              rep.index("Alerte de sécurité") < rep.index("Ignorés"), True)
+        # LE point : les 8 spams sont COMPTES, pas listes un par un.
+        check("les notifications ne sont plus listees", "pixglow" in rep, False)
+        check("…mais leur nombre est dit", "Ignorés (8)" in rep, True)
+        check("et rien n'a ete envoye", "Aucun mail n'a été envoyé" in rep, True)
+    finally:
+        A._tool, C.chat = vrai_tool, vrai_chat
+
+    # --- 2. Les tableaux sont VRAIMENT rendus ------------------------------
+    ui = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+    check("les tableaux sont styles", ".bubble table{" in ui, True)
+    check("…et defilent au lieu de deborder", "overflow-x:auto" in ui, True)
+
+    if shutil.which("node"):
+        src = ui[ui.index("function esc(s)"):ui.index("function addRow(")]
+        with tempfile.TemporaryDirectory() as d:
+            fjs = os.path.join(d, "f.js")
+            open(fjs, "w", encoding="utf-8").write(src)
+            h = ("var KEY='k', ORIGIN='https://x';\n"
+                 "eval(require('fs').readFileSync(%r,'utf8'));\n"
+                 "var t = ['| N° | Sujet |','|----|-------|','| 1 | Alerte |',"
+                 "'| 2 | Devoir |','','Voila.'].join('\\n');\n"
+                 "console.log(JSON.stringify({tab: fmt(t),"
+                 " phrase: fmt('Texte avec | une barre | au milieu.')}));\n" % fjs)
+            fh = os.path.join(d, "h.js")
+            open(fh, "w", encoding="utf-8").write(h)
+            r2 = subprocess.run(["node", fh], capture_output=True, text=True, timeout=60)
+            out = _j.loads(r2.stdout.strip().splitlines()[-1])
+        check("un vrai tableau est produit", "<table>" in out["tab"], True)
+        check("…avec ses en-tetes", "<th>Sujet</th>" in out["tab"], True)
+        check("…et ses lignes", out["tab"].count("<tr>"), 3)
+        check("plus aucune barre verticale a l'ecran", "|" in out["tab"], False)
+        check("le texte qui suit est preserve", "Voila." in out["tab"], True)
+        # ⚠️ Une barre dans une phrase ordinaire ne doit pas fabriquer un tableau.
+        check("une phrase avec une barre reste une phrase",
+              "<table>" in out["phrase"], False)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -6419,7 +6505,8 @@ if __name__ == "__main__":
                test_apprend_seule_mais_visible_et_pose_des_questions,
                test_raisonnement_suit_et_nova_n_invente_pas_de_cause,
                test_le_sujet_survit_a_une_correction,
-               test_rapport_de_mails_ne_peut_pas_envoyer):
+               test_rapport_de_mails_ne_peut_pas_envoyer,
+               test_mails_tries_et_tableaux_rendus):
         try:
             fn()
         except Exception as e:
