@@ -13,20 +13,23 @@
 <link rel="apple-touch-icon" href="/nova/icon.svg">
 <link rel="icon" href="/nova/icon.svg" type="image/svg+xml">
 <style>
-  :root{ --bg:#060610; --glass:rgba(255,255,255,.06); --stroke:rgba(255,255,255,.12);
-         --neon:#7c5cff; --neon2:#22d3ee; --pink:#ec4899; --txt:#e9e9f5; --dim:#9aa0b5; }
+  :root{ --bg:#08080f; --glass:rgba(255,255,255,.055); --stroke:rgba(255,255,255,.10);
+         --neon:#8b6dff; --neon2:#2fe0f5; --pink:#ff4fa3; --txt:#f2f2fa; --dim:#a8afc4; }
   *{ box-sizing:border-box; margin:0; padding:0; } html,body{ height:100%; }
   body{ font-family:'Inter',system-ui,sans-serif; color:var(--txt); background:var(--bg); overflow:hidden; }
   /* Aurora d'ouverture — magnifique au démarrage, se tamise une fois la conversation lancée */
-  #aurora{ position:fixed; inset:0; z-index:0; overflow:hidden; filter:blur(70px); transition:opacity 1.3s ease, filter 1.3s ease; }
-  #aurora .blob{ position:absolute; border-radius:50%; opacity:.6; mix-blend-mode:screen; will-change:transform; }
+  #aurora{ position:fixed; inset:0; z-index:0; overflow:hidden; filter:blur(80px);
+    opacity:.62; transition:opacity 1.3s ease, filter 1.3s ease; }
+  /* ⚠️ Sur un fond quasi noir, les mêmes taches bavaient et délavaient le texte.
+     On baisse leur opacité : le noir doit rester noir pour que l'accent ressorte. */
+  #aurora .blob{ position:absolute; border-radius:50%; opacity:.42; mix-blend-mode:screen; will-change:transform; }
   #aurora .b1{ width:60vw; height:60vw; left:-12vw; top:-16vh; background:radial-gradient(circle,#7c5cff,transparent 68%); animation:float1 22s ease-in-out infinite; }
   #aurora .b2{ width:52vw; height:52vw; right:-10vw; top:2vh; background:radial-gradient(circle,#22d3ee,transparent 68%); animation:float2 26s ease-in-out infinite; }
   #aurora .b3{ width:46vw; height:46vw; left:22vw; bottom:-18vh; background:radial-gradient(circle,#ec4899,transparent 70%); animation:float3 30s ease-in-out infinite; }
   @keyframes float1{ 0%,100%{ transform:translate(0,0) scale(1) } 50%{ transform:translate(7vw,6vh) scale(1.15) } }
   @keyframes float2{ 0%,100%{ transform:translate(0,0) scale(1) } 50%{ transform:translate(-6vw,5vh) scale(.9) } }
   @keyframes float3{ 0%,100%{ transform:translate(0,0) scale(1) } 50%{ transform:translate(5vw,-6vh) scale(1.1) } }
-  body.chatting #aurora{ opacity:.22; filter:blur(90px); }
+  body.chatting #aurora{ opacity:.14; filter:blur(100px); }
   #particles{ position:fixed; inset:0; z-index:0; }
   .app{ position:relative; z-index:2; height:100dvh; display:flex; flex-direction:column; max-width:860px; margin:0 auto; padding:14px; }
   header{ display:flex; align-items:center; justify-content:space-between; padding:4px 4px 10px; }
@@ -114,47 +117,99 @@
      Une orbe endormie qui respire, et qui se réveille dès que tu commences à écrire. */
   .hint{ display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px;
          margin:auto 0; color:var(--dim); font-size:13px; }
-  .sleeper{ position:relative; width:210px; height:210px; }
-  .sleeper .core{ position:absolute; inset:38px; border-radius:50%;
-    background:radial-gradient(circle at 36% 30%, #c9b8ff, #7c5cff 56%, #33236e 100%);
-    box-shadow:0 0 60px rgba(124,92,255,.55), inset 0 -16px 34px rgba(0,0,0,.4);
-    animation:sleepBreath 4.2s ease-in-out infinite; }
-  /* Respiration franche : l'orbe gonfle et s'éclaire nettement */
-  @keyframes sleepBreath{ 0%,100%{ transform:scale(.88); filter:brightness(.6) }
-                          50%{ transform:scale(1.14); filter:brightness(1.25) } }
-  .sleeper .halo{ position:absolute; inset:14px; border-radius:50%; border:1.5px solid rgba(124,92,255,.35);
-    animation:sleepHalo 4.2s ease-in-out infinite; }
-  .sleeper .halo.h2{ inset:0; animation-delay:.7s; border-color:rgba(34,211,238,.28); }
-  @keyframes sleepHalo{ 0%,100%{ transform:scale(.9); opacity:.25 } 50%{ transform:scale(1.12); opacity:.85 } }
-  .sleeper .zzz{ position:absolute; right:16px; top:14px; font-size:17px; opacity:.5; z-index:2;
-    animation:zzzFloat 4.2s ease-in-out infinite; }
-  @keyframes zzzFloat{ 0%,100%{ transform:translateY(0); opacity:.2 } 50%{ transform:translateY(-12px); opacity:.75 } }
-  /* Ses facultés gravitent autour d'elle, au ralenti pendant le sommeil */
-  .sleeper .orbit{ position:absolute; inset:0; animation:orbitSpin 26s linear infinite; }
-  .sleeper .orbit.o2{ animation-duration:38s; animation-direction:reverse; }
-  @keyframes orbitSpin{ to{ transform:rotate(360deg) } }
-  .sleeper .sat{ position:absolute; width:30px; height:30px; margin:-15px 0 0 -15px; border-radius:10px;
-    display:grid; place-items:center; font-size:14px; background:rgba(255,255,255,.05);
-    border:1px solid var(--stroke); backdrop-filter:blur(6px);
-    animation:satBreathe 4.2s ease-in-out infinite; }
-  @keyframes satBreathe{ 0%,100%{ opacity:.3; box-shadow:none } 50%{ opacity:.85; box-shadow:0 0 14px rgba(124,92,255,.5) } }
-  .sleeper .sat i{ display:block; animation:orbitSpin 26s linear infinite reverse; font-style:normal; }
-  .sleeper .orbit.o2 .sat i{ animation-duration:38s; animation-direction:normal; }
-  /* Réveil : tout accélère et s'illumine */
-  body.waking .sleeper .orbit{ animation-duration:6s; }
-  body.waking .sleeper .sat{ animation:none; opacity:1; box-shadow:0 0 18px rgba(34,211,238,.6); border-color:rgba(34,211,238,.5); }
+  /* ⚠️ L'ancienne version faisait graviter des EMOJI (📅 📧 🔍 💻) dans des carrés,
+     à des positions arbitraires (85%/15%), avec un « zᶻ » écrit en texte. L'emoji est
+     rendu différemment sur chaque appareil, il est multicolore, et il jure avec une
+     palette violet/cyan : c'était lui, l'essentiel de la laideur. On garde l'idée
+     d'une créature qui dort, on enlève le bric-à-brac. */
+  .sleeper{ position:relative; width:230px; height:230px;
+            display:grid; place-items:center; }
+
+  /* La sphère : plusieurs couches pour donner une VRAIE profondeur, là où un simple
+     dégradé radial restait plat comme un rond de CSS. */
+  .sleeper .core{ position:absolute; width:118px; height:118px; border-radius:50%;
+    background:
+      /* ⚠️ Un reflet à .92 sur 38% délavait tout le haut de la sphère : elle
+         ressemblait à une ampoule, pas à une matière. Plus petit et plus doux, il
+         se lit comme une lumière POSÉE dessus. */
+      radial-gradient(circle at 33% 26%, rgba(255,255,255,.55), rgba(255,255,255,0) 26%),
+      radial-gradient(circle at 38% 32%, rgba(196,178,255,.55), rgba(196,178,255,0) 48%),
+      radial-gradient(circle at 50% 46%, #8f74f5 0%, #5b3fd0 44%, #241a55 76%, #100b28 100%);
+    box-shadow:
+      0 0 0 1px rgba(255,255,255,.07),
+      0 0 70px rgba(139,109,255,.42),
+      /* Le terminateur — la zone d'ombre en bas — est ce qui fait « sphère ». */
+      inset 0 -26px 46px rgba(0,0,0,.62),
+      inset 0 -3px 10px rgba(47,224,245,.10),
+      inset 0 12px 24px rgba(255,255,255,.07);
+    animation:respire 5.4s ease-in-out infinite; }
+  /* Un reflet spéculaire qui tourne LENTEMENT : c'est ce mouvement-là qui fait
+     « matière » plutôt que « rond coloré ». */
+  .sleeper .core::after{ content:""; position:absolute; inset:0; border-radius:50%;
+    background:conic-gradient(from 0deg,
+      rgba(255,255,255,0) 0deg, rgba(255,255,255,.16) 44deg,
+      rgba(47,224,245,.14) 92deg, rgba(255,255,255,0) 160deg, rgba(255,255,255,0) 360deg);
+    mix-blend-mode:screen; animation:tourne 14s linear infinite; }
+  /* Grain fin : sans lui, les dégradés font des bandes visibles sur grand écran. */
+  .sleeper .core::before{ content:""; position:absolute; inset:0; border-radius:50%;
+    opacity:.16; mix-blend-mode:overlay; pointer-events:none;
+    background-image:radial-gradient(rgba(255,255,255,.5) .5px, transparent .6px);
+    background-size:3px 3px; }
+  @keyframes respire{ 0%,100%{ transform:scale(.94); filter:brightness(.82) }
+                      50%{ transform:scale(1.045); filter:brightness(1.12) } }
+  @keyframes tourne{ to{ transform:rotate(360deg) } }
+
+  /* Deux anneaux très fins — la structure, pas la décoration. */
+  .sleeper .anneau{ position:absolute; border-radius:50%; border:1px solid rgba(139,109,255,.18);
+    animation:pulseAnneau 5.4s ease-in-out infinite; }
+  .sleeper .anneau.a1{ width:168px; height:168px; }
+  .sleeper .anneau.a2{ width:222px; height:222px; border-color:rgba(47,224,245,.10);
+    animation-delay:.9s; }
+  @keyframes pulseAnneau{ 0%,100%{ transform:scale(.97); opacity:.35 }
+                          50%{ transform:scale(1.02); opacity:.8 } }
+
+  /* Les points lumineux remplacent les emoji : même idée d'orbite, sans le fatras. */
+  .sleeper .orbe{ position:absolute; width:222px; height:222px;
+                  animation:tourne 34s linear infinite; }
+  .sleeper .orbe.o2{ width:168px; height:168px; animation-duration:22s;
+                     animation-direction:reverse; }
+  .sleeper .pt{ position:absolute; width:5px; height:5px; margin:-2.5px 0 0 -2.5px;
+    border-radius:50%; background:var(--neon);
+    box-shadow:0 0 10px var(--neon); animation:scintille 5.4s ease-in-out infinite; }
+  .sleeper .orbe.o2 .pt{ width:4px; height:4px; margin:-2px 0 0 -2px;
+    background:var(--neon2); box-shadow:0 0 9px var(--neon2); }
+  @keyframes scintille{ 0%,100%{ opacity:.25 } 50%{ opacity:.95 } }
+
+  /* Réveil : la sphère s'ouvre, les anneaux s'écartent, les points accélèrent.
+     Plus de « zᶻ » : le ralentissement DIT déjà le sommeil. */
+  body.waking .sleeper .orbe{ animation-duration:7s; }
+  body.waking .sleeper .orbe.o2{ animation-duration:5s; }
+  body.waking .sleeper .core{ animation:reveil 1.2s ease-out forwards;
+    box-shadow:0 0 0 1px rgba(255,255,255,.10), 0 0 90px rgba(139,109,255,.8),
+               0 0 150px rgba(47,224,245,.3), inset 0 -18px 34px rgba(0,0,0,.45); }
+  body.waking .sleeper .anneau{ animation:reveilAnneau 1.2s ease-out forwards; }
+  body.waking .sleeper .pt{ animation:none; opacity:1; }
+  @keyframes reveil{ 0%{ transform:scale(1) } 45%{ transform:scale(1.12); filter:brightness(1.45) }
+                     100%{ transform:scale(1.05); filter:brightness(1.18) } }
+  @keyframes reveilAnneau{ to{ transform:scale(1.1); opacity:.9;
+                               border-color:rgba(47,224,245,.45) } }
   .hint .htxt{ font-size:14px; letter-spacing:.02em; transition:.4s; }
   .hint .hsub{ font-size:11.5px; opacity:.6; letter-spacing:.1em; text-transform:uppercase; }
-  /* Réveil : quand tu écris, elle s'illumine et se redresse */
-  body.waking .sleeper .core{ animation:wakeCore 1.1s ease-out forwards;
-    box-shadow:0 0 80px rgba(124,92,255,.85), 0 0 130px rgba(34,211,238,.35); }
-  body.waking .sleeper .halo{ animation:wakeHalo 1.1s ease-out forwards; }
-  body.waking .sleeper .zzz{ opacity:0; transition:opacity .3s; }
   body.waking .hint .htxt{ color:var(--txt); }
-  @keyframes wakeCore{ 0%{ transform:scale(1) } 45%{ transform:scale(1.16); filter:brightness(1.5) }
-                       100%{ transform:scale(1.08); filter:brightness(1.25) } }
-  @keyframes wakeHalo{ 0%{ transform:scale(1); opacity:.5 } 100%{ transform:scale(1.35); opacity:0 } }
-  @media (max-width:620px){ .sleeper{ width:104px; height:104px } }
+  /* ⚠️ Sur téléphone, réduire le CONTENEUR ne réduisait rien : les couches ont des
+     tailles fixes en pixels et débordaient. On les met à l'échelle pour de bon. */
+  @media (max-width:620px){
+    .sleeper{ width:170px; height:170px; }
+    .sleeper .core{ width:92px; height:92px; }
+    .sleeper .anneau.a1, .sleeper .orbe.o2{ width:128px; height:128px; }
+    .sleeper .anneau.a2, .sleeper .orbe{ width:166px; height:166px; }
+  }
+  /* Certains préfèrent l'immobilité — et sur un vieux téléphone, ça soulage aussi. */
+  @media (prefers-reduced-motion:reduce){
+    .sleeper .core, .sleeper .core::after, .sleeper .anneau,
+    .sleeper .orbe, .sleeper .pt{ animation:none; }
+    .sleeper .core{ transform:scale(1); }
+  }
   /* Même correction que pour le menu : l'encoche n'était gérée qu'en app installée. */
   .modal{ position:fixed; inset:0; z-index:9; background:rgba(0,0,0,.6); display:none; place-items:center;
           padding:max(20px,env(safe-area-inset-top)) max(20px,env(safe-area-inset-right))
@@ -313,6 +368,18 @@
     border:1px solid var(--stroke); background:transparent; color:var(--dim); cursor:pointer; }
   .edit-auto .e-jours button.on{ background:var(--neon); border-color:transparent; color:#fff; }
   /* Ce que Nova a retenu toute seule : discret, mais visible et effaçable. */
+  /* Tableaux : lisibles, denses, et qui DÉFILENT au lieu de déborder sur mobile. */
+  .bubble .tw{ white-space:normal; overflow-x:auto; margin:10px 0;
+               border:1px solid var(--stroke); border-radius:12px; }
+  .bubble table{ border-collapse:collapse; width:100%; font-size:12.5px; }
+  .bubble th{ text-align:left; padding:8px 11px; font-weight:600; font-size:11px;
+              letter-spacing:.06em; text-transform:uppercase; color:var(--neon2);
+              background:rgba(255,255,255,.04); white-space:nowrap; }
+  .bubble td{ padding:8px 11px; border-top:1px solid rgba(255,255,255,.06);
+              vertical-align:top; line-height:1.4; }
+  .bubble tbody tr:hover{ background:rgba(255,255,255,.03); }
+  .bubble td:first-child{ color:var(--dim); white-space:nowrap; }
+
   /* Questions interactives : Nova propose, un clic répond. */
   .choix{ margin:10px 0; padding:11px 12px; border-radius:12px;
           background:rgba(124,92,255,.08); border:1px solid rgba(124,92,255,.22);
@@ -465,14 +532,18 @@
     <div class="chat" id="chat">
       <div class="hint" id="hint">
         <div class="sleeper">
-          <span class="halo"></span><span class="halo h2"></span>
-          <span class="orbit"><span class="sat" style="left:50%;top:0"><i>📅</i></span>
-            <span class="sat" style="left:100%;top:50%"><i>📧</i></span>
-            <span class="sat" style="left:50%;top:100%"><i>🔍</i></span>
-            <span class="sat" style="left:0;top:50%"><i>💻</i></span></span>
-          <span class="orbit o2"><span class="sat" style="left:85%;top:15%"><i>🎨</i></span>
-            <span class="sat" style="left:15%;top:85%"><i>📋</i></span></span>
-          <span class="core"></span><span class="zzz">z<sup>z</sup></span></div>
+          <span class="anneau a1"></span><span class="anneau a2"></span>
+          <span class="orbe"><span class="pt" style="left:50%;top:0"></span>
+            <span class="pt" style="left:93.3%;top:25%"></span>
+            <span class="pt" style="left:93.3%;top:75%"></span>
+            <span class="pt" style="left:50%;top:100%"></span>
+            <span class="pt" style="left:6.7%;top:75%"></span>
+            <span class="pt" style="left:6.7%;top:25%"></span></span>
+          <span class="orbe o2"><span class="pt" style="left:50%;top:0"></span>
+            <span class="pt" style="left:100%;top:50%"></span>
+            <span class="pt" style="left:50%;top:100%"></span>
+            <span class="pt" style="left:0;top:50%"></span></span>
+          <span class="core"></span></div>
         <div class="htxt" id="hintTxt">Nova est en veille…</div>
         <div class="hsub">écris ou parle pour la réveiller</div>
       </div>
@@ -657,6 +728,24 @@ function fmt(s){
         + opts.map(o => '<button type="button" onclick="repondre(this)">' + o + '</button>').join("")
         + '</div>\n';
     });
+  // ⚠️ Les TABLEAUX Markdown n'étaient pas rendus du tout : « | N° | Sujet | » et sa
+  // ligne de tirets s'affichaient tels quels, avec les barres verticales. D'où
+  // « c'est une liste de course, police plate » — c'était littéralement du texte brut.
+  t = t.replace(/(?:^[ \t]*\|.+\|[ \t]*\n){2,}/gm, (bloc) => {
+    const lignes = bloc.trim().split("\n")
+      .map(l => l.trim()).filter(l => l.startsWith("|"));
+    if(lignes.length < 2) return bloc;
+    const cellules = l => l.replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+    const sep = /^\|[\s:|-]+\|$/.test(lignes[1]);
+    if(!sep) return bloc;                       // pas un vrai tableau
+    const entete = cellules(lignes[0]);
+    const corps = lignes.slice(2).map(cellules);
+    return '<div class="tw"><table><thead><tr>'
+      + entete.map(c => "<th>" + c + "</th>").join("")
+      + "</tr></thead><tbody>"
+      + corps.map(r => "<tr>" + r.map(c => "<td>" + c + "</td>").join("") + "</tr>").join("")
+      + "</tbody></table></div>\n";
+  });
   t = t.replace(/^[ \t]*#{1,3}[ \t]*(.+?)[ \t]*#*[ \t]*$/gm, "<h4>$1</h4>")
        .replace(/^[ \t]{2,}[-•*][ \t]+(.+)$/gm, "<li class='sous'>$1</li>")
        .replace(/^[ \t]*[-•*][ \t]+(.+)$/gm, "<li>$1</li>")
@@ -678,8 +767,8 @@ function fmt(s){
           .replace(/(?<!["'=(])(https?:\/\/[^\s<]+)/g,'<a href="$1" target="_blank">$1</a>')
           // Un <br> après un titre, une liste ou une barre ajoutait une ligne vide.
           .replace(/\n/g,"<br>")
-          .replace(/<br>\s*(<\/?(?:h4|ul|li|hr|div)\b)/g, "$1")
-          .replace(/(<\/(?:h4|ul|div)>|<hr>)\s*<br>/g, "$1"); }
+          .replace(/<br>\s*(<\/?(?:h4|ul|li|hr|div|table|thead|tbody|tr|th|td)\b)/g, "$1")
+          .replace(/(<\/(?:h4|ul|div|table)>|<hr>)\s*<br>/g, "$1"); }
 
 /* Un clic vaut une réponse tapée : on envoie le libellé du bouton. */
 function repondre(b){
