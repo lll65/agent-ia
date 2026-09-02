@@ -6215,6 +6215,56 @@ def test_raisonnement_suit_et_nova_n_invente_pas_de_cause():
     check("une vraie confidence l'est", A._is_personal_fact("je suis en terminale"), True)
 
 
+def test_le_sujet_survit_a_une_correction():
+    """Trace reelle : Nova cherche un document nomme « mais cest ».
+
+    « Ouvre le fichier suivi PEA Lohan et pere… » → Nova part sur Drive. Lohan
+    corrige : « mais cest sur google sheet ». Nova cherche alors dans Sheets un
+    document nomme « mais cest » — et repond « je n'ai pas trouve le tableur dont tu
+    parles » alors que « Suivi_PEA_Lohan_Pere » etait juste la, dans la liste qu'elle
+    venait d'afficher. Le SUJET etait dans le message PRECEDENT ; seul le dernier
+    etait lu.
+    """
+    import importlib
+    A = importlib.import_module("api.agent")
+    A._DERNIER_SUJET.update(quoi="", t=0.0)
+
+    q1 = A._mots_cles_fichier("Ouvre le fichier suivi PEA Lohan et pere")
+    check("le sujet d'origine est extrait", "suivi" in q1.lower() and "pea" in q1.lower(), True)
+
+    # LA correction : elle ne doit PAS devenir la requete de recherche.
+    q2 = A._mots_cles_fichier("mais cest sur google sheet")
+    check("une correction ne remplace pas le sujet", q2, q1)
+    check("…et ne cherche surtout pas « mais cest »", q2.strip().lower(), q1.strip().lower())
+
+    for correction in ("non plutot dans sheets", "c'est sur google sheet",
+                       "attends", "oui", "et sur drive ?"):
+        check(f"« {correction[:26]} » garde le sujet",
+              A._mots_cles_fichier(correction), q1)
+
+    # Un VRAI nouveau sujet reprend la main.
+    q3 = A._mots_cles_fichier("ouvre le fichier Espagnol")
+    check("un nouveau sujet remplace l'ancien", "espagnol" in q3.lower(), True)
+    check("…et devient le sujet courant",
+          A._mots_cles_fichier("mais cest sur google sheet"), q3)
+
+    # La detection de sujet solide, isolement.
+    check("« mais cest » n'est pas un sujet", A._sujet_solide("mais cest"), False)
+    check("« oui » non plus", A._sujet_solide("oui"), False)
+    check("une chaine vide non plus", A._sujet_solide(""), False)
+    check("« suivi PEA » en est un", A._sujet_solide("suivi PEA"), True)
+    check("« Espagnol » aussi", A._sujet_solide("Espagnol"), True)
+    # ⚠️ Le nom du CONTENANT ne designe aucun document : il dit ou chercher.
+    check("« google sheet » n'est pas un document", A._sujet_solide("google sheet"), False)
+    check("« drive » non plus", A._sujet_solide("drive"), False)
+
+    # Passe le delai, on ne ressort pas un sujet vieux d'une heure.
+    A._DERNIER_SUJET.update(quoi="suivi pea", t=A._t.monotonic() - (A._SUJET_TTL + 10))
+    check("un sujet perime n'est pas reutilise",
+          A._mots_cles_fichier("mais cest sur google sheet"), "mais cest")
+    A._DERNIER_SUJET.update(quoi="", t=0.0)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -6263,7 +6313,8 @@ if __name__ == "__main__":
                test_fiche_valeur_popup_et_edition_en_place,
                test_schemas_traces_sur_les_vrais_chiffres,
                test_apprend_seule_mais_visible_et_pose_des_questions,
-               test_raisonnement_suit_et_nova_n_invente_pas_de_cause):
+               test_raisonnement_suit_et_nova_n_invente_pas_de_cause,
+               test_le_sujet_survit_a_une_correction):
         try:
             fn()
         except Exception as e:
