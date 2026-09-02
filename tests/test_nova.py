@@ -6215,6 +6215,160 @@ def test_raisonnement_suit_et_nova_n_invente_pas_de_cause():
     check("une vraie confidence l'est", A._is_personal_fact("je suis en terminale"), True)
 
 
+def test_le_sujet_survit_a_une_correction():
+    """Trace reelle : Nova cherche un document nomme « mais cest ».
+
+    « Ouvre le fichier suivi PEA Lohan et pere… » → Nova part sur Drive. Lohan
+    corrige : « mais cest sur google sheet ». Nova cherche alors dans Sheets un
+    document nomme « mais cest » — et repond « je n'ai pas trouve le tableur dont tu
+    parles » alors que « Suivi_PEA_Lohan_Pere » etait juste la, dans la liste qu'elle
+    venait d'afficher. Le SUJET etait dans le message PRECEDENT ; seul le dernier
+    etait lu.
+    """
+    import importlib
+    A = importlib.import_module("api.agent")
+    A._DERNIER_SUJET.update(quoi="", t=0.0)
+
+    q1 = A._mots_cles_fichier("Ouvre le fichier suivi PEA Lohan et pere")
+    check("le sujet d'origine est extrait", "suivi" in q1.lower() and "pea" in q1.lower(), True)
+
+    # LA correction : elle ne doit PAS devenir la requete de recherche.
+    q2 = A._mots_cles_fichier("mais cest sur google sheet")
+    check("une correction ne remplace pas le sujet", q2, q1)
+    check("…et ne cherche surtout pas « mais cest »", q2.strip().lower(), q1.strip().lower())
+
+    for correction in ("non plutot dans sheets", "c'est sur google sheet",
+                       "attends", "oui", "et sur drive ?"):
+        check(f"« {correction[:26]} » garde le sujet",
+              A._mots_cles_fichier(correction), q1)
+
+    # Un VRAI nouveau sujet reprend la main.
+    q3 = A._mots_cles_fichier("ouvre le fichier Espagnol")
+    check("un nouveau sujet remplace l'ancien", "espagnol" in q3.lower(), True)
+    check("…et devient le sujet courant",
+          A._mots_cles_fichier("mais cest sur google sheet"), q3)
+
+    # La detection de sujet solide, isolement.
+    check("« mais cest » n'est pas un sujet", A._sujet_solide("mais cest"), False)
+    check("« oui » non plus", A._sujet_solide("oui"), False)
+    check("une chaine vide non plus", A._sujet_solide(""), False)
+    check("« suivi PEA » en est un", A._sujet_solide("suivi PEA"), True)
+    check("« Espagnol » aussi", A._sujet_solide("Espagnol"), True)
+    # ⚠️ Le nom du CONTENANT ne designe aucun document : il dit ou chercher.
+    check("« google sheet » n'est pas un document", A._sujet_solide("google sheet"), False)
+    check("« drive » non plus", A._sujet_solide("drive"), False)
+
+    # Passe le delai, on ne ressort pas un sujet vieux d'une heure.
+    A._DERNIER_SUJET.update(quoi="suivi pea", t=A._t.monotonic() - (A._SUJET_TTL + 10))
+    check("un sujet perime n'est pas reutilise",
+          A._mots_cles_fichier("mais cest sur google sheet"), "mais cest")
+    A._DERNIER_SUJET.update(quoi="", t=0.0)
+
+
+def test_rapport_de_mails_ne_peut_pas_envoyer():
+    """Ce que Lohan a demande pour ses mails, avant de connecter Gmail.
+
+    « Un resume : lesquels regarder, lesquels repondre. Pour les importants, qu'il
+    prevoie une reponse et me la propose — mais SURTOUT qu'il ne l'envoie pas sans
+    mon autorisation. Il a le droit de s'aider de mes connecteurs (agenda) pour
+    proposer. Et il doit voir qu'une pub Spotify c'est pas important, mais que
+    l'abonnement a payer, ca l'est. »
+    """
+    import importlib, json as _j
+    R = importlib.import_module("agent.rapport_mail")
+
+    # --- 1. LE cas qu'il a nomme : meme expediteur, deux natures -------------
+    pub = {"id": "1", "subject": "Découvrez Spotify Premium — 3 mois offerts",
+           "from": "Spotify <no-reply@spotify.com>",
+           "snippet": "Offre spéciale, -50% ! Se désinscrire."}
+    factu = {"id": "2", "subject": "Votre abonnement Spotify arrive à échéance",
+             "from": "Spotify <billing@spotify.com>",
+             "snippet": "Le prélèvement de 10,99 € aura lieu le 12/09."}
+    check("la pub est ignoree", R.classer(pub)["niveau"], R.IGNORER)
+    check("la facture est importante", R.classer(factu)["niveau"], R.IMPORTANT)
+    check("…et la raison est donnee", "argent" in R.classer(factu)["pourquoi"], True)
+
+    # Une facture DEGUISEE en promo reste une facture : c'est l'argent qui tranche,
+    # pas l'expediteur ni le ton du message.
+    piege = {"id": "3", "subject": "Offre spéciale ! -50% — mais votre facture reste due",
+             "from": "no-reply@boite.com", "snippet": "Rappel de paiement, échéance le 30."}
+    check("l'argent l'emporte sur les airs de pub", R.classer(piege)["niveau"], R.IMPORTANT)
+
+    # --- 2. « Lesquels repondre » -------------------------------------------
+    question = {"id": "4", "subject": "Réunion projet", "from": "Marie <marie@lycee.fr>",
+                "snippet": "Salut Lohan, peux-tu me dire tes dispos la semaine prochaine ?"}
+    c = R.classer(question)
+    check("une question appelle une reponse", c["repondre"], True)
+    check("…et c'est signale comme tel", "question" in c["pourquoi"], True)
+    check("…et Nova sait qu'il faut l'agenda", R.a_besoin_agenda(question), True)
+    # Un envoi automatique ne merite pas de reponse, meme s'il pose une question.
+    robot = {"id": "5", "subject": "Sondage", "from": "no-reply@service.com",
+             "snippet": "Pouvez-vous nous dire si vous êtes satisfait ?"}
+    check("on ne repond pas a un robot", R.classer(robot)["repondre"], False)
+    # Securite et echeances passent aussi en important.
+    secu = {"id": "6", "subject": "Connexion inhabituelle", "from": "no-reply@google.com",
+            "snippet": "Une activité suspecte a été détectée."}
+    check("la securite est importante", R.classer(secu)["niveau"], R.IMPORTANT)
+    neutre = {"id": "7", "subject": "Compte-rendu du conseil de classe",
+              "from": "vie.scolaire@lycee.fr", "snippet": "Ci-joint le compte-rendu."}
+    check("le reste est « a lire »", R.classer(neutre)["niveau"], R.A_LIRE)
+
+    # --- 3. Le rapport dit ce qu'il y a a FAIRE -----------------------------
+    tri = R.trier([pub, factu, question, secu, neutre])
+    md = R.resume_markdown(tri, {"4": "Bonjour Marie, je suis libre mardi 14h."})
+    check("la section « a repondre » existe", "À répondre" in md, True)
+    check("le brouillon est propose", "Réponse proposée" in md, True)
+    check("…avec l'avertissement", "Je n'ai RIEN envoyé" in md, True)
+    check("les ignores ne sont pas listes un par un",
+          "Découvrez Spotify Premium" in md, False)
+    check("…mais leur nombre est dit", "Ignorés (1)" in md, True)
+
+    # --- 4. STRUCTURELLEMENT incapable d'envoyer ----------------------------
+    from pathlib import Path as _P
+    racine = _P(__file__).resolve().parents[1]
+    src = (racine / "plugins" / "builtin" / "mails_tool.py").read_text(encoding="utf-8")
+    for interdit in ("GMAIL_SEND", "GMAIL_REPLY", "SEND_EMAIL", "GMAIL_DELETE",
+                     "GMAIL_TRASH", "MODIFY"):
+        check(f"aucune trace de {interdit}", interdit in src, False)
+    check("la seule action Gmail est la lecture", '_LECTURE = "GMAIL_FETCH_EMAILS"' in src, True)
+
+    # Et a l'execution : on verifie les actions REELLEMENT appelees.
+    A = importlib.import_module("api.agent")
+    import llm.client as C
+    M = importlib.import_module("plugins.builtin.mails_tool")
+    vrai_tool, vrai_chat = A._tool, C.chat
+    appels = []
+    try:
+        rep = _j.dumps({"data": {"messages": [pub, factu, question]}})
+
+        def faux(action, args=None, slug="", **k):
+            appels.append(action)
+            if "CALENDAR" in action:
+                return '{"items":[]}'
+            return rep
+
+        A._tool = faux
+        C.chat = lambda *a, **k: "Bonjour Marie, je suis libre mardi apres-midi."
+        sortie = M.RapportMailsPlugin().run(combien=10)
+        check("aucune action d'envoi n'est appelee",
+              [a for a in appels if any(k in a for k in ("SEND", "REPLY", "DELETE", "TRASH"))],
+              [])
+        check("les mails sont bien lus", "GMAIL_FETCH_EMAILS" in appels, True)
+        check("l'agenda est consulte pour la question de dispos",
+              "GOOGLECALENDAR_EVENTS_LIST" in appels, True)
+        check("le rapport le redit en clair", "Aucun mail n'a été envoyé" in sortie, True)
+
+        # ⚠️ Un ECHEC d'acces ne doit JAMAIS se lire « tu n'as aucun mail ».
+        appels.clear()
+        A._tool = lambda action, args=None, slug="", **k: '{"successful": false, "error": "401"}'
+        vide = M.RapportMailsPlugin().run(combien=5)
+        check("un acces refuse est annonce comme tel", vide.startswith("[ERREUR]"), True)
+        check("…et ne pretend pas que la boite est vide",
+              "je ne te dis donc PAS" in vide, True)
+    finally:
+        A._tool, C.chat = vrai_tool, vrai_chat
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -6263,7 +6417,9 @@ if __name__ == "__main__":
                test_fiche_valeur_popup_et_edition_en_place,
                test_schemas_traces_sur_les_vrais_chiffres,
                test_apprend_seule_mais_visible_et_pose_des_questions,
-               test_raisonnement_suit_et_nova_n_invente_pas_de_cause):
+               test_raisonnement_suit_et_nova_n_invente_pas_de_cause,
+               test_le_sujet_survit_a_une_correction,
+               test_rapport_de_mails_ne_peut_pas_envoyer):
         try:
             fn()
         except Exception as e:

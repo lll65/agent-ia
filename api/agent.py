@@ -2289,8 +2289,46 @@ def _que_des_mots_vides(candidat: str) -> bool:
                for x in morceaux)
 
 
+# ⚠️ « Ouvre le fichier suivi PEA Lohan et père… » → Nova part sur Drive. Lohan
+# corrige : « mais cest sur google sheet ». Nova cherche alors dans Sheets un document
+# nommé… « mais cest ». Le SUJET de la demande était dans le message PRÉCÉDENT ; seul
+# le dernier était lu. On retient donc le dernier sujet solide, et une phrase de
+# correction le réutilise au lieu de chercher n'importe quoi.
+_DERNIER_SUJET = {"quoi": "", "t": 0.0}
+_SUJET_TTL = 600.0
+# Mots qui ne peuvent pas, à eux seuls, désigner un document.
+_MOTS_FAIBLES = {"mais", "cest", "c'est", "non", "plutot", "plutôt", "sur", "dans",
+                 "en", "le", "la", "les", "ça", "ca", "celui", "celle", "oui",
+                 "attends", "pardon", "erreur", "et", "puis", "alors", "enfin"}
+
+
+def _sujet_solide(quoi: str) -> bool:
+    """Ces mots peuvent-ils vraiment nommer un document ?
+
+    ⚠️ Le nom du CONTENANT n'en est pas un : « c'est sur google sheet » ne désigne
+    aucun document, il dit seulement OÙ chercher. Sans ce filtre, Nova partait
+    chercher un fichier appelé « google sheet ».
+    """
+    mots = [w for w in re.split(r"[\s\-_']+", (quoi or "").lower()) if w]
+    utiles = [w for w in mots
+              if w not in _MOTS_FAIBLES and w not in _MOTS_CONTENANT and len(w) > 2]
+    return bool(utiles)
+
+
 def _mots_cles_fichier(message: str) -> str:
     """Ce que l'utilisateur a NOMMÉ, débarrassé de la description du contenant."""
+    quoi = _mots_cles_brut(message)
+    if _sujet_solide(quoi):
+        _DERNIER_SUJET.update(quoi=quoi, t=_t.monotonic())
+        return quoi
+    # Rien d'exploitable ici : la demande d'origine tenait dans le message précédent.
+    if _DERNIER_SUJET["quoi"] and _t.monotonic() - _DERNIER_SUJET["t"] < _SUJET_TTL:
+        return _DERNIER_SUJET["quoi"]
+    return quoi
+
+
+def _mots_cles_brut(message: str) -> str:
+    """L'extraction, sans la mémoire du sujet."""
     m = message or ""
     # 1) Un nom entre guillemets, ou un nom composé (Suivi_PEA_Lohan_Pere) : c'est LUI
     for motif in (r"[«\"']([^»\"']{3,60})[»\"']",
