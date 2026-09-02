@@ -789,7 +789,15 @@ function loadSessions(){ try{ SESSIONS=JSON.parse(localStorage.getItem("nova_ses
   // L'affichage local est immédiat ; la fusion avec le serveur arrive juste après,
   // pour que les conversations du téléphone apparaissent aussi sur l'ordinateur.
   syncSessions(); }
-function histPush(role,text){ const s=curSess(); if(!s) return; s.messages.push({role,text}); s.ts=Date.now();
+/* ⚠️ Le raisonnement (« Raisonnement · 3 étapes ») vivait UNIQUEMENT dans la page
+   ouverte : il était accroché au DOM après la réponse et n'était jamais enregistré.
+   Recharger la page le perdait, et sur un autre appareil il n'apparaissait pas du
+   tout — d'où « quand sur PC je regarde les conv de mon tél, y a pas le
+   raisonnement ». Il voyage maintenant AVEC le message. */
+function histPush(role,text,trace){ const s=curSess(); if(!s) return;
+  const m={role,text};
+  if(trace && trace.length) m.trace=trace.slice(0,20);
+  s.messages.push(m); s.ts=Date.now();
   if(s.title==="Nouvelle conversation" && role==="me") s.title=coupeSure(text,42);   // provisoire
   saveSessions(); renderSessions();
   // Après le 1er échange, Nova génère un vrai titre court (comme les produits pro)
@@ -804,7 +812,13 @@ async function makeTitle(s){
   }catch(e){} }
 function renderChat(){ document.querySelectorAll(".chat .row").forEach(r=>r.remove());
   const s=curSess();
-  if(s && s.messages.length){ if(hint&&hint.parentNode)hint.remove(); for(const m of s.messages) addRow(m.role==="me"?"me":"ai", fmt(m.text)); }
+  if(s && s.messages.length){ if(hint&&hint.parentNode)hint.remove();
+    for(const m of s.messages){
+      const b = addRow(m.role==="me"?"me":"ai", fmt(m.text));
+      // On rejoue le raisonnement enregistré : c'est ce qui manquait en rouvrant
+      // une conversation, et surtout en la relisant depuis un autre appareil.
+      if(m.role!=="me" && m.trace && m.trace.length) attachReason(b, m.trace);
+    } }
   else if(hint){ chat.appendChild(hint); } }
 let SEARCH="";
 function filterSessions(v){ SEARCH=(v||"").toLowerCase().trim(); renderSessions(); }
@@ -1647,7 +1661,7 @@ function ask(){
     else if(d.type==="answer"){ const fin=d.text||"";
       if(streamed){ answer=fin||answer; bubble.innerHTML=fmt(answer); }
       else { answer=fin; stopThink(); graphAdd("✍️","Rédaction"); typewrite(bubble,answer); }
-      histPush("ai",answer);
+      histPush("ai",answer,trace);
       if(voiceMode){ vSet("Nova répond…", coupeSure(answer,240)); speak(answer, ()=>{ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }); }
       else if(TTS) speak(answer); }
     else if(d.type==="model"){ MODELE_UTILISE=d.name||""; }
@@ -1690,7 +1704,7 @@ function sendAttachment(question){
   const fd=new FormData(); fd.append("file",file); fd.append("key",KEY); fd.append("question",question||"");
   fetch(ORIGIN+"/agent/upload",{method:"POST",body:fd}).then(r=>r.json()).then(d=>{
     const ans=(d&&d.answer)||"❌ Analyse impossible.";
-    graphAdd("✍️","Rédaction"); typewrite(bubble,ans); histPush("ai",ans);
+    graphAdd("✍️","Rédaction"); typewrite(bubble,ans); histPush("ai",ans,trace);
     if(TTS&&!voiceMode) speak(ans);
   }).catch(e=>{ bubble.innerHTML="⚠️ Envoi impossible : "+esc(String(e).slice(0,120)); })
    .finally(()=>{ thinking=false; document.body.classList.remove("thinking"); graphEnd();

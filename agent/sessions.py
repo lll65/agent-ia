@@ -43,7 +43,18 @@ def _propre(s: dict) -> dict:
         total += len(texte)
         if total > MAX_CARACTERES:
             break
-        msgs.append({"role": str(m.get("role") or "ai")[:12], "text": texte})
+        garde = {"role": str(m.get("role") or "ai")[:12], "text": texte}
+        # ⚠️ Le raisonnement etait jete a la synchronisation : il n'apparaissait donc
+        # pas quand on relisait la conversation depuis un autre appareil. On le garde,
+        # borne — c'est un resume d'etapes, pas un journal complet.
+        tr = m.get("trace")
+        if isinstance(tr, list) and tr:
+            garde["trace"] = [
+                {"icon": str(e.get("icon") or "")[:4],
+                 "label": str(e.get("label") or "")[:80],
+                 "detail": str(e.get("detail") or "")[:300]}
+                for e in tr[:20] if isinstance(e, dict)]
+        msgs.append(garde)
     return {
         "id": str(s.get("id") or "")[:40],
         "title": str(s.get("title") or "Conversation")[:80],

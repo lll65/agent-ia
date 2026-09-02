@@ -1,5 +1,6 @@
 import asyncio
 import hmac
+import time as _t
 import json
 import logging
 import re
@@ -130,7 +131,7 @@ def _profile_ctx() -> str:
         return ""
 
 
-def _smalltalk_messages(message: str) -> list:
+def _smalltalk_messages(message: str, appris=None) -> list:
     return [
         {"role": "system", "content": _profile_ctx().strip() + "\n" + (
             "Tu es Nova, l'assistante personnelle de l'utilisateur. Réponds en français, "
@@ -140,9 +141,19 @@ def _smalltalk_messages(message: str) -> list:
             "ou placements. Même si l'utilisateur mentionne son âge ou de l'argent.\n"
             "- N'invente JAMAIS de chiffre, de cours, d'indice ou de statistique.\n"
             "- Pas de titres, pas de listes à puces, pas de plan d'action, pas de rapport.\n"
-            "Si l'utilisateur te donne une info sur lui (âge, prénom, ville, goûts), accuse simplement "
-            "réception avec chaleur et dis que tu le retiens. Tu peux poser UNE question courte ou "
-            "proposer ton aide en une phrase."
+            # ⚠️ À « Reeseye » — un mot isolé, sans contexte — Nova a répondu « C'est bien
+            # noté : Reeseye. Je garde ça en tête ! ». Elle n'avait RIEN retenu : le mot
+            # n'est pas un fait durable et n'a jamais atteint le profil. Prétendre
+            # mémoriser est un mensonge de plus, et le plus corrosif : il fait croire à
+            # une mémoire qui n'existe pas.
+            + ("Tu VIENS DE MÉMORISER : " + " ; ".join(f.get("texte", "") for f in appris)
+               + ". Accuse réception avec chaleur, brièvement.\n"
+               if appris else
+               "RIEN n'a été mémorisé de ce message. Ne dis donc NI « c'est noté », NI "
+               "« je retiens », NI « je garde ça en tête » : ce serait faux. Si le "
+               "message est trop court ou trop vague pour que tu comprennes (un mot "
+               "seul, un nom inconnu), demande simplement ce que c'est.\n") +
+            "Tu peux poser UNE question courte ou proposer ton aide en une phrase."
             # ⚠️ C'est PAR ICI que passe « tu es sur quel fuseau horaire ? ». Sans repère,
             # Nova répondait « UTC » — l'heure du conteneur, pas la sienne.
             + _repere_temporel())},
@@ -201,11 +212,11 @@ def _remember_fact(message: str) -> list:
 def _smalltalk_reply(message: str) -> str:
     """Réponse conversationnelle directe via le LLM, sans aucun outil."""
     from llm.client import chat
-    _remember_fact(message)
-    out = chat(_smalltalk_messages(message), temperature=0.6)
+    appris = _remember_fact(message)
+    out = chat(_smalltalk_messages(message, appris), temperature=0.6)
     if _has_invented_market_data(out) and not _finance_intent(message):
         # Dérive détectée (chiffres de marché non demandés et non sourcés) → on régénère.
-        msgs = _smalltalk_messages(message) + [
+        msgs = _smalltalk_messages(message, appris) + [
             {"role": "assistant", "content": out},
             {"role": "user", "content": (
                 "Ta réponse contient des chiffres de marché que personne ne t'a demandés et que "
@@ -557,6 +568,18 @@ def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
             "technique employé doit être expliqué en trois mots entre parenthèses "
             "(« le PER (le prix payé pour 1 € de bénéfice) »). Tu décris, tu "
             "ne conseilles pas d'acheter ou de vendre.")
+    # ⚠️ On rappelle à Nova ce qui a RÉELLEMENT marché. Sans ça, elle expliquait un
+    # échec de lecture par « l'application n'est pas correctement configurée » alors
+    # qu'elle venait de s'en servir avec succès — une cause inventée, contredite par
+    # les faits, qui envoyait Lohan reconfigurer ce qui marchait déjà.
+    _ok = apps_qui_marchent()
+    if _ok:
+        system += (
+            f" FAIT VÉRIFIÉ : ces applications viennent de répondre correctement — "
+            f"{', '.join(_ok)}. N'affirme JAMAIS qu'elles sont mal configurées, non "
+            "connectées ou indisponibles : ce serait faux. Si une action échoue "
+            "malgré ça, dis ce qui a échoué (l'action, le paramètre) sans inventer "
+            "de cause, et propose de réessayer autrement.")
     if app and "connected_app" in tools:
         tools.remove("connected_app"); tools.insert(0, "connected_app")
         system += (" Pour l'agenda, le calendrier, les mails, les fichiers, Slack ou Notion, utilise "
@@ -1384,6 +1407,14 @@ _ATTENTE = {}                       # (profil, canal) -> action en attente de co
 # run_in_executor, et un contextvar ne franchit pas cette frontière de thread — piège
 # déjà rencontré ailleurs dans ce projet.
 _CANAL = {"actuel": "web"}
+# app -> instant du dernier succès. Un fait, opposable à toute explication inventée.
+_APP_OK = {}
+_APP_OK_TTL = 900.0
+
+
+def apps_qui_marchent() -> list:
+    """Les apps qui ont RÉELLEMENT répondu récemment."""
+    return sorted(s for s, t in _APP_OK.items() if _t.monotonic() - t < _APP_OK_TTL)
 _ATTENTE_TTL = 300.0                # 5 min : au-delà, on redemande
 
 _MOTS_OUI = ("oui", "ok", "d'accord", "daccord", "vas-y", "vas y", "confirme", "confirmé",
@@ -1870,6 +1901,12 @@ def _tool(name_cmd: str, args: dict, slug: str = "") -> str:
     # … »). Une seule création était faite, et le second était perdu sans un mot.
     autres = (args or {}).pop("_autres_evenements", None) if isinstance(args, dict) else None
     obs = _tool_call(name_cmd, args, slug)
+    # ⚠️ Nova a listé les fichiers Google Sheets, puis a répondu deux tours plus tard
+    # « l'application googlesheets ne semble pas correctement configurée dans
+    # Composio ». C'était faux, et contredit par ce qu'elle venait de faire. On
+    # retient donc ce qui a RÉELLEMENT marché, et on le lui rappelle.
+    if slug and not _looks_like_failure(obs):
+        _APP_OK[slug] = _t.monotonic()
     for e in (autres or []):
         a = {"calendar_id": "primary", "summary": e["titre"],
              "start_datetime": e["debut"], "event_duration_hour": 1,

@@ -6145,6 +6145,76 @@ def test_apprend_seule_mais_visible_et_pose_des_questions():
         check("…et rend bien des puces", "<li>" in r2.stdout, True)
 
 
+def test_raisonnement_suit_et_nova_n_invente_pas_de_cause():
+    """Trois defauts vus dans une conversation reelle de Lohan.
+
+    1. « Quand sur PC je regarde les conv de mon tel, y a pas le raisonnement. » Il
+       vivait UNIQUEMENT dans la page ouverte : accroche au DOM apres la reponse,
+       jamais enregistre. Recharger la page le perdait deja ; sur un autre appareil
+       il n'apparaissait pas du tout. (Defaut introduit avec la synchronisation.)
+    2. Nova a LISTE les fichiers Google Sheets, puis a repondu deux tours plus tard
+       « l'application googlesheets ne semble pas correctement configuree dans
+       Composio ». Faux, et contredit par ce qu'elle venait de faire — ca envoyait
+       Lohan reconfigurer ce qui marchait deja.
+    3. A « Reeseye » — un mot isole — elle a repondu « C'est bien note : Reeseye. Je
+       garde ca en tete ! ». Elle n'avait RIEN retenu. Pretendre memoriser fait croire
+       a une memoire qui n'existe pas.
+    """
+    import importlib
+    from pathlib import Path as _P
+    racine = _P(__file__).resolve().parents[1]
+    A = importlib.import_module("api.agent")
+
+    # --- 1. Le raisonnement voyage AVEC le message -------------------------
+    SE = importlib.import_module("agent.sessions")
+    m = SE._propre({"id": "s1", "title": "t", "ts": 1, "messages": [
+        {"role": "me", "text": "salut"},
+        {"role": "ai", "text": "ok",
+         "trace": [{"icon": "💭", "label": "Analyse de ta demande", "detail": "x" * 500}]}]})
+    check("le raisonnement survit a la synchronisation", "trace" in m["messages"][1], True)
+    check("…avec son libelle", m["messages"][1]["trace"][0]["label"], "Analyse de ta demande")
+    check("…et un detail borne", len(m["messages"][1]["trace"][0]["detail"]), 300)
+    check("un message sans raisonnement reste simple", "trace" in m["messages"][0], False)
+
+    ui = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+    check("l'interface enregistre le raisonnement",
+          "function histPush(role,text,trace)" in ui, True)
+    check("…et le rejoue en rouvrant la conversation",
+          "attachReason(b, m.trace)" in ui, True)
+    check("…y compris pour l'agent complet", 'histPush("ai",ans,trace)' in ui, True)
+
+    # --- 2. Nova ne peut plus accuser une app qui vient de marcher ----------
+    A._APP_OK.clear()
+    check("aucune app n'a encore repondu", A.apps_qui_marchent(), [])
+    A._APP_OK["googlesheets"] = A._t.monotonic()
+    check("une app qui vient de repondre est retenue",
+          A.apps_qui_marchent(), ["googlesheets"])
+    cfg = A._build_agent_cfg("lis mon fichier PEA sur google sheet", "Nova")
+    check("le fait est rappele au modele", "FAIT VÉRIFIÉ" in cfg["system_prompt"], True)
+    check("…en nommant l'app", "googlesheets" in cfg["system_prompt"], True)
+    check("…et en interdisant l'explication inventee",
+          "mal configurées" in cfg["system_prompt"], True)
+    # Un succes trop ancien ne compte plus : l'app a pu etre deconnectee depuis.
+    A._APP_OK["googlesheets"] = A._t.monotonic() - (A._APP_OK_TTL + 10)
+    check("un vieux succes ne protege plus", A.apps_qui_marchent(), [])
+    A._APP_OK.clear()
+
+    # --- 3. Elle ne pretend plus retenir ce qu'elle n'a pas retenu ----------
+    sans = A._smalltalk_messages("Reeseye", [])[0]["content"]
+    check("sans rien memorise, « c'est noté » est interdit",
+          "NI « je retiens »" in sans, True)
+    check("…et elle est invitee a demander ce que c'est",
+          "demande simplement ce que c'est" in sans, True)
+    avec = A._smalltalk_messages("je suis en terminale",
+                                 [{"texte": "Est en terminale"}])[0]["content"]
+    check("avec un fait memorise, elle peut le dire",
+          "VIENS DE MÉMORISER" in avec, True)
+    check("…en nommant ce qu'elle a retenu", "Est en terminale" in avec, True)
+    # Et « Reeseye » ne doit toujours pas devenir un fait.
+    check("un mot isole n'est pas une confidence", A._is_personal_fact("Reeseye"), False)
+    check("une vraie confidence l'est", A._is_personal_fact("je suis en terminale"), True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -6192,7 +6262,8 @@ if __name__ == "__main__":
                test_resultat_lisible_et_sans_protocole,
                test_fiche_valeur_popup_et_edition_en_place,
                test_schemas_traces_sur_les_vrais_chiffres,
-               test_apprend_seule_mais_visible_et_pose_des_questions):
+               test_apprend_seule_mais_visible_et_pose_des_questions,
+               test_raisonnement_suit_et_nova_n_invente_pas_de_cause):
         try:
             fn()
         except Exception as e:
