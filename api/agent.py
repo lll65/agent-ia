@@ -4466,12 +4466,33 @@ async def briefing_ep(key: str = ""):
 
 
 def _split_tts(text: str, limit: int = 180):
-    """Découpe le texte en morceaux ≤ limit, en coupant sur la ponctuation."""
+    """Découpe le texte en morceaux ≤ limit, DANS L'ORDRE, en coupant sur la ponctuation.
+
+    ⚠️ Les morceaux sortaient DANS LE DÉSORDRE. Sur un briefing du matin, la coupe dure
+    d'un bloc long (une liste d'agenda n'a pas de point en fin de ligne) empilait le
+    morceau coupé AVANT d'avoir versé `cur`, qui contenait pourtant le début du texte.
+    Vérifié en exécutant la fonction : « 🌅 Bonjour Lohan ! » se retrouvait prononcé en
+    DERNIER, collé au mot orphelin « Jean Moulin » arraché au milieu d'un nom de gymnase.
+    Les trames MP3 étant concaténées dans cet ordre, Nova lisait sa réponse à l'envers.
+
+    Ce n'est pas un cas limite : n'importe quelle réponse qui commence par une phrase
+    courte suivie d'un bloc de plus de 180 signes sans ponctuation le déclenche — un
+    briefing, une liste d'événements, un récapitulatif de mails.
+    """
     import re
     parts, cur = [], ""
     for piece in re.split(r"(?<=[.!?;:,])\s+", text):
-        while len(piece) > limit:                      # phrase très longue → coupe dure
-            parts.append(piece[:limit]); piece = piece[limit:]
+        while len(piece) > limit:                      # bloc très long → coupe dure
+            # Ce qui précède part D'ABORD : c'est ce qui manquait.
+            if cur:
+                parts.append(cur)
+                cur = ""
+            # …et on coupe sur un espace, pas au milieu d'un mot.
+            coupe = piece.rfind(" ", 0, limit)
+            if coupe < limit * 0.6:
+                coupe = limit
+            parts.append(piece[:coupe])
+            piece = piece[coupe:].lstrip()
         if len(cur) + len(piece) + 1 <= limit:
             cur = (cur + " " + piece).strip()
         else:
@@ -4487,20 +4508,40 @@ def _gtts_mp3(text: str) -> bytes:
     """Voix gratuite sans clé (endpoint TTS de Google Traduction). Renvoie du MP3 ou b''.
     Les trames MP3 se concatènent : on assemble simplement les morceaux."""
     import requests
+    import time as _time
+    morceaux = _split_tts(text)
     out = b""
-    for i, chunk in enumerate(_split_tts(text)):
-        try:
-            r = requests.get("https://translate.google.com/translate_tts",
-                             params={"ie": "UTF-8", "q": chunk, "tl": "fr",
-                                     "client": "tw-ob", "idx": i, "total": 1, "textlen": len(chunk)},
-                             headers={"User-Agent": "Mozilla/5.0", "Referer": "https://translate.google.com/"},
-                             timeout=15)
-            if r.status_code == 200 and r.content[:2] in (b"\xff\xfb", b"\xff\xf3", b"ID", b"\xff\xf2"):
-                out += r.content
-            else:
-                break
-        except Exception:
-            break
+    for i, chunk in enumerate(morceaux):
+        recu = b""
+        # L'endpoint de Google Traduction limite les appels rapprochés : un 429 sur le
+        # 4ᵉ morceau est courant. On retente une fois avant d'abandonner.
+        for essai in range(2):
+            try:
+                r = requests.get("https://translate.google.com/translate_tts",
+                                 params={"ie": "UTF-8", "q": chunk, "tl": "fr",
+                                         "client": "tw-ob", "idx": i, "total": 1, "textlen": len(chunk)},
+                                 headers={"User-Agent": "Mozilla/5.0", "Referer": "https://translate.google.com/"},
+                                 timeout=15)
+                if r.status_code == 200 and r.content[:2] in (b"\xff\xfb", b"\xff\xf3", b"ID", b"\xff\xf2"):
+                    recu = r.content
+                    break
+            except Exception:
+                pass
+            if essai == 0:
+                _time.sleep(0.4)
+        if not recu:
+            # ⚠️ ON NE REND JAMAIS D'AUDIO PARTIEL. L'ancienne version faisait « break »
+            # et renvoyait `out`, c'est-à-dire les trois premiers morceaux : la route
+            # répondait 200 avec un MP3 valide mais AMPUTÉ. Le navigateur déclenchait
+            # onended normalement et repartait écouter — Nova s'arrêtait au milieu d'une
+            # phrase et Lohan croyait avoir entendu toute la réponse. En mode vocal le
+            # chat est masqué : rien à l'écran pour le rattraper.
+            # Rendre b"" fait répondre 502, et le navigateur relit la réponse ENTIÈRE
+            # avec sa propre voix. Un repli franc vaut mille fois une phrase coupée.
+            logger.warning(f"[tts] morceau {i + 1}/{len(morceaux)} indisponible — "
+                           "repli sur la voix du navigateur plutôt qu'un audio tronqué")
+            return b""
+        out += recu
     return out
 
 
