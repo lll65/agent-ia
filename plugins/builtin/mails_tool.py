@@ -55,7 +55,21 @@ class RapportMailsPlugin(Plugin):
                     f"que tu n'as rien.\n\n_Détail : {str(brut)[:220]}_")
         mails = _extraire(str(brut))
         if not mails:
-            return "📭 Aucun mail à traiter."
+            # ⚠️ « 📭 Aucun mail à traiter » s'affichait sur une boîte PLEINE, et rien ne
+            # permettait de savoir si la boîte était vide ou si l'extraction avait raté.
+            # Les deux se lisent pareil et n'ont rien à voir. Gmail renvoie toujours une
+            # enveloppe : si elle est grosse, c'est qu'il y avait des mails dedans et que
+            # c'est MOI qui n'ai pas su les lire. On le dit, avec de quoi le prouver.
+            taille = len(str(brut or ""))
+            if taille > 400:
+                logger.warning(f"[rapport_mails] réponse de {taille} octets, 0 mail extrait")
+                return ("⚠️ **Gmail m'a répondu, mais je n'ai pas su lire ses mails.** "
+                        "Je ne te dis donc PAS que ta boîte est vide — je ne le sais pas.\n\n"
+                        f"_Réponse reçue : {taille} octets, aucun message reconnu. "
+                        "Envoie-moi cette ligne, c'est le format de Composio qui a changé._\n\n"
+                        f"_Début de la réponse : {str(brut)[:200]}_")
+            return ("📭 Aucun mail à traiter — Gmail n'a renvoyé aucun message"
+                    + (" non lu." if non_lus else " dans ta boîte de réception."))
 
         tri = trier(mails)
         # Les réponses ne sont préparées que pour ceux qui en attendent une.
