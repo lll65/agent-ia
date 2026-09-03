@@ -7294,6 +7294,99 @@ def test_audit_vocal_nova_lisait_sa_reponse_a_l_envers():
           ui.count("clearTimeout(VEILLE_VOCALE)") >= 2, True)
 
 
+def test_popup_absence_en_grand_et_lu_a_voix_haute():
+    """« Faut que ca s'affiche en beaucoup plus grand et qu'il y ait une option
+    lecture vocale. »
+
+    Le panneau « Pendant ton absence » etait une vignette de 520 px avec un rapport
+    boursier entier dedans, et DEUX ascenseurs imbriques : celui de la liste et celui
+    du detail (max-height:50vh). Un tableau a cette largeur est illisible — la capture
+    montrait « Bours orama » coupe en deux sur trois lignes.
+
+    Et la lecture vocale ne pouvait pas se contenter d'appeler speak() : celui-ci
+    coupe a 900 caracteres. Un rapport entier n'aurait ete lu qu'au debut, puis se
+    serait arrete sans un mot — exactement le defaut « une phrase coupee presentee
+    comme finie » corrige cote serveur le meme jour.
+    """
+    import subprocess, tempfile, os, json as _j
+    from pathlib import Path as _P
+    racine = _P(__file__).resolve().parents[1]
+    ui = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+
+    # --- 1. En GRAND, et avec un seul ascenseur ----------------------------
+    check("le panneau n'est plus une vignette", 'id="novModal"><div class="card" style="max-width:520px"' in ui, False)
+    check("…il prend l'ecran", ".card.cardXL{" in ui, True)
+    check("…jusqu'a 1080 px de large", "min(1080px, 96vw)" in ui, True)
+    check("…et 92 % de la hauteur", "max-height:92vh" in ui, True)
+    check("le detail n'a plus son propre ascenseur", "max-height:50vh;overflow:auto" in ui, False)
+    check("…c'est le panneau qui defile", ".novb{ flex:1; min-height:0; overflow-y:auto;" in ui, True)
+    # La taille du texte : c'etait la demande.
+    check("le titre d'un rapport est lisible", ".novb .nov-titre{ font-size:17px" in ui, True)
+    check("…le detail aussi", ".novb .nov-detail{ font-size:15.5px" in ui, True)
+    check("…et l'apercu n'est plus minuscule", ".novb .nov-apercu{ font-size:15px" in ui, True)
+    check("plus de troncature du titre sur une ligne",
+          "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1\">'+esc(x.titre)" in ui, False)
+    check("sur telephone il prend tout l'ecran", "max-width:100vw; max-height:100vh" in ui, True)
+
+    # --- 2. Les boutons d'ecoute existent ----------------------------------
+    check("chaque rapport peut etre ecoute", 'lireNouveaute(' in ui, True)
+    check("…et tout d'un coup aussi", 'onclick="lireTout(this)"' in ui, True)
+    check("fermer le panneau coupe la lecture",
+          ui.index("function fermerNouveautes(){") < ui.index("arreteLecture();          // sinon"), True)
+
+    # --- 3. Le texte lu : ni markdown, ni barres de tableau ----------------
+    if not shutil.which("node"):
+        return
+    src = ui[ui.index("function texteALire("):ui.index("function detailNouveaute(")]
+    md = ("## Actualités et cours du 3 septembre 2026\n\n"
+          "### DBV Technologies (ticker : DBV)\n\n"
+          "| Source | Information clé | Cours |\n"
+          "|--------|-----------------|-------|\n"
+          "| Boursorama | Page d'évolution | **2,39 €** |\n\n"
+          "Voir [le détail](https://boursorama.com/x) pour plus d'infos.\n\n"
+          "- Point un\n- Point deux\n")
+    with tempfile.TemporaryDirectory() as d:
+        fjs, fmd = os.path.join(d, "f.js"), os.path.join(d, "m.txt")
+        open(fjs, "w", encoding="utf-8").write(src)
+        open(fmd, "w", encoding="utf-8").write(md)
+        h = ("eval(require('fs').readFileSync(%r,'utf8'));\n"
+             "const md=require('fs').readFileSync(%r,'utf8');\n"
+             "const t=texteALire(md);\n"
+             "const long='Phrase numero X. '.repeat(400);\n"
+             "const tl=texteALire(long);\n"
+             "console.log(JSON.stringify({t:t,\n"
+             "  m80:_morceauxLecture(t,80), ml:_morceauxLecture(tl,800), tl:tl,\n"
+             "  vide:_morceauxLecture(texteALire(''),800)}));\n" % (fjs, fmd))
+        fh = os.path.join(d, "h.js")
+        open(fh, "w", encoding="utf-8").write(h)
+        r = subprocess.run(["node", fh], capture_output=True, text=True, timeout=60)
+        out = _j.loads(r.stdout.strip().splitlines()[-1])
+
+    t = out["t"]
+    check("aucune barre verticale n'est prononcee", "|" in t, False)
+    check("aucun diese", "#" in t, False)
+    check("aucune etoile", "*" in t, False)
+    check("aucune URL lue lettre par lettre", "http" in t, False)
+    check("le contenu du tableau est bien la", "Boursorama" in t and "2,39" in t, True)
+    check("le libelle du lien reste", "le détail" in t, True)
+    # ⚠️ Un tableau laisse des virgules orphelines : « , Source , Cours , . , Bours… ».
+    check("pas de virgules en rafale", ", ," in t, False)
+    check("…ni de virgule collee a un point", ", ." in t, False)
+
+    # --- 4. Le decoupage : rien perdu, rien qui depasse --------------------
+    m80 = out["m80"]
+    check("un long texte est decoupe", len(m80) > 1, True)
+    check("…sans qu'aucun morceau depasse", all(len(x) <= 81 for x in m80), True)
+    check("…et sans rien perdre",
+          "".join(m80).replace(" ", ""), t.replace(" ", ""))
+    ml = out["ml"]
+    check("un rapport long tient sous la limite de speak()",
+          all(len(x) <= 801 for x in ml), True)
+    check("…et rien ne se perd non plus",
+          "".join(ml).replace(" ", ""), out["tl"].replace(" ", ""))
+    check("un texte vide ne produit aucun morceau", out["vide"], [])
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -7354,7 +7447,8 @@ if __name__ == "__main__":
                test_ni_mur_de_signes_ni_porte_fermee,
                test_rien_ne_traine_avant_que_nova_commence,
                test_audit_un_evenement_rate_ne_se_perd_plus_en_silence,
-               test_audit_vocal_nova_lisait_sa_reponse_a_l_envers):
+               test_audit_vocal_nova_lisait_sa_reponse_a_l_envers,
+               test_popup_absence_en_grand_et_lu_a_voix_haute):
         try:
             fn()
         except Exception as e:

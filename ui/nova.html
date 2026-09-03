@@ -360,6 +360,29 @@
   .scrim.show{ opacity:1; pointer-events:auto; }
   /* Modale mémoire (thème Nova) */
   .memb{ max-height:60vh; overflow-y:auto; margin-top:6px; display:flex; flex-direction:column; gap:8px; }
+  /* Le panneau « Pendant ton absence » : large, lisible, UN seul ascenseur. */
+  .card.cardXL{ max-width:min(1080px, 96vw); width:96vw; max-height:92vh;
+                display:flex; flex-direction:column; padding:24px 26px; }
+  .card.cardXL > p{ font-size:14.5px; }
+  .novb{ flex:1; min-height:0; overflow-y:auto; margin-top:10px;
+         display:flex; flex-direction:column; gap:12px; }
+  .novb .pitem{ padding:16px 18px; }
+  .novb .nov-titre{ font-size:17px; line-height:1.3; }
+  .novb .nov-quand{ font-size:12.5px; }
+  .novb .nov-apercu{ font-size:15px; line-height:1.6; margin:10px 0 12px; }
+  /* Le détail n'a plus sa propre hauteur : il déroule dans le panneau. */
+  .novb .nov-detail{ font-size:15.5px; line-height:1.75; margin-top:14px;
+                     padding-top:14px; border-top:1px solid var(--stroke); }
+  .novb .nov-detail table{ font-size:14.5px; }
+  .novb .nov-detail h1,.novb .nov-detail h2,.novb .nov-detail h3{ font-size:17px; }
+  .novb .nov-act{ display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  .novb .nov-act a{ cursor:pointer; color:var(--neon2); font-size:14px; }
+  .btnLire.on{ background:linear-gradient(90deg,var(--pink),var(--neon)); }
+  @media (max-width:640px){
+    .card.cardXL{ width:100vw; max-width:100vw; max-height:100vh; border-radius:0; padding:18px 14px; }
+    .novb .nov-titre{ font-size:16px; }
+    .novb .nov-detail{ font-size:15px; }
+  }
   /* Édition d'une automatisation DANS sa ligne : plus besoin d'aller la chercher
      tout en bas de la fenêtre en perdant de vue laquelle on modifie. */
   .edit-auto{ margin-top:9px; padding-top:9px; border-top:1px solid var(--stroke); }
@@ -605,13 +628,18 @@
 
   <div id="toast"></div>
 
-  <div class="modal" id="novModal"><div class="card" style="max-width:520px">
+  <!-- ⚠️ « Faut que ça s'affiche en beaucoup plus grand. » C'était une vignette de
+       520 px avec un rapport entier dedans, et DEUX ascenseurs imbriqués : celui de la
+       liste et celui du détail. Un tableau de bourse à cette largeur est illisible.
+       Le panneau prend maintenant l'écran, et il n'y a plus qu'un seul défilement. -->
+  <div class="modal" id="novModal"><div class="card cardXL">
     <div class="chead"><h3>🌙 Pendant ton absence</h3>
       <button class="ic" onclick="fermerNouveautes()" title="Fermer">✕</button></div>
     <p>Ce que Nova a fait <b>toute seule</b> pendant que tu n'étais pas là.</p>
-    <div class="memb" id="novBody"></div>
-    <div style="margin-top:12px;display:flex;gap:8px">
-      <button onclick="fermerNouveautes()" style="flex:1">D'accord, c'est vu</button>
+    <div class="novb" id="novBody"></div>
+    <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
+      <button onclick="lireTout(this)" class="btnLire" style="flex:1;min-width:190px">🔊 Tout écouter</button>
+      <button onclick="fermerNouveautes()" style="flex:2;min-width:190px">D'accord, c'est vu</button>
     </div>
   </div></div>
 
@@ -1006,27 +1034,101 @@ async function nouveautes(){
     corps.innerHTML = NOUVEAUTES.map((x, i) => {
       const quand = x.quand ? new Date(x.quand*1000).toLocaleString("fr-FR",
         {weekday:"short", day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit"}) : "";
-      return '<div class="pitem" style="margin-bottom:8px">'
-        + '<div style="display:flex;align-items:center;gap:8px">'
-        +   '<span style="font-size:16px">'+(x.icon||"⚡")+'</span>'
-        +   '<b style="color:var(--txt);font-size:13px;text-transform:none;letter-spacing:0;'
-        +     'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1">'+esc(x.titre)+'</b>'
-        +   (quand ? '<span style="color:var(--dim);font-size:11px;white-space:nowrap">'+esc(quand)+'</span>' : '')
+      return '<div class="pitem">'
+        + '<div style="display:flex;align-items:center;gap:10px">'
+        +   '<span style="font-size:20px">'+(x.icon||"⚡")+'</span>'
+        +   '<b class="nov-titre" style="color:var(--txt);text-transform:none;letter-spacing:0;flex:1">'
+        +     esc(x.titre)+'</b>'
+        +   (quand ? '<span class="nov-quand" style="color:var(--dim);white-space:nowrap">'+esc(quand)+'</span>' : '')
         + '</div>'
-        + '<div style="color:var(--dim);font-size:12.5px;margin:6px 0 8px;line-height:1.45">'
-        +   esc(_apercuTexte(x.resultat, 170)) + '</div>'
-        + '<div style="display:flex;gap:8px">'
-        +   '<a onclick="detailNouveaute('+i+')" style="cursor:pointer;color:var(--neon2);font-size:12px">'
-        +     '📖 Voir en détail</a>'
+        + '<div class="nov-apercu" style="color:var(--dim)">'
+        +   esc(_apercuTexte(x.resultat, 320)) + '</div>'
+        + '<div class="nov-act">'
+        +   '<a onclick="detailNouveaute('+i+')">📖 Voir en détail</a>'
+        +   '<a onclick="lireNouveaute('+i+',this)">🔊 Écouter</a>'
         + '</div>'
-        + '<div id="novD'+i+'" style="display:none;margin-top:9px;padding-top:9px;'
-        +   'border-top:1px solid var(--stroke);font-size:13px;line-height:1.5;'
-        +   'max-height:50vh;overflow:auto"></div>'
+        + '<div class="nov-detail" id="novD'+i+'" style="display:none"></div>'
         + '</div>';
     }).join("");
     document.getElementById("novModal").classList.add("show");
     sndOpen && sndOpen();
   }catch(e){}
+}
+
+/* ═══ LECTURE VOCALE D'UN RAPPORT ═══
+   ⚠️ speak() coupe a 900 caracteres (coupeSure) : passer un rapport entier ne lirait
+   que le debut, et s'arreterait sans rien dire — exactement le defaut « une phrase
+   coupee presentee comme finie » deja corrige cote serveur. On decoupe donc ici, sur
+   des fins de phrase, et on enchaine morceau par morceau.
+   Et un rapport est du MARKDOWN : lu tel quel, on entend « diese diese barre Source
+   barre Information cle barre ». Les tableaux deviennent des virgules, les titres et
+   les liens disparaissent. */
+function texteALire(md){
+  return String(md || "")
+    .replace(/```[\s\S]*?```/g, " ")                       // blocs de code : illisibles a voix haute
+    .replace(/^[ \t]*\|?[-:\s|]*\|[-:\s|]*$/gm, " ")       // ligne de separation d'un tableau
+    .replace(/^[ \t]*#{1,6}[ \t]*/gm, "")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/\|/g, ", ")
+    .replace(/^[ \t]*[-*•][ \t]+/gm, "")
+    .replace(/[*#`>_~]/g, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n+/g, ". ")
+    // Un tableau laisse des virgules orphelines en debut et fin de ligne
+    // (« , Source , Cours , . , Boursorama ») : a l'oreille c'est du hachis.
+    .replace(/(?:,\s*){2,}/g, ", ")
+    .replace(/[.,]\s*,\s*/g, ". ")
+    .replace(/,\s*\./g, ".")
+    .replace(/(?:\.\s*){2,}/g, ". ")
+    .replace(/^[\s.,]+/, "")
+    .replace(/\s+/g, " ").trim();
+}
+
+let LECTURE = null;
+function _morceauxLecture(t, taille){
+  const out = []; let reste = t;
+  while(reste.length > taille){
+    let c = reste.lastIndexOf(". ", taille);
+    if(c < taille * 0.5) c = reste.lastIndexOf(" ", taille);
+    if(c < 1) c = taille;
+    out.push(reste.slice(0, c + 1).trim());
+    reste = reste.slice(c + 1).trim();
+  }
+  if(reste) out.push(reste);
+  return out.filter(x => x);
+}
+function _lanceLecture(texte, btn, etiquette){
+  arreteLecture();
+  const t = texteALire(texte);
+  if(!t){ toast("Il n'y a rien à lire ici."); return; }
+  primeTTS(); unlockAudio();
+  LECTURE = { morceaux: _morceauxLecture(t, 800), k: 0, btn: btn, av: btn ? btn.innerHTML : "" };
+  if(btn){ btn.innerHTML = "⏹ Arrêter"; btn.classList.add("on"); }
+  _suiteLecture();
+}
+function _suiteLecture(){
+  if(!LECTURE) return;
+  if(LECTURE.k >= LECTURE.morceaux.length){ arreteLecture(); return; }
+  const m = LECTURE.morceaux[LECTURE.k++];
+  speak(m, () => { if(LECTURE) _suiteLecture(); });
+}
+function arreteLecture(){
+  if(!LECTURE) return;
+  const l = LECTURE; LECTURE = null;      // avant stopSpeaking : sinon le rappel relance
+  stopSpeaking();
+  if(l.btn){ l.btn.innerHTML = l.av || "🔊 Écouter"; l.btn.classList.remove("on"); }
+}
+/* Un clic sur le meme bouton pendant la lecture l'arrete : c'est le comportement
+   attendu, et c'est le seul moyen de la couper sans fermer le panneau. */
+function lireNouveaute(i, btn){
+  if(LECTURE && LECTURE.btn === btn){ arreteLecture(); return; }
+  _lanceLecture((NOUVEAUTES[i] || {}).resultat || "", btn);
+}
+function lireTout(btn){
+  if(LECTURE && LECTURE.btn === btn){ arreteLecture(); return; }
+  const tout = NOUVEAUTES.map(x => (x.titre || "") + ". " + (x.resultat || "")).join(". ");
+  _lanceLecture(tout, btn);
 }
 
 function detailNouveaute(i){
@@ -1041,6 +1143,7 @@ function detailNouveaute(i){
 }
 
 function fermerNouveautes(){
+  arreteLecture();          // sinon Nova continue de parler dans le vide
   document.getElementById("novModal").classList.remove("show");
   // ⚠️ On ne les marque lus QUE quand il ferme : sinon un affichage qu'il n'a pas
   // vu (onglet en arrière-plan, téléphone verrouillé) était perdu pour toujours.
