@@ -6108,8 +6108,12 @@ def test_apprend_seule_mais_visible_et_pose_des_questions():
 
     # --- 2. Les questions interactives deviennent des boutons ---------------
     check("Nova sait quand proposer un choix", "QUESTION INTERACTIVE" in api, True)
-    check("…et jamais pour une action sans retour",
-          "Jamais de CHOIX pour une action sans retour" in api, True)
+    # ⚠️ Regle INVERSEE a la demande de Lohan : le bouton est justement le plus utile
+    # avant un envoi (« envoyer oui ou non, ou le modifier »). La surete ne vient plus
+    # de l'absence de bouton, mais de ce qu'il declenche — il prepare, il n'execute pas.
+    check("un choix est possible avant un envoi",
+          "Tu PEUX proposer un choix avant une action sans retour" in api, True)
+    check("…mais il ne fait que preparer", "le bouton ne fait que préparer" in api, True)
 
     if shutil.which("node"):
         src = ui[ui.index("function esc(s)"):ui.index("function addRow(")]
@@ -6317,8 +6321,10 @@ def test_rapport_de_mails_ne_peut_pas_envoyer():
     tri = R.trier([pub, factu, question, secu, neutre])
     md = R.resume_markdown(tri, {"4": "Bonjour Marie, je suis libre mardi 14h."})
     check("la section « a repondre » existe", "À répondre" in md, True)
-    check("le brouillon est propose", "Réponse proposée" in md, True)
-    check("…avec l'avertissement", "Je n'ai RIEN envoyé" in md, True)
+    # Le brouillon est desormais mis en CITATION, et suivi de boutons cliquables.
+    check("le brouillon est propose", "> Bonjour Marie" in md, True)
+    check("…avec ses boutons", "CHOIX: Envoyer cette réponse" in md, True)
+    check("…dont celui de modifier", "- Modifier la réponse" in md, True)
     check("les ignores ne sont pas listes un par un",
           "Découvrez Spotify Premium" in md, False)
     check("…mais leur nombre est dit", "Ignorés (1)" in md, True)
@@ -6414,7 +6420,8 @@ def test_mails_tries_et_tableaux_rendus():
         check("ce qui demande une reponse est EN TETE",
               rep.index("À répondre") < rep.index("Ignorés"), True)
         check("le devoir de maths remonte", "Devoir de maths" in rep, True)
-        check("…avec un brouillon pret", "Réponse proposée" in rep, True)
+        check("…avec un brouillon pret", "> Bonjour monsieur" in rep, True)
+        check("…et son bouton d'envoi", "CHOIX: Envoyer cette réponse" in rep, True)
         check("l'alerte de securite n'est plus noyee", "Alerte de sécurité" in rep, True)
         check("…et elle est classee importante",
               rep.index("Alerte de sécurité") < rep.index("Ignorés"), True)
@@ -6453,6 +6460,272 @@ def test_mails_tries_et_tableaux_rendus():
         # ⚠️ Une barre dans une phrase ordinaire ne doit pas fabriquer un tableau.
         check("une phrase avec une barre reste une phrase",
               "<table>" in out["phrase"], False)
+
+
+def test_boutons_sur_les_reponses_proposees():
+    """« Il faut que dans les reponses de Nova il y ait des questions interactives
+    comme sur Claude. Par exemple, sur les reponses proposees : envoyer oui ou non
+    ce message, ou alors le modifier. »
+
+    Le mecanisme de boutons existait deja, mais le rapport de mails est ECRIT PAR DU
+    CODE PYTHON, pas par le modele : il n'emettait donc jamais de bloc CHOIX. Et
+    j'avais explicitement INTERDIT les choix avant une action sans retour — ce qui
+    supprimait le bouton exactement la ou il sert le plus.
+    """
+    import importlib, subprocess, tempfile, os
+    from pathlib import Path as _P
+    racine = _P(__file__).resolve().parents[1]
+    R = importlib.import_module("agent.rapport_mail")
+
+    mail = {"id": "1", "subject": "Devoir de maths", "from": "M. Durand <d@lycee.fr>",
+            "snippet": "Peux-tu me dire si tu as fini l'exercice 4 ?"}
+    md = R.resume_markdown(R.trier([mail]),
+                           {"1": "Bonjour monsieur, oui j'ai termine l'exercice 4."})
+
+    # --- 1. Le choix accompagne TOUJOURS un brouillon ----------------------
+    check("un bloc de choix est propose", "CHOIX:" in md, True)
+    check("…qui nomme le destinataire", "à M. Durand ?" in md, True)
+    check("l'option d'envoi existe", "- Envoyer la réponse à M. Durand" in md, True)
+    check("…celle de modifier aussi", "- Modifier la réponse" in md, True)
+    check("…et celle de ne rien faire", "- Laisser ce mail de côté" in md, True)
+    # Pas de brouillon → pas de bouton d'envoi : on ne propose pas d'envoyer du vide.
+    sans = R.resume_markdown(R.trier([mail]), {})
+    check("sans brouillon, aucun bouton d'envoi", "CHOIX:" in sans, False)
+
+    # --- 2. L'interface en fait de vrais boutons ---------------------------
+    ui = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+    if shutil.which("node"):
+        src = ui[ui.index("function esc(s)"):ui.index("function addRow(")]
+        with tempfile.TemporaryDirectory() as d:
+            fjs, fmd = os.path.join(d, "f.js"), os.path.join(d, "md.txt")
+            open(fjs, "w", encoding="utf-8").write(src)
+            open(fmd, "w", encoding="utf-8").write(md)
+            h = ("var KEY='k', ORIGIN='https://x';\n"
+                 "eval(require('fs').readFileSync(%r,'utf8'));\n"
+                 "console.log(fmt(require('fs').readFileSync(%r,'utf8')));\n" % (fjs, fmd))
+            fh = os.path.join(d, "h.js")
+            open(fh, "w", encoding="utf-8").write(h)
+            out = subprocess.run(["node", fh], capture_output=True, text=True,
+                                 timeout=60).stdout
+        check("le bloc devient un encart de choix", 'class="choix"' in out, True)
+        check("trois boutons cliquables", out.count("<button"), 3)
+        check("…qui repondent au clic", 'onclick="repondre(this)"' in out, True)
+        check("plus aucun « CHOIX: » a l'ecran", "CHOIX:" in out, False)
+        # Le brouillon doit se DETACHER : c'est ce qu'il faut relire avant d'envoyer.
+        check("le brouillon est mis en citation", "<blockquote>" in out, True)
+        check("…sans chevron perdu a l'ecran", "&gt;" in out, False)
+    check("la citation est stylee", ".bubble blockquote{" in ui, True)
+
+    # --- 3. Le bouton PROPOSE, il n'execute pas ----------------------------
+    # ⚠️ La surete ne vient pas de l'absence de bouton, mais de ce qu'il declenche.
+    api = (racine / "api" / "agent.py").read_text(encoding="utf-8")
+    check("les choix sont autorises avant un envoi",
+          "Tu PEUX proposer un choix avant une action sans retour" in api, True)
+    check("…mais le bouton ne fait que preparer",
+          "le bouton ne fait que préparer" in api, True)
+    check("…la confirmation ecrite reste exigee",
+          "la confirmation reste" in api, True)
+    # Et le garde-fou lui-meme n'a pas bouge : un envoi passe toujours par lui.
+    A = importlib.import_module("api.agent")
+    check("un envoi reste irreversible", A._est_irreversible("GMAIL_SEND_EMAIL"), True)
+    check("…et un clic ne vaut pas un accord",
+          A._confirmation_donnee("Envoyer la réponse à M. Durand"), False)
+
+
+def test_journee_dictee_est_inscrite_pas_relue():
+    """« Organise ma journee de demain dans mon agenda, alors 9h30 je me reveille,
+    ensuite je me prepare jusqu'a 10, de 10h a 10h30 je fais ma valise et je mets
+    toutes mes affaires pour Pau dans la voiture, je dois emballer le colis aussi,
+    10h30 je pars au travail, ensuite faudrait que je parte a 14h maximum pour Pau. »
+
+    Reponse obtenue : « Il n'y a rien de prevu dans VOTRE agenda pour demain », suivie
+    de deux suggestions proposant… de creer les evenements qu'on venait de demander.
+
+    Quatre defauts d'un coup, tous corriges ici :
+      1. une journee DICTEE partait en LECTURE — aucun verbe d'ajout n'y figure ;
+      2. les etapes se chevauchaient (duree d'une heure en dur, fin ignoree) ;
+      3. au-dela de 4 etapes, les dernieres disparaissaient sans un mot ;
+      4. elle vouvoyait, et remplissait la fin avec des suggestions creuses.
+    """
+    import importlib, json as _j
+    from pathlib import Path as _P
+    A = importlib.import_module("api.agent")
+
+    DICTEE = ("organisme journee de demain dans mon agenda alors 9h30 je me reveille "
+              "ensuite je me prepare jusqu'a 10 de 10h a 10h30 je fais ma valise et je "
+              "mets tous toutes mes affaires pour Pau dans la voiture je dois emballer "
+              "le colis aussi 10h30 je pars au travail ensuite je pense que faudrait "
+              "que je parte d'ici a 14h maximum pour aller a Pau")
+
+    # --- 1. La forme suffit : ni « ajoute », ni « cree », ni « organise ma » ------
+    check("aucun verbe d'ajout dans la phrase",
+          any(v in DICTEE for v in A._CAL_CREATE), False)
+    check("…et pourtant c'est bien une journee dictee", A._planning_dicte(DICTEE), True)
+
+    # Ce qui NE doit PAS basculer en creation : les vraies questions.
+    for q in ("qu'est-ce que j'ai de prevu demain entre 9h et 18h ?",
+              "montre mes rendez-vous de demain de 9h a 17h",
+              "mes dispos de demain entre 10h et 14h",
+              "regarde mon agenda demain 9h 12h"):
+        check(f"« {q[:34]}… » reste une lecture", A._planning_dicte(q), False)
+    # Ni les phrases sans jour vise, ni celles sans deuxieme heure.
+    check("« il est 9h et j'ai 14h de retard » n'est pas un planning",
+          A._planning_dicte("il est 9h et j'ai 14h de retard je fais quoi"), False)
+    check("une seule heure ne fait pas une journee",
+          A._planning_dicte("demain je pars a 14h je fais ma valise"), False)
+
+    # --- 2. La demande part vers la CREATION -------------------------------------
+    vrai_json = A._llm_json
+    try:
+        A._llm_json = lambda *a, **k: {"evenements": [
+            {"titre": "Reveil", "debut": "2026-09-04T09:30", "fin": "2026-09-04T10:00",
+             "details": "Se reveiller."},
+            {"titre": "Preparation", "debut": "2026-09-04T10:00", "fin": "2026-09-04T11:00",
+             "details": "Se preparer."},
+            {"titre": "Valise et colis", "debut": "2026-09-04T10:00", "fin": "2026-09-04T11:00",
+             "details": "Valise, affaires pour Pau dans la voiture, emballer le colis."},
+            {"titre": "Travail", "debut": "2026-09-04T10:30", "fin": "2026-09-04T11:30",
+             "details": "Depart au travail."},
+            {"titre": "Depart pour Pau", "debut": "2026-09-04T14:00", "fin": "",
+             "details": "Partir a 14h maximum pour Pau."},
+        ]}
+        act, args = A._resolve_app_action(DICTEE)
+        check("la journee dictee est INSCRITE, pas relue", act, "GOOGLECALENDAR_CREATE_EVENT")
+
+        # --- 3. Les cinq etapes sont la : plus de coupe silencieuse a 4 -----------
+        autres = args.get("_autres_evenements") or []
+        check("les cinq etapes sont conservees", 1 + len(autres), 5)
+        titres = [args["summary"]] + [e["titre"] for e in autres]
+        check("l'etape a contrainte n'est plus perdue", "Depart pour Pau" in titres, True)
+
+        # --- 4. Elles ne se chevauchent plus --------------------------------------
+        from datetime import datetime, timedelta
+        tous = [{"titre": args["summary"], "debut": args["start_datetime"],
+                 "h": args["event_duration_hour"], "m": args["event_duration_minutes"]}]
+        for e in autres:
+            a = A._args_evenement(e)
+            tous.append({"titre": a["summary"], "debut": a["start_datetime"],
+                         "h": a["event_duration_hour"], "m": a["event_duration_minutes"]})
+        bornes = []
+        for t in tous:
+            d = datetime.fromisoformat(t["debut"])
+            bornes.append((d, d + timedelta(hours=t["h"], minutes=t["m"]), t["titre"]))
+        bornes.sort()
+        # Deux etapes a la meme minute restent permises (valise ET affaires dans la
+        # voiture) : ce qu'on interdit, c'est qu'une etape morde sur une etape SUIVANTE.
+        for d1, f1, n1 in bornes:
+            for d2, _f2, n2 in bornes:
+                if d2 > d1:
+                    check(f"« {n1} » ne deborde pas sur « {n2} »", f1 <= d2, True)
+                    break
+        # La valise dure bien 30 minutes, pas une heure imposee.
+        valise = [b for b in bornes if b[2] == "Valise et colis"][0]
+        check("le bloc de 10h a 10h30 dure 30 minutes",
+              int((valise[1] - valise[0]).total_seconds() // 60), 30)
+        # Et l'ordre suit la journee reelle.
+        check("les etapes sont dans l'ordre", [b[2] for b in bornes][0], "Reveil")
+        check("…jusqu'au depart", [b[2] for b in bornes][-1], "Depart pour Pau")
+    finally:
+        A._llm_json = vrai_json
+
+    # --- 5. Le recapitulatif montre la PLAGE, pas seulement le debut -------------
+    rep = _j.dumps({"data": {"summary": "Valise et colis",
+                             "start": {"dateTime": "2026-09-04T10:00:00+02:00"},
+                             "end": {"dateTime": "2026-09-04T10:30:00+02:00"}}})
+    r = A._recap_evenement(rep)
+    check("le recap dit le jour", "04/09/2026" in r, True)
+    check("…et la plage complete", "10h00 → 10h30" in r, True)
+
+    # --- 6. Elle tutoie, et ne remplit plus la fin de suggestions creuses --------
+    msgs = A._format_app_messages("mon agenda demain", "GOOGLECALENDAR_EVENTS_LIST", "{}")
+    sysmsg = msgs[0]["content"]
+    check("la consigne impose le tutoiement", "jamais " in sysmsg and "votre" in sysmsg, True)
+    check("les suggestions ne sont plus obligatoires",
+          "au plus 2 suggestions utiles" in sysmsg, False)
+    check("…et elle ne repropose pas ce qu'on vient de demander",
+          "Ne propose JAMAIS de faire ce qui vient d" in sysmsg, True)
+
+    # --- 7. Le modele annonce est celui qui repond ------------------------------
+    src = (_P(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
+    check("le chemin des apps demande le niveau annonce",
+          "niveau=_niveau_tache(message)" in src, True)
+
+
+def test_audit_qualite_aucun_raccourci_ne_repond_a_la_place():
+    """Audit lance apres la panne de l'agenda : le meme defaut existait-il ailleurs ?
+
+    Oui, deux fois. Le defaut n'etait pas « l'agenda est casse », c'etait « un
+    raccourci de LECTURE repond a la place d'une demande d'ECRITURE ». Verifie en
+    vrai avant correction :
+      « supprime l'evenement de 14h dans mon agenda » → Nova LISTAIT la journee ;
+      « envoie un mail a Marie pour lui dire que je serai en retard » → Nova TRIAIT
+      la boite de reception ;
+      « deplace ma reunion de 14h a 16h » → Nova LISTAIT la journee.
+    A chaque fois la demande est perdue, et la reponse a l'air d'un travail fait —
+    c'est ce qui la rend pire qu'une erreur franche.
+
+    Ces demandes repartent desormais vers l'agent complet, qui a les outils ET le
+    garde-fou de confirmation. C'est aussi le seul chemin sur : rien ne part ni ne
+    s'efface sans un accord ecrit.
+    """
+    import importlib
+    from pathlib import Path as _P
+    A = importlib.import_module("api.agent")
+
+    # --- 1. Aucune ECRITURE n'est avalee par un raccourci de lecture -------------
+    for demande in ("supprime l'evenement de 14h dans mon agenda",
+                    "annule mon rdv de demain",
+                    "deplace ma reunion de 14h a 16h",
+                    "decale mon rendez-vous dentiste",
+                    "modifie l'heure de ma reunion",
+                    "envoie un mail a Marie pour lui dire que je serai en retard",
+                    "reponds a ce mail",
+                    "ecris un mail au proviseur",
+                    "transfere ce mail a mon pere",
+                    "supprime les mails de pub",
+                    "archive mes mails de la semaine"):
+        check(f"« {demande[:38]}… » ne part pas en lecture",
+              A._resolve_app_action(demande)[0], None)
+        check(f"…et elle est bien vue comme une ecriture", A._demande_ecriture(demande), True)
+
+    # --- 2. Les vraies LECTURES continuent de marcher ---------------------------
+    for demande, attendu in (("lit mes mails d'aujourdhui", "__RAPPORT_MAILS__"),
+                             ("resume mes mails", "__RAPPORT_MAILS__"),
+                             ("mes mails", "__RAPPORT_MAILS__"),
+                             ("regarde ma boite mail", "__RAPPORT_MAILS__"),
+                             ("mon agenda de demain", "GOOGLECALENDAR_EVENTS_LIST"),
+                             ("mes rendez-vous de la semaine", "GOOGLECALENDAR_EVENTS_LIST")):
+        check(f"« {demande} » reste une lecture", A._resolve_app_action(demande)[0], attendu)
+        check("…et n'est pas prise pour une ecriture", A._demande_ecriture(demande), False)
+
+    # --- 3. Une creation d'evenement reste une creation --------------------------
+    vrai_json = A._llm_json
+    try:
+        A._llm_json = lambda *a, **k: {"evenements": [
+            {"titre": "Dentiste", "debut": "2026-09-04T14:00", "fin": "2026-09-04T15:00"}]}
+        check("« ajoute un rdv demain a 14h » cree bien",
+              A._resolve_app_action("ajoute un rdv dentiste demain a 14h")[0],
+              "GOOGLECALENDAR_CREATE_EVENT")
+    finally:
+        A._llm_json = vrai_json
+
+    # --- 4. Le tutoiement est ecrit UNE fois, et applique PARTOUT ----------------
+    # ⚠️ Aucun prompt ne disait de tutoyer : « il n'y a rien de prevu dans VOTRE
+    # agenda » pouvait sortir sur n'importe quel chemin, pas seulement celui des apps.
+    from agent.system_prompt import TUTOIEMENT, AGENT_COMPACT_DIRECTIVE, SHORT_SYSTEM_PROMPT
+    from agent.core import SYSTEM_TEMPLATE
+    check("la regle existe en un seul endroit", "Tutoie TOUJOURS" in TUTOIEMENT, True)
+    check("…et interdit explicitement « votre »", "votre" in TUTOIEMENT, True)
+    for nom, texte in (("directive de l'agent", AGENT_COMPACT_DIRECTIVE),
+                       ("mode rapide", SHORT_SYSTEM_PROMPT)):
+        check(f"{nom} : tutoiement impose", TUTOIEMENT in texte, True)
+    check("boucle ReAct : tutoiement impose", "tutoies TOUJOURS" in SYSTEM_TEMPLATE, True)
+    for nom, msgs in (("discussion", A._smalltalk_messages("salut")),
+                      ("reponse d'app", A._format_app_messages("x", "y", "{}")),
+                      ("action d'app", A._format_app_messages("x", "y", "{}", True))):
+        check(f"{nom} : tutoiement impose", TUTOIEMENT in msgs[0]["content"], True)
+    # Et la version d'api/agent.py est la MEME chaine, pas une reformulation qui derive.
+    check("une seule formulation, pas deux", A._TUTOIE.strip(), TUTOIEMENT)
 
 
 if __name__ == "__main__":
@@ -6506,7 +6779,10 @@ if __name__ == "__main__":
                test_raisonnement_suit_et_nova_n_invente_pas_de_cause,
                test_le_sujet_survit_a_une_correction,
                test_rapport_de_mails_ne_peut_pas_envoyer,
-               test_mails_tries_et_tableaux_rendus):
+               test_mails_tries_et_tableaux_rendus,
+               test_boutons_sur_les_reponses_proposees,
+               test_journee_dictee_est_inscrite_pas_relue,
+               test_audit_qualite_aucun_raccourci_ne_repond_a_la_place):
         try:
             fn()
         except Exception as e:

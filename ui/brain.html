@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>NOVA · Constellation 3D</title>
 <link rel="icon" href="/nova/icon.svg" type="image/svg+xml">
-<meta name="theme-color" content="#7c5cff">
+<meta name="theme-color" content="#8b6dff">
 <style>
-  :root{ --bg:#05050d; --glass:rgba(255,255,255,.06); --stroke:rgba(255,255,255,.12);
-         --neon:#7c5cff; --neon2:#22d3ee; --txt:#e9e9f5; --dim:#9aa0b5; }
+  :root{ --bg:#08080f; --glass:rgba(255,255,255,.06); --stroke:rgba(255,255,255,.12);
+         --neon:#8b6dff; --neon2:#2fe0f5; --txt:#f2f2fa; --dim:#a8afc4; }
   *{ box-sizing:border-box; margin:0; padding:0; } html,body{ height:100%; }
   body{ font-family:'Inter',system-ui,sans-serif; color:var(--txt); background:var(--bg); overflow:hidden;
         -webkit-user-select:none; user-select:none; }
@@ -24,8 +24,8 @@
   .tools{ display:flex; gap:8px; pointer-events:auto; }
   .btn{ text-decoration:none; color:var(--txt); background:var(--glass); border:1px solid var(--stroke);
         padding:9px 14px; border-radius:12px; font-size:13px; backdrop-filter:blur(12px); transition:.2s; cursor:pointer; }
-  .btn:hover{ border-color:var(--neon); box-shadow:0 0 18px rgba(124,92,255,.4); }
-  .btn.on{ border-color:var(--neon2); color:#fff; box-shadow:0 0 16px rgba(34,211,238,.45); }
+  .btn:hover{ border-color:var(--neon); box-shadow:0 0 18px rgba(139,109,255,.4); }
+  .btn.on{ border-color:var(--neon2); color:#fff; box-shadow:0 0 16px rgba(47,224,245,.45); }
   .hud{ position:fixed; left:max(18px,env(safe-area-inset-left)); bottom:calc(18px + env(safe-area-inset-bottom)); z-index:3; display:flex; flex-direction:column; gap:8px;
         background:rgba(12,12,26,.55); border:1px solid var(--stroke); border-radius:16px; padding:13px 16px;
         backdrop-filter:blur(16px); min-width:206px; }
@@ -157,7 +157,7 @@ function draw(){ T+=0.016; if(autoSpin&&!dragging) yaw+=0.0016;
   // liens coeur → agents, et agents → outils (dessinés avant les noeuds)
   sc.agents.forEach(({a,p})=>{ const q=project(p), act=ACTIVE[a.id]||0;
     const g=ctx.createLinearGradient(pc.x,pc.y,q.x,q.y);
-    g.addColorStop(0,"rgba(124,92,255,"+(0.22+0.6*act)+")"); g.addColorStop(1,hexA(a.color,0.12+0.6*act));
+    g.addColorStop(0,"rgba(139,109,255,"+(0.22+0.6*act)+")"); g.addColorStop(1,hexA(a.color,0.12+0.6*act));
     ctx.beginPath(); ctx.moveTo(pc.x,pc.y); ctx.lineTo(q.x,q.y);
     ctx.strokeStyle=g; ctx.lineWidth=Math.max(0.6,(0.9+2.2*act)*q.s); ctx.stroke(); });
   sc.tools.forEach(t=>{ const q=project(t.p), pp=project(t.parent);
@@ -211,15 +211,38 @@ function draw(){ T+=0.016; if(autoSpin&&!dragging) yaw+=0.0016;
     else { const busy=Object.values(ACTIVE).reduce((m,v)=>Math.max(m,v),0);
       const R=(40+Math.sin(T*1.5)*3+busy*6)*q.s;
       for(let k=0;k<2;k++){ ctx.beginPath(); ctx.arc(q.x,q.y,R+(11+k*10)*q.s,0,7);
-        ctx.strokeStyle="rgba(124,92,255,"+(0.28-k*0.1+busy*0.3)+")"; ctx.lineWidth=1.3*q.s; ctx.stroke(); }
-      const cg=ctx.createRadialGradient(q.x,q.y,2,q.x,q.y,R);
-      cg.addColorStop(0,"rgba(205,188,255,.98)"); cg.addColorStop(.55,"rgba(124,92,255,.75)"); cg.addColorStop(1,"rgba(80,50,190,.22)");
-      ctx.beginPath(); ctx.arc(q.x,q.y,R,0,7); ctx.fillStyle=cg; ctx.shadowBlur=50*q.s; ctx.shadowColor="#7c5cff"; ctx.fill(); ctx.shadowBlur=0;
-      ctx.font="700 "+Math.round(14*q.s)+"px sans-serif"; ctx.textAlign="center"; ctx.fillStyle="#fff";
-      ctx.fillText("NOVA",q.x,q.y+5*q.s); }
+        ctx.strokeStyle="rgba(139,109,255,"+(0.28-k*0.1+busy*0.3)+")"; ctx.lineWidth=1.3*q.s; ctx.stroke(); }
+      // ⚠️ Le noyau était dessiné ici d'une TROISIÈME façon (accueil, schéma,
+      // constellation en avaient chacun une). Un même objet doit se ressembler
+      // partout : c'est la même sphère, à l'identique.
+      dessineNoyau(ctx, q.x, q.y, R);
+      ctx.font="700 "+Math.round(11.5*q.s)+"px sans-serif"; ctx.textAlign="center";
+      ctx.fillStyle="rgba(242,242,250,.92)";
+      ctx.fillText("NOVA",q.x,q.y+R+15*q.s); }
   }
   requestAnimationFrame(draw); }
-function hexA(hex,a){ const h=(hex||"#7c5cff").replace("#",""); const b=parseInt(h.length===3?h.split("").map(c=>c+c).join(""):h,16);
+/* La sphère de Nova — MÊME matière que sur l'accueil et dans le schéma de
+   raisonnement. Copie fidèle et volontaire : ces deux pages ne partagent aucun
+   fichier de script, et une divergence se verrait tout de suite. */
+function dessineNoyau(c, x, y, r){
+  const g = c.createRadialGradient(x - r*0.24, y - r*0.30, r*0.08, x, y, r);
+  g.addColorStop(0,"#b9a6ff"); g.addColorStop(0.30,"#8f74f5");
+  g.addColorStop(0.62,"#5b3fd0"); g.addColorStop(0.86,"#241a55");
+  g.addColorStop(1,"#100b28");
+  c.beginPath(); c.arc(x,y,r,0,7);
+  c.fillStyle=g; c.shadowBlur=40; c.shadowColor="rgba(139,109,255,.75)";
+  c.fill(); c.shadowBlur=0;
+  const t = c.createRadialGradient(x + r*0.22, y + r*0.34, r*0.1, x, y, r);
+  t.addColorStop(0,"rgba(0,0,0,.42)"); t.addColorStop(1,"rgba(0,0,0,0)");
+  c.beginPath(); c.arc(x,y,r,0,7); c.fillStyle=t; c.fill();
+  const s2 = c.createRadialGradient(x - r*0.30, y - r*0.34, 0, x - r*0.30, y - r*0.34, r*0.42);
+  s2.addColorStop(0,"rgba(255,255,255,.55)"); s2.addColorStop(1,"rgba(255,255,255,0)");
+  c.beginPath(); c.arc(x,y,r,0,7); c.fillStyle=s2; c.fill();
+  c.beginPath(); c.arc(x,y,r-0.6,2.1,4.1);
+  c.strokeStyle="rgba(47,224,245,.20)"; c.lineWidth=1.4; c.stroke();
+}
+
+function hexA(hex,a){ const h=(hex||"#8b6dff").replace("#",""); const b=parseInt(h.length===3?h.split("").map(c=>c+c).join(""):h,16);
   return "rgba("+((b>>16)&255)+","+((b>>8)&255)+","+(b&255)+","+a+")"; }
 draw();
 

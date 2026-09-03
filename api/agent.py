@@ -136,6 +136,7 @@ def _smalltalk_messages(message: str, appris=None) -> list:
         {"role": "system", "content": _profile_ctx().strip() + "\n" + (
             "Tu es Nova, l'assistante personnelle de l'utilisateur. Réponds en français, "
             "de façon chaleureuse, BRÈVE (1 à 3 phrases maximum) et naturelle, comme un ami.\n"
+            + _TUTOIE.strip() + "\n"
             "INTERDICTIONS ABSOLUES :\n"
             "- Ne parle JAMAIS de bourse, actions, ETF, crypto, marchés, investissement, épargne "
             "ou placements. Même si l'utilisateur mentionne son âge ou de l'argent.\n"
@@ -530,10 +531,17 @@ def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
               "CHOIX: ta question en une ligne\n"
               "- première option\n"
               "- deuxième option\n"
-              "Deux à quatre options, courtes (1 à 5 mots), qui s'excluent. N'en mets "
-              "PAS quand la demande est claire : une question inutile fait perdre du "
-              "temps. Jamais de CHOIX pour une action sans retour — un envoi ou une "
-              "suppression demande une confirmation écrite, pas un bouton."
+              "Deux à quatre options, courtes, qui s'excluent. N'en mets PAS quand la "
+              "demande est claire : une question inutile fait perdre du temps. "
+              # ⚠️ J'avais d'abord interdit les CHOIX sur une action sans retour. Lohan
+              # veut justement le bouton là où il sert le plus (« envoyer ce message ?
+              # oui / non / le modifier »). La sûreté ne vient donc pas de l'absence de
+              # bouton, mais de ce qu'il déclenche : le bouton PROPOSE, il n'exécute
+              # pas. Un envoi passe toujours par la confirmation écrite ensuite.
+              "Tu PEUX proposer un choix avant une action sans retour (envoi, "
+              "suppression) : le bouton ne fait que préparer, la confirmation reste "
+              "demandée juste après. Propose alors toujours une option pour MODIFIER "
+              "et une pour ne rien faire."
               + _repere_temporel())
     if not fin:
         system += (" INTERDIT : ne parle pas de bourse, actions, crypto, marchés, investissement, "
@@ -687,6 +695,78 @@ _CAL_CREATE = ("ajoute", "rajoute", "crée", "cree", "créer", "creer", "réserv
                "bloque", "programme", "note un", "note une", "mets un", "mets une",
                "mets-moi", "mets moi", "planifie un", "planifie une", "ajouter un", "ajouter une")
 
+# ⚠️ « Organise ma journée de demain dans mon agenda : alors 9h30 je me réveille,
+# ensuite je me prépare jusqu'à 10, de 10h à 10h30 je fais ma valise, 10h30 je pars
+# au travail, et faudrait que je parte à 14h maximum pour Pau. »
+# Nova a répondu « Il n'y a rien de prévu dans ton agenda pour demain » : on lui
+# demandait de REMPLIR l'agenda, elle l'a LU. Deux causes, toutes deux structurelles :
+#   • aucun verbe de _CAL_CREATE n'apparaît — une journée qu'on DICTE n'a pas
+#     d'impératif, elle se raconte au présent (« je me réveille », « je pars ») ;
+#   • le seul mot « agenda » suffisait à partir en lecture, et la lecture gagnait.
+# Sur un doute, se tromper vers la lecture est le pire des deux : la demande est
+# perdue, et la réponse est en plus vexante (« tu n'as rien de prévu »). On reconnaît
+# donc la journée dictée par sa FORME, indépendamment du vocabulaire employé.
+_HEURE_DITE = re.compile(r"\b(\d{1,2})\s*h\s*(\d{2})?\b", re.I)
+_JOUR_VISE = re.compile(
+    r"\b(demain|apr[eè]s-demain|aujourd'?hui|ce soir|ce matin|cet aprem|cet apr[eè]s-midi|"
+    r"lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche|"
+    r"le\s+\d{1,2}[/\s-]|\d{1,2}\s+(?:janvier|f[ée]vrier|mars|avril|mai|juin|juillet|"
+    r"ao[uû]t|septembre|octobre|novembre|d[ée]cembre))", re.I)
+# Ce qui trahit une QUESTION sur l'agenda — là, il faut lire, pas écrire.
+_LECTURE_AGENDA = re.compile(
+    r"(\?|qu'?est-ce que j|qu'?ai-je|j'ai quoi|je fais quoi|quoi de pr[ée]vu|qu'?y a-t-il|"
+    r"c'est quoi mon|mes dispos|mes disponibilit|suis-je libre|est-ce que je suis libre|"
+    r"\bregarde\b|\bmontre\b|\baffiche\b|\bconsulte\b|\bliste\b|\brésume mon\b|"
+    r"qu'?est-ce qui est pr[ée]vu|y a-t-il|mes rendez-vous|mes [ée]v[ée]nements|"
+    r"v[ée]rifie mon|dis-moi ce que j)", re.I)
+# « je me réveille », « je fais ma valise », « je pars »… : on RACONTE une journée.
+_JE_FAIS = re.compile(r"\bj(?:e|'|ai\s)\s*\w*", re.I)
+
+
+# ⚠️ MÊME DÉFAUT, DEUX AUTRES ENDROITS — trouvé en auditant la panne de l'agenda.
+# Les raccourcis « mot d'agenda → je liste » et « mot de mail → je trie » attrapaient
+# aussi les demandes d'ÉCRITURE :
+#   « supprime l'événement de 14h »        → Nova listait la journée ;
+#   « envoie un mail à Marie »             → Nova triait la boîte de réception ;
+#   « déplace ma réunion de 14h à 16h »    → Nova listait la journée.
+# À chaque fois : la demande est perdue, et la réponse a l'air d'un travail fait. Un
+# raccourci de LECTURE ne doit jamais répondre à la place d'une demande d'écriture ;
+# celles-ci repartent vers l'agent complet, qui a les outils ET le garde-fou de
+# confirmation (_demande_confirmation). C'est aussi le seul chemin sûr : rien ne part
+# ni ne s'efface sans un accord écrit.
+_ECRITURE = re.compile(
+    r"\b(envoie|envoyer|envoi|écris|ecris|écrire|ecrire|rédige|redige|rédiger|rediger|"
+    r"réponds|reponds|répondre|repondre|transf[eè]re|transf[ée]rer|renvoie|renvoyer|"
+    r"supprime|supprimer|efface|effacer|annule|annuler|archive|archiver|"
+    r"déplace|deplace|déplacer|deplacer|décale|decale|décaler|decaler|reporte|reporter|"
+    r"modifie|modifier|change|changer|renomme|renommer|marque comme lu)\b", re.I)
+
+
+def _demande_ecriture(message: str) -> bool:
+    """La personne demande-t-elle de MODIFIER quelque chose, pas de le consulter ?"""
+    return bool(_ECRITURE.search(message or ""))
+
+
+def _planning_dicte(message: str) -> bool:
+    """Cette phrase DÉCRIT-elle une journée à inscrire, plutôt qu'une question ?
+
+    Quatre conditions, toutes nécessaires — c'est ce qui empêche « mes rendez-vous
+    de demain entre 9h et 18h » de partir en création :
+      1. ce n'est pas une question ni un verbe de consultation ;
+      2. au moins deux heures DIFFÉRENTES sont citées (une journée a des étapes) ;
+      3. un jour est visé (sinon « il est 9h et j'ai 14h de retard » suffirait) ;
+      4. la personne parle de ce qu'ELLE fait, au moins deux fois.
+    """
+    m = (message or "").lower()
+    if _LECTURE_AGENDA.search(m):
+        return False
+    heures = {(int(h), int(mn or 0)) for h, mn in _HEURE_DITE.findall(m) if int(h) <= 24}
+    if len(heures) < 2:
+        return False
+    if not _JOUR_VISE.search(m):
+        return False
+    return len(_JE_FAIS.findall(m)) >= 2
+
 
 def _clean_event_text(message: str) -> str:
     """Nettoie la phrase pour Google Quick Add (retire l'appel à Nova, le verbe et les mots 'agenda')."""
@@ -736,11 +816,22 @@ def _evenements_demandes(message: str) -> list:
         "Si l'heure de fin n'est pas dite, mets une heure après le début. "
         "Si seul un moment de la journée est donné : matin = 09:00, "
         "après-midi = 14:00, soir = 19:00.\n"
+        # ⚠️ Une JOURNÉE dictée s'enchaîne : « je me prépare jusqu'à 10 », « de 10h à
+        # 10h30 je fais ma valise ». Sans ces deux règles, chaque étape devenait une
+        # heure pleine et les blocs se chevauchaient — l'agenda était illisible.
+        "Une journée racontée est une SUITE d'étapes : « de 10h à 10h30 » donne "
+        "debut 10:00 et fin 10:30, « jusqu'à 10 » veut dire jusqu'à 10:00. Quand une "
+        "étape n'a pas de fin dite, elle s'arrête au début de la suivante.\n"
+        "Une étape = une activité réelle, même sans verbe d'ajout (« je me réveille », "
+        "« je fais ma valise », « je pars au travail » sont trois étapes).\n"
         "N'invente aucun événement qui ne serait pas demandé.",
         f"MAINTENANT : {now:%Y-%m-%dT%H:%M} ({_JOURS_FR_MIN[now.weekday()]}).\n"
         f"Phrase : {message}")
     sortie = []
-    for e in (ex.get("evenements") or [])[:4]:
+    # ⚠️ La limite était de 4. La journée qu'il a dictée en comptait cinq : la
+    # dernière — « partir à 14h pour Pau », celle qui avait une contrainte — sautait
+    # en silence. On ne coupe plus dans ce qu'il a explicitement demandé.
+    for e in (ex.get("evenements") or [])[:12]:
         titre = (e.get("titre") or "").strip(" .\"'")[:80]
         debut = (e.get("debut") or "").strip()
         if not titre or not re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", debut):
@@ -751,7 +842,67 @@ def _evenements_demandes(message: str) -> list:
             fin = (datetime.fromisoformat(debut[:16]) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
         sortie.append({"titre": titre, "debut": debut[:16], "fin": fin[:16],
                        "details": (e.get("details") or "").strip()[:400]})
-    return sortie
+    return _enchaine(sortie)
+
+
+def _enchaine(evts: list) -> list:
+    """Remet les étapes dans l'ordre et empêche qu'elles se chevauchent.
+
+    ⚠️ « De 10h à 10h30 je fais ma valise, 10h30 je pars au travail » : dès que le
+    modèle rate une heure de fin, il met une heure pleine par défaut et la valise
+    déborde sur le départ. Deux blocs superposés dans un agenda, c'est un agenda
+    faux. L'ordre et les bornes se calculent — on ne les demande pas au modèle.
+    """
+    from datetime import datetime
+    def _dt(s):
+        try:
+            return datetime.fromisoformat(str(s)[:16])
+        except Exception:
+            return None
+    evts = [e for e in evts if _dt(e.get("debut"))]
+    evts.sort(key=lambda e: _dt(e["debut"]))
+    for i, e in enumerate(evts):
+        d, f = _dt(e["debut"]), _dt(e.get("fin"))
+        # La prochaine étape qui commence VRAIMENT plus tard. Deux étapes à la même
+        # minute sont laissées telles quelles : « je fais ma valise » et « je mets mes
+        # affaires dans la voiture » se font bel et bien en même temps.
+        suivant = next((_dt(x["debut"]) for x in evts[i + 1:] if _dt(x["debut"]) > d), None)
+        # Une fin avant le début n'a aucun sens : on la refait.
+        if f is None or f <= d:
+            f = suivant
+        # Une étape ne mord jamais sur la suivante.
+        if suivant and f and f > suivant:
+            f = suivant
+        if f is None:
+            from datetime import timedelta
+            f = d + timedelta(hours=1)
+        e["fin"] = f.strftime("%Y-%m-%dT%H:%M")
+    return evts
+
+
+def _args_evenement(e: dict) -> dict:
+    """Les arguments de création, avec la VRAIE durée de l'étape.
+
+    ⚠️ On envoyait « event_duration_hour: 1 » en dur, quelle que soit l'heure de fin
+    extraite. Un créneau de 10h à 10h30 était donc posé jusqu'à 11h — et recouvrait
+    le départ de 10h30. La durée était pourtant sous la main.
+    """
+    from datetime import datetime
+    minutes = 60
+    try:
+        d = datetime.fromisoformat(str(e["debut"])[:16])
+        f = datetime.fromisoformat(str(e["fin"])[:16])
+        minutes = int((f - d).total_seconds() // 60)
+    except Exception:
+        pass
+    minutes = max(5, min(minutes, 24 * 60))
+    args = {"calendar_id": "primary", "summary": e["titre"],
+            "start_datetime": e["debut"],
+            "event_duration_hour": minutes // 60,
+            "event_duration_minutes": minutes % 60}
+    if e.get("details"):
+        args["description"] = e["details"]
+    return args
 
 
 _JOURS_FR_MIN = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
@@ -796,7 +947,8 @@ def _resolve_app_action(message: str):
     cal_ctx = any(c in m for c in cal_strong) or (any(p in m for p in plan) and day_word)
 
     # ➕ CRÉATION d'événement → Quick Add (langage naturel). Exige un mot d'agenda OU une heure précise.
-    if any(v in m for v in _CAL_CREATE) and (cal_ctx or has_clock):
+    # ⚠️ …OU une journée DICTÉE, qui n'emploie aucun verbe d'ajout (voir _planning_dicte).
+    if (any(v in m for v in _CAL_CREATE) and (cal_ctx or has_clock)) or _planning_dicte(message):
         # ⚠️ On laissait Google deviner à partir de la phrase brute. Sur une demande
         # qui en contient DEUX (« … et ensuite mets pour mercredi … »), il n'en créait
         # qu'un, titré avec la phrase entière, et au mauvais jour. On extrait donc les
@@ -804,16 +956,16 @@ def _resolve_app_action(message: str):
         # Add reste le repli quand l'extraction ne donne rien d'exploitable.
         evts = _evenements_demandes(message)
         if evts:
-            e = evts[0]
-            args = {"calendar_id": "primary", "summary": e["titre"],
-                    "start_datetime": e["debut"], "event_duration_hour": 1,
-                    "event_duration_minutes": 0}
-            if e.get("details"):
-                args["description"] = e["details"]
+            args = _args_evenement(evts[0])
             if len(evts) > 1:
                 args["_autres_evenements"] = evts[1:]     # créés à la suite (voir _tool)
             return "GOOGLECALENDAR_CREATE_EVENT", args
         return "GOOGLECALENDAR_QUICK_ADD", {"calendar_id": "primary", "text": _event_text(message)}
+
+    # ⚠️ À partir d'ici, ce sont des raccourcis de LECTURE. Une demande d'écriture qui
+    # les atteint repart vers l'agent complet — voir _demande_ecriture.
+    if _demande_ecriture(message):
+        return None, None
 
     if cal_ctx:
         tmin, tmax, _ = _time_bounds(message)
@@ -1226,6 +1378,13 @@ def _erreur_lisible_app(obs: str) -> str:
             else (obs or "")[:220])
 
 
+# ⚠️ Nova tutoie Lohan partout ailleurs. Sur le chemin des apps, aucune consigne ne le
+# disait : elle a répondu « il n'y a rien de prévu dans VOTRE agenda », « VOTRE limite de
+# départ ». Ce n'est pas un détail de style — c'est une autre personne qui répond.
+from agent.system_prompt import TUTOIEMENT as _REGLE_TUTOIEMENT
+_TUTOIE = " " + _REGLE_TUTOIEMENT
+
+
 def _format_app_messages(message: str, action: str, obs: str, is_write: bool = False) -> list:
     if is_write:
         sys = (
@@ -1234,6 +1393,7 @@ def _format_app_messages(message: str, action: str, obs: str, is_write: bool = F
             "UNIQUEMENT sur ces données réelles (titre, date, heure exacts renvoyés). "
             "N'invente rien. Si la réponse ne confirme pas clairement la création, dis-le honnêtement "
             "et propose de réessayer. Format court (1-3 lignes), avec un ✅ si c'est confirmé."
+            + _TUTOIE
         )
     else:
         sys = (
@@ -1241,7 +1401,17 @@ def _format_app_messages(message: str, action: str, obs: str, is_write: bool = F
             "Résume-les clairement en français (tableau ou liste lisible). "
             "RÈGLE ABSOLUE : utilise UNIQUEMENT ces données. N'invente AUCUN événement, mail, "
             "date, heure, lieu ou personne. Si la liste est vide, dis simplement qu'il n'y a rien "
-            "de prévu. Termine par au plus 2 suggestions utiles."
+            "de prévu."
+            # ⚠️ « Termine par au plus 2 suggestions utiles » était une OBLIGATION : le
+            # modèle en fabriquait donc toujours deux, même quand il n'avait rien compris.
+            # Sur « organise ma journée de demain », ça a donné « 1. Créez un événement
+            # Départ pour Pau à 14h » — c'est-à-dire proposer poliment de faire ce qu'on
+            # venait justement de lui demander. Une suggestion doit être un supplément,
+            # jamais un remplissage.
+            " N'ajoute une suggestion que si elle apporte vraiment quelque chose ; "
+            "sinon, n'en mets aucune. Ne propose JAMAIS de faire ce qui vient d'être "
+            "demandé : si c'était une demande d'action, c'est qu'elle a échoué — dis-le."
+            + _TUTOIE
         )
     # ⚠️ PAS de nouvelle troncature ici : elle recoupait au milieu d'un enregistrement le
     # JSON que _reduit venait justement de rendre valide — le défaut « aucun document
@@ -1316,20 +1486,36 @@ def _recap_evenement(obs: str) -> str:
     titre = (d.get("summary") or "").strip()
     if not quand:
         return ""
+    dt = _local(quand)
+    if dt is None:
+        return f"✅ Créé dans ton agenda : « {titre or 'sans titre'} » — {quand}."
+    if len(str(quand)) <= 10:
+        return (f"✅ Créé dans ton agenda : « {titre or 'sans titre'} » — "
+                f"{_JOURS_FR_MIN[dt.weekday()]} {dt:%d/%m/%Y}.")
+    # ⚠️ Seule l'heure de DÉBUT était affichée. Sur une journée découpée en étapes,
+    # c'est précisément la FIN qui dit si l'agencement est bon : sans elle, il ne peut
+    # pas voir que « valise 10h00 » déborde sur « départ 10h30 ».
+    fin = (d.get("end") or {}).get("dateTime") or ""
+    df = _local(fin) if fin else None
+    plage = f"{dt:%Hh%M}" + (f" → {df:%Hh%M}" if df and df > dt else "")
+    return (f"✅ Créé dans ton agenda : « {titre or 'sans titre'} » — "
+            f"{_JOURS_FR_MIN[dt.weekday()]} {dt:%d/%m/%Y}, {plage}.")
+
+
+def _local(quand: str):
+    """Une date Google → l'heure de Paris, en datetime naïf. None si illisible."""
     try:
         from datetime import datetime
         dt = datetime.fromisoformat(str(quand).replace("Z", "+00:00"))
-        if dt.tzinfo is not None:
-            from agent.horloge import zone
-            z = zone()
-            if z is not None:
-                dt = dt.astimezone(z)
-            dt = dt.replace(tzinfo=None)
-        libelle = (f"{_JOURS_FR_MIN[dt.weekday()]} {dt:%d/%m/%Y à %Hh%M}"
-                   if len(str(quand)) > 10 else f"{_JOURS_FR_MIN[dt.weekday()]} {dt:%d/%m/%Y}")
     except Exception:
-        libelle = str(quand)
-    return f"✅ Créé dans ton agenda : « {titre or 'sans titre'} » — {libelle}."
+        return None
+    if dt.tzinfo is not None:
+        from agent.horloge import zone
+        z = zone()
+        if z is not None:
+            dt = dt.astimezone(z)
+        dt = dt.replace(tzinfo=None)
+    return dt
 
 
 def _format_app_result(message: str, action: str, obs: str, is_write: bool = False) -> str:
@@ -1343,7 +1529,13 @@ def _format_app_result(message: str, action: str, obs: str, is_write: bool = Fal
     from agent.chrono import mesure
     try:
         with mesure("modele"):
-            brut = chat(_format_app_messages(message, action, obs, is_write), temperature=0.2)
+            # ⚠️ La bulle annonçait « je sors mon modèle le plus costaud », puis ce
+            # chemin appelait chat() SANS niveau : le pied de page affichait alors un
+            # petit modèle. L'annonce était donc fausse — et c'est exactement le genre
+            # de détail qui fait douter de tout le reste. Le niveau annoncé est
+            # maintenant celui qui est réellement demandé.
+            brut = chat(_format_app_messages(message, action, obs, is_write),
+                        temperature=0.2, niveau=_niveau_tache(message))
     except Exception:
         return f"Voici les données réelles récupérées :\n\n{obs[:2000]}"
     propre = _prose_seule(brut)
@@ -1934,12 +2126,7 @@ def _tool(name_cmd: str, args: dict, slug: str = "") -> str:
     if slug and not _looks_like_failure(obs):
         _APP_OK[slug] = _t.monotonic()
     for e in (autres or []):
-        a = {"calendar_id": "primary", "summary": e["titre"],
-             "start_datetime": e["debut"], "event_duration_hour": 1,
-             "event_duration_minutes": 0}
-        if e.get("details"):
-            a["description"] = e["details"]
-        suite = _tool_call(name_cmd, a, slug)
+        suite = _tool_call(name_cmd, _args_evenement(e), slug)
         obs = str(obs) + "\n\n[ÉVÉNEMENT SUIVANT]\n" + str(suite)
     return obs
 
@@ -3089,6 +3276,11 @@ _INTENTIONS = (
 def _intention_app(message: str) -> str:
     """Décrit l'intention en français clair, par simple analyse lexicale."""
     m = (message or "").lower()
+    # ⚠️ Une journée dictée n'a aucun verbe : la bulle affichait donc « je vais aller
+    # regarder » pendant qu'elle allait ÉCRIRE. Annoncer l'inverse de ce qu'on fait,
+    # c'est le même défaut que le modèle annoncé et non utilisé.
+    if _planning_dicte(message):
+        return "tu me dictes ta journée, je l'inscris"
     for mots, libelle in _INTENTIONS:
         if any(k in m for k in mots):
             return libelle

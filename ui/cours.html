@@ -3,16 +3,16 @@
 <title>Nova · Mode Cours</title>
 <link rel="manifest" href="/nova/manifest.webmanifest">
 <style>
-  :root{ --bg:#060610; --glass:rgba(255,255,255,.06); --stroke:rgba(255,255,255,.12);
-         --neon:#7c5cff; --neon2:#22d3ee; --pink:#ec4899; --ok:#34d399; --warn:#fbbf24;
-         --txt:#e9e9f5; --dim:#9aa0b5; }
+  :root{ --bg:#08080f; --glass:rgba(255,255,255,.06); --stroke:rgba(255,255,255,.12);
+         --neon:#8b6dff; --neon2:#2fe0f5; --pink:#ec4899; --ok:#34d399; --warn:#fbbf24;
+         --txt:#f2f2fa; --dim:#a8afc4; }
   *{ box-sizing:border-box; margin:0; padding:0; }
   html,body{ height:100%; }
   body{ font-family:'Inter',system-ui,sans-serif; color:var(--txt); background:var(--bg); }
   #aurora{ position:fixed; inset:0; z-index:0; overflow:hidden; filter:blur(80px); opacity:.35; transition:opacity 1s; }
   #aurora .b{ position:absolute; border-radius:50%; mix-blend-mode:screen; }
-  #aurora .b1{ width:60vw; height:60vw; left:-14vw; top:-18vh; background:radial-gradient(circle,#7c5cff,transparent 68%); animation:f1 24s ease-in-out infinite; }
-  #aurora .b2{ width:50vw; height:50vw; right:-10vw; top:4vh; background:radial-gradient(circle,#22d3ee,transparent 68%); animation:f2 28s ease-in-out infinite; }
+  #aurora .b1{ width:60vw; height:60vw; left:-14vw; top:-18vh; background:radial-gradient(circle,#8b6dff,transparent 68%); animation:f1 24s ease-in-out infinite; }
+  #aurora .b2{ width:50vw; height:50vw; right:-10vw; top:4vh; background:radial-gradient(circle,#2fe0f5,transparent 68%); animation:f2 28s ease-in-out infinite; }
   @keyframes f1{ 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(7vw,6vh) scale(1.14)} }
   @keyframes f2{ 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(-6vw,5vh) scale(.9)} }
   body.rec #aurora{ opacity:.5; }
@@ -38,7 +38,7 @@
   label{ display:block; font-size:12px; color:var(--dim); margin:0 0 6px; font-weight:600; letter-spacing:.04em; }
   input{ width:100%; background:rgba(0,0,0,.28); border:1px solid var(--stroke); color:var(--txt);
          border-radius:12px; padding:12px 14px; font-size:15px; font-family:inherit; outline:none; transition:.2s; }
-  input:focus{ border-color:var(--neon); box-shadow:0 0 16px rgba(124,92,255,.28); }
+  input:focus{ border-color:var(--neon); box-shadow:0 0 16px rgba(139,109,255,.28); }
   .duo{ display:flex; gap:12px; } .duo>div{ flex:1; }
 
   button{ font-family:inherit; cursor:pointer; border-radius:14px; transition:.2s; border:1px solid var(--stroke);
@@ -46,7 +46,7 @@
   button:hover:not(:disabled){ border-color:var(--neon); }
   button:disabled{ opacity:.4; cursor:not-allowed; }
   .big{ width:100%; padding:17px; font-size:16px; font-weight:700; letter-spacing:.02em; margin-top:16px;
-        background:linear-gradient(90deg,rgba(124,92,255,.9),rgba(34,211,238,.8)); border:none; color:#080812; }
+        background:linear-gradient(90deg,rgba(139,109,255,.9),rgba(47,224,245,.8)); border:none; color:#080812; }
   .big.stop{ background:linear-gradient(90deg,#ef4444,#ec4899); color:#fff; }
 
   /* ── Écran d'enregistrement ── */
