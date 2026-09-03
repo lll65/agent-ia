@@ -6961,6 +6961,85 @@ def test_le_nom_de_l_action_empechait_de_lire_les_mails():
     check("…celles-la seulement", all(not m.get("repondre") for m in tri[R.IGNORER]), True)
 
 
+def test_ni_mur_de_signes_ni_porte_fermee():
+    """Deux facons de rendre une reponse inutilisable, vues le meme jour.
+
+    1. « et un schema du cours de la bourse stp » →
+         NASDAQ Composite 26 370,89 ──▁▁▁▁▁▁▁▁▁… (un millier de fois)
+       Le modele, a qui on demandait un graphique SANS lui donner de chiffres, a
+       dessine une ligne plate en repetant le meme caractere jusqu'a epuisement.
+
+    2. « fait des recherches pendant minimum 10 minutes sur une action PEA qui va
+       exploser d'ici quelques mois et explique pourquoi » →
+         « Je suis desole, mais je ne peux pas repondre a cette demande. »
+       Point final. Sa propre consigne dit pourtant : « Jamais de "je ne peux pas"
+       sans alternative. » Et il y avait tout a dire.
+
+    Les deux etaient DEJA interdits dans les prompts. Un modele sature enfreint
+    n'importe quelle consigne : ce qui compte se verifie sur la SORTIE.
+    """
+    import importlib
+    from pathlib import Path as _P
+    Q = importlib.import_module("agent.qualite")
+
+    # --- 1. Le mur de signes -----------------------------------------------
+    mur = "NASDAQ Composite 26 370,89  ──" + "▁" * 900 + "\nSuite du texte."
+    coupe = Q.sans_repetition(mur)
+    check("le mur est coupe", len(coupe) < 120, True)
+    check("…et la coupure est annoncee", "[…]" in coupe, True)
+    check("…une seule fois", coupe.count("[…]"), 1)
+    check("le texte qui suit est preserve", "Suite du texte." in coupe, True)
+    check("…et le chiffre aussi", "26 370,89" in coupe, True)
+    # Un motif alterne compte aussi (« ─▁─▁─▁… »).
+    check("un motif repete est coupe aussi",
+          len(Q.sans_repetition("a" + "─▁" * 60 + "b")) < 40, True)
+    # ⚠️ Et surtout : ce qui est LEGITIME n'est pas touche.
+    for normal in ("Texte.\n" + "-" * 20 + "\nSuite.",
+                   "Voici tes 3 rendez-vous de demain a 14h.",
+                   "### Titre\n\n- point un\n- point deux",
+                   "Le CAC 40 est a 7 812 points (+0,8 %)."):
+        check(f"intact : « {normal[:28]} »", Q.sans_repetition(normal), normal)
+
+    # --- 2. Le refus sec ---------------------------------------------------
+    check("un refus nu est reconnu",
+          Q.refus_sec("Je suis désolé, mais je ne peux pas répondre à cette demande."), True)
+    check("un refus AVEC une suite ne l'est pas",
+          Q.refus_sec("Je ne peux pas prédire le cours. En revanche je peux te lister "
+                      "les échéances connues des prochains mois."), False)
+    check("une reponse ordinaire n'est pas un refus",
+          Q.refus_sec("Voici tes 3 rendez-vous de demain."), False)
+
+    reponse = Q.relis("Je suis désolé, mais je ne peux pas répondre à cette demande.",
+                      "une action pea qui va exploser d'ici quelques mois")
+    check("le refus recoit une suite", len(reponse) > 300, True)
+    check("…qui dit la verite sur la prediction",
+          "Personne ne sait quelle action va monter" in reponse, True)
+    check("…et propose du concret et datable", "échéance" in reponse, True)
+    check("…en parlant bien du PEA", "PEA" in reponse, True)
+    check("…sans effacer le refus lui-meme", "je ne peux pas" in reponse, True)
+    # Hors finance, la porte de sortie reste ouverte mais generique.
+    autre = Q.relis("Je ne suis pas en mesure de traiter cela.", "traduis ce texte")
+    check("hors finance aussi, on ne s'arrete pas la",
+          "je préfère te dire ce que je sais faire" in autre, True)
+    check("…sans plaquer le laius bourse", "PEA" in autre, False)
+    # Une bonne reponse traverse la relecture sans une egratignure.
+    bonne = "Voici tes 3 rendez-vous de demain a 14h, 16h et 18h."
+    check("une bonne reponse n'est pas modifiee", Q.relis(bonne, "mon agenda"), bonne)
+
+    # --- 3. Branche sur TOUS les chemins -----------------------------------
+    racine = _P(__file__).resolve().parents[1]
+    api = (racine / "api" / "agent.py").read_text(encoding="utf-8")
+    core = (racine / "agent" / "core.py").read_text(encoding="utf-8")
+    check("le chat relit ses reponses", "from agent.qualite import relis as _relis_q" in api, True)
+    check("…et l'agent aussi (Telegram, automatisations)",
+          "from agent.qualite import relis as relis_qualite" in core, True)
+    # --- 4. Et le quiz ne felicite plus une reponse fausse ------------------
+    check("un quiz doit verifier avant de feliciter",
+          "ne felicite JAMAIS une reponse sans l" in api, True)
+    check("…et corriger avec une source",
+          "donne la bonne reponse et sa source" in api, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -7017,7 +7096,8 @@ if __name__ == "__main__":
                test_journee_dictee_est_inscrite_pas_relue,
                test_audit_qualite_aucun_raccourci_ne_repond_a_la_place,
                test_heure_exacte_cause_reelle_et_boite_lisible,
-               test_le_nom_de_l_action_empechait_de_lire_les_mails):
+               test_le_nom_de_l_action_empechait_de_lire_les_mails,
+               test_ni_mur_de_signes_ni_porte_fermee):
         try:
             fn()
         except Exception as e:

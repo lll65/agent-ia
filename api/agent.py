@@ -542,6 +542,18 @@ def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
               "suppression) : le bouton ne fait que préparer, la confirmation reste "
               "demandée juste après. Propose alors toujours une option pour MODIFIER "
               "et une pour ne rien faire."
+              # ⚠️ « Pose-moi des questions interactives pour savoir si je
+              # connais bien 2CRSi pour investir dessus. » Il a repondu
+              # « fabrication de semi-conducteurs » — c'est FAUX, 2CRSi fabrique des
+              # serveurs. Nova a repondu « Super, tu connais bien le secteur ! ». Sur
+              # un quiz dont le but est de savoir s'il en sait assez pour engager son
+              # argent, valider une reponse fausse est le contraire du service demande.
+              " SI TU POSES UN QUIZ : ne felicite JAMAIS une reponse sans l'avoir "
+              "verifiee. Dis si elle est juste ou fausse ; quand elle est fausse, "
+              "donne la bonne reponse et sa source. Un quiz qui approuve tout "
+              "n'apprend rien et donne une fausse confiance — c'est pire que pas de "
+              "quiz du tout. Si tu n'es pas sur de la bonne reponse, va la chercher "
+              "avant de corriger."
               + _repere_temporel())
     if not fin:
         system += (" INTERDIT : ne parle pas de bourse, actions, crypto, marchés, investissement, "
@@ -4121,6 +4133,18 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
             for _c in ("text", "answer", "t"):
                 if isinstance(obj.get(_c), str):
                     obj[_c] = sans_secrets(obj[_c])
+            # ⚠️ Même filet pour la QUALITÉ. « Un schéma du cours de la bourse » a
+            # produit un millier de « ▁ » à la suite : le modèle, sans chiffres,
+            # dessinait une ligne plate jusqu'à épuisement. Et « je ne peux pas
+            # répondre à cette demande », point final, sur une question de bourse
+            # parfaitement traitable. Les deux étaient déjà interdits dans les
+            # consignes : un modèle saturé les enfreint quand même, donc on relit.
+            if isinstance(obj.get("answer"), str):
+                from agent.qualite import relis as _relis_q
+                obj["answer"] = _relis_q(obj["answer"], message)
+            elif isinstance(obj.get("text"), str) and obj.get("type") == "answer":
+                from agent.qualite import relis as _relis_q
+                obj["text"] = _relis_q(obj["text"], message)
             return f"data: {_json.dumps(obj, ensure_ascii=False)}\n\n"
         if not message:
             yield sse({"type": "answer", "text": "Message vide."}); yield sse({"type": "done"}); return

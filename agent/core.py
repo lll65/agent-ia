@@ -1009,6 +1009,14 @@ async def run_agent(
             res["answer"] = relis(res["answer"], _noms_cites(task))
     except Exception as e:
         logger.info(f"[relecture] ignorée ({type(e).__name__})")
+    # Ni mur de caractères, ni « je ne peux pas » sans suite — sur TOUS les chemins,
+    # y compris Telegram et les automatisations, pas seulement le chat.
+    try:
+        from agent.qualite import relis as relis_qualite
+        if res.get("answer"):
+            res["answer"] = relis_qualite(res["answer"], task)
+    except Exception as e:
+        logger.info(f"[qualité] relecture ignorée ({type(e).__name__})")
     return res
 
 
