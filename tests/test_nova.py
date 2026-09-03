@@ -5937,7 +5937,12 @@ def test_fiche_valeur_popup_et_edition_en_place():
     check("…avec l'age de chaque article", "son ÂGE" in api, True)
     check("…un seuil clair", "moins de 7 jours" in api, True)
     check("…et le vieux mis a part", "ancien, pour le contexte" in api, True)
-    check("« rien de neuf » est une reponse valable", "est une information utile" in api, True)
+    # ⚠️ La regle a ete DURCIE : dire « je n'ai rien trouve » reste une reponse valable,
+    # mais affirmer « il n'y a rien » ne l'est plus. Sur 2CRSi (+9,25 %), Nova a ecrit
+    # « rien de neuf publie aujourd'hui » alors que Zonebourse avait publie a 12h37.
+    check("« je n'ai rien trouve » reste une reponse valable",
+          "je n'ai rien trouvé de moins de 7 jours" in api, True)
+    check("…mais « il n'y a rien » est interdit", 'JAMAIS « il n\'y a rien »' in api, True)
     check("une explication simple est exigee", "**En clair**" in api, True)
     check("…sans jargon non explique", "expliqué en trois mots" in api, True)
 
@@ -6728,6 +6733,150 @@ def test_audit_qualite_aucun_raccourci_ne_repond_a_la_place():
     check("une seule formulation, pas deux", A._TUTOIE.strip(), TUTOIEMENT)
 
 
+def test_heure_exacte_cause_reelle_et_boite_lisible():
+    """Trois pannes rapportees le meme jour, trois causes differentes.
+
+    1. « Quand je lui dis des evenements a ajouter, elle me les ajoute a la MAUVAISE
+       HEURE. » On envoyait « 2026-09-04T09:30 » tout nu, sans fuseau. Le conteneur
+       Render tourne en UTC : Google recevait une heure sans repere et la posait
+       decalee. Nova connait pourtant son fuseau depuis toujours — elle ne le DISAIT
+       jamais a Google.
+
+    2. « Elle me dit ca alors que regarde la new d'hier sur Zonebourse. » Le 2
+       septembre, 2CRSi prenait +9,25 % ; Zonebourse avait publie a 12h37 que
+       Portzamparc maintenait la valeur dans sa liste High Five. Nova a ecrit « rien
+       de neuf publie aujourd'hui », puis a comble le trou : « les mouvements
+       refletent la dynamique de marche et la digestion des actualites de l'ete ».
+       Ce n'est pas une cause, c'est une facon de ne pas dire « je ne sais pas » qui
+       a l'air d'un diagnostic — et ca referme la question qu'il voulait ouvrir.
+
+    3. « Lit mes mail et fait un resume » → « Aucun mail a traiter », boite pleine.
+       Rien ne distinguait « ta boite est vide » de « je n'ai pas su lire ».
+    """
+    import importlib, json as _j
+    from pathlib import Path as _P
+    A = importlib.import_module("api.agent")
+    C = importlib.import_module("agent.cause_boursiere")
+    M = importlib.import_module("plugins.builtin.mails_tool")
+    racine = _P(__file__).resolve().parents[1]
+
+    # --- 1. L'HEURE ---------------------------------------------------------
+    # Le fuseau est demande a Composio sous le nom EXACT de son schema.
+    vraies = A._composio_list_actions
+    try:
+        A._composio_list_actions = lambda slug: [
+            {"name": "GOOGLECALENDAR_CREATE_EVENT",
+             "props": ["calendar_id", "summary", "start_datetime", "timezone"]}]
+        a = A._args_evenement({"titre": "Reveil", "debut": "2026-09-04T09:30",
+                               "fin": "2026-09-04T10:00"})
+        from agent.horloge import FUSEAU
+        check("le fuseau part avec l'evenement", a.get("timezone"), FUSEAU)
+        # Un schema SANS champ de fuseau ne doit pas faire inventer un parametre.
+        A._composio_list_actions = lambda slug: [
+            {"name": "GOOGLECALENDAR_CREATE_EVENT", "props": ["calendar_id", "summary"]}]
+        a2 = A._args_evenement({"titre": "Reveil", "debut": "2026-09-04T09:30",
+                                "fin": "2026-09-04T10:00"})
+        check("aucun parametre invente si le schema n'en a pas",
+              [k for k in a2 if "zone" in k.lower()], [])
+        # Le catalogue injoignable ne casse rien.
+        A._composio_list_actions = lambda slug: (_ for _ in ()).throw(RuntimeError("hs"))
+        a3 = A._args_evenement({"titre": "Reveil", "debut": "2026-09-04T09:30",
+                                "fin": "2026-09-04T10:00"})
+        check("un catalogue injoignable ne bloque pas la creation",
+              a3.get("start_datetime"), "2026-09-04T09:30")
+    finally:
+        A._composio_list_actions = vraies
+
+    # ⚠️ Le filet qui ne depend d'AUCUN reglage : on compare l'heure revenue de Google
+    # a celle qui a ete demandee. Meme si le parametre de fuseau se fait ignorer, le
+    # decalage se voit — et un ✅ sur un evenement pose deux heures a cote est pire
+    # qu'une erreur franche.
+    pose_trop_tot = _j.dumps({"data": {
+        "summary": "Reveil",
+        "start": {"dateTime": "2026-09-04T07:30:00+02:00"},
+        "end": {"dateTime": "2026-09-04T08:00:00+02:00"}}})
+    r = A._recap_evenement(pose_trop_tot, "2026-09-04T09:30")
+    check("le decalage est signale", "ce n'est pas l'heure demandée" in r, True)
+    check("…avec l'heure demandee", "09h30" in r, True)
+    check("…et celle reellement posee", "07h30" in r, True)
+    check("…et l'ecart en clair", "2 h plus tôt" in r, True)
+    check("…et le ✅ est explicitement desavoue", "Ne te fie pas au ✅" in r, True)
+    # A l'heure demandee : aucun bruit.
+    ok = A._recap_evenement(pose_trop_tot, "2026-09-04T07:30")
+    check("aucune alerte quand l'heure est bonne", "Attention" in ok, False)
+    # Et les heures demandees sont relevees AVANT que _tool ne vide les arguments.
+    args = {"start_datetime": "2026-09-04T09:30",
+            "_autres_evenements": [{"debut": "2026-09-04T10:00"},
+                                   {"debut": "2026-09-04T14:00"}]}
+    check("les heures demandees sont toutes relevees",
+          A._heures_demandees(args),
+          ["2026-09-04T09:30", "2026-09-04T10:00", "2026-09-04T14:00"])
+
+    # --- 2. LA CAUSE INVENTEE ----------------------------------------------
+    vrai = ("Cours : 28,10 €. Variation du jour : +9,25 %. Aucune nouvelle annonce "
+            "officielle n'est tombée aujourd'hui pour expliquer ces variations : les "
+            "mouvements reflètent la dynamique de marché et la digestion des "
+            "actualités de l'été. Il convient de surveiller les volumes.")
+    relu = C.relis(vrai, ["2CRSi"])
+    check("la formule creuse est retiree", "dynamique de marché" in relu, False)
+    check("…et la digestion aussi", "digestion des actualités" in relu, False)
+    check("l'aveu remplace l'invention",
+          "Je n'ai pas trouvé ce qui explique ce mouvement" in relu, True)
+    check("…et il distingue les deux choses", "pas pareil que « il n'y a rien »" in relu, True)
+    check("le reste du rapport est preserve", "28,10 €" in relu, True)
+    check("…y compris ce qui suivait", "surveiller les volumes" in relu, True)
+    check("…et on lui dit ou aller voir", "zonebourse.com" in relu, True)
+
+    # Un texte qui donne une VRAIE cause datee n'est pas touche.
+    sain = ("Cours : 28,10 €. Hausse de +9,25 % après le maintien par Portzamparc dans "
+            "sa liste High Five (Zonebourse, 02/09 à 12h37).")
+    check("une cause reelle et sourcee est laissee telle quelle", C.relis(sain, ["2CRSi"]), sain)
+    # Une observation n'est pas une explication : « le marche est nerveux » reste.
+    obs = "Le marché est nerveux depuis lundi. Cours : 28,10 €."
+    check("une observation n'est pas prise pour une cause", C.relis(obs, []), obs)
+
+    # « Je n'ai pas pu chercher » ne doit jamais se lire « il n'y a rien ».
+    panne = C.relis("Cours : 28,10 €. Variation : +9,25 %.", ["2CRSi"], actu_verifiee=False)
+    check("une recherche en panne est annoncee", "Je n'ai pas pu vérifier" in panne, True)
+    check("…et ne se lit pas « rien ne s'est passe »",
+          "pas la même chose que « il ne s'est rien passé »" in panne, True)
+    # Sur une variation ANODINE, on ne rajoute pas d'avertissement pour rien.
+    calme = C.relis("Cours : 28,10 €. Variation : +0,4 %.", ["2CRSi"], actu_verifiee=False)
+    check("pas d'alarme sur une variation anodine", "Je n'ai pas pu vérifier" in calme, False)
+
+    # La relecture est branchee sur TOUTES les sorties de l'agent, pas seulement le chat.
+    src = (racine / "agent" / "core.py").read_text(encoding="utf-8")
+    check("la relecture enveloppe la boucle ReAct", "_run_agent_brut" in src, True)
+    check("…et appelle bien le garde-fou", "from agent.cause_boursiere import relis" in src, True)
+    api = (racine / "api" / "agent.py").read_text(encoding="utf-8")
+    check("la consigne interdit la cause inventee",
+          "n'explique JAMAIS un mouvement de cours" in api, True)
+    check("…et separe « rien trouve » de « il n'y a rien »",
+          "l'un décrit le monde, l'autre décrit ta recherche" in api, True)
+
+    # --- 3. « AUCUN MAIL » SUR UNE BOITE PLEINE ----------------------------
+    vrai_tool = A._tool
+    try:
+        # Gmail repond gros, mais dans un emballage qu'on ne sait pas lire.
+        A._tool = lambda *a, **k: _j.dumps({"successful": True, "data": {
+            "inconnu": [{"machin": "x" * 60} for _ in range(12)]}})
+        rep = M.RapportMailsPlugin().run(combien=5)
+        check("on n'affirme plus que la boite est vide",
+              rep.startswith("📭 Aucun mail à traiter."), False)
+        check("…on dit qu'on n'a pas su lire", "je n'ai pas su lire ses mails" in rep, True)
+        check("…et on refuse explicitement de rassurer",
+              "je ne le sais pas" in rep, True)
+        check("…avec de quoi diagnostiquer", "octets" in rep, True)
+        # Une boite reellement vide reste annoncee comme telle, sans alarmisme.
+        A._tool = lambda *a, **k: '{"successful": true, "data": {"messages": []}}'
+        vide = M.RapportMailsPlugin().run(combien=5)
+        check("une vraie boite vide est dite simplement",
+              vide.startswith("📭 Aucun mail à traiter"), True)
+        check("…sans faux avertissement", "je n'ai pas su lire" in vide, False)
+    finally:
+        A._tool = vrai_tool
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -6782,7 +6931,8 @@ if __name__ == "__main__":
                test_mails_tries_et_tableaux_rendus,
                test_boutons_sur_les_reponses_proposees,
                test_journee_dictee_est_inscrite_pas_relue,
-               test_audit_qualite_aucun_raccourci_ne_repond_a_la_place):
+               test_audit_qualite_aucun_raccourci_ne_repond_a_la_place,
+               test_heure_exacte_cause_reelle_et_boite_lisible):
         try:
             fn()
         except Exception as e:

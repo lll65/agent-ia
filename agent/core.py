@@ -564,7 +564,7 @@ def _avertit_si_pas_de_reveil(budget: float) -> None:
         pass
 
 
-async def run_agent(
+async def _run_agent_brut(
     task: str,
     agent_config: dict,
     agent_id: str = "default",
@@ -982,6 +982,57 @@ def _extract_thought(llm_out: str) -> str:
     """Extrait la section THOUGHT: d'une sortie LLM."""
     m = re.search(r"THOUGHT:\s*(.+?)(?=\n(?:ACTION|FINAL|PARAMS):|$)", llm_out, re.DOTALL | re.IGNORECASE)
     return m.group(1).strip()[:200] if m else ""
+
+
+async def run_agent(
+    task: str,
+    agent_config: dict,
+    agent_id: str = "default",
+    plugin_loader=None,
+    memory_manager=None,
+    fond: bool = False,
+) -> dict:
+    """La boucle ReAct, puis une RELECTURE de ce qui en sort.
+
+    ⚠️ Sur 2CRSi le 2 septembre 2026 (+9,25 %), Nova a écrit « aucune nouvelle annonce
+    n'est tombée aujourd'hui pour expliquer ces variations : les mouvements reflètent
+    la dynamique de marché et la digestion des actualités de l'été ». Zonebourse avait
+    publié à 12h37 le jour même. Interdire cette formule dans le prompt ne suffit pas :
+    un modèle saturé la reproduira. Ce qui est coûteux quand c'est faux se vérifie
+    APRÈS le modèle, pas seulement avant.
+    """
+    res = await _run_agent_brut(task, agent_config, agent_id, plugin_loader,
+                                memory_manager, fond)
+    try:
+        from agent.cause_boursiere import relis
+        if res.get("answer") and _sujets_finance(task, res["answer"]):
+            res["answer"] = relis(res["answer"], _noms_cites(task))
+    except Exception as e:
+        logger.info(f"[relecture] ignorée ({type(e).__name__})")
+    return res
+
+
+_MOTS_COURS = ("cours", "bourse", "action", "titre", "%", "€", "hausse", "baisse",
+               "variation", "ticker", "capitalisation")
+
+
+def _sujets_finance(task: str, reponse: str) -> bool:
+    """La réponse parle-t-elle d'un cours ? (sinon la relecture n'a rien à faire)"""
+    t = (task or "").lower() + " " + (reponse or "").lower()
+    return sum(1 for m in _MOTS_COURS if m in t) >= 2
+
+
+def _noms_cites(task: str) -> list:
+    """Les entreprises nommées dans la demande — pour dire OÙ vérifier."""
+    vus, out = set(), []
+    for m in _ENTITE.finditer(task or ""):
+        mot = m.group(0)
+        if mot.upper() in ("OK", "PEA", "TVA", "SMS", "PDF", "URL", "IA", "RDV"):
+            continue
+        if mot.upper() not in vus:
+            vus.add(mot.upper())
+            out.append(mot)
+    return out[:3]
 
 
 async def run_agent_stream(

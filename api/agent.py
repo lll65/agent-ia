@@ -568,8 +568,24 @@ def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
             "(« 16 juillet — il y a 47 jours »). N'appelle « récent » que ce qui a "
             "moins de 7 jours. Ce qui est plus vieux va dans une section « Plus "
             "ancien, pour le contexte » — jamais mélangé au reste. Si tu n'as RIEN "
-            "de moins de 7 jours, dis-le franchement : « rien de neuf depuis X jours » "
-            "est une information utile, pas un échec."
+            "de moins de 7 jours, dis « je n'ai rien trouvé de moins de 7 jours » — "
+            # ⚠️ Le 2 septembre, Nova a écrit « rien de neuf publié aujourd'hui » sur
+            # 2CRSi, qui prenait +9,25 %. Zonebourse avait publié à 12h37 le jour même :
+            # Portzamparc maintenait la valeur dans sa liste High Five. La cause
+            # existait, datée et publique. Elle ne l'avait pas trouvée, et elle a comblé
+            # le trou : « les mouvements reflètent la dynamique de marché et la
+            # digestion des actualités de l'été ». Ça n'est pas une cause, c'est une
+            # façon de ne pas dire « je ne sais pas » qui a l'air d'un diagnostic — et
+            # ça referme la question qu'il voulait justement ouvrir.
+            "et JAMAIS « il n'y a rien ». Les deux se ressemblent et n'ont rien à voir : "
+            "l'un décrit le monde, l'autre décrit ta recherche.\n"
+            " CAUSE D'UNE VARIATION : n'explique JAMAIS un mouvement de cours par « la "
+            "dynamique de marché », « la digestion des actualités », « le sentiment de "
+            "marché » ou « des prises de bénéfices » quand aucun article ne te l'a dit. "
+            "Ce ne sont pas des causes. Sans article daté, écris « je n'ai pas trouvé ce "
+            "qui explique ce mouvement » et dis où aller vérifier. Une variation de plus "
+            "de 3 % sur une petite valeur a presque toujours une cause publiée : ne pas "
+            "l'avoir trouvée est une limite de ta recherche, pas une absence de nouvelle."
             " EXPLIQUE : termine par « **En clair** » — deux ou trois phrases simples, "
             "sans jargon, qui disent ce que ces chiffres signifient concrètement et "
             "ce qu'il y a à surveiller. L'utilisateur a 17 ans et apprend : un mot "
@@ -880,6 +896,43 @@ def _enchaine(evts: list) -> list:
     return evts
 
 
+def _heures_demandees(args: dict) -> list:
+    """Les heures de début DEMANDÉES, dans l'ordre de création.
+
+    Relevées avant l'appel : `_tool` retire « _autres_evenements » de args au passage,
+    et sans cette liste on ne peut plus comparer ce qui a été créé à ce qui a été dit.
+    """
+    if not isinstance(args, dict) or not args.get("start_datetime"):
+        return []
+    out = [str(args.get("start_datetime"))]
+    for e in (args.get("_autres_evenements") or []):
+        if isinstance(e, dict) and e.get("debut"):
+            out.append(str(e["debut"]))
+    return out
+
+
+def _cle_fuseau(slug: str, action: str) -> str:
+    """Le nom EXACT du paramètre de fuseau horaire chez Composio, lu dans son schéma.
+
+    On le cherche au lieu de le deviner : « timezone », « time_zone » et « timeZone »
+    existent tous selon les actions, et un paramètre au mauvais nom est ignoré en
+    silence — c'est-à-dire exactement la panne qu'on essaie de réparer.
+    """
+    try:
+        for a in (_composio_list_actions(slug) or []):
+            if str(a.get("name", "")).upper() != action.upper():
+                continue
+            props = [str(p) for p in (a.get("props") or [])]
+            for cle in ("timezone", "time_zone", "timeZone", "timezone_name"):
+                for p in props:
+                    if p.lower().replace("-", "_") == cle.lower().replace("-", "_"):
+                        return p
+            return ""
+    except Exception as ex:
+        logger.info(f"[agenda] schéma du fuseau illisible ({type(ex).__name__})")
+    return ""
+
+
 def _args_evenement(e: dict) -> dict:
     """Les arguments de création, avec la VRAIE durée de l'étape.
 
@@ -902,6 +955,15 @@ def _args_evenement(e: dict) -> dict:
             "event_duration_minutes": minutes % 60}
     if e.get("details"):
         args["description"] = e["details"]
+    # ⚠️ « Quand je lui dis des événements à ajouter, elle me les ajoute à la MAUVAISE
+    # HEURE. » On envoyait « 2026-09-04T09:30 » tout nu, sans fuseau. Le conteneur
+    # Render tourne en UTC : Google recevait une heure sans repère et la plaçait donc
+    # décalée de deux heures en été. Nova connaît pourtant son fuseau (agent/horloge)
+    # depuis le début — elle ne le DISAIT simplement jamais à Google.
+    cle = _cle_fuseau("googlecalendar", "GOOGLECALENDAR_CREATE_EVENT")
+    if cle:
+        from agent.horloge import FUSEAU
+        args[cle] = FUSEAU
     return args
 
 
@@ -1451,7 +1513,7 @@ def _calendrier_periode(message: str) -> str:
     return "\n".join(lignes[:35])
 
 
-def _recap_evenement(obs: str) -> str:
+def _recap_evenement(obs: str, attendu: str = "") -> str:
     """Ce que Google a VRAIMENT créé, lu dans sa réponse — jamais ce qu'on espérait.
 
     ⚠️ Le récapitulatif était écrit par le modèle à partir d'un extrait de la réponse
@@ -1498,8 +1560,29 @@ def _recap_evenement(obs: str) -> str:
     fin = (d.get("end") or {}).get("dateTime") or ""
     df = _local(fin) if fin else None
     plage = f"{dt:%Hh%M}" + (f" → {df:%Hh%M}" if df and df > dt else "")
-    return (f"✅ Créé dans ton agenda : « {titre or 'sans titre'} » — "
-            f"{_JOURS_FR_MIN[dt.weekday()]} {dt:%d/%m/%Y}, {plage}.")
+    ligne = (f"✅ Créé dans ton agenda : « {titre or 'sans titre'} » — "
+             f"{_JOURS_FR_MIN[dt.weekday()]} {dt:%d/%m/%Y}, {plage}.")
+    # ⚠️ « Elle me les ajoute à la MAUVAISE HEURE. » On compare donc l'heure REVENUE de
+    # Google à celle qu'il a demandée. Ce contrôle ne dépend d'aucun réglage Composio :
+    # même si le paramètre de fuseau porte un autre nom et se fait ignorer, le décalage
+    # se voit ici — et il vaut mille fois mieux le lui dire que de confirmer un ✅ sur un
+    # événement posé deux heures à côté.
+    if attendu:
+        try:
+            from datetime import datetime
+            voulu = datetime.fromisoformat(str(attendu)[:16])
+            ecart = round((dt - voulu).total_seconds() / 60)
+            if abs(ecart) >= 5:
+                sens = "plus tard" if ecart > 0 else "plus tôt"
+                h, mn = divmod(abs(ecart), 60)
+                dec = (f"{h} h" if h and not mn else f"{h} h {mn:02d}" if h else f"{mn} min")
+                ligne += (f"\n\n⚠️ **Attention : ce n'est pas l'heure demandée.** Tu avais dit "
+                          f"**{voulu:%Hh%M}**, Google l'a placé à **{dt:%Hh%M}** — {dec} {sens}. "
+                          "Ne te fie pas au ✅ ci-dessus : va corriger dans ton agenda, et "
+                          "dis-le-moi pour que je cherche d'où vient le décalage.")
+        except Exception:
+            pass
+    return ligne
 
 
 def _local(quand: str):
@@ -1518,7 +1601,8 @@ def _local(quand: str):
     return dt
 
 
-def _format_app_result(message: str, action: str, obs: str, is_write: bool = False) -> str:
+def _format_app_result(message: str, action: str, obs: str, is_write: bool = False,
+                       attendus: list = None) -> str:
     """Met en forme les DONNÉES RÉELLES via le LLM — interdiction absolue d'inventer.
 
     ⚠️ Le brouillon <think> est retiré ICI aussi : ce chemin ne passe ni par
@@ -1545,7 +1629,11 @@ def _format_app_result(message: str, action: str, obs: str, is_write: bool = Fal
     if "CALENDAR" in (action or "").upper() and any(
             k in (action or "").upper() for k in ("CREATE", "QUICK_ADD", "UPDATE", "PATCH")):
         morceaux = str(obs).split("[ÉVÉNEMENT SUIVANT]")
-        recaps = [r for r in (_recap_evenement(x) for x in morceaux) if r]
+        # Les événements sont créés DANS L'ORDRE : le n-ième morceau répond à la
+        # n-ième heure demandée. C'est ce qui permet de comparer les deux.
+        att = list(attendus or [])
+        recaps = [r for r in (_recap_evenement(x, att[i] if i < len(att) else "")
+                              for i, x in enumerate(morceaux)) if r]
         if recaps:
             return "\n".join(recaps) + (("\n\n" + propre) if propre else "")
     # Si le modèle n'a produit que du protocole, mieux vaut les données brutes que rien.
@@ -1875,6 +1963,7 @@ def _direct_app_run_brut(message: str, canal: str = "passerelle"):
     # Le slug est déduit AVANT l'appel : sinon _tool doit le redeviner, et l'identité
     # Composio se perd dès que le préfixe ne correspond pas à un slug connu.
     slug = (action or "").split("_", 1)[0].lower()
+    attendus = _heures_demandees(args)   # AVANT _tool : il vide « _autres_evenements »
     obs = _tool(action, args, slug)   # identité résolue + activité enregistrée
     steps = [
         {"kind": "action", "tool": slug, "label": action},
@@ -1883,7 +1972,9 @@ def _direct_app_run_brut(message: str, canal: str = "passerelle"):
     if _looks_like_failure(obs):
         return {"steps": steps, "answer": _honest_no_access(action, obs), "ok": False}
     is_write = any(k in action for k in ("CREATE", "QUICK_ADD", "UPDATE", "DELETE", "PATCH", "SEND"))
-    return {"steps": steps, "answer": _format_app_result(message, action, obs, is_write), "ok": True}
+    return {"steps": steps,
+            "answer": _format_app_result(message, action, obs, is_write, attendus),
+            "ok": True}
 
 
 # ── FLUX MULTI-ÉTAPES (Gmail envoi, agenda supprimer, créneau libre) ────────────
