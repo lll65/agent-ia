@@ -219,7 +219,15 @@ _MAX_LISTE = 8000        # pour un simple index « identifiant + nom », bien pl
 # réponse est trop longue. Mieux vaut 200 fichiers réduits à l'essentiel que 6 complets.
 _CHAMPS_ESSENTIELS = ("id", "name", "title", "spreadsheetId", "spreadsheetTitle", "fileId",
                       "documentId", "pageId", "databaseId", "filename", "displayName",
-                      "summary", "subject", "email", "status", "url", "start", "end")
+                      "summary", "subject", "email", "status", "url", "start", "end",
+                      # ⚠️ Un mail réduit à son seul « subject » est inutilisable. Le tri
+                      # repose sur l'EXPÉDITEUR (« no-reply » → envoi automatique) et sur
+                      # l'APERÇU (« peux-tu me dire tes dispos ? » → à répondre) : sans
+                      # eux, une alerte de sécurité et une notification Instagram se
+                      # ressemblent. Vu en vrai : la liste arrivait bien, mais amputée
+                      # ici de tout ce qui permettait de la trier.
+                      "from", "sender", "snippet", "preview", "date", "messageId",
+                      "threadId", "messageTimestamp")
 
 
 def _raccourci(element, limite: int):
