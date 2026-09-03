@@ -786,6 +786,43 @@ def _demande_ecriture(message: str) -> bool:
     return bool(_ECRITURE.search(m))
 
 
+# ⚠️ « fait des recherche pendant minimum 10 minute … cherche pendant minimum 10
+# minutes je veux une reponse de qualitée ! » → deux recherches, une minute, dix
+# paragraphes. La demande d'approfondir n'avait AUCUN effet : le chemin du chat était
+# borné à 2 recherches et 75 s, et le mode long ne servait qu'aux automatisations.
+# Quand il demande explicitement du temps, il faut le prendre — ou lui dire pourquoi on
+# ne le prend pas. Faire semblant est la troisième option, et c'est celle qu'on avait.
+_RECHERCHE_LONGUE = re.compile(
+    r"(cherche[rz]?\s+(?:bien\s+)?pendant\s+(?:minimum\s+)?(\d{1,3})\s*(?:min|minutes?|h|heures?)"
+    r"|(?:pendant\s+)?(?:minimum|au moins)\s+(\d{1,3})\s*(?:min|minutes?|h|heures?)"
+    r"|recherche\s+(?:approfondie|pouss[ée]e|compl[èe]te|exhaustive|s[ée]rieuse)"
+    r"|cherche\s+(?:bien|[àa] fond|en profondeur|partout|longtemps)"
+    r"|prends?\s+(?:ton|le)\s+temps"
+    r"|fouille|creuse\s+(?:bien|le sujet|la question))", re.I)
+
+
+def recherche_approfondie(message: str) -> int:
+    """Minutes de recherche explicitement demandées. 0 si rien n'est demandé.
+
+    Rend un nombre de MINUTES pour pouvoir le lui annoncer : promettre « je cherche
+    en profondeur » sans dire combien de temps, c'est le laisser devant un écran qui
+    tourne sans savoir s'il doit attendre.
+    """
+    m = _RECHERCHE_LONGUE.search(message or "")
+    if not m:
+        return 0
+    for g in (m.group(2), m.group(3)):
+        if g:
+            try:
+                n = int(g)
+            except ValueError:
+                continue
+            if "h" in m.group(0).lower() and "min" not in m.group(0).lower():
+                n *= 60
+            return max(1, min(20, n))       # borné : au-delà, Render coupe de toute façon
+    return 5                                # « recherche approfondie » sans durée dite
+
+
 def _planning_dicte(message: str) -> bool:
     """Cette phrase DÉCRIT-elle une journée à inscrire, plutôt qu'une question ?
 
@@ -4422,7 +4459,20 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
                 yield sse({"type": "done"}); return
             from agent.core import run_agent_stream
             cfg = _build_agent_cfg(message, "Nova")
-            async for step in run_agent_stream(message, cfg, _PROFILE_ID):
+            _minutes = recherche_approfondie(message)
+            if _minutes:
+                # On le DIT avant de commencer : sinon il regarde un écran tourner sans
+                # savoir s'il doit attendre — et c'est lui qui a demandé le temps long.
+                yield sse({"type": "step", "kind": "route", "tool": "analyse",
+                           "text": f"tu veux une recherche approfondie — je prends "
+                                   f"jusqu'à {_minutes} min"})
+                cfg["system"] = (cfg.get("system", "") +
+                                 " Tu fais une recherche APPROFONDIE explicitement demandée : "
+                                 "cherche à plusieurs endroits, avec des formulations "
+                                 "différentes, recoupe les sources, et rends une synthèse "
+                                 "substantielle et SOURCÉE. Ne conclus pas après une seule "
+                                 "recherche. Dis clairement ce que tu n'as pas pu vérifier.")
+            async for step in run_agent_stream(message, cfg, _PROFILE_ID, fond=bool(_minutes)):
                 t = step.get("type")
                 if t == "final":
                     yield sse({"type": "answer", "text": step.get("answer", "")})

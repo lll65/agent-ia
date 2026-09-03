@@ -7485,6 +7485,135 @@ def test_recent_veut_dire_recent_et_la_mise_en_forme_survit():
     check("…et le chiffre reel est garde", "+9,25 %" in net, True)
 
 
+def test_aucun_chiffre_de_marche_sans_source_et_recherche_longue_reelle():
+    """« Vraiment, c'est super important la fiabilite de l'outil, et tu le sais. »
+
+    Deux defauts, sur la meme reponse — celle ou il demandait une action PEA.
+
+    1. AUCUN CHIFFRE N'ETAIT SOURCE. « GENFIT (ticker : GENF) — Cours 13,42 € ·
+       +2,3 % · PER de 9,5 · CA 112 M€ (source : Les Echos) ». La trace montre DEUX
+       recherches web et pas une seule cotation : aucun outil n'a renvoye le moindre
+       nombre. Tout venait du modele, avec des noms de journaux accroches dessus pour
+       faire vrai. L'interdiction existe pourtant en majuscules dans quatre prompts
+       (« ZERO CHIFFRE INVENTE ») — elle a ete enfreinte quand meme. Une consigne est
+       une intention ; ce qui engage son argent se verifie sur la SORTIE.
+       Meme faute en image : « voici un petit graphique », suivi d'un data:URI de
+       188 octets pour une image annoncee en 640x640, dont les donnees compressees ne
+       se decompressent meme pas.
+
+    2. « CHERCHE PENDANT MINIMUM 10 MINUTES » n'avait AUCUN effet. Le chemin du chat
+       etait cable en dur sur 2 recherches et 75 s ; le mode long existait, mais
+       seulement pour les automatisations. Elle a cherche une minute, puis ecrit dix
+       paragraphes.
+    """
+    import importlib, inspect
+    A = importlib.import_module("api.agent")
+    CH = importlib.import_module("agent.chiffres")
+    C = importlib.import_module("agent.core")
+
+    OBS = ['{"symbol":"DBV.PA","price":2.39,"changePercent":-0.5,'
+           '"marketCap":112000000,"per":9.5}']
+
+    # --- 1a. Ce qui est SOURCE passe sans une marque ------------------------
+    for nom, t in (("cours exact", "DBV cote 2,39 € aujourd'hui."),
+                   ("variation", "DBV recule de -0,5 % sur la journée."),
+                   ("arrondi honnete", "DBV cote environ 2,4 €."),
+                   ("autre echelle", "Sa capitalisation est de 112 M€."),
+                   ("PER", "Son PER ressort à 9,5."),
+                   ("hors finance", "Tu as 3 rendez-vous demain à 14h.")):
+        check(f"reponse sourcee intacte ({nom})", CH.relis(t, OBS), t)
+
+    # --- 1b. Ce qui n'est adosse a RIEN est nomme ---------------------------
+    invente = "DBV cote 2,39 € mais son PER est de 47,3."
+    r = CH.relis(invente, OBS)
+    check("le chiffre invente est signale", "47,3" in r.split("\n")[2], True)
+    check("…sans jeter le reste de la reponse", "2,39" in r, True)
+    check("…et c'est dit comme une reserve, pas un verdict",
+          "Certains chiffres" in r, True)
+
+    # Le cas reel : AUCUN outil n'a rien renvoye.
+    genfit = ("GENFIT (ticker : GENF). Cours actuel : 13,42 €. Variation : +2,3 %. "
+              "PER de 9,5. Chiffre d'affaires de 112 M€ (source : Les Échos).")
+    g = CH.relis(genfit, [])
+    check("aucune source du tout : c'est dit en tete",
+          g.startswith("> ⚠️ **Aucun de ces chiffres"), True)
+    check("…les nombres fautifs sont nommes", "13,42 €" in g and "+2,3 %" in g, True)
+    check("…l'interdiction est explicite", "Ne prends aucune décision d'argent" in g, True)
+    check("…et la fausse caution est retiree", "(source : Les Échos)" in g, False)
+    # ⚠️ Une caution inventee est pire qu'aucune caution.
+    check("le texte lui-meme est conserve", "GENFIT" in g, True)
+
+    # --- 1c. L'image fabriquee est RETIREE ---------------------------------
+    img = ("Voici un petit graphique du cours :\n\n"
+           "![visuel](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAoAAAAKA)\n\n"
+           "Le cours evolue.")
+    ri = CH.relis(img, [])
+    check("l'image inventee disparait", "data:image" in ri, False)
+    check("…et c'est annonce", "graphique » que j'avais fabriqué" in ri, True)
+    check("…avec quoi faire a la place", "fiche de la valeur" in ri, True)
+    # Une image reellement produite par un outil est CONSERVEE.
+    vraie = "![courbe](data:image/png;base64,ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef)"
+    obs_img = ["resultat : data:image/png;base64,ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef"]
+    check("un vrai graphique d'outil est garde", CH.relis(vraie, obs_img), vraie)
+
+    # --- 1d. Les observations REELLES sont accessibles apres coup -----------
+    # ⚠️ Les `steps` ne suffisent pas : ils ne gardent qu'un apercu de 400 signes, et
+    # un cours peut se trouver plus loin dans la reponse de l'outil.
+    src = inspect.getsource(C)
+    check("les observations du tour sont publiees", "_OBS_DU_TOUR.set(observations)" in src, True)
+    check("…et lues par la verification", "observations_du_tour()" in src, True)
+    check("la verification est branchee sur l'agent",
+          "from agent.chiffres import relis as relis_chiffres" in src, True)
+
+    # Bout en bout, par le vrai chemin.
+    import asyncio
+    vrai_brut = C._run_agent_brut
+    try:
+        async def sans_outil(task, cfg, aid="default", pl=None, mm=None, fond=False):
+            C._OBS_DU_TOUR.set([])
+            return {"answer": "GENFIT cote 13,42 €, en hausse de +2,3 %.",
+                    "steps": [], "iterations": 1}
+        C._run_agent_brut = sans_outil
+        out = asyncio.run(C.run_agent("cours de genfit action bourse", {}))["answer"]
+        check("bout en bout, l'invention est signalee",
+              "Aucun de ces chiffres" in out, True)
+
+        async def avec_outil(task, cfg, aid="default", pl=None, mm=None, fond=False):
+            C._OBS_DU_TOUR.set(list(OBS))
+            return {"answer": "DBV cote 2,39 €, en baisse de -0,5 %.",
+                    "steps": [], "iterations": 1}
+        C._run_agent_brut = avec_outil
+        bon = asyncio.run(C.run_agent("cours de dbv action bourse", {}))["answer"]
+        check("…et une reponse mesuree n'est pas salie", "⚠️" in bon, False)
+    finally:
+        C._run_agent_brut = vrai_brut
+
+    # --- 2. « Cherche pendant 10 minutes » veut enfin dire quelque chose ----
+    check("la duree demandee est lue",
+          A.recherche_approfondie("fait des recherche pendant minimum 10 minute sur une action pea"), 10)
+    check("…une autre duree aussi", A.recherche_approfondie("cherche pendant 3 minutes"), 3)
+    check("« recherche approfondie » vaut un defaut",
+          A.recherche_approfondie("fais une recherche approfondie sur 2CRSi"), 5)
+    check("« prends ton temps » aussi", A.recherche_approfondie("prends ton temps et cherche"), 5)
+    # ⚠️ Borne : au-dela Render coupe de toute facon — mieux vaut une limite honnete.
+    check("une demande demesuree est bornee",
+          A.recherche_approfondie("cherche pendant 2 heures"), 20)
+    for ordinaire in ("quelle heure il est", "mes mails", "mon agenda de demain",
+                      "cherche le cours de DBV"):
+        check(f"« {ordinaire} » reste une demande normale",
+              A.recherche_approfondie(ordinaire), 0)
+
+    # Le budget suit reellement, et l'interface le DIT avant de commencer.
+    stream = inspect.getsource(C.run_agent_stream)
+    check("le flux accepte le mode long", "fond: bool = False" in stream, True)
+    check("…et en tire un vrai plafond de recherches",
+          "MAX_RECHERCHES_FOND if fond else MAX_RECHERCHES" in stream, True)
+    check("…et un vrai budget de temps", "AGENT_TIMEOUT_FOND if fond" in stream, True)
+    api = inspect.getsource(A.ask_stream)
+    check("le chat branche le mode long", "fond=bool(_minutes)" in api, True)
+    check("…et annonce la duree qu'il va prendre", "je prends " in api, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -7547,7 +7676,8 @@ if __name__ == "__main__":
                test_audit_un_evenement_rate_ne_se_perd_plus_en_silence,
                test_audit_vocal_nova_lisait_sa_reponse_a_l_envers,
                test_popup_absence_en_grand_et_lu_a_voix_haute,
-               test_recent_veut_dire_recent_et_la_mise_en_forme_survit):
+               test_recent_veut_dire_recent_et_la_mise_en_forme_survit,
+               test_aucun_chiffre_de_marche_sans_source_et_recherche_longue_reelle):
         try:
             fn()
         except Exception as e:
