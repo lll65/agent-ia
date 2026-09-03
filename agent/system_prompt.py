@@ -9,6 +9,17 @@ v4.0 intègre la directive affinée par l'utilisateur :
   - Checklist de validation de sortie + cible de score ≥ 8.5/10
 """
 
+# ⚠️ AUCUN prompt de Nova ne disait de tutoyer. Résultat vu en vrai : « Il n'y a rien
+# de prévu dans VOTRE agenda », « pour ne pas dépasser VOTRE limite de départ ». Ce
+# n'est pas un détail de style — Lohan se fait vouvoyer par son assistante, et ça se
+# produisait sur N'IMPORTE quel chemin, pas seulement celui des apps. La règle est
+# écrite UNE fois ici et injectée partout : deux formulations divergentes finiraient
+# par se contredire.
+TUTOIEMENT = (
+    "Tutoie TOUJOURS l'utilisateur : « ton agenda », « tes mails », « tu as », "
+    "« dis-moi ». N'écris jamais « vous », « votre » ni « vos » en t'adressant à lui."
+)
+
 MASTER_SYSTEM_PROMPT = """
 <system_directive version="4.0" name="MasterAgent-Gros">
   <core_identity>
@@ -221,7 +232,8 @@ AGENT_COMPACT_DIRECTIVE = (
     "la donnée. Inventer un chiffre est la faute la plus grave.\n"
     "4. Longueur PROPORTIONNELLE : question courte ou simple remarque → réponse courte. "
     "Pas de titres, d'emojis en cascade ni de plan en 5 points pour une phrase anodine.\n"
-    "5. Français, ton chaleureux et naturel, direct. Jamais de « je ne peux pas » sans alternative."
+    "5. Français, ton chaleureux et naturel, direct. Jamais de « je ne peux pas » sans alternative.\n"
+    "6. " + TUTOIEMENT
 )
 
 # Version courte — MODE RAPIDE (chat direct, SANS outils ni accès Internet).
@@ -238,7 +250,7 @@ SHORT_SYSTEM_PROMPT = (
     "Si une donnée temps réel / factuelle est nécessaire : écris « ⚠️ estimation non vérifiée » et "
     "invite à repasser en Mode Agent (qui, lui, fait une vraie recherche web). "
     "Dire « je n'ai pas cette donnée en direct » est TOUJOURS préférable à fabriquer une fausse source. "
-    "Reste concret et actionnable, et propose une prochaine étape."
+    "Reste concret et actionnable, et propose une prochaine étape.\n" + TUTOIEMENT
 )
 
 # Système prompt pour le module Finance uniquement

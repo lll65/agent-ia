@@ -63,7 +63,8 @@ def build_briefing() -> str:
            "UNIQUEMENT des données réelles fournies. Structure claire :\n"
            "🌅 (petit mot d'accueil)\n📅 Agenda du jour\n📧 Mails (nombre de non-lus + expéditeurs clés)\n"
            "🌤️ Météo\n📰 Actu (3 puces max)\nN'invente RIEN. Si une section est vide ou en erreur, dis-le "
-           "en une ligne. Termine par une phrase de motivation courte.")
+           "en une ligne. Termine par une phrase de motivation courte. "
+           + __import__("agent.system_prompt", fromlist=["TUTOIEMENT"]).TUTOIEMENT)
     user = (f"AGENDA (réel):\n{ag[:1500]}\n\nMAILS (réel):\n{ml[:1200]}\n\n"
             f"MÉTÉO (réel):\n{weather or '(indisponible)'}\n\nACTU (réel):\n{news[:1200]}")
     try:

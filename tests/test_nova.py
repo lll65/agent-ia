@@ -6651,6 +6651,83 @@ def test_journee_dictee_est_inscrite_pas_relue():
           "niveau=_niveau_tache(message)" in src, True)
 
 
+def test_audit_qualite_aucun_raccourci_ne_repond_a_la_place():
+    """Audit lance apres la panne de l'agenda : le meme defaut existait-il ailleurs ?
+
+    Oui, deux fois. Le defaut n'etait pas « l'agenda est casse », c'etait « un
+    raccourci de LECTURE repond a la place d'une demande d'ECRITURE ». Verifie en
+    vrai avant correction :
+      « supprime l'evenement de 14h dans mon agenda » → Nova LISTAIT la journee ;
+      « envoie un mail a Marie pour lui dire que je serai en retard » → Nova TRIAIT
+      la boite de reception ;
+      « deplace ma reunion de 14h a 16h » → Nova LISTAIT la journee.
+    A chaque fois la demande est perdue, et la reponse a l'air d'un travail fait —
+    c'est ce qui la rend pire qu'une erreur franche.
+
+    Ces demandes repartent desormais vers l'agent complet, qui a les outils ET le
+    garde-fou de confirmation. C'est aussi le seul chemin sur : rien ne part ni ne
+    s'efface sans un accord ecrit.
+    """
+    import importlib
+    from pathlib import Path as _P
+    A = importlib.import_module("api.agent")
+
+    # --- 1. Aucune ECRITURE n'est avalee par un raccourci de lecture -------------
+    for demande in ("supprime l'evenement de 14h dans mon agenda",
+                    "annule mon rdv de demain",
+                    "deplace ma reunion de 14h a 16h",
+                    "decale mon rendez-vous dentiste",
+                    "modifie l'heure de ma reunion",
+                    "envoie un mail a Marie pour lui dire que je serai en retard",
+                    "reponds a ce mail",
+                    "ecris un mail au proviseur",
+                    "transfere ce mail a mon pere",
+                    "supprime les mails de pub",
+                    "archive mes mails de la semaine"):
+        check(f"« {demande[:38]}… » ne part pas en lecture",
+              A._resolve_app_action(demande)[0], None)
+        check(f"…et elle est bien vue comme une ecriture", A._demande_ecriture(demande), True)
+
+    # --- 2. Les vraies LECTURES continuent de marcher ---------------------------
+    for demande, attendu in (("lit mes mails d'aujourdhui", "__RAPPORT_MAILS__"),
+                             ("resume mes mails", "__RAPPORT_MAILS__"),
+                             ("mes mails", "__RAPPORT_MAILS__"),
+                             ("regarde ma boite mail", "__RAPPORT_MAILS__"),
+                             ("mon agenda de demain", "GOOGLECALENDAR_EVENTS_LIST"),
+                             ("mes rendez-vous de la semaine", "GOOGLECALENDAR_EVENTS_LIST")):
+        check(f"« {demande} » reste une lecture", A._resolve_app_action(demande)[0], attendu)
+        check("…et n'est pas prise pour une ecriture", A._demande_ecriture(demande), False)
+
+    # --- 3. Une creation d'evenement reste une creation --------------------------
+    vrai_json = A._llm_json
+    try:
+        A._llm_json = lambda *a, **k: {"evenements": [
+            {"titre": "Dentiste", "debut": "2026-09-04T14:00", "fin": "2026-09-04T15:00"}]}
+        check("« ajoute un rdv demain a 14h » cree bien",
+              A._resolve_app_action("ajoute un rdv dentiste demain a 14h")[0],
+              "GOOGLECALENDAR_CREATE_EVENT")
+    finally:
+        A._llm_json = vrai_json
+
+    # --- 4. Le tutoiement est ecrit UNE fois, et applique PARTOUT ----------------
+    # ⚠️ Aucun prompt ne disait de tutoyer : « il n'y a rien de prevu dans VOTRE
+    # agenda » pouvait sortir sur n'importe quel chemin, pas seulement celui des apps.
+    from agent.system_prompt import TUTOIEMENT, AGENT_COMPACT_DIRECTIVE, SHORT_SYSTEM_PROMPT
+    from agent.core import SYSTEM_TEMPLATE
+    check("la regle existe en un seul endroit", "Tutoie TOUJOURS" in TUTOIEMENT, True)
+    check("…et interdit explicitement « votre »", "votre" in TUTOIEMENT, True)
+    for nom, texte in (("directive de l'agent", AGENT_COMPACT_DIRECTIVE),
+                       ("mode rapide", SHORT_SYSTEM_PROMPT)):
+        check(f"{nom} : tutoiement impose", TUTOIEMENT in texte, True)
+    check("boucle ReAct : tutoiement impose", "tutoies TOUJOURS" in SYSTEM_TEMPLATE, True)
+    for nom, msgs in (("discussion", A._smalltalk_messages("salut")),
+                      ("reponse d'app", A._format_app_messages("x", "y", "{}")),
+                      ("action d'app", A._format_app_messages("x", "y", "{}", True))):
+        check(f"{nom} : tutoiement impose", TUTOIEMENT in msgs[0]["content"], True)
+    # Et la version d'api/agent.py est la MEME chaine, pas une reformulation qui derive.
+    check("une seule formulation, pas deux", A._TUTOIE.strip(), TUTOIEMENT)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -6704,7 +6781,8 @@ if __name__ == "__main__":
                test_rapport_de_mails_ne_peut_pas_envoyer,
                test_mails_tries_et_tableaux_rendus,
                test_boutons_sur_les_reponses_proposees,
-               test_journee_dictee_est_inscrite_pas_relue):
+               test_journee_dictee_est_inscrite_pas_relue,
+               test_audit_qualite_aucun_raccourci_ne_repond_a_la_place):
         try:
             fn()
         except Exception as e:

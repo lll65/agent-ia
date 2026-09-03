@@ -136,6 +136,7 @@ def _smalltalk_messages(message: str, appris=None) -> list:
         {"role": "system", "content": _profile_ctx().strip() + "\n" + (
             "Tu es Nova, l'assistante personnelle de l'utilisateur. Réponds en français, "
             "de façon chaleureuse, BRÈVE (1 à 3 phrases maximum) et naturelle, comme un ami.\n"
+            + _TUTOIE.strip() + "\n"
             "INTERDICTIONS ABSOLUES :\n"
             "- Ne parle JAMAIS de bourse, actions, ETF, crypto, marchés, investissement, épargne "
             "ou placements. Même si l'utilisateur mentionne son âge ou de l'argent.\n"
@@ -722,6 +723,30 @@ _LECTURE_AGENDA = re.compile(
 _JE_FAIS = re.compile(r"\bj(?:e|'|ai\s)\s*\w*", re.I)
 
 
+# ⚠️ MÊME DÉFAUT, DEUX AUTRES ENDROITS — trouvé en auditant la panne de l'agenda.
+# Les raccourcis « mot d'agenda → je liste » et « mot de mail → je trie » attrapaient
+# aussi les demandes d'ÉCRITURE :
+#   « supprime l'événement de 14h »        → Nova listait la journée ;
+#   « envoie un mail à Marie »             → Nova triait la boîte de réception ;
+#   « déplace ma réunion de 14h à 16h »    → Nova listait la journée.
+# À chaque fois : la demande est perdue, et la réponse a l'air d'un travail fait. Un
+# raccourci de LECTURE ne doit jamais répondre à la place d'une demande d'écriture ;
+# celles-ci repartent vers l'agent complet, qui a les outils ET le garde-fou de
+# confirmation (_demande_confirmation). C'est aussi le seul chemin sûr : rien ne part
+# ni ne s'efface sans un accord écrit.
+_ECRITURE = re.compile(
+    r"\b(envoie|envoyer|envoi|écris|ecris|écrire|ecrire|rédige|redige|rédiger|rediger|"
+    r"réponds|reponds|répondre|repondre|transf[eè]re|transf[ée]rer|renvoie|renvoyer|"
+    r"supprime|supprimer|efface|effacer|annule|annuler|archive|archiver|"
+    r"déplace|deplace|déplacer|deplacer|décale|decale|décaler|decaler|reporte|reporter|"
+    r"modifie|modifier|change|changer|renomme|renommer|marque comme lu)\b", re.I)
+
+
+def _demande_ecriture(message: str) -> bool:
+    """La personne demande-t-elle de MODIFIER quelque chose, pas de le consulter ?"""
+    return bool(_ECRITURE.search(message or ""))
+
+
 def _planning_dicte(message: str) -> bool:
     """Cette phrase DÉCRIT-elle une journée à inscrire, plutôt qu'une question ?
 
@@ -936,6 +961,11 @@ def _resolve_app_action(message: str):
                 args["_autres_evenements"] = evts[1:]     # créés à la suite (voir _tool)
             return "GOOGLECALENDAR_CREATE_EVENT", args
         return "GOOGLECALENDAR_QUICK_ADD", {"calendar_id": "primary", "text": _event_text(message)}
+
+    # ⚠️ À partir d'ici, ce sont des raccourcis de LECTURE. Une demande d'écriture qui
+    # les atteint repart vers l'agent complet — voir _demande_ecriture.
+    if _demande_ecriture(message):
+        return None, None
 
     if cal_ctx:
         tmin, tmax, _ = _time_bounds(message)
@@ -1351,8 +1381,8 @@ def _erreur_lisible_app(obs: str) -> str:
 # ⚠️ Nova tutoie Lohan partout ailleurs. Sur le chemin des apps, aucune consigne ne le
 # disait : elle a répondu « il n'y a rien de prévu dans VOTRE agenda », « VOTRE limite de
 # départ ». Ce n'est pas un détail de style — c'est une autre personne qui répond.
-_TUTOIE = (" Tutoie toujours : « ton agenda », « tes mails », « tu as » — jamais "
-           "« votre » ni « vous ».")
+from agent.system_prompt import TUTOIEMENT as _REGLE_TUTOIEMENT
+_TUTOIE = " " + _REGLE_TUTOIEMENT
 
 
 def _format_app_messages(message: str, action: str, obs: str, is_write: bool = False) -> list:
@@ -3246,6 +3276,11 @@ _INTENTIONS = (
 def _intention_app(message: str) -> str:
     """Décrit l'intention en français clair, par simple analyse lexicale."""
     m = (message or "").lower()
+    # ⚠️ Une journée dictée n'a aucun verbe : la bulle affichait donc « je vais aller
+    # regarder » pendant qu'elle allait ÉCRIRE. Annoncer l'inverse de ce qu'on fait,
+    # c'est le même défaut que le modèle annoncé et non utilisé.
+    if _planning_dicte(message):
+        return "tu me dictes ta journée, je l'inscris"
     for mots, libelle in _INTENTIONS:
         if any(k in m for k in mots):
             return libelle
