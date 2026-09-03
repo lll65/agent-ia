@@ -770,9 +770,20 @@ _ECRITURE = re.compile(
     r"modifie|modifier|change|changer|renomme|renommer|marque comme lu)\b", re.I)
 
 
+# ⚠️ Trouvé en auditant le correctif précédent : « envoie-MOI mes dispos » veut dire
+# « montre-moi », pas « envoie un mail ». Le mot « envoie » suffisait à faire perdre à
+# la demande son chemin direct — donc la réponse rapide et sans invention qu'il attend
+# justement sur son agenda. Un correctif qui casse le cas voisin n'est pas un correctif.
+_FAUX_ECRITURE = re.compile(
+    r"(envoi\w*[-\s]+(?:moi|nous)|passe[-\s]+moi|donne[-\s]+moi|"
+    r"ne\s+(?:change|modifie|supprime|efface)\s+rien|"
+    r"(?:change|modifie|supprime|efface)\s+rien|sans\s+rien\s+(?:changer|modifier))", re.I)
+
+
 def _demande_ecriture(message: str) -> bool:
     """La personne demande-t-elle de MODIFIER quelque chose, pas de le consulter ?"""
-    return bool(_ECRITURE.search(message or ""))
+    m = _FAUX_ECRITURE.sub(" ", message or "")
+    return bool(_ECRITURE.search(m))
 
 
 def _planning_dicte(message: str) -> bool:
@@ -916,10 +927,10 @@ def _heures_demandees(args: dict) -> list:
     """
     if not isinstance(args, dict) or not args.get("start_datetime"):
         return []
-    out = [str(args.get("start_datetime"))]
+    out = [{"titre": str(args.get("summary") or ""), "debut": str(args["start_datetime"])}]
     for e in (args.get("_autres_evenements") or []):
         if isinstance(e, dict) and e.get("debut"):
-            out.append(str(e["debut"]))
+            out.append({"titre": str(e.get("titre") or ""), "debut": str(e["debut"])})
     return out
 
 
@@ -1011,7 +1022,17 @@ def _resolve_app_action(message: str):
     # Mots d'agenda EXPLICITES (déclencheurs forts)
     cal_strong = ("agenda", "calendrier", "calendar", "rendez-vous", "rendez vous", "rdv",
                   "réunion", "reunion", "meeting", "événement", "evenement", "planning",
-                  "mes events", "mon planning")
+                  "mes events", "mon planning",
+                  # ⚠️ « Si je demande mes dispos de la semaine, ça doit pas prendre
+                  # 40 s. » Et pour cause : « dispo » n'était PAS un mot d'agenda. La
+                  # demande n'a jamais pris le chemin direct — elle partait à chaque
+                  # fois par l'agent complet, le plus lent et le plus bavard, pour
+                  # aller lire exactement le même calendrier.
+                  "mes dispo", "mes disponibilit", "ma dispo", "tes dispo",
+                  "créneau", "creneau", "suis-je libre", "je suis libre",
+                  "suis je libre", "es-tu libre", "quand je suis libre",
+                  "temps libre", "je fais quoi", "j'ai quoi de prévu",
+                  "quoi de prévu", "quoi de prevu")
     plan = ("planifie ma", "planifie mon", "organise ma", "organise mon", "prépare ma", "prepare ma")
     day_word = any(w in m for w in ("journée", "journee", "semaine", "jour", "mois"))
     mail = ("mail", "mails", "email", "e-mail", "gmail", "boîte mail", "boite mail",
@@ -1582,7 +1603,8 @@ def _recap_evenement(obs: str, attendu: str = "") -> str:
     if attendu:
         try:
             from datetime import datetime
-            voulu = datetime.fromisoformat(str(attendu)[:16])
+            debut_voulu = attendu.get("debut") if isinstance(attendu, dict) else attendu
+            voulu = datetime.fromisoformat(str(debut_voulu)[:16])
             ecart = round((dt - voulu).total_seconds() / 60)
             if abs(ecart) >= 5:
                 sens = "plus tard" if ecart > 0 else "plus tôt"
@@ -1595,6 +1617,29 @@ def _recap_evenement(obs: str, attendu: str = "") -> str:
         except Exception:
             pass
     return ligne
+
+
+def _echec_evenement(attendu, morceau: str) -> str:
+    """Dire NOIR SUR BLANC qu'un événement demandé n'est pas dans l'agenda.
+
+    Le silence est ici le pire des choix : il croit sa journée inscrite, et il
+    découvre le trou au moment où l'événement aurait dû le prévenir.
+    """
+    titre = (attendu.get("titre") if isinstance(attendu, dict) else "") or "sans titre"
+    debut = (attendu.get("debut") if isinstance(attendu, dict) else attendu) or ""
+    quand = ""
+    try:
+        from datetime import datetime
+        d = datetime.fromisoformat(str(debut)[:16])
+        quand = f" ({_JOURS_FR_MIN[d.weekday()]} {d:%d/%m à %Hh%M})"
+    except Exception:
+        pass
+    raison = ""
+    m = re.search(r'"(?:error|message)"\s*:\s*"([^"]{3,160})"', morceau or "")
+    if m:
+        raison = f" — {m.group(1)}"
+    return (f"❌ **« {titre} »{quand} n'a PAS été créé.**{raison}\n"
+            "   Dis-moi et je réessaie — ne compte pas dessus en attendant.")
 
 
 def _local(quand: str):
@@ -1644,10 +1689,29 @@ def _format_app_result(message: str, action: str, obs: str, is_write: bool = Fal
         # Les événements sont créés DANS L'ORDRE : le n-ième morceau répond à la
         # n-ième heure demandée. C'est ce qui permet de comparer les deux.
         att = list(attendus or [])
-        recaps = [r for r in (_recap_evenement(x, att[i] if i < len(att) else "")
-                              for i, x in enumerate(morceaux)) if r]
+        recaps = []
+        for i, x in enumerate(morceaux):
+            a = att[i] if i < len(att) else ""
+            r = _recap_evenement(x, a)
+            if r:
+                recaps.append(r)
+            elif a:
+                # ⚠️ AUDIT : quand une journée dictée compte cinq événements et que le
+                # troisième échoue, Google renvoie un succès pour les quatre autres.
+                # L'enveloppe globale ne « ressemblait pas à un échec », le morceau raté
+                # ne produisait simplement AUCUNE ligne — et Nova annonçait la journée
+                # créée. Un trou dans son agenda qu'il ne découvre que le jour même.
+                recaps.append(_echec_evenement(a, x))
+        if not any(r.startswith("✅") for r in recaps):
+            # Aucun n'a abouti : autant le dire franchement, sans habillage du modèle.
+            return "\n".join(recaps) if recaps else _honest_no_access(action, obs)
         if recaps:
-            return "\n".join(recaps) + (("\n\n" + propre) if propre else "")
+            # ⚠️ Le modèle rédige à partir du JSON brut et ne voit pas quel morceau a
+            # raté : il concluait « ta journée est prête » juste sous un ❌. Deux phrases
+            # qui se contredisent, et c'est la rassurante qu'on retient. Quand un
+            # événement manque, les lignes exactes suffisent — on n'ajoute rien.
+            rate = any(r.startswith("❌") for r in recaps)
+            return "\n".join(recaps) + (("\n\n" + propre) if propre and not rate else "")
     # Si le modèle n'a produit que du protocole, mieux vaut les données brutes que rien.
     return propre or f"Voici les données réelles récupérées :\n\n{obs[:2000]}"
 

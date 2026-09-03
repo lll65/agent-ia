@@ -6808,8 +6808,10 @@ def test_heure_exacte_cause_reelle_et_boite_lisible():
     args = {"start_datetime": "2026-09-04T09:30",
             "_autres_evenements": [{"debut": "2026-09-04T10:00"},
                                    {"debut": "2026-09-04T14:00"}]}
+    # ⚠️ Le TITRE voyage desormais avec l'heure : sans lui, impossible de nommer
+    # l'evenement quand sa creation echoue (voir l'audit du meme jour).
     check("les heures demandees sont toutes relevees",
-          A._heures_demandees(args),
+          [e["debut"] for e in A._heures_demandees(args)],
           ["2026-09-04T09:30", "2026-09-04T10:00", "2026-09-04T14:00"])
 
     # --- 2. LA CAUSE INVENTEE ----------------------------------------------
@@ -7086,6 +7088,100 @@ def test_rien_ne_traine_avant_que_nova_commence():
     check("ce qui n'est pas mesure reste visible", "non_mesure_s" in bilan, True)
 
 
+def test_audit_un_evenement_rate_ne_se_perd_plus_en_silence():
+    """Audit lance sur les CLASSES de defauts deja avérées. Trois trouvailles.
+
+    1. LE PIRE. Sur une journee dictee de cinq evenements, si le troisieme echoue,
+       Google renvoie un succes pour les quatre autres. L'enveloppe globale ne
+       « ressemblait pas a un echec », et le morceau rate ne produisait simplement
+       AUCUNE ligne : Nova annoncait la journee creee. Un trou dans son agenda qu'il
+       ne decouvre que le jour meme, au moment ou l'evenement aurait du le prevenir.
+
+    2. Ma propre correction precedente cassait le cas voisin : « envoie-MOI mes
+       dispos » veut dire « montre-moi », pas « envoie un mail ». Le mot « envoie »
+       suffisait a lui faire perdre son chemin direct.
+
+    3. Et surtout : « dispo » n'etait PAS un mot d'agenda. « Si je demande mes dispos
+       de la semaine ca doit pas prendre 40 s » — et pour cause, la demande n'a
+       JAMAIS pris le chemin direct. Elle partait par l'agent complet, le plus lent,
+       pour aller lire exactement le meme calendrier.
+    """
+    import importlib, json as _j
+    A = importlib.import_module("api.agent")
+    import llm.client as C
+
+    # --- 1. Un evenement rate est DIT ---------------------------------------
+    def _evt(titre, h1, h2):
+        return _j.dumps({"data": {"summary": titre,
+                                  "start": {"dateTime": f"2026-09-04T{h1}:00+02:00"},
+                                  "end": {"dateTime": f"2026-09-04T{h2}:00+02:00"}}})
+    rate = '❌ [GOOGLECALENDAR_CREATE_EVENT] échec : {"error": "Quota exceeded for calendar"}'
+    obs = (_evt("Reveil", "09:30", "10:00") + "\n\n[ÉVÉNEMENT SUIVANT]\n" + rate
+           + "\n\n[ÉVÉNEMENT SUIVANT]\n" + _evt("Travail", "10:30", "11:30"))
+    att = [{"titre": "Reveil", "debut": "2026-09-04T09:30"},
+           {"titre": "Valise et colis", "debut": "2026-09-04T10:00"},
+           {"titre": "Travail", "debut": "2026-09-04T10:30"}]
+    vrai_chat = C.chat
+    try:
+        C.chat = lambda *a, **k: "Ta journée est prête, tout est en place !"
+        out = A._format_app_result("organise ma journée", "GOOGLECALENDAR_CREATE_EVENT",
+                                   obs, True, att)
+        check("l'evenement rate est annonce", "n'a PAS été créé" in out, True)
+        check("…nomme", "Valise et colis" in out, True)
+        check("…date et heure a l'appui", "04/09 à 10h00" in out, True)
+        check("…avec la raison rendue par Google", "Quota exceeded" in out, True)
+        check("…et il est dit de ne pas compter dessus", "ne compte pas dessus" in out, True)
+        # ⚠️ Le modele redige a partir du JSON brut et ne voit pas quel morceau a rate :
+        # il concluait « ta journee est prete » juste sous le ❌. Deux phrases qui se
+        # contredisent, et c'est la rassurante qu'on retient.
+        check("la prose rassurante est supprimee", "tout est en place" in out, False)
+        # Les deux qui ont marche restent confirmes : on ne jette pas le vrai travail.
+        check("les evenements crees sont confirmes", out.count("✅ Créé"), 2)
+
+        # Tout va bien → la prose du modele revient normalement.
+        bon = A._format_app_result("x", "GOOGLECALENDAR_CREATE_EVENT",
+                                   _evt("Reveil", "09:30", "10:00"), True, [att[0]])
+        check("sans echec, la reponse reste chaleureuse", "tout est en place" in bon, True)
+        check("…et sans fausse alerte", "n'a PAS été créé" in bon, False)
+    finally:
+        C.chat = vrai_chat
+
+    # Les titres voyagent avec les heures : sans eux, impossible de nommer le rate.
+    args = {"summary": "Reveil", "start_datetime": "2026-09-04T09:30",
+            "_autres_evenements": [{"titre": "Valise", "debut": "2026-09-04T10:00"}]}
+    dem = A._heures_demandees(args)
+    check("le titre accompagne l'heure demandee", dem[0]["titre"], "Reveil")
+    check("…pour chaque evenement", dem[1]["titre"], "Valise")
+
+    # --- 2. « envoie-MOI » n'est pas un envoi -------------------------------
+    for lecture in ("envoie-moi mes dispos de la semaine",
+                    "envoie moi le resume de mes mails",
+                    "envoie-moi mon agenda de demain",
+                    "passe-moi mes mails",
+                    "montre mes mails et change rien"):
+        check(f"« {lecture[:34]}… » reste une lecture",
+              A._demande_ecriture(lecture), False)
+        check("…et garde son chemin direct", A._resolve_app_action(lecture)[0] is not None, True)
+    # Les vraies ecritures n'ont pas bouge.
+    for ecriture in ("envoie un mail a Marie", "supprime l'evenement de 14h",
+                     "deplace ma reunion de 14h a 16h", "reponds a ce mail"):
+        check(f"« {ecriture[:30]} » reste une ecriture", A._demande_ecriture(ecriture), True)
+
+    # --- 3. « mes dispos » part enfin par le chemin RAPIDE ------------------
+    for demande in ("mes dispos de la semaine", "mes dispos de demain",
+                    "quelles sont mes disponibilites jeudi",
+                    "trouve moi un creneau mardi",
+                    "je suis libre quand cette semaine",
+                    "quoi de prevu demain"):
+        check(f"« {demande} » va droit a l'agenda",
+              A._resolve_app_action(demande)[0], "GOOGLECALENDAR_EVENTS_LIST")
+    # …sans emporter ce qui n'a rien a voir.
+    for hors_sujet in ("parle moi du logiciel libre", "cherche des infos sur 2CRSi",
+                       "explique moi la chute libre"):
+        check(f"« {hors_sujet} » n'ouvre pas l'agenda",
+              A._resolve_app_action(hors_sujet)[0], None)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -7144,7 +7240,8 @@ if __name__ == "__main__":
                test_heure_exacte_cause_reelle_et_boite_lisible,
                test_le_nom_de_l_action_empechait_de_lire_les_mails,
                test_ni_mur_de_signes_ni_porte_fermee,
-               test_rien_ne_traine_avant_que_nova_commence):
+               test_rien_ne_traine_avant_que_nova_commence,
+               test_audit_un_evenement_rate_ne_se_perd_plus_en_silence):
         try:
             fn()
         except Exception as e:
