@@ -7614,6 +7614,100 @@ def test_aucun_chiffre_de_marche_sans_source_et_recherche_longue_reelle():
     check("…et annonce la duree qu'il va prendre", "je prends " in api, True)
 
 
+def test_en_vocal_nova_parle_au_lieu_de_reciter():
+    """« En vocal faut pas qu'elle ecrive tout, mais qu'elle interagisse avec moi —
+    genre elle me dit : tu veux les mails importants ou pas ? »
+    « C'est du vrai streaming, la ou c'est des phrases deja ecrites ? Je veux du vrai
+    streaming, la ca fait tres moche et pas pro. » « Toute l'ecriture est coupee. »
+
+    LA CAUSE : le serveur ne savait PAS qu'on etait en mode vocal. Il renvoyait donc
+    son rapport ECRIT — titres, tableaux, puces — qu'on affichait en markdown brut
+    coupe a 240 signes en plein mot (« ### 🔴 Important, sans reponse attendue (2) -
+    ** 🚨 Marta Ferrando Merino vient de publier une story qui exp ») et qu'on lisait
+    a voix haute tel quel.
+
+    Parler et ecrire ne demandent pas le meme texte. A l'oral on dit l'essentiel en
+    deux phrases et on POSE UNE QUESTION — on ne recite pas un document.
+    """
+    import importlib, inspect, json as _j
+    from pathlib import Path as _P
+    A = importlib.import_module("api.agent")
+    R = importlib.import_module("agent.rapport_mail")
+    M = importlib.import_module("plugins.builtin.mails_tool")
+    racine = _P(__file__).resolve().parents[1]
+
+    # --- 1. Le serveur SAIT qu'on est en vocal -----------------------------
+    ui = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+    check("l'interface le dit au serveur", 'voiceMode ? "&vocal=1" : ""' in ui, True)
+    src = inspect.getsource(A.ask_stream)
+    check("…et le serveur l'ecoute", "vocal: int = 0" in inspect.getsource(A.ask_stream)
+          or "vocal: int = 0" in (racine / "api" / "agent.py").read_text(encoding="utf-8"), True)
+    # ⚠️ …SANS changer le canal : une action armee a la voix doit pouvoir etre
+    # confirmee a la voix, et le garde-fou se verifie en dur sur « web ».
+    check("le canal des confirmations ne bouge pas", '_CANAL["actuel"] = "web"' in src, True)
+
+    # --- 2. Le rapport de mails a une version PARLEE -----------------------
+    mails = ([{"id": str(i), "subject": "Instagram", "from": "no-reply@mail.instagram.com",
+               "snippet": "story"} for i in range(8)]
+             + [{"id": "9", "subject": "Alerte de sécurité", "from": "Google <no-reply@google.com>",
+                 "snippet": "Une connexion inhabituelle a été détectée."},
+                {"id": "10", "subject": "Devoir de maths", "from": "M. Durand <d@lycee.fr>",
+                 "snippet": "peux-tu me dire si tu as fini l'exercice 4 ?"}])
+    dit = R.resume_vocal(R.trier(mails))
+    check("elle annonce le total", "dix mails" in dit, True)
+    check("…ce qui attend une reponse", "attend une réponse" in dit, True)
+    check("…et de qui", "M. Durand" in dit, True)
+    # LE point de sa demande : ca se termine par une QUESTION.
+    check("elle POSE une question", dit.rstrip().endswith("?"), True)
+    check("…qui propose la suite", "Tu veux que je te lise" in dit, True)
+    # Rien de ce qui ne se prononce pas.
+    for interdit in ("#", "**", "|", "- ", "•", "✍️", "🔴", "http"):
+        check(f"rien d'ecrit a l'oral ({interdit.strip() or 'puce'})", interdit in dit, False)
+    check("c'est court", len(dit) < 320, True)
+    # Les cas limites parlent aussi.
+    check("boite vide", R.resume_vocal(R.trier([])), "Tu n'as aucun mail à traiter pour l'instant.")
+    seul = R.resume_vocal(R.trier([{"id": "1", "subject": "Compte rendu",
+                                    "from": "vie.scolaire@lycee.fr", "snippet": "ci-joint"}]))
+    check("un seul mail se dit au singulier", "Tu as un mail." in seul, True)
+    check("…et propose quand meme quelque chose", seul.rstrip().endswith("?"), True)
+
+    # Bout en bout : le meme appel rend l'ecrit ou le parle selon le mode.
+    vrai_tool = A._tool
+    try:
+        A._tool = lambda *a, **k: _j.dumps({"data": {"messages": mails}})
+        ecrit = M.RapportMailsPlugin().run(combien=10)
+        parle = M.RapportMailsPlugin().run(combien=10, vocal=True)
+        check("a l'ecrit, le rapport complet reste", "### " in ecrit, True)
+        check("a l'oral, aucun titre", "### " in parle, False)
+        check("…et c'est bien plus court", len(parle) < len(ecrit) / 2, True)
+        check("…et ca finit par une question", parle.rstrip().endswith("?"), True)
+        # ⚠️ Pas de brouillons a l'oral : c'est un appel modele PAR MAIL, donc plusieurs
+        # secondes de silence avant qu'elle ouvre la bouche.
+        check("aucun brouillon n'est prepare a l'oral", "Bonjour" in parle, False)
+    finally:
+        A._tool = vrai_tool
+
+    # --- 3. La consigne parlee s'applique aux autres reponses --------------
+    check("la consigne existe", "TU PARLES, TU N'ÉCRIS PAS" in A.CONSIGNE_VOCALE, True)
+    check("…elle interdit la mise en forme",
+          "aucun titre, aucune puce, aucun tableau" in A.CONSIGNE_VOCALE, True)
+    check("…et exige une question a la fin",
+          "TERMINE PAR UNE QUESTION" in A.CONSIGNE_VOCALE, True)
+    check("la discussion en vocal la recoit",
+          A.CONSIGNE_VOCALE in A._smalltalk_messages("salut", vocal=True)[0]["content"], True)
+    check("…et pas la discussion ecrite",
+          A.CONSIGNE_VOCALE in A._smalltalk_messages("salut")[0]["content"], False)
+
+    # --- 4. Plus de phrases figees a l'ecran pendant qu'il parle -----------
+    check("les bulles figees sont coupees en vocal", "if vocal:\n                bulles = []" in src, True)
+
+    # --- 5. Ce qui s'affiche est ce qui sera DIT, coupe a la fin d'un mot --
+    check("le sous-titre n'affiche plus le markdown brut",
+          "coupeSure(answer,240)" in ui, False)
+    check("…il montre le texte tel qu'il sera dit",
+          "_cut(texteALire(answer),240)" in ui, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -7677,7 +7771,8 @@ if __name__ == "__main__":
                test_audit_vocal_nova_lisait_sa_reponse_a_l_envers,
                test_popup_absence_en_grand_et_lu_a_voix_haute,
                test_recent_veut_dire_recent_et_la_mise_en_forme_survit,
-               test_aucun_chiffre_de_marche_sans_source_et_recherche_longue_reelle):
+               test_aucun_chiffre_de_marche_sans_source_et_recherche_longue_reelle,
+               test_en_vocal_nova_parle_au_lieu_de_reciter):
         try:
             fn()
         except Exception as e:

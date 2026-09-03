@@ -131,7 +131,7 @@ def _profile_ctx() -> str:
         return ""
 
 
-def _smalltalk_messages(message: str, appris=None) -> list:
+def _smalltalk_messages(message: str, appris=None, vocal: bool = False) -> list:
     return [
         {"role": "system", "content": _profile_ctx().strip() + "\n" + (
             "Tu es Nova, l'assistante personnelle de l'utilisateur. Réponds en français, "
@@ -157,7 +157,8 @@ def _smalltalk_messages(message: str, appris=None) -> list:
             "Tu peux poser UNE question courte ou proposer ton aide en une phrase."
             # ⚠️ C'est PAR ICI que passe « tu es sur quel fuseau horaire ? ». Sans repère,
             # Nova répondait « UTC » — l'heure du conteneur, pas la sienne.
-            + _repere_temporel())},
+            + _repere_temporel()
+            + (CONSIGNE_VOCALE if vocal else ""))},
         {"role": "user", "content": message},
     ]
 
@@ -1336,12 +1337,31 @@ def sans_secrets(texte: str) -> str:
     return _SECRETS.sub(_masque, texte or "")
 
 
+# ⚠️ « En vocal faut pas qu'elle écrive tout, mais qu'elle interagisse avec moi — genre
+# elle me dit : tu veux les mails importants ou pas ? »
+# Le serveur ignorait le mode vocal : il renvoyait son rapport ÉCRIT, affiché en markdown
+# brut et coupé en plein mot, et lu à voix haute tel quel. Parler et écrire ne demandent
+# pas le même texte : à l'oral on dit l'essentiel en deux phrases et on POSE UNE QUESTION.
+CONSIGNE_VOCALE = (
+    " ⚠️ TU PARLES, TU N'ÉCRIS PAS. Réponds comme à l'oral : 1 à 3 phrases courtes, "
+    "aucun titre, aucune puce, aucun tableau, aucun symbole de mise en forme, aucune "
+    "URL, aucun emoji. Donne l'essentiel, puis TERMINE PAR UNE QUESTION qui propose "
+    "la suite (« tu veux que je te lise les importants ? », « je te donne le détail ? »). "
+    "Écris les nombres en toutes lettres quand c'est naturel. Si la réponse complète est "
+    "longue, ne la récite pas : résume-la en une phrase et propose de l'afficher.")
+
+
+def en_vocal() -> bool:
+    """La demande en cours vient-elle du mode vocal ?"""
+    return bool(_CANAL.get("vocal"))
+
+
 def _rapport_mails(args: dict) -> str:
     """Le tri des mails — jamais la liste brute des sujets."""
     try:
         from plugins.builtin.mails_tool import RapportMailsPlugin
         return RapportMailsPlugin().run(combien=int((args or {}).get("combien") or 25),
-                                        non_lus=False)
+                                        non_lus=False, vocal=en_vocal())
     except Exception as e:
         logger.warning(f"[mails] rapport impossible : {type(e).__name__}: {e}")
         obs = _tool("GMAIL_FETCH_EMAILS", {"maxResults": 10, "query": "in:inbox"}, "gmail")
@@ -4212,7 +4232,7 @@ async def ask_post(req: AskRequest, request: Request):
 
 
 @router.get("/ask/stream")
-async def ask_stream(q: str = "", key: str = "", modele: str = ""):
+async def ask_stream(q: str = "", key: str = "", modele: str = "", vocal: int = 0):
     """Streaming SSE : émet en direct les étapes du raisonnement + la réponse (pour /nova)."""
     import json as _json
     from fastapi.responses import StreamingResponse
@@ -4221,6 +4241,13 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
     message = (q or "").strip()
     # C'est le chat web : une confirmation armée ici ne peut être donnée qu'ici.
     _CANAL["actuel"] = "web"
+    # ⚠️ Le mode vocal reste le canal « web » pour les CONFIRMATIONS : c'est le même
+    # appareil et la même session, et une action armée à la voix doit pouvoir être
+    # confirmée à la voix. Changer le canal ici aurait cassé le garde-fou, qui se
+    # vérifie en dur sur « web ». Le vocal n'est pas un autre canal — c'est une autre
+    # FAÇON DE RÉPONDRE (voir CONSIGNE_VOCALE).
+    vocal = bool(vocal)
+    _CANAL["vocal"] = vocal
     # « Ça met 40 s » : on mesure au lieu de supposer (voir /agent/diag/vitesse).
     from agent.chrono import demarre as _chrono_demarre, termine as _chrono_termine
     _chrono_demarre(message)
@@ -4367,6 +4394,14 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
             # patienter — 0,04 s suffisent à les ordonner.
             with mesure("analyse"):
                 bulles = _route_bulles(message) + [_NIVEAU_BULLE[_niv]]
+            # ⚠️ « C'est du vrai streaming, là où c'est des phrases déjà écrites ? Je veux
+            # du vrai streaming, là ça fait très moche et pas pro. » Il a l'œil : ces
+            # bulles-là sont des phrases FIGÉES, choisies par mots-clés. À l'écrit elles
+            # aident à patienter. En vocal, il PARLE — il ne lit pas l'écran — et elles ne
+            # font qu'habiller l'attente. On ne garde que les étapes RÉELLES : un outil
+            # appelé, une réponse reçue. Ce qui reste à l'écran est alors vrai.
+            if vocal:
+                bulles = []
             for _b in bulles:
                 yield sse({"type": "step", "kind": "route", "tool": "analyse", "text": _b})
                 await asyncio.sleep(0.04)
@@ -4395,7 +4430,7 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
             if _action_en_attente(_PROFILE_ID, "web") and _is_smalltalk(message):
                 pass                      # on laisse le chemin direct trancher
             elif _is_smalltalk(message):
-                async for tok in _stream_llm(_smalltalk_messages(message), 0.6, niveau="rapide"):
+                async for tok in _stream_llm(_smalltalk_messages(message, vocal=vocal), 0.6, niveau="rapide"):
                     yield sse({"type": "token", "t": tok})
                 yield sse({"type": "answer", "text": yield_acc[0], "final": True})
                 yield sse({"type": "model", "name": _modele_utilise()})
@@ -4459,6 +4494,8 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
                 yield sse({"type": "done"}); return
             from agent.core import run_agent_stream
             cfg = _build_agent_cfg(message, "Nova")
+            if vocal:
+                cfg["system"] = cfg.get("system", "") + CONSIGNE_VOCALE
             _minutes = recherche_approfondie(message)
             if _minutes:
                 # On le DIT avant de commencer : sinon il regarde un écran tourner sans

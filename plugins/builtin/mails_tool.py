@@ -31,7 +31,7 @@ class RapportMailsPlugin(Plugin):
                     "required": False},
     }
 
-    def run(self, combien: int = 20, non_lus: bool = True, **_) -> str:
+    def run(self, combien: int = 20, non_lus: bool = True, vocal: bool = False, **_) -> str:
         try:
             from api.agent import _tool
             from agent.rapport_mail import trier, resume_markdown, a_besoin_agenda, _cle
@@ -72,6 +72,12 @@ class RapportMailsPlugin(Plugin):
                     + (" non lu." if non_lus else " dans ta boîte de réception."))
 
         tri = trier(mails)
+        # ⚠️ À la voix, on ne récite pas un rapport : on dit l'essentiel et on POSE UNE
+        # QUESTION. Et surtout on ne prépare PAS de brouillons — c'est un appel modèle
+        # par mail, donc plusieurs secondes de silence avant qu'elle ouvre la bouche.
+        if vocal:
+            from agent.rapport_mail import resume_vocal
+            return resume_vocal(tri)
         # Les réponses ne sont préparées que pour ceux qui en attendent une.
         brouillons = {}
         for m in tri.get("important", []):

@@ -1847,8 +1847,14 @@ function ask(){
     else { pi=(pi+1)%THINK_PHRASES.length; bubble.innerHTML=thinkHTML(THINK_PHRASES[pi],"💭"); }
     chat.scrollTop=chat.scrollHeight; }, 1700);
   const stopThink=()=>clearInterval(thinkTimer);
+  /* ⚠️ Le serveur ne savait PAS qu'on est en mode vocal. Il renvoyait donc son rapport
+     ÉCRIT — titres, tableaux, puces — qu'on affichait en markdown brut et coupé à
+     240 signes en plein mot, et qu'on faisait lire à voix haute tel quel. Parler et
+     écrire ne demandent pas le même texte : à l'oral on dit l'essentiel et on POSE UNE
+     QUESTION, on ne récite pas un document. */
   const url=ORIGIN+"/agent/ask/stream?key="+encodeURIComponent(KEY)+"&q="+encodeURIComponent(msg)
-    + (MODELE ? "&modele="+encodeURIComponent(MODELE) : "");
+    + (MODELE ? "&modele="+encodeURIComponent(MODELE) : "")
+    + (voiceMode ? "&vocal=1" : "");
   const es=new EventSource(url);
   es.onmessage=(e)=>{ let d; try{ d=JSON.parse(e.data);}catch{ return; }
     // Décisions réelles du routeur → sous-bulles du nœud « Analyse »
@@ -1885,13 +1891,17 @@ function ask(){
       if(!answer&&!streamed){ bubble.innerHTML=thinkHTML(stepLabel(d), ic); pi=trace.length-1; chat.scrollTop=chat.scrollHeight; } }
     else if(d.type==="token"){ if(!streamed){ streamed=true; stopThink(); bubble.innerHTML=""; graphAdd("✍️","Rédaction"); }
       answer+=(d.t||""); bubble.innerHTML=fmt(answer)+'<span class="cur">▍</span>'; chat.scrollTop=chat.scrollHeight;
-      if(voiceMode) vSet("Nova répond…", finSure(answer,240)); }
+      /* ⚠️ On affichait le MARKDOWN BRUT du rapport écrit, coupé à 240 signes en plein
+         mot : « ### 🔴 Important, sans réponse attendue (2) - ** 🚨 Marta Ferrando
+         Merino vient de publier une story qui exp ». Illisible, et ça n'a rien à faire
+         sous une orbe. On montre le texte tel qu'il sera DIT, coupé à la fin d'un mot. */
+      if(voiceMode) vSet("Nova répond…", _cut(texteALire(answer),240)); }
     else if(d.type==="answer"){ const fin=d.text||"";
       if(streamed){ answer=fin||answer; bubble.innerHTML=fmt(answer); }
       else { answer=fin; stopThink(); graphAdd("✍️","Rédaction"); typewrite(bubble,answer); }
       histPush("ai",answer,trace);
       if(voiceMode){ clearTimeout(VEILLE_VOCALE); VEILLE_VOCALE=null;
-        vSet("Nova répond…", coupeSure(answer,240)); speak(answer, ()=>{ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }); }
+        vSet("Nova répond…", _cut(texteALire(answer),240)); speak(answer, ()=>{ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }); }
       else if(TTS) speak(answer); }
     else if(d.type==="model"){ MODELE_UTILISE=d.name||""; }
     // ⚠️ Nova apprend maintenant toute seule. Retenir en douce serait le contraire de
