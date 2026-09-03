@@ -6877,6 +6877,215 @@ def test_heure_exacte_cause_reelle_et_boite_lisible():
         A._tool = vrai_tool
 
 
+def test_le_nom_de_l_action_empechait_de_lire_les_mails():
+    """« 📭 Aucun mail à traiter » sur une boite pleine. Trouve grace au message de
+    diagnostic ajoute juste avant, qui a rendu la vraie reponse de Gmail visible.
+
+    DEUX causes, et la premiere est presque drole :
+
+    1. On cherchait le JSON avec re.search(r"\{.*\}|\[.*\]"). Or l'observation
+       commence par « ✅ [GMAIL_FETCH_EMAILS] resultat : {…} ». Arrive au crochet de
+       GMAIL_FETCH_EMAILS, la premiere alternative echoue, la seconde attrape TOUT
+       jusqu'au dernier « ] » de la reponse — soit « [GMAIL_FETCH_EMAILS] resultat :
+       {… », qui n'est evidemment pas du JSON. Le NOM DE L'ACTION decidait donc si
+       Nova savait lire les mails.
+
+    2. Et meme lu, le tri restait aveugle : _essentiel() ne gardait des mails que
+       leur « subject ». Sans expediteur (« no-reply » → envoi automatique) ni apercu
+       (« peux-tu me dire tes dispos ? » → a repondre), une alerte de securite et une
+       notification Instagram se ressemblent.
+    """
+    import importlib, json as _j
+    M = importlib.import_module("plugins.builtin.mails_tool")
+    CT = importlib.import_module("plugins.builtin.composio_tool")
+    R = importlib.import_module("agent.rapport_mail")
+
+    # --- 1. La forme EXACTE qu'il a vue a l'ecran ---------------------------
+    reel = ('✅ [GMAIL_FETCH_EMAILS] résultat :\n'
+            '{\n "messages": [\n'
+            '  {"subject": "Alerte de sécurité"},\n'
+            '  {"subject": "À propos de Marta et d\u2019autres personnes : 5 autres '
+            'nouvelles notifications."},\n'
+            '  {"subject": "Facture Spotify"}\n ]\n}')
+    ex = M._extraire(reel)
+    check("les trois mails sont enfin lus", len(ex), 3)
+    check("…dans le bon ordre", ex[0].get("subject"), "Alerte de sécurité")
+    # Le crochet du nom d'action ne doit plus rien decider.
+    check("le nom de l'action n'empeche plus la lecture",
+          len(M._extraire('✅ [TOTALEMENT_AUTRE_CHOSE] résultat :\n'
+                          '{"messages":[{"subject":"a"},{"subject":"b"}]}')), 2)
+    # On ne devine plus ou commence le JSON : on le decode.
+    check("le JSON est decode, pas devine",
+          M._json_dans('[ACTION] blabla {"a": 1}'), {"a": 1})
+    check("…et un texte sans JSON ne casse rien", M._json_dans("rien ici"), None)
+
+    # --- 2. Une reponse COUPEE rend ce qui est lisible, pas zero ------------
+    coupe = reel[:-15]
+    check("une reponse tronquee rend quand meme les mails complets",
+          len(M._extraire(coupe)), 2)
+    check("…et l'enveloppe cassee ne fait pas tout perdre",
+          len(M._extraire('{"messages":[{"subject":"a"},{"subject":"b"},{"sub')), 2)
+
+    # --- 3. Les emballages deja connus continuent de marcher ---------------
+    for nom, brut, attendu in (
+            ("data.messages", _j.dumps({"data": {"messages": [{"subject": "a", "from": "x"}]}}), 1),
+            ("liste nue", _j.dumps([{"subject": "a"}]), 1),
+            ("imbrique", _j.dumps({"successful": True, "data": {"response_data": {
+                "items": [{"snippet": "salut"}]}}}), 1),
+            ("boite vide", _j.dumps({"data": {"messages": []}}), 0),
+            ("enveloppe d'erreur", '{"successful": false, "error": "401"}', 0),
+            ("texte sans json", "pas de json ici", 0)):
+        check(f"emballage « {nom} »", len(M._extraire(brut)), attendu)
+
+    # --- 4. Le tri n'est plus aveugle -------------------------------------
+    check("l'expediteur survit a la reduction", "from" in CT._CHAMPS_ESSENTIELS, True)
+    check("…et l'apercu aussi", "snippet" in CT._CHAMPS_ESSENTIELS, True)
+    # Bout en bout, sur une reponse assez grosse pour DECLENCHER la reduction.
+    mails = [{"id": f"m{i}", "threadId": f"t{i}", "subject": f"Sujet {i}",
+              "from": ("Instagram <no-reply@mail.instagram.com>" if i % 2
+                       else "M. Durand <d@lycee.fr>"),
+              "snippet": "Bonjour, peux-tu me dire tes dispos la semaine prochaine ? " * 4,
+              "payload": {"headers": [{"name": "X", "value": "y" * 300}]},
+              "labelIds": ["UNREAD", "INBOX"]} for i in range(25)]
+    txt = CT._fmt("GMAIL_FETCH_EMAILS", {"successful": True, "data": {"messages": mails}})
+    check("la reduction s'est bien declenchee", len(txt) > 2500, True)
+    lus = M._extraire(txt)
+    check("beaucoup de mails passent la reduction", len(lus) >= 15, True)
+    check("l'expediteur est encore la", bool(lus[0].get("from")), True)
+    check("l'apercu est encore la", bool(lus[0].get("snippet")), True)
+    tri = R.trier(lus)
+    # ⚠️ LE point : sans expediteur, AUCUN mail n'etait classe « envoi automatique ».
+    check("les notifications automatiques sont reconnues", len(tri[R.IGNORER]) > 0, True)
+    check("…et les vraies questions demandent une reponse",
+          any(m.get("repondre") for m in tri[R.IMPORTANT]), True)
+    check("…celles-la seulement", all(not m.get("repondre") for m in tri[R.IGNORER]), True)
+
+
+def test_ni_mur_de_signes_ni_porte_fermee():
+    """Deux facons de rendre une reponse inutilisable, vues le meme jour.
+
+    1. « et un schema du cours de la bourse stp » →
+         NASDAQ Composite 26 370,89 ──▁▁▁▁▁▁▁▁▁… (un millier de fois)
+       Le modele, a qui on demandait un graphique SANS lui donner de chiffres, a
+       dessine une ligne plate en repetant le meme caractere jusqu'a epuisement.
+
+    2. « fait des recherches pendant minimum 10 minutes sur une action PEA qui va
+       exploser d'ici quelques mois et explique pourquoi » →
+         « Je suis desole, mais je ne peux pas repondre a cette demande. »
+       Point final. Sa propre consigne dit pourtant : « Jamais de "je ne peux pas"
+       sans alternative. » Et il y avait tout a dire.
+
+    Les deux etaient DEJA interdits dans les prompts. Un modele sature enfreint
+    n'importe quelle consigne : ce qui compte se verifie sur la SORTIE.
+    """
+    import importlib
+    from pathlib import Path as _P
+    Q = importlib.import_module("agent.qualite")
+
+    # --- 1. Le mur de signes -----------------------------------------------
+    mur = "NASDAQ Composite 26 370,89  ──" + "▁" * 900 + "\nSuite du texte."
+    coupe = Q.sans_repetition(mur)
+    check("le mur est coupe", len(coupe) < 120, True)
+    check("…et la coupure est annoncee", "[…]" in coupe, True)
+    check("…une seule fois", coupe.count("[…]"), 1)
+    check("le texte qui suit est preserve", "Suite du texte." in coupe, True)
+    check("…et le chiffre aussi", "26 370,89" in coupe, True)
+    # Un motif alterne compte aussi (« ─▁─▁─▁… »).
+    check("un motif repete est coupe aussi",
+          len(Q.sans_repetition("a" + "─▁" * 60 + "b")) < 40, True)
+    # ⚠️ Et surtout : ce qui est LEGITIME n'est pas touche.
+    for normal in ("Texte.\n" + "-" * 20 + "\nSuite.",
+                   "Voici tes 3 rendez-vous de demain a 14h.",
+                   "### Titre\n\n- point un\n- point deux",
+                   "Le CAC 40 est a 7 812 points (+0,8 %)."):
+        check(f"intact : « {normal[:28]} »", Q.sans_repetition(normal), normal)
+
+    # --- 2. Le refus sec ---------------------------------------------------
+    check("un refus nu est reconnu",
+          Q.refus_sec("Je suis désolé, mais je ne peux pas répondre à cette demande."), True)
+    check("un refus AVEC une suite ne l'est pas",
+          Q.refus_sec("Je ne peux pas prédire le cours. En revanche je peux te lister "
+                      "les échéances connues des prochains mois."), False)
+    check("une reponse ordinaire n'est pas un refus",
+          Q.refus_sec("Voici tes 3 rendez-vous de demain."), False)
+
+    reponse = Q.relis("Je suis désolé, mais je ne peux pas répondre à cette demande.",
+                      "une action pea qui va exploser d'ici quelques mois")
+    check("le refus recoit une suite", len(reponse) > 300, True)
+    check("…qui dit la verite sur la prediction",
+          "Personne ne sait quelle action va monter" in reponse, True)
+    check("…et propose du concret et datable", "échéance" in reponse, True)
+    check("…en parlant bien du PEA", "PEA" in reponse, True)
+    check("…sans effacer le refus lui-meme", "je ne peux pas" in reponse, True)
+    # Hors finance, la porte de sortie reste ouverte mais generique.
+    autre = Q.relis("Je ne suis pas en mesure de traiter cela.", "traduis ce texte")
+    check("hors finance aussi, on ne s'arrete pas la",
+          "je préfère te dire ce que je sais faire" in autre, True)
+    check("…sans plaquer le laius bourse", "PEA" in autre, False)
+    # Une bonne reponse traverse la relecture sans une egratignure.
+    bonne = "Voici tes 3 rendez-vous de demain a 14h, 16h et 18h."
+    check("une bonne reponse n'est pas modifiee", Q.relis(bonne, "mon agenda"), bonne)
+
+    # --- 3. Branche sur TOUS les chemins -----------------------------------
+    racine = _P(__file__).resolve().parents[1]
+    api = (racine / "api" / "agent.py").read_text(encoding="utf-8")
+    core = (racine / "agent" / "core.py").read_text(encoding="utf-8")
+    check("le chat relit ses reponses", "from agent.qualite import relis as _relis_q" in api, True)
+    check("…et l'agent aussi (Telegram, automatisations)",
+          "from agent.qualite import relis as relis_qualite" in core, True)
+    # --- 4. Et le quiz ne felicite plus une reponse fausse ------------------
+    check("un quiz doit verifier avant de feliciter",
+          "ne felicite JAMAIS une reponse sans l" in api, True)
+    check("…et corriger avec une source",
+          "donne la bonne reponse et sa source" in api, True)
+
+
+def test_rien_ne_traine_avant_que_nova_commence():
+    """« Quand Nova utilise des outils ou commence à faire des recherches ça va vite,
+    mais il y a un gros délai entre le moment où j'envoie le message et le moment où
+    il lit et essaye de comprendre ma demande. »
+
+    Il visait juste : le temps ne partait pas dans les outils, il partait AVANT.
+
+      • Quatre bulles a 0,3 s d'attente chacune = 1,2 s ajoutees EXPRES, « le temps
+        de les lire defiler ». Sur une reponse d'agenda de 3 s, c'est 40 % du total.
+      • Et l'apprentissage des faits personnels tournait AVANT la premiere bulle :
+        sur une phrase qui parle de lui, reformuler le fait demande un appel modele
+        complet. L'ecran restait vide pendant tout ce temps — avant meme que Nova
+        ait l'air d'avoir commence. Rien dans l'aiguillage n'en depend.
+      • Enfin le diagnostic annoncait « 100 % non mesure » : toute cette fenetre
+        echappait au chronometre, donc on ne pouvait meme pas la voir.
+    """
+    import inspect, importlib, re as _re
+    A = importlib.import_module("api.agent")
+    src = inspect.getsource(A.ask_stream)
+
+    # --- 1. Plus d'attente artificielle -------------------------------------
+    attentes = [float(x) for x in _re.findall(r"asyncio\.sleep\(([0-9.]+)\)", src)]
+    check("les attentes ajoutees sont minimes", all(a <= 0.05 for a in attentes), True)
+    check("…et l'ancienne pause de 0,3 s a disparu", 0.3 in attentes, False)
+
+    # --- 2. Nova se montre AVANT d'apprendre --------------------------------
+    pos_bulle = src.index('"kind": "route"')
+    pos_appris = src.index("_remember_fact")
+    check("les bulles partent avant l'apprentissage", pos_bulle < pos_appris, True)
+
+    # --- 3. La fenetre est enfin MESUREE ------------------------------------
+    for etape in ("avant_analyse", "analyse", "apprentissage", "aiguillage"):
+        check(f"l'etape « {etape} » est chronometree", f'mesure("{etape}")' in src, True)
+
+    # Et le chronometre sait toujours additionner ce qu'on lui donne.
+    from agent import chrono
+    chrono.demarre("test de mesure")
+    chrono.ajoute("analyse", 0.2)
+    chrono.ajoute("analyse", 0.3)
+    chrono.ajoute("composio", 1.0)
+    bilan = chrono.termine()
+    check("les etapes se cumulent", bilan["etapes"]["analyse"]["s"], 0.5)
+    check("…et sont comptees", bilan["etapes"]["analyse"]["n"], 2)
+    check("ce qui n'est pas mesure reste visible", "non_mesure_s" in bilan, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -6932,7 +7141,10 @@ if __name__ == "__main__":
                test_boutons_sur_les_reponses_proposees,
                test_journee_dictee_est_inscrite_pas_relue,
                test_audit_qualite_aucun_raccourci_ne_repond_a_la_place,
-               test_heure_exacte_cause_reelle_et_boite_lisible):
+               test_heure_exacte_cause_reelle_et_boite_lisible,
+               test_le_nom_de_l_action_empechait_de_lire_les_mails,
+               test_ni_mur_de_signes_ni_porte_fermee,
+               test_rien_ne_traine_avant_que_nova_commence):
         try:
             fn()
         except Exception as e:

@@ -119,13 +119,12 @@ def _extraire(brut: str) -> list:
     cherche maintenant N'IMPORTE OÙ dans la structure le premier ensemble d'objets qui
     ressemblent à des mails.
     """
-    m = re.search(r"\{.*\}|\[.*\]", brut or "", re.S)
-    if not m:
-        return []
-    try:
-        racine = json.loads(m.group(0))
-    except Exception:
-        return []
+    racine = _json_dans(brut)
+    if racine is None:
+        # ⚠️ La réponse peut arriver TRONQUÉE (bornée en amont) : plus rien ne parse en
+        # entier. On récupère alors les mails un par un — mieux vaut en rendre neuf sur
+        # dix que zéro sur dix.
+        return _objets_mails(brut)
 
     trouve = []
 
@@ -149,7 +148,63 @@ def _extraire(brut: str) -> list:
     # Un objet unique peut être un mail à lui seul.
     if not trouve and _est_mail(racine):
         trouve = [racine]
+    # ⚠️ Sur une réponse COUPÉE, l'enveloppe ne parse plus : _json_dans tombe alors sur
+    # le premier mail complet et s'arrête là — un mail rendu au lieu de neuf. On compte
+    # donc les deux méthodes et on garde la plus généreuse. Rendre moins que ce qu'on
+    # peut lire, c'est la même faute que de ne rien rendre du tout, en plus discret.
+    secours = _objets_mails(brut)
+    if len(secours) > len(trouve):
+        return secours[:50]
     return trouve[:50]
+
+
+def _json_dans(brut: str):
+    """Le premier objet JSON RÉELLEMENT décodable du texte. None si aucun.
+
+    ⚠️ LA cause de « 📭 Aucun mail à traiter » sur une boîte pleine, trouvée grâce au
+    message de diagnostic. On cherchait le JSON avec `re.search(r"\\{.*\\}|\\[.*\\]")`.
+    Or l'observation commence par « ✅ [GMAIL_FETCH_EMAILS] résultat : {…} » : à la
+    position du crochet de GMAIL_FETCH_EMAILS, la première alternative échoue, la
+    seconde attrape TOUT jusqu'au dernier « ] » de la réponse — soit
+    « [GMAIL_FETCH_EMAILS] résultat : {… » , qui n'est évidemment pas du JSON. Le
+    nom de l'action décidait donc si Nova savait lire tes mails.
+    On ne devine plus où commence le JSON : on essaie de le DÉCODER à chaque début
+    possible, et le premier qui tient est le bon.
+    """
+    dec = json.JSONDecoder()
+    texte = brut or ""
+    for i, c in enumerate(texte):
+        if c not in "{[":
+            continue
+        try:
+            valeur, _ = dec.raw_decode(texte, i)
+        except ValueError:
+            continue
+        if isinstance(valeur, (dict, list)):
+            return valeur
+    return None
+
+
+def _objets_mails(brut: str) -> list:
+    """Les objets qui ressemblent à des mails, ramassés un par un.
+
+    Dernier recours, utile quand la réponse est coupée en plein milieu : chaque « { »
+    est tenté séparément, et on garde ce qui est à la fois valide et mail-like.
+    """
+    dec, texte, out = json.JSONDecoder(), brut or "", []
+    i = texte.find("{")
+    while i != -1 and len(out) < 50:
+        try:
+            valeur, fin = dec.raw_decode(texte, i)
+        except ValueError:
+            i = texte.find("{", i + 1)
+            continue
+        if _est_mail(valeur):
+            out.append(valeur)
+            i = texte.find("{", fin)
+        else:
+            i = texte.find("{", i + 1)
+    return out
 
 
 def _dispos() -> str:
