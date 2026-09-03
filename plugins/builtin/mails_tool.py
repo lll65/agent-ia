@@ -38,9 +38,12 @@ class RapportMailsPlugin(Plugin):
         except Exception as e:
             return f"[ERREUR] Module indisponible ({type(e).__name__})."
 
-        args = {"max_results": max(1, min(50, int(combien or 20)))}
-        if non_lus:
-            args["query"] = "is:unread"
+        # ⚠️ J'avais écrit « max_results » et retiré la requête. L'ancien appel, qui
+        # MARCHAIT, utilisait « maxResults » et « in:inbox » : Composio ignorait donc
+        # mes paramètres et je concluais « aucun mail » sur une boîte pleine. On reprend
+        # exactement la forme éprouvée.
+        args = {"maxResults": max(1, min(50, int(combien or 20))),
+                "query": "is:unread" if non_lus else "in:inbox"}
         brut = _tool(_LECTURE, args, "gmail")
         # ⚠️ L'ÉCHEC se juge AVANT l'extraction. `{"successful": false, "error": "401"}`
         # est un JSON parfaitement valide : extrait, il devenait « un mail » de plus,
@@ -83,35 +86,56 @@ def _echec(brut: str) -> bool:
                                 "unauthorized", "forbidden", '"successful": false'))
 
 
+# Ce qui fait qu'un objet EST un mail. Composio change de forme d'une version à
+# l'autre : on reconnaît donc le contenu, pas l'emballage.
+_CHAMPS_MAIL = ("subject", "sujet", "snippet", "apercu", "preview", "from",
+                "expediteur", "sender", "body", "corps", "messageText", "payload")
+
+
+def _est_mail(x) -> bool:
+    return isinstance(x, dict) and any(x.get(c) for c in _CHAMPS_MAIL)
+
+
 def _extraire(brut: str) -> list:
-    """Les mails, quelle que soit la forme que Composio a renvoyée."""
+    """Les mails, quelle que soit la forme que Composio a renvoyée.
+
+    ⚠️ L'ancienne version descendait par une liste FIXE de clés (« data », « messages »…)
+    et abandonnait dès qu'aucune ne correspondait — d'où « 📭 Aucun mail à traiter »
+    sur une boîte pleine, simplement parce que l'emballage avait changé de nom. On
+    cherche maintenant N'IMPORTE OÙ dans la structure le premier ensemble d'objets qui
+    ressemblent à des mails.
+    """
     m = re.search(r"\{.*\}|\[.*\]", brut or "", re.S)
     if not m:
         return []
     try:
-        d = json.loads(m.group(0))
+        racine = json.loads(m.group(0))
     except Exception:
         return []
-    for _ in range(5):
-        if isinstance(d, dict):
-            for c in ("data", "response_data", "messages", "emails", "items", "result"):
-                if isinstance(d.get(c), (list, dict)):
-                    d = d[c]
-                    break
-            else:
-                break
-        else:
-            break
-    if isinstance(d, dict):
-        d = [d]
-    if not isinstance(d, list):
-        return []
-    # Un objet n'est un mail que s'il en a les traits. Sans ce filtre, une enveloppe
-    # de statut ou un objet de pagination se retrouvait classé comme un message.
-    champs = ("subject", "sujet", "snippet", "apercu", "from", "expediteur",
-              "sender", "body", "corps")
-    return [x for x in d
-            if isinstance(x, dict) and any(x.get(c) for c in champs)][:50]
+
+    trouve = []
+
+    def explore(n, prof=0):
+        if trouve or prof > 6:
+            return
+        if isinstance(n, list):
+            mails = [x for x in n if _est_mail(x)]
+            if mails:
+                trouve.extend(mails[:50])
+                return
+            for x in n[:50]:
+                explore(x, prof + 1)
+        elif isinstance(n, dict):
+            for v in n.values():
+                explore(v, prof + 1)
+                if trouve:
+                    return
+
+    explore(racine)
+    # Un objet unique peut être un mail à lui seul.
+    if not trouve and _est_mail(racine):
+        trouve = [racine]
+    return trouve[:50]
 
 
 def _dispos() -> str:

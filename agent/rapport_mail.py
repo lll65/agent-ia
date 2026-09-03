@@ -144,8 +144,19 @@ def resume_markdown(tri: dict, brouillons: dict = None) -> str:
             L.append(f"  - _{m['pourquoi']}_")
             b = brouillons.get(_cle(m))
             if b:
-                L.append(f"  - **Réponse proposée :** {b}")
-                L.append("  - ⚠️ _Je n'ai RIEN envoyé. Dis-moi « envoie » si elle te va._")
+                L.append("")
+                L.append(f"  > {b}")
+                L.append("")
+                # ⚠️ Ce bloc devient des BOUTONS dans l'interface (voir fmt() dans
+                # ui/nova.html). Il est écrit ici, en Python, et pas laissé au modèle :
+                # une proposition d'envoi doit TOUJOURS s'accompagner de son choix,
+                # pas seulement quand le modèle y pense.
+                qui = _court(_expediteur(m))
+                L.append(f"CHOIX: Envoyer cette réponse à {qui} ?")
+                L.append(f"- Envoyer la réponse à {qui}")
+                L.append("- Modifier la réponse")
+                L.append("- Laisser ce mail de côté")
+                L.append("")
         L.append("")
     if autres_imp:
         L.append(f"### 🔴 Important, sans réponse attendue ({len(autres_imp)})")
