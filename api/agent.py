@@ -4246,28 +4246,45 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
 
         yield_acc = [""]
         try:
-            _log_activity(message)   # visible immédiatement dans la constellation
-            # ⚠️ Retenir ce qu'il dit de LUI, quel que soit le chemin pris ensuite.
-            # L'apprentissage ne tournait que sur la voie « discussion » : dès que la
-            # phrase partait vers une app, une recherche ou l'agent, la confidence était
-            # perdue. « mon père et moi on a un PEA » n'était jamais retenu.
-            _appris = await _off(_remember_fact, message)
-            # ⚠️ Retenir en douce serait le contraire de ce qu'on veut. Lohan doit VOIR
-            # ce que Nova garde de lui, et pouvoir l'enlever d'un clic — c'est ce qui
-            # rend acceptable qu'elle apprenne toute seule.
-            if _appris:
-                yield sse({"type": "appris",
-                           "faits": [{"id": f.get("id"), "texte": f.get("texte", "")}
-                                     for f in _appris]})
+            # ⚠️ Le diagnostic annonçait « 35,1 s dont 100 % non mesuré » : tout ce qui
+            # précède le premier appel modèle échappait au chronomètre, donc justement
+            # la fenêtre dont il se plaint. On mesure maintenant cette fenêtre-là.
+            from agent.chrono import mesure
+            with mesure("avant_analyse"):
+                _log_activity(message)   # visible immédiatement dans la constellation
             # Le serveur annonce ses VRAIES décisions de routage → sous-bulles authentiques
             # (et non des mots-clés extraits de la question, qui simulaient un raisonnement).
             # Les décisions arrivent UNE PAR UNE, en français clair. Elles partaient
             # auparavant d'un seul bloc, en jargon (« question factuelle · recherche web
             # requise · modèle équilibré ») : illisible, et sans aucune sensation de direct.
             _niv = _niveau_tache(message)
-            for _b in _route_bulles(message) + [_NIVEAU_BULLE[_niv]]:
+            # ⚠️ « Il y a un gros délai entre le moment où j'envoie et le moment où
+            # elle commence. » Il y en avait un, et une partie était DÉLIBÉRÉE : quatre
+            # bulles à 0,3 s d'attente chacune = 1,2 s de rien, ajoutées exprès « pour
+            # les lire défiler ». Sur une réponse d'agenda de 3 s, c'est 40 % du temps.
+            # L'effet de défilé est le travail de l'interface, pas une raison de faire
+            # patienter — 0,04 s suffisent à les ordonner.
+            with mesure("analyse"):
+                bulles = _route_bulles(message) + [_NIVEAU_BULLE[_niv]]
+            for _b in bulles:
                 yield sse({"type": "step", "kind": "route", "tool": "analyse", "text": _b})
-                await asyncio.sleep(0.3)      # le temps de les lire défiler
+                await asyncio.sleep(0.04)
+            # ⚠️ Retenir ce qu'il dit de LUI, quel que soit le chemin pris ensuite.
+            # L'apprentissage ne tournait que sur la voie « discussion » : dès que la
+            # phrase partait vers une app, une recherche ou l'agent, la confidence était
+            # perdue. « mon père et moi on a un PEA » n'était jamais retenu.
+            # ⚠️ ET IL PASSAIT AVANT LA PREMIÈRE BULLE. Sur une phrase qui parle de lui,
+            # reformuler le fait demande un appel modèle complet : l'écran restait donc
+            # vide pendant tout ce temps, avant même que Nova ait l'air de commencer.
+            # Rien dans l'aiguillage n'en dépend — ça passe après.
+            with mesure("apprentissage"):
+                _appris = await _off(_remember_fact, message)
+            # Retenir en douce serait le contraire de ce qu'on veut : Lohan doit VOIR ce
+            # que Nova garde de lui, et pouvoir l'enlever d'un clic.
+            if _appris:
+                yield sse({"type": "appris",
+                           "faits": [{"id": f.get("id"), "texte": f.get("texte", "")}
+                                     for f in _appris]})
             # 1) Chitchat / info personnelle → streamé directement (aucun outil)
             # ⚠️ SAUF si une action attend ton accord : « ok » et « d'accord » sont
             # classés bavardage. Ton accord partait donc en discussion, l'action n'était
@@ -4291,7 +4308,8 @@ async def ask_stream(q: str = "", key: str = "", modele: str = ""):
                 yield sse({"type": "model", "name": _modele_utilise()})
                 yield sse({"type": "done"}); return
             # 2) Agenda / mails → chemin déterministe (aucune invention), réponse streamée
-            direct = await _off(_direct_app_prepare, message)
+            with mesure("aiguillage"):
+                direct = await _off(_direct_app_prepare, message)
             if direct is not None:
                 for st in direct["steps"]:
                     if st["kind"] == "action":

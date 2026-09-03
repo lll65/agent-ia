@@ -7040,6 +7040,52 @@ def test_ni_mur_de_signes_ni_porte_fermee():
           "donne la bonne reponse et sa source" in api, True)
 
 
+def test_rien_ne_traine_avant_que_nova_commence():
+    """« Quand Nova utilise des outils ou commence à faire des recherches ça va vite,
+    mais il y a un gros délai entre le moment où j'envoie le message et le moment où
+    il lit et essaye de comprendre ma demande. »
+
+    Il visait juste : le temps ne partait pas dans les outils, il partait AVANT.
+
+      • Quatre bulles a 0,3 s d'attente chacune = 1,2 s ajoutees EXPRES, « le temps
+        de les lire defiler ». Sur une reponse d'agenda de 3 s, c'est 40 % du total.
+      • Et l'apprentissage des faits personnels tournait AVANT la premiere bulle :
+        sur une phrase qui parle de lui, reformuler le fait demande un appel modele
+        complet. L'ecran restait vide pendant tout ce temps — avant meme que Nova
+        ait l'air d'avoir commence. Rien dans l'aiguillage n'en depend.
+      • Enfin le diagnostic annoncait « 100 % non mesure » : toute cette fenetre
+        echappait au chronometre, donc on ne pouvait meme pas la voir.
+    """
+    import inspect, importlib, re as _re
+    A = importlib.import_module("api.agent")
+    src = inspect.getsource(A.ask_stream)
+
+    # --- 1. Plus d'attente artificielle -------------------------------------
+    attentes = [float(x) for x in _re.findall(r"asyncio\.sleep\(([0-9.]+)\)", src)]
+    check("les attentes ajoutees sont minimes", all(a <= 0.05 for a in attentes), True)
+    check("…et l'ancienne pause de 0,3 s a disparu", 0.3 in attentes, False)
+
+    # --- 2. Nova se montre AVANT d'apprendre --------------------------------
+    pos_bulle = src.index('"kind": "route"')
+    pos_appris = src.index("_remember_fact")
+    check("les bulles partent avant l'apprentissage", pos_bulle < pos_appris, True)
+
+    # --- 3. La fenetre est enfin MESUREE ------------------------------------
+    for etape in ("avant_analyse", "analyse", "apprentissage", "aiguillage"):
+        check(f"l'etape « {etape} » est chronometree", f'mesure("{etape}")' in src, True)
+
+    # Et le chronometre sait toujours additionner ce qu'on lui donne.
+    from agent import chrono
+    chrono.demarre("test de mesure")
+    chrono.ajoute("analyse", 0.2)
+    chrono.ajoute("analyse", 0.3)
+    chrono.ajoute("composio", 1.0)
+    bilan = chrono.termine()
+    check("les etapes se cumulent", bilan["etapes"]["analyse"]["s"], 0.5)
+    check("…et sont comptees", bilan["etapes"]["analyse"]["n"], 2)
+    check("ce qui n'est pas mesure reste visible", "non_mesure_s" in bilan, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -7097,7 +7143,8 @@ if __name__ == "__main__":
                test_audit_qualite_aucun_raccourci_ne_repond_a_la_place,
                test_heure_exacte_cause_reelle_et_boite_lisible,
                test_le_nom_de_l_action_empechait_de_lire_les_mails,
-               test_ni_mur_de_signes_ni_porte_fermee):
+               test_ni_mur_de_signes_ni_porte_fermee,
+               test_rien_ne_traine_avant_que_nova_commence):
         try:
             fn()
         except Exception as e:
