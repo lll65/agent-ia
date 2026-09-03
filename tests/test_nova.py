@@ -7387,6 +7387,104 @@ def test_popup_absence_en_grand_et_lu_a_voix_haute():
     check("un texte vide ne produit aucun morceau", out["vide"], [])
 
 
+def test_recent_veut_dire_recent_et_la_mise_en_forme_survit():
+    """« Actualites recentes (moins de 7 jours) — 1. 12 aout 2026 : … »
+
+    Rendu le 3 septembre 2026, sur une valeur qu'il envisageait d'ACHETER. Le 12 aout,
+    ce jour-la, a vingt-deux jours. La consigne de fraicheur existe pourtant depuis
+    longtemps et elle est explicite : le modele a ecrit le titre, puis range dessous ce
+    qu'il avait, sans jamais faire la soustraction.
+
+    C'est le genre d'erreur qu'un texte bien ecrit rend invisible : le titre rassure et
+    personne ne recalcule trois dates en lisant. Une soustraction, elle, ne se trompe
+    jamais — donc on la fait dans le code.
+
+    Et en verifiant ce garde-fou, un defaut que J'AVAIS INTRODUIT : relis() decoupait le
+    texte entier en phrases puis le recollait avec des espaces. Toute reponse finance
+    dont les lignes finissent par un point ressortait APLATIE — la « liste de course,
+    police plate » qu'il avait deja signalee, reintroduite par le garde-fou cense
+    ameliorer la qualite.
+    """
+    import importlib
+    from datetime import date, datetime
+    C = importlib.import_module("agent.cause_boursiere")
+    H = importlib.import_module("agent.horloge")
+
+    # --- 1. La soustraction ------------------------------------------------
+    actu = ("Actualites recentes (moins de 7 jours)\n"
+            "1. 12 août 2026 - Resultat du deuxieme trimestre.\n"
+            "2. 28 août 2026 - Partenariat signe.\n"
+            "3. 30 août 2026 - Validation de phase III.")
+    fenetre, perimees = C.fraicheur_contredite(actu, date(2026, 9, 3))
+    check("la fenetre annoncee est lue", fenetre, 7)
+    check("seule la date trop vieille est relevee", [l for l, _a in perimees], ["12 août 2026"])
+    check("…avec son age exact", perimees[0][1], 22)
+
+    # Ce qui ne doit PAS declencher d'alerte.
+    check("un texte sans promesse de fraicheur n'est pas repris",
+          C.fraicheur_contredite("Le 12 août 2026 il s'est passe ceci.", date(2026, 9, 3))[1], [])
+    check("des actualites vraiment recentes passent",
+          C.fraicheur_contredite("Actualites recentes : le 2 septembre 2026, ceci.",
+                                 date(2026, 9, 3))[1], [])
+    check("une date FUTURE n'est pas une actu perimee",
+          C.fraicheur_contredite("Actualites recentes : commercialisation le 5 mars 2027.",
+                                 date(2026, 9, 3))[1], [])
+    check("une fenetre personnalisee est respectee",
+          C.fraicheur_contredite("Actus de moins de 30 jours : le 12 août 2026, ceci.",
+                                 date(2026, 9, 3))[1], [])
+    check("les dates en chiffres comptent aussi",
+          [l for l, _a in C.fraicheur_contredite("Actualites recentes : le 12/08/2026.",
+                                                 date(2026, 9, 3))[1]], ["12/08/2026"])
+    check("une date impossible n'est pas inventee",
+          C.dates_citees("le 32 août 2026 et le 45/13/2026"), [])
+
+    # --- 2. Le titre menteur est corrige LA OU IL EST ----------------------
+    vrai = H.maintenant
+    try:
+        H.maintenant = lambda: datetime(2026, 9, 3, 18, 0)
+        out = C.relis(actu, ["GENFIT"])
+        # ⚠️ Deux phrases qui se contredisent dans une meme reponse, c'est la rassurante
+        # qu'on retient : le titre doit cesser de mentir a l'endroit exact ou il est lu.
+        # ⚠️ On vise le TITRE, pas la chaine : le bloc d'avertissement cite lui-meme
+        # « (moins de 7 jours) » pour rappeler ce qui avait ete promis.
+        check("le titre ne promet plus 7 jours",
+              "Actualites recentes (moins de 7 jours)" in out, False)
+        check("…il dit l'age reel", "la plus ancienne a 22 jours" in out, True)
+        check("…et c'est repete en clair plus bas", "Attention à la fraîcheur" in out, True)
+        check("…avec la date fautive nommee", "« 12 août 2026 » a 22 jours" in out, True)
+        check("…et pourquoi ca compte pour lui", "décision d'achat" in out, True)
+        # Les trois actualites restent, plus la mention de la fautive dans l'avertissement.
+        check("les trois actualites restent la", out.count("août 2026"), 4)
+        check("…et aucune n'est supprimee",
+              all(d in out for d in ("12 août 2026", "28 août 2026", "30 août 2026")), True)
+        # Une reponse dont les dates sont vraiment recentes n'est pas touchee.
+        propre = "Actualites recentes : le 2 septembre 2026, partenariat signe."
+        check("une reponse honnete traverse sans marque", C.relis(propre, []), propre)
+    finally:
+        H.maintenant = vrai
+
+    # --- 3. LA MISE EN FORME SURVIT ---------------------------------------
+    for nom, t in (
+            ("liste numerotee",
+             "### Actualites\n\n1. Le 30 aout, partenariat signe.\n"
+             "2. Le 2 septembre, resultats publies.\n\n**En clair** : ca monte."),
+            ("tableau",
+             "### Cours\n\n| Valeur | Cours |\n|--------|-------|\n"
+             "| DBV | 2,39 EUR |\n\n- Un\n- Deux"),
+            ("prose", "Le cours a monte. Les volumes sont eleves."),
+            ("titres", "# Titre\n\n## Sous-titre\n\nUn paragraphe.")):
+        check(f"la mise en forme survit ({nom})", C.relis(t, []), t)
+
+    # …y compris quand une phrase creuse EST retiree au milieu.
+    avec_creux = ("Le cours a pris +9,25 %.\n\n"
+                  "Les mouvements refletent la dynamique de marche.\n\n"
+                  "- Point un\n- Point deux")
+    net = C.relis(avec_creux, ["2CRSi"])
+    check("la cause creuse est bien retiree", "dynamique de marche" in net, False)
+    check("…mais les puces restent des puces", "- Point un\n- Point deux" in net, True)
+    check("…et le chiffre reel est garde", "+9,25 %" in net, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -7448,7 +7546,8 @@ if __name__ == "__main__":
                test_rien_ne_traine_avant_que_nova_commence,
                test_audit_un_evenement_rate_ne_se_perd_plus_en_silence,
                test_audit_vocal_nova_lisait_sa_reponse_a_l_envers,
-               test_popup_absence_en_grand_et_lu_a_voix_haute):
+               test_popup_absence_en_grand_et_lu_a_voix_haute,
+               test_recent_veut_dire_recent_et_la_mise_en_forme_survit):
         try:
             fn()
         except Exception as e:

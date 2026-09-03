@@ -85,6 +85,18 @@ def ou_verifier(noms: list) -> list:
     return liens
 
 
+def _corrige_fraicheur(texte: str, fenetre: int, perimees: list) -> str:
+    """Réécrit le titre menteur là où il est, plutôt que de le contredire plus bas.
+
+    Deux phrases qui se contredisent dans une même réponse, c'est la rassurante qu'on
+    retient : le titre doit cesser de mentir à l'endroit exact où il est lu.
+    """
+    plus_vieux = max(age for _lib, age in perimees)
+    return re.sub(r"\(\s*moins de\s+\d{1,3}\s+jours?\s*\)",
+                  f"(⚠️ pas toutes : la plus ancienne a {plus_vieux} jours)",
+                  texte, flags=re.I)
+
+
 def relis(texte: str, noms: list = None, actu_verifiee: bool = True) -> str:
     """Retire les causes inventées et dit franchement ce qui n'a pas été trouvé.
 
@@ -93,19 +105,49 @@ def relis(texte: str, noms: list = None, actu_verifiee: bool = True) -> str:
     """
     if not texte:
         return texte
-    phrases, gardees, retirees = _phrases(texte), [], 0
-    for p in phrases:
-        if cause_creuse(p):
-            retirees += 1
+    # ⚠️ DÉFAUT QUE J'AVAIS INTRODUIT ICI : on découpait le texte ENTIER en phrases puis
+    # on le recollait avec des espaces. Toute réponse finance dont les lignes finissent
+    # par un point — donc presque toutes — ressortait APLATIE : listes numérotées mises
+    # bout à bout, titres collés au paragraphe suivant. Exactement la « liste de course,
+    # police plate » qu'il avait déjà signalée, réintroduite par le garde-fou censé
+    # améliorer la qualité. On travaille donc LIGNE PAR LIGNE : la mise en forme est
+    # une donnée, pas un détail.
+    retirees = 0
+    lignes = []
+    for ligne in (texte or "").split("\n"):
+        if not ligne.strip():
+            lignes.append(ligne)
             continue
-        gardees.append(p)
-    sortie = " ".join(x for x in gardees if x.strip())
+        gardees = []
+        for p in _phrases(ligne):
+            if cause_creuse(p):
+                retirees += 1
+                continue
+            gardees.append(p)
+        reste = " ".join(x for x in gardees if x.strip())
+        # Une ligne vidée de sa seule phrase disparaît ; sinon on garde son indentation.
+        if reste:
+            lignes.append(re.match(r"^[ \t>*\-\d.)]*", ligne).group(0) + reste
+                          if not reste.startswith(ligne[:1]) else reste)
+    sortie = "\n".join(lignes).strip("\n")
+
+    # ⚠️ La fraîcheur ANNONCÉE contre les dates réellement citées. Le titre rassure et
+    # personne ne recalcule trois dates en lisant — surtout pas avant d'acheter.
+    fenetre, perimees = fraicheur_contredite(sortie)
+    if perimees:
+        sortie = _corrige_fraicheur(sortie, fenetre, perimees)
 
     fortes = [v for v in variations(texte) if v >= SEUIL_NOTABLE]
-    if not (retirees or (fortes and not actu_verifiee)):
+    if not (retirees or perimees or (fortes and not actu_verifiee)):
         return sortie
 
     bloc = ["", "---", ""]
+    if perimees:
+        detail = " · ".join(f"« {lib} » a {age} jours" for lib, age in perimees[:4])
+        bloc.append(f"⚠️ **Attention à la fraîcheur.** J'ai présenté comme « récent » "
+                    f"(moins de {fenetre} jours) ce qui ne l'est pas : {detail}. "
+                    "Sur une décision d'achat, une info d'il y a trois semaines n'a pas "
+                    "la même valeur qu'une info d'hier — vérifie la date avant de t'en servir.")
     if not actu_verifiee:
         # ⚠️ « Je n'ai pas pu chercher » et « il n'y a rien » se ressemblent à l'écran
         # et n'ont rien à voir. Confondre les deux, c'est rassurer à tort.
@@ -122,3 +164,86 @@ def relis(texte: str, noms: list = None, actu_verifiee: bool = True) -> str:
         bloc.append("**À vérifier toi-même :**")
         bloc.extend(liens)
     return (sortie + "\n" + "\n".join(bloc)).strip()
+
+# ═══ LA FRAÎCHEUR ANNONCÉE CONTRE LES DATES RÉELLEMENT CITÉES ═══
+#
+# ⚠️ Réponse rendue le 3 septembre 2026, sur une valeur qu'il envisageait d'acheter :
+#     « Actualités récentes (moins de 7 jours)
+#       1. 12 août 2026 – Résultat du deuxième trimestre… »
+# Le 12 août, ce jour-là, a VINGT-DEUX JOURS. La consigne de fraîcheur existe pourtant
+# depuis longtemps et elle est explicite. Le modèle a écrit le titre, puis rangé
+# dessous ce qu'il avait — sans jamais faire la soustraction.
+#
+# C'est le genre d'erreur qu'un texte bien écrit rend invisible : le titre rassure, et
+# on ne recalcule pas trois dates en lisant. Or lui s'en sert pour décider d'acheter.
+# Une soustraction, elle, ne se trompe jamais — donc on la fait ici.
+_MOIS_FR = ("janvier", "février", "mars", "avril", "mai", "juin", "juillet",
+            "août", "septembre", "octobre", "novembre", "décembre")
+_DATE_LONGUE = re.compile(
+    r"\b(\d{1,2})(?:er)?\s+(janvier|f[ée]vrier|mars|avril|mai|juin|juillet|"
+    r"ao[uû]t|septembre|octobre|novembre|d[ée]cembre)\s+(\d{4})\b", re.I)
+_DATE_COURTE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b")
+# « moins de 7 jours », « actualités récentes », « ces derniers jours »…
+_PROMESSE_FRAICHEUR = re.compile(
+    r"(moins de\s+(\d{1,3})\s+jours?"
+    r"|actualit[ée]s?\s+r[ée]centes?|nouvelles?\s+r[ée]centes?"
+    r"|ces derniers jours|tout r[ée]cemment|derni[èe]res? actualit[ée]s?)", re.I)
+
+
+def _sans_accent_mois(mot: str) -> str:
+    m = (mot or "").lower().replace("û", "u").replace("é", "e").replace("è", "e")
+    for i, nom in enumerate(_MOIS_FR):
+        n = nom.replace("û", "u").replace("é", "e").replace("è", "e")
+        if m == n:
+            return i + 1
+    return 0
+
+
+def dates_citees(texte: str) -> list:
+    """Les dates écrites dans le texte, en (libellé, date). Ignore ce qui n'en est pas."""
+    from datetime import date
+    out = []
+    for m in _DATE_LONGUE.finditer(texte or ""):
+        mois = _sans_accent_mois(m.group(2))
+        if not mois:
+            continue
+        try:
+            out.append((m.group(0), date(int(m.group(3)), mois, int(m.group(1)))))
+        except ValueError:
+            continue
+    for m in _DATE_COURTE.finditer(texte or ""):
+        try:
+            out.append((m.group(0), date(int(m.group(3)), int(m.group(2)), int(m.group(1)))))
+        except ValueError:
+            continue
+    return out
+
+
+def fraicheur_contredite(texte: str, aujourdhui=None) -> tuple:
+    """(fenêtre annoncée en jours, [(libellé, âge)]) pour les dates qui la dépassent.
+
+    Rend (0, []) si le texte ne promet aucune fraîcheur — on ne reproche rien à un
+    texte qui n'a rien promis.
+    """
+    if aujourdhui is None:
+        try:
+            from agent.horloge import maintenant
+            aujourdhui = maintenant().date()
+        except Exception:
+            return 0, []
+    p = _PROMESSE_FRAICHEUR.search(texte or "")
+    if not p:
+        return 0, []
+    fenetre = 7
+    if p.group(2):
+        try:
+            fenetre = max(1, min(365, int(p.group(2))))
+        except ValueError:
+            fenetre = 7
+    trop_vieilles = []
+    for libelle, d in dates_citees(texte):
+        age = (aujourdhui - d).days
+        # Une date FUTURE n'est pas une actualité périmée (« commercialisation en 2027 »).
+        if age > fenetre:
+            trop_vieilles.append((libelle, age))
+    return fenetre, trop_vieilles
