@@ -1787,7 +1787,8 @@ function ask(){
       if(streamed){ answer=fin||answer; bubble.innerHTML=fmt(answer); }
       else { answer=fin; stopThink(); graphAdd("✍️","Rédaction"); typewrite(bubble,answer); }
       histPush("ai",answer,trace);
-      if(voiceMode){ vSet("Nova répond…", coupeSure(answer,240)); speak(answer, ()=>{ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }); }
+      if(voiceMode){ clearTimeout(VEILLE_VOCALE); VEILLE_VOCALE=null;
+        vSet("Nova répond…", coupeSure(answer,240)); speak(answer, ()=>{ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }); }
       else if(TTS) speak(answer); }
     else if(d.type==="model"){ MODELE_UTILISE=d.name||""; }
     // ⚠️ Nova apprend maintenant toute seule. Retenir en douce serait le contraire de
@@ -1796,7 +1797,15 @@ function ask(){
     else if(d.type==="done"){ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false; attachReason(bubble,trace); attachModel(bubble); puceAppris(bubble.parentElement); sndReceive(); setTimeout(refreshUsage,900); }
   };
   es.onerror=()=>{ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false;
-    if(!answer) bubble.innerHTML="⚠️ Connexion interrompue. Vérifie ta clé (⚙️) et réessaie."; else attachReason(bubble,trace); };
+    if(!answer) bubble.innerHTML="⚠️ Connexion interrompue. Vérifie ta clé (⚙️) et réessaie."; else attachReason(bubble,trace);
+    /* ⚠️ En mode vocal, ce message est INVISIBLE : body.voice masque .chat (voir la
+       règle CSS plus haut). Et ce gestionnaire ne relançait jamais le micro. Résultat,
+       une simple bascule Wi-Fi → 4G laissait l'orbe figée sur « Nova réfléchit… », le
+       micro coupé, l'erreur cachée : on parle dans le vide, et seul « ✕ Quitter » en
+       sort. Le mode vocal doit dire ses pannes À VOIX HAUTE — c'est le seul canal
+       disponible quand l'écran est masqué. */
+    finVocale(answer ? "La connexion a été coupée pendant ma réponse. Redemande-moi si tu veux la suite."
+                     : "La connexion a été coupée, je n'ai rien reçu. Répète ta question."); };
 }
 function typewrite(el,text){ const html=fmt(text); if(html.includes("<pre>")){ el.innerHTML=html; return; }
   let i=0; clearInterval(el._t); el._t=setInterval(()=>{ el.innerHTML=fmt(coupeSure(text,i))+'<span style="opacity:.5">▍</span>'; chat.scrollTop=chat.scrollHeight; i+=2; if(i>=text.length){ clearInterval(el._t); el.innerHTML=html; } },12); }
@@ -2160,7 +2169,23 @@ function startListen(){ const SR=window.SpeechRecognition||window.webkitSpeechRe
 }
 function stopListen(hard){ document.body.classList.remove("listening"); clearTimeout(silenceTimer);
   if(vrec){ try{ vrec.onend=null; hard && vrec.abort ? vrec.abort() : vrec.stop(); }catch(e){}; vrec=null; } }
+/* Sortie vocale d'une panne : on le dit, puis on se remet à écouter. Sans ça, le mode
+   vocal reste bloqué pour toujours — il n'a aucun écran pour le prévenir. */
+function finVocale(phrase){
+  clearTimeout(VEILLE_VOCALE); VEILLE_VOCALE=null;
+  if(!voiceMode) return;
+  vSet("Connexion perdue","");
+  try{ speak(phrase, ()=>{ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }); }
+  catch(e){ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }
+}
+/* Deuxième filet : si RIEN n'arrive (le serveur ne répond plus du tout, ou l'instance
+   Render se réveille), onerror peut ne jamais se déclencher. Au bout de 90 s sans un
+   mot, on rend la main plutôt que de laisser l'orbe tourner indéfiniment. */
+let VEILLE_VOCALE=null;
 function askVoice(text){ document.body.classList.remove("listening"); vSet("Nova réfléchit…", text);
+  clearTimeout(VEILLE_VOCALE);
+  VEILLE_VOCALE=setTimeout(()=>{ if(voiceMode && thinking)
+    finVocale("Je n'ai pas réussi à répondre à temps. Répète ta question."); }, 90000);
   const inp=document.getElementById("in"); inp.value=text; ask(); }
 let rec=null;
 function toggleMic(){ const SR=window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR){ alert("Micro non supporté par ce navigateur (essaie Chrome/Safari)."); return; }

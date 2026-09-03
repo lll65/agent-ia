@@ -7182,6 +7182,118 @@ def test_audit_un_evenement_rate_ne_se_perd_plus_en_silence():
               A._resolve_app_action(hors_sujet)[0], None)
 
 
+def test_audit_vocal_nova_lisait_sa_reponse_a_l_envers():
+    """Audit du sous-systeme VOCAL. Trois defauts, tous verifies en EXECUTANT le code.
+
+    1. _split_tts rendait les morceaux DANS LE DESORDRE. Sur un briefing du matin,
+       « 🌅 Bonjour Lohan ! » etait prononce en DERNIER, colle au mot orphelin
+       « Jean Moulin » arrache au milieu d'un nom de gymnase. Les trames MP3 etant
+       concatenees dans cet ordre, Nova lisait sa reponse a l'envers.
+
+    2. Un morceau audio manquant rendait un MP3 TRONQUE avec un code 200. Le
+       navigateur declenchait onended normalement et repartait ecouter : Nova
+       s'arretait au milieu d'une phrase et il croyait avoir tout entendu. En mode
+       vocal le chat est masque — rien a l'ecran pour le rattraper.
+
+    3. Une coupure du flux SSE laissait le mode vocal fige POUR TOUJOURS : micro
+       coupe, orbe sur « Nova reflechit… », et le message d'erreur ecrit dans .chat,
+       que body.voice masque. Seul « Quitter » en sortait.
+    """
+    import importlib, inspect, re as _re
+    from pathlib import Path as _P
+    A = importlib.import_module("api.agent")
+    racine = _P(__file__).resolve().parents[1]
+
+    # --- 1. L'ORDRE, verifie en executant ----------------------------------
+    briefing = ("🌅 Bonjour Lohan !\n\n📅 Agenda du jour\n"
+                "- 09h00 Cours de maths salle B12\n"
+                "- 11h00 Devoir surveille de physique\n"
+                "- 14h00 Rendez-vous orthodontiste avenue de la Republique\n"
+                "- 18h30 Entrainement basket gymnase Jean Moulin\n\n"
+                "📧 Mails\n3 non lus : Google, Lycee Voltaire, ton oncle Pierre")
+    morceaux = A._split_tts(briefing)
+    check("le texte est dit DANS L'ORDRE",
+          " ".join(morceaux).split(), briefing.split())
+    check("…et ca commence bien par le debut",
+          morceaux[0].startswith("🌅 Bonjour Lohan"), True)
+    # ⚠️ La propriete qui compte : rien ne se perd, rien ne se reordonne. Sur des
+    # textes varies, dont ceux SANS ponctuation qui declenchaient la coupe dure.
+    # ⚠️ L'invariante n'est pas « les memes mots » : un bloc sans aucun espace DOIT etre
+    # coupe net, ce qui cree un mot de plus. Ce qui compte, c'est que rien ne se perde et
+    # que rien ne change de place — donc la suite des caracteres, espaces mis a part.
+    def _nu(t):
+        return "".join(str(t).split())
+    for essai in (briefing,
+                  "Court.",
+                  "a " * 300,
+                  "Salut ! " + "mot " * 200,
+                  "Bonjour. " + "x" * 400 + " fin.",
+                  "- un\n- deux\n- trois",
+                  "Sans aucune ponctuation " + "et " * 120 + "voila"):
+        m = A._split_tts(essai)
+        rendu = _nu("".join(m))
+        check(f"rien n'est perdu ni deplace ({essai[:18].strip()}…)",
+              _nu(essai).startswith(rendu), True)
+        check(f"…et aucun morceau vide ({essai[:14].strip()}…)",
+              all(x.strip() for x in m), True)
+    # Un mot n'est plus coupe en deux quand un espace est disponible.
+    long_avec_espaces = "Bonjour. " + " ".join(["motdequatorze"] * 40)
+    check("la coupe tombe sur un espace",
+          all(not x.endswith("motdequ") for x in A._split_tts(long_avec_espaces)), True)
+
+    # --- 2. Jamais d'audio PARTIEL ------------------------------------------
+    src = inspect.getsource(A._gtts_mp3)
+    check("un morceau manquant annule tout l'audio", 'return b""' in src, True)
+    check("…au lieu de rendre ce qui a ete recu", "break\n    return out" in src, False)
+    check("…apres une seconde tentative", "for essai in range(2)" in src, True)
+    check("…et c'est trace pour pouvoir le diagnostiquer", "[tts] morceau" in src, True)
+    # A l'execution : un morceau qui echoue -> b"" -> la route repond 502 -> le
+    # navigateur relit la reponse ENTIERE avec sa propre voix.
+    import requests as _rq
+    vrai_get = _rq.get
+    try:
+        class _Rep:
+            def __init__(self, code, contenu):
+                self.status_code, self.content = code, contenu
+        appels = {"n": 0}
+
+        def faux(url, **k):
+            appels["n"] += 1
+            # les deux premiers morceaux passent, le suivant tombe en 429 (et sa reprise aussi)
+            return _Rep(200, b"\xff\xfb" + b"0" * 50) if appels["n"] <= 2 else _Rep(429, b"")
+        _rq.get = faux
+        sortie = A._gtts_mp3(briefing)
+        check("un echec partiel ne rend AUCUN audio", sortie, b"")
+        # Tout passe -> l'audio complet est bien rendu.
+        appels["n"] = 0
+        _rq.get = lambda url, **k: _Rep(200, b"\xff\xfb" + b"0" * 50)
+        complet = A._gtts_mp3(briefing)
+        check("quand tout passe, l'audio est rendu", len(complet) > 0, True)
+        check("…avec un morceau par bout de texte",
+              len(complet), len(A._split_tts(briefing)) * 52)
+    finally:
+        _rq.get = vrai_get
+
+    # --- 3. Le mode vocal ne reste plus bloque ------------------------------
+    ui = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+    check("le chat est bien masque en mode vocal", "body.voice .chat" in ui, True)
+    check("…donc une panne se dit A VOIX HAUTE", "function finVocale(" in ui, True)
+    onerror = ui[ui.index("es.onerror=()=>"):ui.index("es.onerror=()=>") + 1400]
+    check("la coupure du flux relance le vocal", "finVocale(" in onerror, True)
+    check("…en distinguant « rien recu » de « coupe en route »",
+          "je n'ai rien reçu" in onerror and "pendant ma réponse" in onerror, True)
+    corps = ui[ui.index("function finVocale("):ui.index("function finVocale(") + 700]
+    check("…puis le micro se rouvre", "startListen()" in corps, True)
+    check("…meme si la voix echoue", "catch(e)" in corps, True)
+    # Le chien de garde : si RIEN n'arrive, on rend la main au lieu de tourner.
+    check("un chien de garde existe", "VEILLE_VOCALE" in ui, True)
+    ask = ui[ui.index("function askVoice("):ui.index("function askVoice(") + 600]
+    check("…arme a chaque question vocale", "setTimeout(" in ask and "90000" in ask, True)
+    # …et desarme des qu'une reponse arrive, sinon il couperait Nova en plein milieu.
+    check("…desarme quand la reponse arrive",
+          ui.count("clearTimeout(VEILLE_VOCALE)") >= 2, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -7241,7 +7353,8 @@ if __name__ == "__main__":
                test_le_nom_de_l_action_empechait_de_lire_les_mails,
                test_ni_mur_de_signes_ni_porte_fermee,
                test_rien_ne_traine_avant_que_nova_commence,
-               test_audit_un_evenement_rate_ne_se_perd_plus_en_silence):
+               test_audit_un_evenement_rate_ne_se_perd_plus_en_silence,
+               test_audit_vocal_nova_lisait_sa_reponse_a_l_envers):
         try:
             fn()
         except Exception as e:
