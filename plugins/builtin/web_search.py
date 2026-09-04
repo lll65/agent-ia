@@ -163,6 +163,22 @@ class WebSearchPlugin(Plugin):
             try:
                 from plugins.builtin.actu_rss import recuperer, formater, theme_de
                 arts = recuperer(query, max_results, fin)
+                # ⚠️ « Valneva cours euro 1er septembre 2026 » rendait « Deux
+                # ex-directeurs du groupe Orpea bientôt jugés à Paris pour délit
+                # d'initié ». Les flux sont interrogés par THÈME (bourse), jamais par
+                # société : sans ce filtre, on sert les titres du jour comme s'ils
+                # répondaient à la question. Des articles hors sujet présentés comme la
+                # réponse, c'est pire que pas de réponse — il croit que c'est ça,
+                # l'actualité de sa valeur.
+                from agent.entites import filtre_sur_sujet, entites_citees
+                noms = entites_citees(query)
+                if arts and noms:
+                    sur_sujet = filtre_sur_sujet(arts, noms)
+                    if sur_sujet:
+                        return formater(sur_sujet, theme_de(query))
+                    # Rien qui parle d'elle : on laisse la main aux moteurs, qui
+                    # cherchent par mots-clés. Ne surtout PAS rendre le reste.
+                    arts = []
                 if arts:
                     return formater(arts, theme_de(query))
             except Exception as e:

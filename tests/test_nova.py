@@ -7836,6 +7836,95 @@ def test_le_tri_des_mails_etait_exactement_a_l_envers():
           "La formule f(x) = 2x [1] est simple.")
 
 
+def test_un_nom_dicte_de_travers_et_l_actu_hors_sujet():
+    """Deux defauts de la meme conversation, tous deux vus en vrai.
+
+    1. « est-ce que tu peux me faire resume de Van Eva de l'action valneva
+       aujourd'hui » — la dictee avait ecrit « Van Eva » pour « Valneva ». Nova a
+       cherche litteralement « Van Eva Valneva 3 septembre 2026 », puis a repondu :
+       « Je n'ai trouve aucune information concernant un "Van Eva" lie a l'action
+       Valneva. » Elle avait le vrai nom SOUS LES YEUX, dans la meme phrase.
+       Il parle beaucoup a la voix : un nom propre ecorche est le cas NORMAL.
+
+    2. « Valneva cours euro 1er septembre 2026 » → « Actualite — 6 articles recents :
+       1. Deux ex-directeurs du groupe Orpea bientot juges a Paris pour delit
+       d'initie ». Les flux sont interroges par THEME (bourse), jamais par societe.
+       Des articles hors sujet presentes comme la reponse, c'est pire que pas de
+       reponse : il croit que c'est ca, l'actualite de sa valeur.
+    """
+    import importlib, inspect
+    E = importlib.import_module("agent.entites")
+    C = importlib.import_module("agent.core")
+    W = importlib.import_module("plugins.builtin.web_search")
+
+    SUIVIES = ["Valneva", "2CRSi", "DBV Technologies", "Genfit",
+               "Amundi MSCI World PEA Acc", "WPEA.PA"]
+
+    # --- 1. Le nom ecorche est repare --------------------------------------
+    sa_phrase = ("est-ce que tu peux me faire resume de Van Eva de l action valneva "
+                 "aujourd hui")
+    corrige, faits = E.repare(sa_phrase, SUIVIES)
+    check("« Van Eva » est reconnu", faits, [("Van Eva", "Valneva")])
+    check("…et le fantome disparait de la requete", "Van Eva" in corrige, False)
+    check("…sans dupliquer le vrai nom, deja present", corrige.count("valneva"), 1)
+    # Une INVERSION de lettres est l'erreur la plus courante : elle doit compter pour une.
+    check("« Vanleva » aussi", E.repare("quoi de neuf sur Vanleva", SUIVIES)[1],
+          [("Vanleva", "Valneva")])
+    check("la transposition coute UNE faute", E._distance("vanleva", "valneva"), 1)
+
+    # ⚠️ …et surtout : ce qui est DEJA JUSTE ne bouge pas.
+    for intact in ("le cours de Valneva aujourd hui",
+                   "le cours de Valnéva aujourd hui",
+                   "le cours de 2CRSi",
+                   "le cours de Total Energies",
+                   "mes mails de ce matin",
+                   "rendez-vous chez le dentiste demain",
+                   "ajoute une reunion demain a 14h",
+                   "quelle heure il est"):
+        check(f"intact : « {intact[:32]} »", E.repare(intact, SUIVIES)[0], intact)
+    # ⚠️ Le correcteur ne doit pas manger la phrase : « de Valnéva » ressemble a
+    # « Valneva » a deux lettres pres, et la premiere version avalait la preposition
+    # ET le nom, laissant « le cours aujourd'hui ».
+    check("un groupe ne commence pas par un mot vide",
+          "Valnéva" in E.repare("le cours de Valnéva aujourd hui", SUIVIES)[0], True)
+    # On ne repare que vers ce qu'il SUIT : pas d'invention.
+    check("aucune reference, aucune correction",
+          E.repare("parle moi de Van Eva", [])[1], [])
+    check("la reparation est branchee sur la recherche",
+          "from agent.entites import repare" in inspect.getsource(C), True)
+
+    # --- 2. L'actualite reste SUR LE SUJET ---------------------------------
+    check("l'entreprise est reperee", E.entites_citees("Valneva cours euro 1er septembre 2026"),
+          ["Valneva"])
+    # ⚠️ « 1er » passait : un article « Le 1er septembre, Orpea… » aurait alors ete
+    # juge « sur le sujet ». Un ordinal n'est pas une societe.
+    check("un ordinal n'est pas une societe",
+          "1er" in E.entites_citees("Valneva cours euro 1er septembre 2026"), False)
+    for general in ("resume l actu tech du jour", "quoi de neuf aujourd hui",
+                    "actualite bourse du jour"):
+        check(f"« {general} » ne vise personne", E.entites_citees(general), [])
+
+    arts = [{"titre": "Deux ex-directeurs du groupe Orpea bientot juges a Paris",
+             "resume": "delit d'initie"},
+            {"titre": "Seance en forte hausse pour Valneva SE", "resume": "le titre progresse"},
+            {"titre": "Le CAC 40 termine en baisse", "resume": ""},
+            {"titre": "Le 1er septembre, Orpea a annonce", "resume": ""}]
+    gardes = E.filtre_sur_sujet(arts, E.entites_citees("Valneva cours euro 1er septembre 2026"))
+    check("seul l'article sur la valeur est garde", len(gardes), 1)
+    check("…et c'est le bon", "Valneva" in gardes[0]["titre"], True)
+    check("l'article d'a cote est ecarte",
+          any("Orpea" in a["titre"] for a in gardes), False)
+    # Sans entite demandee, on ne filtre rien : l'actu generale reste l'actu generale.
+    check("une demande generale garde tout", len(E.filtre_sur_sujet(arts, [])), 4)
+    # Et le filtre est bien pose sur le chemin d'actualite.
+    src = inspect.getsource(W)
+    check("le mode actualite filtre sur le sujet",
+          "from agent.entites import filtre_sur_sujet, entites_citees" in src, True)
+    # ⚠️ Rien sur le sujet -> on laisse la main aux moteurs, on ne rend PAS le reste.
+    check("aucun article sur le sujet : on ne sert pas le reste",
+          "arts = []" in src, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -7901,7 +7990,8 @@ if __name__ == "__main__":
                test_recent_veut_dire_recent_et_la_mise_en_forme_survit,
                test_aucun_chiffre_de_marche_sans_source_et_recherche_longue_reelle,
                test_en_vocal_nova_parle_au_lieu_de_reciter,
-               test_le_tri_des_mails_etait_exactement_a_l_envers):
+               test_le_tri_des_mails_etait_exactement_a_l_envers,
+               test_un_nom_dicte_de_travers_et_l_actu_hors_sujet):
         try:
             fn()
         except Exception as e:

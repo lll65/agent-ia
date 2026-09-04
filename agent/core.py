@@ -834,6 +834,18 @@ def search_query(task: str) -> str:
     from llm.client import chat
     from datetime import datetime
     t = (task or "").strip()
+    # ⚠️ « résumé de Van Eva de l'action valneva » : la dictée avait écorché le nom, et
+    # Nova est partie chercher « Van Eva Valneva » — puis a répondu qu'elle ne trouvait
+    # rien sur « Van Eva ». Elle avait le vrai nom dans la MÊME PHRASE. Il parle
+    # beaucoup à la voix : un nom propre déformé est le cas normal, pas le cas rare.
+    try:
+        from agent.entites import repare
+        t2, corrections = repare(t)
+        if corrections:
+            logger.info(f"[recherche] nom réparé : {corrections}")
+            t = t2
+    except Exception as e:
+        logger.info(f"[recherche] réparation impossible ({type(e).__name__})")
     # ⚠️ Le modèle ignore la date du jour et met l'année de son entraînement (« 2024 »).
     # On la lui donne explicitement, sinon les recherches d'actualité sont périmées.
     auj = datetime.now()
