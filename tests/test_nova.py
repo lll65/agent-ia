@@ -7485,6 +7485,229 @@ def test_recent_veut_dire_recent_et_la_mise_en_forme_survit():
     check("…et le chiffre reel est garde", "+9,25 %" in net, True)
 
 
+def test_aucun_chiffre_de_marche_sans_source_et_recherche_longue_reelle():
+    """« Vraiment, c'est super important la fiabilite de l'outil, et tu le sais. »
+
+    Deux defauts, sur la meme reponse — celle ou il demandait une action PEA.
+
+    1. AUCUN CHIFFRE N'ETAIT SOURCE. « GENFIT (ticker : GENF) — Cours 13,42 € ·
+       +2,3 % · PER de 9,5 · CA 112 M€ (source : Les Echos) ». La trace montre DEUX
+       recherches web et pas une seule cotation : aucun outil n'a renvoye le moindre
+       nombre. Tout venait du modele, avec des noms de journaux accroches dessus pour
+       faire vrai. L'interdiction existe pourtant en majuscules dans quatre prompts
+       (« ZERO CHIFFRE INVENTE ») — elle a ete enfreinte quand meme. Une consigne est
+       une intention ; ce qui engage son argent se verifie sur la SORTIE.
+       Meme faute en image : « voici un petit graphique », suivi d'un data:URI de
+       188 octets pour une image annoncee en 640x640, dont les donnees compressees ne
+       se decompressent meme pas.
+
+    2. « CHERCHE PENDANT MINIMUM 10 MINUTES » n'avait AUCUN effet. Le chemin du chat
+       etait cable en dur sur 2 recherches et 75 s ; le mode long existait, mais
+       seulement pour les automatisations. Elle a cherche une minute, puis ecrit dix
+       paragraphes.
+    """
+    import importlib, inspect
+    A = importlib.import_module("api.agent")
+    CH = importlib.import_module("agent.chiffres")
+    C = importlib.import_module("agent.core")
+
+    OBS = ['{"symbol":"DBV.PA","price":2.39,"changePercent":-0.5,'
+           '"marketCap":112000000,"per":9.5}']
+
+    # --- 1a. Ce qui est SOURCE passe sans une marque ------------------------
+    for nom, t in (("cours exact", "DBV cote 2,39 € aujourd'hui."),
+                   ("variation", "DBV recule de -0,5 % sur la journée."),
+                   ("arrondi honnete", "DBV cote environ 2,4 €."),
+                   ("autre echelle", "Sa capitalisation est de 112 M€."),
+                   ("PER", "Son PER ressort à 9,5."),
+                   ("hors finance", "Tu as 3 rendez-vous demain à 14h.")):
+        check(f"reponse sourcee intacte ({nom})", CH.relis(t, OBS), t)
+
+    # --- 1b. Ce qui n'est adosse a RIEN est nomme ---------------------------
+    invente = "DBV cote 2,39 € mais son PER est de 47,3."
+    r = CH.relis(invente, OBS)
+    check("le chiffre invente est signale", "47,3" in r.split("\n")[2], True)
+    check("…sans jeter le reste de la reponse", "2,39" in r, True)
+    check("…et c'est dit comme une reserve, pas un verdict",
+          "Certains chiffres" in r, True)
+
+    # Le cas reel : AUCUN outil n'a rien renvoye.
+    genfit = ("GENFIT (ticker : GENF). Cours actuel : 13,42 €. Variation : +2,3 %. "
+              "PER de 9,5. Chiffre d'affaires de 112 M€ (source : Les Échos).")
+    g = CH.relis(genfit, [])
+    check("aucune source du tout : c'est dit en tete",
+          g.startswith("> ⚠️ **Aucun de ces chiffres"), True)
+    check("…les nombres fautifs sont nommes", "13,42 €" in g and "+2,3 %" in g, True)
+    check("…l'interdiction est explicite", "Ne prends aucune décision d'argent" in g, True)
+    check("…et la fausse caution est retiree", "(source : Les Échos)" in g, False)
+    # ⚠️ Une caution inventee est pire qu'aucune caution.
+    check("le texte lui-meme est conserve", "GENFIT" in g, True)
+
+    # --- 1c. L'image fabriquee est RETIREE ---------------------------------
+    img = ("Voici un petit graphique du cours :\n\n"
+           "![visuel](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAoAAAAKA)\n\n"
+           "Le cours evolue.")
+    ri = CH.relis(img, [])
+    check("l'image inventee disparait", "data:image" in ri, False)
+    check("…et c'est annonce", "graphique » que j'avais fabriqué" in ri, True)
+    check("…avec quoi faire a la place", "fiche de la valeur" in ri, True)
+    # Une image reellement produite par un outil est CONSERVEE.
+    vraie = "![courbe](data:image/png;base64,ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef)"
+    obs_img = ["resultat : data:image/png;base64,ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef"]
+    check("un vrai graphique d'outil est garde", CH.relis(vraie, obs_img), vraie)
+
+    # --- 1d. Les observations REELLES sont accessibles apres coup -----------
+    # ⚠️ Les `steps` ne suffisent pas : ils ne gardent qu'un apercu de 400 signes, et
+    # un cours peut se trouver plus loin dans la reponse de l'outil.
+    src = inspect.getsource(C)
+    check("les observations du tour sont publiees", "_OBS_DU_TOUR.set(observations)" in src, True)
+    check("…et lues par la verification", "observations_du_tour()" in src, True)
+    check("la verification est branchee sur l'agent",
+          "from agent.chiffres import relis as relis_chiffres" in src, True)
+
+    # Bout en bout, par le vrai chemin.
+    import asyncio
+    vrai_brut = C._run_agent_brut
+    try:
+        async def sans_outil(task, cfg, aid="default", pl=None, mm=None, fond=False):
+            C._OBS_DU_TOUR.set([])
+            return {"answer": "GENFIT cote 13,42 €, en hausse de +2,3 %.",
+                    "steps": [], "iterations": 1}
+        C._run_agent_brut = sans_outil
+        out = asyncio.run(C.run_agent("cours de genfit action bourse", {}))["answer"]
+        check("bout en bout, l'invention est signalee",
+              "Aucun de ces chiffres" in out, True)
+
+        async def avec_outil(task, cfg, aid="default", pl=None, mm=None, fond=False):
+            C._OBS_DU_TOUR.set(list(OBS))
+            return {"answer": "DBV cote 2,39 €, en baisse de -0,5 %.",
+                    "steps": [], "iterations": 1}
+        C._run_agent_brut = avec_outil
+        bon = asyncio.run(C.run_agent("cours de dbv action bourse", {}))["answer"]
+        check("…et une reponse mesuree n'est pas salie", "⚠️" in bon, False)
+    finally:
+        C._run_agent_brut = vrai_brut
+
+    # --- 2. « Cherche pendant 10 minutes » veut enfin dire quelque chose ----
+    check("la duree demandee est lue",
+          A.recherche_approfondie("fait des recherche pendant minimum 10 minute sur une action pea"), 10)
+    check("…une autre duree aussi", A.recherche_approfondie("cherche pendant 3 minutes"), 3)
+    check("« recherche approfondie » vaut un defaut",
+          A.recherche_approfondie("fais une recherche approfondie sur 2CRSi"), 5)
+    check("« prends ton temps » aussi", A.recherche_approfondie("prends ton temps et cherche"), 5)
+    # ⚠️ Borne : au-dela Render coupe de toute facon — mieux vaut une limite honnete.
+    check("une demande demesuree est bornee",
+          A.recherche_approfondie("cherche pendant 2 heures"), 20)
+    for ordinaire in ("quelle heure il est", "mes mails", "mon agenda de demain",
+                      "cherche le cours de DBV"):
+        check(f"« {ordinaire} » reste une demande normale",
+              A.recherche_approfondie(ordinaire), 0)
+
+    # Le budget suit reellement, et l'interface le DIT avant de commencer.
+    stream = inspect.getsource(C.run_agent_stream)
+    check("le flux accepte le mode long", "fond: bool = False" in stream, True)
+    check("…et en tire un vrai plafond de recherches",
+          "MAX_RECHERCHES_FOND if fond else MAX_RECHERCHES" in stream, True)
+    check("…et un vrai budget de temps", "AGENT_TIMEOUT_FOND if fond" in stream, True)
+    api = inspect.getsource(A.ask_stream)
+    check("le chat branche le mode long", "fond=bool(_minutes)" in api, True)
+    check("…et annonce la duree qu'il va prendre", "je prends " in api, True)
+
+
+def test_en_vocal_nova_parle_au_lieu_de_reciter():
+    """« En vocal faut pas qu'elle ecrive tout, mais qu'elle interagisse avec moi —
+    genre elle me dit : tu veux les mails importants ou pas ? »
+    « C'est du vrai streaming, la ou c'est des phrases deja ecrites ? Je veux du vrai
+    streaming, la ca fait tres moche et pas pro. » « Toute l'ecriture est coupee. »
+
+    LA CAUSE : le serveur ne savait PAS qu'on etait en mode vocal. Il renvoyait donc
+    son rapport ECRIT — titres, tableaux, puces — qu'on affichait en markdown brut
+    coupe a 240 signes en plein mot (« ### 🔴 Important, sans reponse attendue (2) -
+    ** 🚨 Marta Ferrando Merino vient de publier une story qui exp ») et qu'on lisait
+    a voix haute tel quel.
+
+    Parler et ecrire ne demandent pas le meme texte. A l'oral on dit l'essentiel en
+    deux phrases et on POSE UNE QUESTION — on ne recite pas un document.
+    """
+    import importlib, inspect, json as _j
+    from pathlib import Path as _P
+    A = importlib.import_module("api.agent")
+    R = importlib.import_module("agent.rapport_mail")
+    M = importlib.import_module("plugins.builtin.mails_tool")
+    racine = _P(__file__).resolve().parents[1]
+
+    # --- 1. Le serveur SAIT qu'on est en vocal -----------------------------
+    ui = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+    check("l'interface le dit au serveur", 'voiceMode ? "&vocal=1" : ""' in ui, True)
+    src = inspect.getsource(A.ask_stream)
+    check("…et le serveur l'ecoute", "vocal: int = 0" in inspect.getsource(A.ask_stream)
+          or "vocal: int = 0" in (racine / "api" / "agent.py").read_text(encoding="utf-8"), True)
+    # ⚠️ …SANS changer le canal : une action armee a la voix doit pouvoir etre
+    # confirmee a la voix, et le garde-fou se verifie en dur sur « web ».
+    check("le canal des confirmations ne bouge pas", '_CANAL["actuel"] = "web"' in src, True)
+
+    # --- 2. Le rapport de mails a une version PARLEE -----------------------
+    mails = ([{"id": str(i), "subject": "Instagram", "from": "no-reply@mail.instagram.com",
+               "snippet": "story"} for i in range(8)]
+             + [{"id": "9", "subject": "Alerte de sécurité", "from": "Google <no-reply@google.com>",
+                 "snippet": "Une connexion inhabituelle a été détectée."},
+                {"id": "10", "subject": "Devoir de maths", "from": "M. Durand <d@lycee.fr>",
+                 "snippet": "peux-tu me dire si tu as fini l'exercice 4 ?"}])
+    dit = R.resume_vocal(R.trier(mails))
+    check("elle annonce le total", "dix mails" in dit, True)
+    check("…ce qui attend une reponse", "attend une réponse" in dit, True)
+    check("…et de qui", "M. Durand" in dit, True)
+    # LE point de sa demande : ca se termine par une QUESTION.
+    check("elle POSE une question", dit.rstrip().endswith("?"), True)
+    check("…qui propose la suite", "Tu veux que je te lise" in dit, True)
+    # Rien de ce qui ne se prononce pas.
+    for interdit in ("#", "**", "|", "- ", "•", "✍️", "🔴", "http"):
+        check(f"rien d'ecrit a l'oral ({interdit.strip() or 'puce'})", interdit in dit, False)
+    check("c'est court", len(dit) < 320, True)
+    # Les cas limites parlent aussi.
+    check("boite vide", R.resume_vocal(R.trier([])), "Tu n'as aucun mail à traiter pour l'instant.")
+    seul = R.resume_vocal(R.trier([{"id": "1", "subject": "Compte rendu",
+                                    "from": "vie.scolaire@lycee.fr", "snippet": "ci-joint"}]))
+    check("un seul mail se dit au singulier", "Tu as un mail." in seul, True)
+    check("…et propose quand meme quelque chose", seul.rstrip().endswith("?"), True)
+
+    # Bout en bout : le meme appel rend l'ecrit ou le parle selon le mode.
+    vrai_tool = A._tool
+    try:
+        A._tool = lambda *a, **k: _j.dumps({"data": {"messages": mails}})
+        ecrit = M.RapportMailsPlugin().run(combien=10)
+        parle = M.RapportMailsPlugin().run(combien=10, vocal=True)
+        check("a l'ecrit, le rapport complet reste", "### " in ecrit, True)
+        check("a l'oral, aucun titre", "### " in parle, False)
+        check("…et c'est bien plus court", len(parle) < len(ecrit) / 2, True)
+        check("…et ca finit par une question", parle.rstrip().endswith("?"), True)
+        # ⚠️ Pas de brouillons a l'oral : c'est un appel modele PAR MAIL, donc plusieurs
+        # secondes de silence avant qu'elle ouvre la bouche.
+        check("aucun brouillon n'est prepare a l'oral", "Bonjour" in parle, False)
+    finally:
+        A._tool = vrai_tool
+
+    # --- 3. La consigne parlee s'applique aux autres reponses --------------
+    check("la consigne existe", "TU PARLES, TU N'ÉCRIS PAS" in A.CONSIGNE_VOCALE, True)
+    check("…elle interdit la mise en forme",
+          "aucun titre, aucune puce, aucun tableau" in A.CONSIGNE_VOCALE, True)
+    check("…et exige une question a la fin",
+          "TERMINE PAR UNE QUESTION" in A.CONSIGNE_VOCALE, True)
+    check("la discussion en vocal la recoit",
+          A.CONSIGNE_VOCALE in A._smalltalk_messages("salut", vocal=True)[0]["content"], True)
+    check("…et pas la discussion ecrite",
+          A.CONSIGNE_VOCALE in A._smalltalk_messages("salut")[0]["content"], False)
+
+    # --- 4. Plus de phrases figees a l'ecran pendant qu'il parle -----------
+    check("les bulles figees sont coupees en vocal", "if vocal:\n                bulles = []" in src, True)
+
+    # --- 5. Ce qui s'affiche est ce qui sera DIT, coupe a la fin d'un mot --
+    check("le sous-titre n'affiche plus le markdown brut",
+          "coupeSure(answer,240)" in ui, False)
+    check("…il montre le texte tel qu'il sera dit",
+          "_cut(texteALire(answer),240)" in ui, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -7547,7 +7770,9 @@ if __name__ == "__main__":
                test_audit_un_evenement_rate_ne_se_perd_plus_en_silence,
                test_audit_vocal_nova_lisait_sa_reponse_a_l_envers,
                test_popup_absence_en_grand_et_lu_a_voix_haute,
-               test_recent_veut_dire_recent_et_la_mise_en_forme_survit):
+               test_recent_veut_dire_recent_et_la_mise_en_forme_survit,
+               test_aucun_chiffre_de_marche_sans_source_et_recherche_longue_reelle,
+               test_en_vocal_nova_parle_au_lieu_de_reciter):
         try:
             fn()
         except Exception as e:

@@ -4,6 +4,7 @@ Moteur ReAct — Reasoning + Acting loop avec mémoire et plugins.
 import json
 import os
 import re
+import contextvars
 import logging
 import asyncio
 import time as _tm
@@ -564,6 +565,16 @@ def _avertit_si_pas_de_reveil(budget: float) -> None:
         pass
 
 
+# Les observations REELLES du tour en cours (voir plus bas dans _run_agent_brut).
+# Un contextvar : deux conversations simultanees ne doivent pas melanger leurs sources.
+_OBS_DU_TOUR = contextvars.ContextVar("observations_du_tour", default=None)
+
+
+def observations_du_tour() -> list:
+    """Ce que les outils ont VRAIMENT renvoye pendant ce tour. Vide si aucun appel."""
+    return list(_OBS_DU_TOUR.get() or [])
+
+
 async def _run_agent_brut(
     task: str,
     agent_config: dict,
@@ -637,6 +648,12 @@ async def _run_agent_brut(
 
     # Forçage déterministe de search_web sur les questions factuelles (idem run_agent_stream)
     observations, deja_cherche = [], {}
+    # ⚠️ La MEME liste est publiee ici pour que la relecture puisse verifier, apres coup,
+    # que chaque chiffre de marche annonce vient bien d'une observation reelle. Les
+    # `steps` ne servent pas : ils ne gardent qu'un apercu de 400 signes, et un cours
+    # peut se trouver plus loin. On partage l'objet, pas une copie — il se remplit tout
+    # seul au fil des appels d'outils.
+    _OBS_DU_TOUR.set(observations)
     _budget = (AGENT_TIMEOUT_FOND if fond
                else float(getattr(config, "AGENT_TIMEOUT", 75)))
     _plafond_recherches = MAX_RECHERCHES_FOND if fond else MAX_RECHERCHES
@@ -1009,6 +1026,18 @@ async def run_agent(
             res["answer"] = relis(res["answer"], _noms_cites(task))
     except Exception as e:
         logger.info(f"[relecture] ignorée ({type(e).__name__})")
+    # ⚠️ AUCUN CHIFFRE DE MARCHÉ SANS SOURCE. L'interdiction existe en majuscules dans
+    # quatre prompts (« ZÉRO CHIFFRE INVENTÉ ») et elle a été enfreinte quand même : sur
+    # « une action PEA qui va exploser », Nova a rendu un cours, une variation, un PER et
+    # des millions d'euros, avec des noms de journaux accrochés dessus — sans qu'aucun
+    # outil n'ait renvoyé le moindre nombre. Une consigne est une intention ; ce qui
+    # engage son argent se vérifie sur la sortie, contre les observations réelles.
+    try:
+        from agent.chiffres import relis as relis_chiffres
+        if res.get("answer") and _sujets_finance(task, res["answer"]):
+            res["answer"] = relis_chiffres(res["answer"], observations_du_tour(), task)
+    except Exception as e:
+        logger.info(f"[chiffres] vérification ignorée ({type(e).__name__})")
     # Ni mur de caractères, ni « je ne peux pas » sans suite — sur TOUS les chemins,
     # y compris Telegram et les automatisations, pas seulement le chat.
     try:
@@ -1049,6 +1078,7 @@ async def run_agent_stream(
     agent_id: str = "default",
     plugin_loader=None,
     memory_manager=None,
+    fond: bool = False,
 ):
     """
     Async generator — même logique que run_agent mais yield chaque étape ReAct.
@@ -1116,8 +1146,17 @@ async def run_agent_stream(
     # ⏱️ Échéance globale, armée AVANT la recherche forcée : sinon une recherche lente
     # consommait déjà plusieurs minutes avant même que le chrono ne démarre.
     # Le flux SSE, lui, est TOUJOURS interactif : quelqu'un regarde l'écran.
-    _plafond_recherches = MAX_RECHERCHES
-    _fin = _tm.monotonic() + float(getattr(config, "AGENT_TIMEOUT", 75))
+    # ⚠️ « Cherche pendant minimum 10 minutes, je veux une réponse de qualité ! » — et
+    # elle a fait DEUX recherches en une minute, puis écrit dix paragraphes. Le chemin
+    # du chat était câblé en dur sur 2 recherches et 75 s : la demande d'approfondir
+    # n'avait littéralement aucun effet. Le mode long existait pourtant déjà, mais
+    # seulement pour les automatisations. Demander plus doit vouloir dire plus.
+    _plafond_recherches = MAX_RECHERCHES_FOND if fond else MAX_RECHERCHES
+    _fin = _tm.monotonic() + (AGENT_TIMEOUT_FOND if fond
+                              else float(getattr(config, "AGENT_TIMEOUT", 75)))
+    if fond:
+        logger.info(f"[core] recherche approfondie demandée : {_plafond_recherches} "
+                    f"recherches et {int(AGENT_TIMEOUT_FOND)} s de budget.")
 
     # ── FORÇAGE DÉTERMINISTE DE search_web pour les questions factuelles ──────
     # On exécute une VRAIE recherche DuckDuckGo AVANT le 1er appel LLM et on injecte

@@ -188,3 +188,58 @@ def _court(exp: str) -> str:
 
 def _cle(m: dict) -> str:
     return str(m.get("id") or m.get("messageId") or _sujet(m))
+
+# ═══ LA VERSION PARLÉE ═══
+#
+# ⚠️ « En vocal faut pas qu'elle écrive tout, mais qu'elle interagisse avec moi —
+# genre elle me dit : tu veux les mails importants ou pas ? »
+# À l'écran, Nova affichait « ### 🔴 Important, sans réponse attendue (2) - ** 🚨 Marta
+# Ferrando Merino vient de publier une story qui exp… » : le rapport ÉCRIT, en markdown
+# brut, coupé en plein mot. Et elle le lisait à voix haute tel quel.
+# Parler et écrire ne demandent pas le même texte. À l'oral on dit l'essentiel en deux
+# phrases et on POSE UNE QUESTION — on ne récite pas un document.
+def resume_vocal(tri: dict) -> str:
+    """Ce que Nova DIT quand on lui demande ses mails à la voix. Deux phrases, une question."""
+    imp = tri.get(IMPORTANT) or []
+    lire = tri.get(A_LIRE) or []
+    rien = tri.get(IGNORER) or []
+    total = len(imp) + len(lire) + len(rien)
+    if not total:
+        return "Tu n'as aucun mail à traiter pour l'instant."
+
+    a_repondre = [m for m in imp if m.get("repondre")]
+    bouts = []
+    if a_repondre:
+        qui = _court(_expediteur(a_repondre[0]))
+        bouts.append(f"{_nombre(len(a_repondre))} qui {'attendent' if len(a_repondre) > 1 else 'attend'} "
+                     f"une réponse, dont {'un de ' + qui if qui != 'expéditeur inconnu' else 'un'}")
+    autres = [m for m in imp if not m.get("repondre")]
+    if autres:
+        bouts.append(f"{_nombre(len(autres))} {'importants' if len(autres) > 1 else 'important'} "
+                     "sans réponse attendue")
+    if rien:
+        bouts.append(f"{_nombre(len(rien))} de publicité que j'ai mis de côté")
+
+    phrase = f"Tu as {_nombre(total)} mail{'s' if total > 1 else ''}"
+    if bouts:
+        phrase += " : " + ", ".join(bouts[:2]) + "."
+    else:
+        phrase += "."
+
+    # La question — c'est elle qui fait une conversation plutôt qu'un bulletin.
+    if a_repondre:
+        question = "Tu veux que je te lise ceux qui attendent une réponse ?"
+    elif imp:
+        question = "Tu veux que je te dise lesquels sont importants ?"
+    else:
+        question = "Tu veux que je t'en lise un ?"
+    return phrase + " " + question
+
+
+_UNITES = ("zéro", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit",
+           "neuf", "dix", "onze", "douze", "treize", "quatorze", "quinze", "seize")
+
+
+def _nombre(n: int) -> str:
+    """« 3 » se lit mal quand la voix hésite : on l'écrit en toutes lettres."""
+    return _UNITES[n] if 0 <= n < len(_UNITES) else str(n)
