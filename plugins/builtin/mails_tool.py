@@ -93,11 +93,18 @@ class RapportMailsPlugin(Plugin):
                 brouillons[_cle(m)] = b
 
         rapport = resume_markdown(tri, brouillons)
-        return rapport + (
-            "\n\n---\n🔒 **Aucun mail n'a été envoyé, supprimé ni archivé.** "
-            "Les réponses ci-dessus sont des propositions : dis-moi laquelle envoyer, "
-            "et je te redemanderai confirmation avant de le faire."
-        )
+        # ⚠️ Ce pied de page était INCONDITIONNEL. Sur un rapport SANS aucun brouillon,
+        # il annonçait « les réponses ci-dessus sont des propositions : dis-moi laquelle
+        # envoyer » — en parlant de réponses qui n'existaient pas. Une phrase rassurante
+        # qui décrit autre chose que ce qu'on a sous les yeux use la confiance aussi
+        # sûrement qu'une erreur franche.
+        if brouillons:
+            return rapport + (
+                "\n\n---\n🔒 **Aucun mail n'a été envoyé, supprimé ni archivé.** "
+                "Les réponses ci-dessus sont des propositions : dis-moi laquelle envoyer, "
+                "et je te redemanderai confirmation avant de le faire."
+            )
+        return rapport + "\n\n---\n🔒 _Je n'ai rien envoyé, supprimé ni archivé — j'ai lu, c'est tout._"
 
 
 def _echec(brut: str) -> bool:

@@ -801,6 +801,29 @@ async def _run_agent_brut(
     return {"answer": last, "steps": steps, "iterations": config.MAX_ITERATIONS}
 
 
+# Ce qui n'est jamais une requête ni un titre : le brouillon du modèle, ses balises,
+# ses marqueurs de protocole. Ça a fini en requête de recherche ET en titre de
+# conversation (trois « <think> » dans sa liste de conversations).
+_PAS_UN_CONTENU = re.compile(
+    r"^\s*(<\s*/?\s*(think|thinking|reasoning|scratchpad|analysis)\s*>|"
+    r"```\w*|\.\.\.|…)\s*$", re.I)
+# Ces marqueurs-là ouvrent une ligne de BROUILLON : la ligne entière est à jeter, pas
+# seulement le mot. « THOUGHT: je réfléchis » n'est ni une requête ni un titre.
+_LIGNE_DE_PROTOCOLE = re.compile(r"^\s*(THOUGHT|ACTION|PARAMS|OBSERVATION)\s*:", re.I)
+# « FINAL: » précède au contraire le vrai contenu : on retire le marqueur, on garde la suite.
+_PREFIXE_FINAL = re.compile(r"^\s*FINAL\s*:\s*", re.I)
+
+
+def _premiere_ligne_utile(texte: str) -> str:
+    """La première ligne qui dit vraiment quelque chose."""
+    for ligne in (texte or "").splitlines():
+        l = _PREFIXE_FINAL.sub("", ligne).strip().strip('"«».')
+        if not l or _PAS_UN_CONTENU.match(l) or _LIGNE_DE_PROTOCOLE.match(l):
+            continue
+        return l
+    return ""
+
+
 def search_query(task: str) -> str:
     """Transforme la demande en VRAIE requête de recherche (mots-clés), pas la phrase entière.
 
@@ -811,6 +834,18 @@ def search_query(task: str) -> str:
     from llm.client import chat
     from datetime import datetime
     t = (task or "").strip()
+    # ⚠️ « résumé de Van Eva de l'action valneva » : la dictée avait écorché le nom, et
+    # Nova est partie chercher « Van Eva Valneva » — puis a répondu qu'elle ne trouvait
+    # rien sur « Van Eva ». Elle avait le vrai nom dans la MÊME PHRASE. Il parle
+    # beaucoup à la voix : un nom propre déformé est le cas normal, pas le cas rare.
+    try:
+        from agent.entites import repare
+        t2, corrections = repare(t)
+        if corrections:
+            logger.info(f"[recherche] nom réparé : {corrections}")
+            t = t2
+    except Exception as e:
+        logger.info(f"[recherche] réparation impossible ({type(e).__name__})")
     # ⚠️ Le modèle ignore la date du jour et met l'année de son entraînement (« 2024 »).
     # On la lui donne explicitement, sinon les recherches d'actualité sont périmées.
     auj = datetime.now()
@@ -837,7 +872,11 @@ def search_query(task: str) -> str:
                 "• JAMAIS une année passée. Réponds UNIQUEMENT par la requête, sans guillemets.")},
             {"role": "user", "content": t[:300]},
         ], temperature=0.2) or ""
-        q = out.strip().strip('"«».\n').split("\n")[0]
+        # ⚠️ VU EN VRAI : « 🔍 Recherche sur le web… <think> », et le premier résultat
+        # était la définition du verbe « think » sur Wiktionary. Le modèle avait ouvert
+        # son brouillon de raisonnement, et .split("\n")[0] prenait la PREMIÈRE ligne —
+        # c'est-à-dire la balise. Le raisonnement est retiré AVANT de découper.
+        q = _premiere_ligne_utile(sans_raisonnement(out))
         # Garde-fou : le modèle glisse parfois une année périmée (2023/2024/2025).
         # Si l'utilisateur n'a PAS demandé cette année-là, on la remplace par l'année courante.
         for vieille in range(2020, auj.year):

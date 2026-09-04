@@ -46,6 +46,19 @@ _ALTERNATIVE = re.compile(
     r"je te propose|on peut|il existe|voici|par exemple)", re.I)
 
 
+# ⚠️ VU EN VRAI : « …c'est le consensus de prix cible sur un an (source : Fintel et
+# ChartMill)【2†source】【3†source】. » Ces marqueurs viennent du format de citation de
+# certains modèles ; ils ne renvoient à rien chez nous et s'affichent tels quels. Du
+# bruit qui a l'air d'une référence — donc pire que du bruit.
+_CITATION_MODELE = re.compile(r"【[^】]{0,40}】|\[\s*citation:[^\]]{0,40}\]|"
+                              r"\[\s*\^?\d{1,2}\s*†[^\]]{0,30}\]")
+
+
+def sans_citations_fantomes(texte: str) -> str:
+    """Retire les marqueurs de citation qui ne pointent vers rien."""
+    return _CITATION_MODELE.sub("", texte or "")
+
+
 def sans_repetition(texte: str) -> str:
     """Coupe les débordements de caractères, sans toucher au reste.
 
@@ -107,5 +120,6 @@ def porte_de_sortie(texte: str, demande: str = "") -> str:
 
 
 def relis(texte: str, demande: str = "") -> str:
-    """Le passage obligé de toute réponse : ni mur de signes, ni porte fermée."""
-    return porte_de_sortie(sans_repetition(texte or ""), demande)
+    """Le passage obligé de toute réponse : ni mur de signes, ni porte fermée,
+    ni référence fantôme."""
+    return porte_de_sortie(sans_repetition(sans_citations_fantomes(texte or "")), demande)
