@@ -7925,6 +7925,116 @@ def test_un_nom_dicte_de_travers_et_l_actu_hors_sujet():
           "arts = []" in src, True)
 
 
+def test_une_automatisation_de_nuit_ne_peut_plus_armer_un_envoi_sur_son_chat():
+    """Trouvaille de l'audit, VERIFIEE et reproduite avant correction. La plus grave
+    de toutes : c'est exactement ce qu'il redoutait des le debut — « tu te rends
+    compte s'il fait ca avec mes mails ! »
+
+      03h00 · l'automatisation « range mes mails » demarre        → canal = « fond »
+      03h02 · Lohan pose une question dans le chat depuis son lit → canal = « web »
+      03h03 · l'automatisation arrive sur GMAIL_SEND_EMAIL. Elle appelle le garde-fou
+              SANS lui passer de canal — la boucle ReAct ne peut pas le transmettre —
+              il lit donc la valeur GLOBALE : « web ». Le refus « en mode fond je
+              n'arme rien » est contourne, et l'envoi est arme sur le canal du CHAT.
+      07h00 · Lohan tape « ok » pour tout autre chose. Le mail part.
+
+    Le canal etait range dans un simple dictionnaire de module, partage par toutes les
+    requetes du serveur. Le garde-fou existait, il etait juste assis sur une valeur
+    que n'importe quelle autre requete pouvait changer sous lui.
+    """
+    import asyncio, importlib
+    A = importlib.import_module("api.agent")
+    K = importlib.import_module("agent.canal")
+    from agent.core import _off
+
+    def outil_qui_veut_envoyer():
+        # Ce que fait plugins/builtin/composio_tool.py : il appelle le garde-fou
+        # SANS canal, parce qu'il n'en a pas a lui passer.
+        return A._demande_confirmation("lohan", "gmail", "GMAIL_SEND_EMAIL",
+                                       {"to": "x@y.fr", "subject": "test"})
+
+    # --- 1. LE scenario : deux requetes simultanees -------------------------
+    async def scenario_concurrent():
+        A._ATTENTE.clear()
+
+        async def automatisation():
+            A._CANAL["actuel"] = "fond"
+            await asyncio.sleep(0.01)                    # elle reflechit
+            return outil_qui_veut_envoyer()
+
+        async def chat_web():
+            await asyncio.sleep(0.005)
+            A._CANAL["actuel"] = "web"                   # Lohan ecrit pendant ce temps
+            return "ok"
+
+        rep, _ = await asyncio.gather(automatisation(), chat_web())
+        return rep
+
+    rep = asyncio.run(scenario_concurrent())
+    check("l'automatisation REFUSE d'armer", rep.startswith("🛑"), True)
+    check("…et le dit franchement", "tu n'es pas là" in rep, True)
+    check("RIEN n'est arme sur le chat", ("lohan", "web") in A._ATTENTE, False)
+    check("…ni nulle part ailleurs", list(A._ATTENTE), [])
+
+    # --- 2. …y compris quand l'outil tourne dans un THREAD ------------------
+    # ⚠️ Les outils passent par run_in_executor, et un contextvar ne franchit pas
+    # cette frontiere : sans relais explicite, le thread retomberait sur la valeur
+    # globale, c'est-a-dire le canal de la derniere requete recue.
+    async def via_thread():
+        A._ATTENTE.clear()
+        A._CANAL["actuel"] = "fond"
+
+        async def bruit():
+            await asyncio.sleep(0.002)
+            A._CANAL["actuel"] = "web"
+
+        r, _ = await asyncio.gather(_off(outil_qui_veut_envoyer), bruit())
+        return r
+
+    r2 = asyncio.run(via_thread())
+    check("dans un thread aussi, le fond refuse", r2.startswith("🛑"), True)
+    check("…et rien n'est arme", ("lohan", "web") in A._ATTENTE, False)
+
+    # --- 3. Le comportement LEGITIME n'a pas bouge -------------------------
+    async def depuis_le_chat():
+        A._ATTENTE.clear()
+        A._CANAL["actuel"] = "web"
+        return await _off(outil_qui_veut_envoyer)
+
+    r3 = asyncio.run(depuis_le_chat())
+    check("depuis le chat, la confirmation est demandee", r3.startswith("⚠️"), True)
+    check("…et l'action attend sur LE BON canal", ("lohan", "web") in A._ATTENTE, True)
+    # Un accord donne dans le chat declenche bien ce qui y a ete arme.
+    check("un accord y est reconnu", A._confirmation_donnee("oui vas-y"), True)
+
+    # --- 4. Le canal est RESTITUE apres chaque travail ---------------------
+    # ⚠️ Les threads d'un pool sont reutilises : un canal laisse derriere soi
+    # contaminerait la requete suivante — le defaut qu'on repare, a l'envers.
+    def lit_le_canal():
+        return K.courant()
+
+    async def deux_a_la_suite():
+        A._CANAL["actuel"] = "fond"
+        a = await _off(lit_le_canal)
+        A._CANAL["actuel"] = "web"
+        b = await _off(lit_le_canal)
+        return a, b
+
+    a, b = asyncio.run(deux_a_la_suite())
+    check("le thread voit le canal du travail (fond)", a, "fond")
+    check("…puis celui du suivant (web)", b, "web")
+    check("hors de tout travail, le defaut est le plus prudent", K.courant(), "web")
+
+    # --- 5. Le relais est bien en place dans le code -----------------------
+    import inspect
+    from agent import core as C
+    check("le canal entre dans le thread avec le travail",
+          "_applique_canal" in inspect.getsource(C._off), True)
+    api = inspect.getsource(A._demande_confirmation)
+    check("le garde-fou lit le canal du travail, pas la derniere requete",
+          "canal_courant()" in api, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -7991,7 +8101,8 @@ if __name__ == "__main__":
                test_aucun_chiffre_de_marche_sans_source_et_recherche_longue_reelle,
                test_en_vocal_nova_parle_au_lieu_de_reciter,
                test_le_tri_des_mails_etait_exactement_a_l_envers,
-               test_un_nom_dicte_de_travers_et_l_actu_hors_sujet):
+               test_un_nom_dicte_de_travers_et_l_actu_hors_sujet,
+               test_une_automatisation_de_nuit_ne_peut_plus_armer_un_envoi_sur_son_chat):
         try:
             fn()
         except Exception as e:

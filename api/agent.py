@@ -1837,7 +1837,13 @@ _ATTENTE = {}                       # (profil, canal) -> action en attente de co
 # ⚠️ Un dict de module, PAS un contextvar : les appels d'outils passent par
 # run_in_executor, et un contextvar ne franchit pas cette frontière de thread — piège
 # déjà rencontré ailleurs dans ce projet.
-_CANAL = {"actuel": "web"}
+# ⚠️ Un simple dict de module était partagé par TOUTES les requêtes du serveur : une
+# automatisation de nuit qui arrivait sur un envoi pendant que Lohan écrivait dans le
+# chat lisait « web », contournait le refus « fond », et armait l'envoi sur SON chat —
+# que son prochain « ok » faisait partir. Reproduit en trois lignes. Le canal suit
+# maintenant le travail (tâche asyncio + thread d'exécution) : voir agent/canal.py.
+from agent.canal import Registre as _RegistreCanal, courant as canal_courant
+_CANAL = _RegistreCanal({"actuel": "web"})
 # app -> instant du dernier succès. Un fait, opposable à toute explication inventée.
 _APP_OK = {}
 _APP_OK_TTL = 900.0
@@ -1892,7 +1898,8 @@ def _demande_confirmation(profil: str, slug: str, action: str, args: dict,
     serait pire que de ne rien faire.
     """
     import time as _t
-    canal = canal or _CANAL.get("actuel", "web")
+    # Le canal du travail RÉELLEMENT en cours — pas celui de la dernière requête reçue.
+    canal = canal or canal_courant()
     if canal == "fond":
         return ("🛑 Je n'ai rien envoyé : cette action est sans retour et tu n'es pas là "
                 f"pour me le confirmer.\n\n> {_resume_action(action, args)}\n\n"

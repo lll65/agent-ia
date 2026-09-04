@@ -142,9 +142,17 @@ async def _off(fn, *args, **kwargs):
     """
     import functools
     from llm.client import DERNIER, executer_et_capturer
+    from agent.canal import courant as _canal_courant, applique as _applique_canal
     loop = asyncio.get_running_loop()
+    # ⚠️ Le canal doit ENTRER dans le thread avec le travail. Un contextvar ne franchit
+    # pas run_in_executor : sans ce relais, l'outil appelé là-dedans retomberait sur la
+    # valeur globale — c'est-à-dire le canal de la dernière requête reçue, qui peut être
+    # celle de quelqu'un d'autre. C'est ce trou qui laissait une automatisation de nuit
+    # armer un envoi sur le chat de Lohan.
+    _canal = _canal_courant()
     res, modele = await loop.run_in_executor(
-        None, functools.partial(executer_et_capturer, fn, *args, **kwargs))
+        None, functools.partial(_applique_canal, _canal,
+                                executer_et_capturer, fn, *args, **kwargs))
     if modele:                      # le travail a appelé un modèle : on ramène son nom ici
         DERNIER.set(modele)
     return res
