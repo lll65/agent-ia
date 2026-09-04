@@ -8035,6 +8035,123 @@ def test_une_automatisation_de_nuit_ne_peut_plus_armer_un_envoi_sur_son_chat():
           "canal_courant()" in api, True)
 
 
+def test_le_pilote_refuse_ce_qui_ne_se_rattrape_pas():
+    """« Est-ce que Nova peut prendre le controle de ma souris et de mon ordi, que je
+    voie ma souris bouger toute seule, aller sur Google, ouvrir des apps ? »
+
+    On commence par un NAVIGATEUR DEDIE. Ce sous-systeme est a part de tout le reste
+    pour une raison precise : les garde-fous existants protegent des actions passant
+    par une API — Nova « demande » a Gmail d'envoyer, et on peut refuser. Un
+    navigateur pilote ne demande rien a personne : il CLIQUE sur « Envoyer ». Aucune
+    protection existante ne s'y applique.
+
+    D'ou des regles a lui, ECRITES EN DUR plutot que confiees au modele — la lecon de
+    la journee : ce qui coute cher ne se met pas dans un prompt.
+    """
+    import importlib
+    from pathlib import Path as _P
+    P = importlib.import_module("agent.pilote")
+    racine = _P(__file__).resolve().parents[1]
+
+    # --- 1. La ou le pilote n'ira JAMAIS ------------------------------------
+    for url in ("https://www.credit-agricole.fr", "boursorama-banque.com/comptes",
+                "https://www.bnpparibas.net", "https://paypal.com/checkout",
+                "https://impots.gouv.fr", "https://www.ameli.fr",
+                "https://revolut.com", "https://binance.com",
+                "https://x.fr/paiement/valider"):
+        check(f"refus : {url[:40]}", bool(P.site_interdit(url)), True)
+        try:
+            P.verifie({"quoi": "ouvrir", "cible": url})
+            check(f"…et l'ordre est bien rejete ({url[:28]})", False, True)
+        except P.Refus as e:
+            check(f"…avec une raison lisible ({url[:24]})", "je refuse" in str(e), True)
+
+    # …sans bloquer ce qui est anodin.
+    for url in ("https://google.com", "https://fr.wikipedia.org", "zonebourse.com",
+                "https://www.lemonde.fr", "https://github.com"):
+        check(f"autorise : {url[:34]}", P.site_interdit(url), "")
+
+    # --- 2. Les gestes qu'il ne fera jamais --------------------------------
+    for geste, attendu in (
+            ({"quoi": "ecrire", "cible": "Mot de passe", "valeur": "azerty"}, "mot de passe"),
+            ({"quoi": "ecrire", "cible": "champ", "valeur": "mon code secret 1234"}, "mot de passe"),
+            ({"quoi": "ecrire", "cible": "Numéro de carte", "valeur": "4970"}, "mot de passe"),
+            ({"quoi": "clic", "cible": "Valider le paiement"}, "je ne clique pas"),
+            ({"quoi": "clic", "cible": "Supprimer mon compte"}, "je ne clique pas"),
+            ({"quoi": "telecharger", "cible": "x"}, "je ne sais pas faire"),
+            ({"quoi": "executer", "cible": "rm -rf"}, "je ne sais pas faire"),
+            ({"quoi": "ouvrir", "cible": ""}, "aucune adresse")):
+        try:
+            P.verifie(geste)
+            check(f"⚠️ AUTORISE a tort : {str(geste)[:44]}", False, True)
+        except P.Refus as e:
+            check(f"refus : {str(geste.get('quoi'))} {str(geste.get('cible'))[:24]}",
+                  attendu in str(e), True)
+
+    # --- 3. Ce qui est legitime passe --------------------------------------
+    plan = P.verifie_plan([
+        {"quoi": "ouvrir", "cible": "google.com", "pourquoi": "chercher la meteo"},
+        {"quoi": "ecrire", "cible": "", "valeur": "meteo Pau demain"},
+        {"quoi": "lire"},
+        {"quoi": "capture"}])
+    check("un plan ordinaire est accepte", len(plan), 4)
+    check("…et l'adresse est completee", plan[0]["cible"], "https://google.com")
+    # ⚠️ Il doit savoir a quoi il dit oui AVANT que ca bouge.
+    texte = P.resume(plan)
+    check("le plan se lit en francais", "ouvrir **https://google.com**" in texte, True)
+    check("…chaque geste", "écrire « meteo Pau demain »" in texte, True)
+
+    # --- 4. Un plan ne s'execute pas a moitie ------------------------------
+    # ⚠️ Un plan a moitie joue laisse le navigateur dans un etat que personne n'a voulu.
+    try:
+        P.verifie_plan([{"quoi": "ouvrir", "cible": "google.com"},
+                        {"quoi": "ouvrir", "cible": "https://credit-agricole.fr"},
+                        {"quoi": "lire"}])
+        check("⚠️ un plan avec une etape interdite est passe", False, True)
+    except P.Refus as e:
+        check("un seul geste interdit annule tout le plan", "je refuse" in str(e), True)
+    try:
+        P.verifie_plan([{"quoi": "defiler"}] * 30)
+        check("⚠️ plan trop long accepte", False, True)
+    except P.Refus as e:
+        check("un plan trop long est refuse", "trop long" in str(e), True)
+    try:
+        P.verifie_plan([])
+        check("⚠️ plan vide accepte", False, True)
+    except P.Refus as e:
+        check("un plan vide est refuse", "vide" in str(e), True)
+
+    # --- 5. La file : rien ne survit a un redemarrage ----------------------
+    # ⚠️ Un ordre de pilotage ne doit PAS survivre a une coupure : il n'aurait aucune
+    # raison de s'attendre a voir sa souris bouger pour une demande d'avant.
+    src = (racine / "agent" / "pilote.py").read_text(encoding="utf-8")
+    check("la file est en memoire, pas sur disque", "_FILE = []" in src, True)
+    check("…et les ordres perimes sont jetes", "périmé, jeté sans être joué" in src, True)
+    lot = P.depose([{"quoi": "ouvrir", "cible": "google.com"}], "cherche la meteo")
+    check("un plan depose attend", P.en_attente(), 1)
+    pris = P.prochain()
+    check("…le programme local le recupere", pris["id"], lot["id"])
+    check("…et il n'est plus en attente", P.en_attente(), 0)
+    check("plus rien a faire ensuite", P.prochain(), {})
+    P.enregistre({"id": lot["id"], "etapes": [{"quoi": "ouvrir", "ok": True}]})
+    check("le resultat reel est garde", P.derniers(1)[0]["id"], lot["id"])
+
+    # --- 6. Le programme LOCAL rejoue les memes regles ---------------------
+    # ⚠️ Une verification qui n'existe que sur le serveur disparait si le serveur se
+    # trompe. Ici, c'est SON ordinateur qui refuse — ca ne depend de personne.
+    local = (racine / "pilote" / "nova_pilote.py").read_text(encoding="utf-8")
+    check("le programme local existe", len(local) > 2000, True)
+    check("…il rejoue la liste des sites interdits", "def interdit(" in local, True)
+    check("…il verifie AUSSI apres une redirection",
+          "la page a redirigé vers un site interdit" in local, True)
+    check("…le navigateur est VISIBLE", "headless=False" in local, True)
+    check("…avec un profil vierge, sans ses cookies", "new_context(" in local, True)
+    check("…chaque geste est annonce AVANT d'etre fait",
+          "On ANNONCE avant de faire" in local, True)
+    check("…et le plan s'arrete au premier echec",
+          "j'arrête là, je ne devine pas la suite" in local, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -8102,7 +8219,8 @@ if __name__ == "__main__":
                test_en_vocal_nova_parle_au_lieu_de_reciter,
                test_le_tri_des_mails_etait_exactement_a_l_envers,
                test_un_nom_dicte_de_travers_et_l_actu_hors_sujet,
-               test_une_automatisation_de_nuit_ne_peut_plus_armer_un_envoi_sur_son_chat):
+               test_une_automatisation_de_nuit_ne_peut_plus_armer_un_envoi_sur_son_chat,
+               test_le_pilote_refuse_ce_qui_ne_se_rattrape_pas):
         try:
             fn()
         except Exception as e:

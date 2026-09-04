@@ -5569,6 +5569,37 @@ async def voice_pending(since: float = 0.0, key: str = ""):
     return {"wake": bool(fresh), "ts": _WAKE["ts"], "from": _WAKE["from"]}
 
 
+# ═══ PILOTAGE D'UN NAVIGATEUR SUR SON PC ═══
+#
+# ⚠️ Nova n'a AUCUN accès à son écran : elle tourne sur un serveur. C'est le programme
+# `pilote/nova_pilote.py`, qu'il lance lui-même sur sa machine, qui vient chercher les
+# ordres ici et bouge le curseur. Tant qu'il ne l'a pas lancé, ces routes ne pilotent
+# rien du tout — le seul interrupteur qui compte est entre ses mains.
+@router.get("/pilote/prochain")
+async def pilote_prochain(key: str = ""):
+    """Le programme local vient chercher son prochain plan. {} s'il n'y a rien."""
+    _check_key(key)
+    from agent import pilote
+    return pilote.prochain()
+
+
+@router.post("/pilote/resultat")
+async def pilote_resultat(req: dict, key: str = ""):
+    """Ce que le programme local a RÉELLEMENT fait — succès comme échec."""
+    _check_key(key)
+    from agent import pilote
+    pilote.enregistre(req or {})
+    return {"ok": True}
+
+
+@router.get("/pilote/etat")
+async def pilote_etat(key: str = ""):
+    """De quoi savoir si le pilote tourne et ce qu'il vient de faire."""
+    _check_key(key)
+    from agent import pilote
+    return {"en_attente": pilote.en_attente(), "derniers": pilote.derniers(5)}
+
+
 @router.get("/file")
 async def serve_file(p: str = "", key: str = ""):
     """Sert un fichier produit par Nova (visuels, exports). Chemin restreint à output/ et data/."""
