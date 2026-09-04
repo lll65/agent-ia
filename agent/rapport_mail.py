@@ -58,6 +58,42 @@ _PUB = re.compile(
 _AUTOMATIQUE = re.compile(r"(no-?reply|ne-pas-repondre|nepasrepondre|donotreply|"
                           r"notification|noreply)", re.I)
 
+# ⚠️ VU EN VRAI, ET C'EST L'INVERSE DU SERVICE RENDU :
+#   🔴 Important  → « Marta Ferrando Merino vient de publier une story qui EXPIRE
+#                    dans 24 heures » (Facebook), motif « date limite ou rendez-vous »
+#   📄 À lire (16) → seize notifications Instagram « pixglow.app, see what's been
+#                    happening on Instagram »
+# Deux causes :
+#   1. « expire » déclenchait _URGENT. Une story qui disparaît dans 24 h n'est pas une
+#      échéance : c'est le mot qui compte, pas ce qu'il désigne.
+#   2. _AUTOMATIQUE cherche « no-reply » dans l'EXPÉDITEUR — or après réduction il ne
+#      reste que le nom affiché (« Instagram », « Marta sur Facebook »), sans adresse.
+#      Et _PUB est entièrement en français, donc aveugle à « see what's been happening ».
+# Une notification de réseau social n'est ni importante ni à lire : c'est du bruit, et
+# le noyer dans « à lire » revient à recréer la boîte de réception qu'on devait trier.
+_RESEAU = re.compile(
+    r"\b(instagram|facebook|tiktok|snapchat|linkedin|pinterest|twitter|discord|"
+    r"reddit|youtube|threads|whatsapp|messenger|meta)\b", re.I)
+_NOTIF_SOCIALE = re.compile(
+    r"(vient de publier|a comment[ée]|a aim[ée]|a partag[ée]|t'a mentionn[ée]|"
+    r"vous a mentionn[ée]|a r[ée]agi|nouvel abonn[ée]|new follower|"
+    r"see what'?s been happening|in your feed|likes? your|commented on|"
+    r"started following|added to (?:their|his|her) story|a ajout[ée] .{0,20}story|"
+    r"story qui expire|suggestions? pour (?:toi|vous)|d[ée]couvre[zr]? (?:qui|ce)|"
+    r"tu (?:pourrais|pourrait) conna[îi]tre|people you may know|"
+    r"a publi[ée] (?:une|un|des)|notifications? non lues?)", re.I)
+
+
+def _bruit_social(mail: dict) -> bool:
+    """Une notification de réseau social — jamais importante, jamais « à lire »."""
+    exp = _expediteur(mail)
+    txt = _texte(mail)
+    if _NOTIF_SOCIALE.search(txt):
+        return True
+    # « Instagram » comme expéditeur ET un sujet sans rien qui appelle une action.
+    return bool(_RESEAU.search(exp) and not _ARGENT.search(txt)
+                and not _SECURITE.search(txt) and not _DEMANDE.search(txt))
+
 # Un mail à la fois publicitaire ET porteur d'argent est IMPORTANT : c'est
 # exactement le cas « pub Spotify » contre « abonnement Spotify à payer ».
 IMPORTANT, A_LIRE, IGNORER = "important", "a_lire", "ignorer"
@@ -76,6 +112,12 @@ def classer(mail: dict) -> dict:
     """Range un mail, avec la RAISON du classement — jamais un verdict sans motif."""
     t = _texte(mail)
     exp = _expediteur(mail)
+    # ⚠️ AVANT TOUT LE RESTE. Une facture Instagram resterait importante (voir
+    # _bruit_social, qui laisse passer argent, sécurité et vraie question) ; mais une
+    # story qui « expire dans 24 heures » n'est pas une échéance.
+    if _bruit_social(mail):
+        return {"niveau": IGNORER, "repondre": False,
+                "pourquoi": "notification de réseau social — rien à faire"}
     raisons = []
 
     if _ARGENT.search(t):
@@ -113,11 +155,22 @@ def a_besoin_agenda(mail: dict) -> bool:
 
 
 def trier(mails: list) -> dict:
-    """Le rapport complet, range par ce qu'il y a a FAIRE."""
+    """Le rapport complet, range par ce qu'il y a a FAIRE.
+
+    ⚠️ Le meme mail pouvait apparaitre deux fois : « Marta Ferrando Merino vient de
+    publier une story » etait liste en double dans la section « Important ». Gmail
+    renvoie parfois le meme message sur plusieurs fils ; compter deux fois la meme
+    chose fausse tous les nombres du rapport.
+    """
     out = {IMPORTANT: [], A_LIRE: [], IGNORER: []}
+    vus = set()
     for m in (mails or []):
         if not isinstance(m, dict):
             continue
+        signature = (_sujet(m).strip().lower(), _court(_expediteur(m)).lower())
+        if signature in vus:
+            continue
+        vus.add(signature)
         c = classer(m)
         out[c["niveau"]].append({**m, **c, "agenda": a_besoin_agenda(m)})
     return out
@@ -167,6 +220,11 @@ def resume_markdown(tri: dict, brouillons: dict = None) -> str:
         L.append(f"### 📄 À lire quand tu as le temps ({len(lire)})")
         for m in lire[:8]:
             L.append(f"- {_sujet(m)} — {_court(_expediteur(m))}")
+        # ⚠️ Le titre annoncait 16 et la liste en montrait 8, sans un mot. Une coupe
+        # silencieuse se lit comme « c'est tout » — c'est le meme defaut que partout
+        # ailleurs, en plus discret parce que le nombre juste est ecrit juste au-dessus.
+        if len(lire) > 8:
+            L.append(f"- _…et {len(lire) - 8} autres, dis-moi si tu veux la suite._")
         L.append("")
     if rien:
         # On ne les liste pas : les nommer un par un, c'est recréer la boîte mail.

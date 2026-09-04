@@ -5687,7 +5687,11 @@ async def make_title(req: TitleReq):
                 "« Bilan des points GPS ». Réponds UNIQUEMENT par le titre.")},
             {"role": "user", "content": f"Question : {q}\nRéponse : {a}"},
         ], temperature=0.3)
-        titre = (out or "").strip().strip('"«».').split("\n")[0][:48]
+        # ⚠️ Sa liste de conversations contenait TROIS entrées intitulées « <think> ».
+        # Même cause que pour les requêtes de recherche : le modèle ouvre son brouillon
+        # de raisonnement, et on prenait la première ligne telle quelle.
+        from agent.core import sans_raisonnement, _premiere_ligne_utile
+        titre = _premiere_ligne_utile(sans_raisonnement(out or ""))[:48]
     except Exception:
         titre = ""
     return {"title": titre or q[:42]}

@@ -6408,7 +6408,9 @@ def test_mails_tries_et_tableaux_rendus():
     import llm.client as C
     vrai_tool, vrai_chat = A._tool, C.chat
     try:
-        spam = [{"id": str(i), "subject": "pixglow.app, see what's been happening on Instagram",
+        # Sujets DISTINCTS : huit sujets identiques seraient un seul et meme mail,
+        # et le rapport aurait raison de n'en compter qu'un (voir le dedoublonnage).
+        spam = [{"id": str(i), "subject": f"pixglow.app, see what's been happening ({i})",
                  "from": "Instagram <no-reply@mail.instagram.com>",
                  "snippet": "Voir le fil"} for i in range(8)]
         vrais = [{"id": "9", "subject": "Alerte de sécurité",
@@ -7647,7 +7649,10 @@ def test_en_vocal_nova_parle_au_lieu_de_reciter():
     check("le canal des confirmations ne bouge pas", '_CANAL["actuel"] = "web"' in src, True)
 
     # --- 2. Le rapport de mails a une version PARLEE -----------------------
-    mails = ([{"id": str(i), "subject": "Instagram", "from": "no-reply@mail.instagram.com",
+    # ⚠️ Ce jeu d'essai empilait huit fois le MEME sujet ; le dedoublonnage les compte
+    # maintenant pour un seul, a raison. De vraies notifications different entre elles.
+    mails = ([{"id": str(i), "subject": f"Instagram : nouveaute {i}",
+               "from": "no-reply@mail.instagram.com",
                "snippet": "story"} for i in range(8)]
              + [{"id": "9", "subject": "Alerte de sécurité", "from": "Google <no-reply@google.com>",
                  "snippet": "Une connexion inhabituelle a été détectée."},
@@ -7706,6 +7711,129 @@ def test_en_vocal_nova_parle_au_lieu_de_reciter():
           "coupeSure(answer,240)" in ui, False)
     check("…il montre le texte tel qu'il sera dit",
           "_cut(texteALire(answer),240)" in ui, True)
+
+
+def test_le_tri_des_mails_etait_exactement_a_l_envers():
+    """Analyse de sa conversation du 3 septembre. Le tri faisait l'INVERSE du service.
+
+      🔴 Important  → « Marta Ferrando Merino vient de publier une story qui EXPIRE
+                       dans 24 heures » (Facebook), motif « date limite ou rendez-vous »,
+                       et listee DEUX fois.
+      📄 A lire (16) → seize notifications Instagram « pixglow.app, see what's been
+                       happening on Instagram ».
+      Et « Alerte de securite » de Google noyee au milieu.
+
+    Trois causes :
+      1. « expire » declenchait _URGENT. Une story qui disparait dans 24 h n'est pas
+         une echeance : c'est le mot qui comptait, pas ce qu'il designe.
+      2. _AUTOMATIQUE cherche « no-reply » dans l'EXPEDITEUR — or apres reduction il
+         ne reste que le nom affiche (« Instagram », « Marta sur Facebook »), sans
+         adresse. Et _PUB est entierement en francais, donc aveugle a « see what's
+         been happening ».
+      3. Le meme mail pouvait etre compte deux fois.
+
+    Plus deux phrases qui mentaient dans le meme ecran : « A lire (16) » n'en listait
+    que 8 sans le dire, et le pied de page annoncait « les reponses ci-dessus sont des
+    propositions » alors qu'AUCUN brouillon n'avait ete prepare.
+    """
+    import importlib, json as _j
+    R = importlib.import_module("agent.rapport_mail")
+    A = importlib.import_module("api.agent")
+    M = importlib.import_module("plugins.builtin.mails_tool")
+
+    # --- 1. Le bruit social redescend ou il doit -----------------------------
+    for suj, exp in (
+            ("Marta Ferrando Merino vient de publier une story qui expire dans 24 heures",
+             "Marta sur Facebook"),
+            ("pixglow.app, see what's been happening on Instagram", "Instagram"),
+            ("pixglow.app, see boukandilshop, charline_dressing and more in your feed", "Instagram"),
+            ("Jose Luis Uriel Grasa a commenté : « N »", "Jose Luis sur Facebook"),
+            ("Quelqu'un a aimé ta photo", "Instagram"),
+            ("Tu pourrais connaître Marie", "LinkedIn")):
+        c = R.classer({"subject": suj, "from": exp, "snippet": ""})
+        check(f"ignoré : « {suj[:40]}… »", c["niveau"], R.IGNORER)
+        check("…et le motif est dit", "réseau social" in c["pourquoi"], True)
+
+    # --- 2. …SANS emporter ce qui compte vraiment ---------------------------
+    for suj, exp, snip, attendu in (
+            ("Alerte de sécurité", "Google", "connexion inhabituelle détectée", R.IMPORTANT),
+            ("Votre facture Instagram", "Instagram", "le prélèvement de 9,99 €", R.IMPORTANT),
+            ("Devoir de maths", "M. Durand <d@lycee.fr>",
+             "peux-tu me dire si tu as fini l'exercice 4 ?", R.IMPORTANT),
+            ("Convocation entretien", "RH <rh@boite.fr>", "entretien le 12 septembre", R.IMPORTANT),
+            ("Compte-rendu du conseil", "vie.scolaire@lycee.fr", "ci-joint", R.A_LIRE)):
+        check(f"conservé : « {suj[:34]} »",
+              R.classer({"subject": suj, "from": exp, "snippet": snip})["niveau"], attendu)
+    # ⚠️ Une FACTURE Instagram reste importante : c'est le « pub Spotify contre
+    # abonnement Spotify » qu'il avait posé comme test dès le début.
+    check("une facture d'un réseau social reste importante",
+          R.classer({"subject": "Votre facture Instagram", "from": "Instagram",
+                     "snippet": "prélèvement de 9,99 €"})["repondre"], False)
+
+    # --- 3. Plus de doublons -----------------------------------------------
+    deux_fois = [{"id": "a", "subject": "Devoir de maths", "from": "M. Durand <d@lycee.fr>",
+                  "snippet": "peux-tu me dire si tu as fini ?"},
+                 {"id": "b", "subject": "Devoir de maths", "from": "M. Durand <d@lycee.fr>",
+                  "snippet": "peux-tu me dire si tu as fini ?"}]
+    check("le même mail n'est compté qu'une fois",
+          len(R.trier(deux_fois)[R.IMPORTANT]), 1)
+
+    # --- 4. Bout en bout, sur SA boîte --------------------------------------
+    sa_boite = ([{"id": "a", "subject": "Marta Ferrando Merino vient de publier une story "
+                                        "qui expire dans 24 heures",
+                  "from": "Marta sur Facebook", "snippet": ""}] * 2
+                + [{"id": f"i{i}", "subject": "pixglow.app, see what's been happening on Instagram",
+                    "from": "Instagram", "snippet": ""} for i in range(16)]
+                + [{"id": "s", "subject": "Alerte de sécurité", "from": "Google",
+                    "snippet": "connexion inhabituelle détectée"}])
+    vrai_tool = A._tool
+    try:
+        A._tool = lambda *a, **k: _j.dumps({"data": {"messages": sa_boite}})
+        rep = M.RapportMailsPlugin().run(combien=25)
+        check("l'alerte de sécurité remonte en tête", "Alerte de sécurité" in rep, True)
+        check("…et elle est la SEULE chose importante", rep.count("Important, sans réponse"), 1)
+        check("les stories Facebook ne sont plus importantes",
+              "story qui expire" in rep.split("Ignorés")[0], False)
+        check("les notifications Instagram ne sont plus « à lire »",
+              "pixglow" in rep, False)
+        check("le doublon a disparu", rep.count("Marta Ferrando"), 0)
+        # ⚠️ Le pied de page parlait de « réponses proposées » sans aucun brouillon.
+        check("plus de promesse de brouillons inexistants",
+              "Les réponses ci-dessus sont des propositions" in rep, False)
+        check("…mais la garantie reste dite", "rien envoyé, supprimé ni archivé" in rep, True)
+
+        # Une coupe de liste est ANNONCÉE (« À lire (16) » n'en montrait que 8).
+        beaucoup = [{"id": str(i), "subject": f"Compte-rendu numéro {i}",
+                     "from": "vie.scolaire@lycee.fr", "snippet": "ci-joint"} for i in range(16)]
+        md = R.resume_markdown(R.trier(beaucoup))
+        check("le titre annonce le vrai nombre", "À lire quand tu as le temps (16)" in md, True)
+        check("…et la coupe est dite", "et 8 autres" in md, True)
+    finally:
+        A._tool = vrai_tool
+
+    # --- 5. « <think> » ne devient plus ni requête ni titre ------------------
+    from agent.core import _premiere_ligne_utile as util, sans_raisonnement as sr
+    for brut, attendu in (
+            ("<think>\nJe dois chercher le cours.\n</think>\nValneva cours bourse",
+             "Valneva cours bourse"),
+            ("THOUGHT: je réfléchis\nActualité tech du jour", "Actualité tech du jour"),
+            ("OBSERVATION: rien\nPARAMS: {}\nBilan des points GPS", "Bilan des points GPS"),
+            ("FINAL: Agenda de la semaine", "Agenda de la semaine"),
+            ("```\nAgenda de la semaine\n```", "Agenda de la semaine"),
+            ("Agenda de la semaine", "Agenda de la semaine"),
+            ("<think>", ""), ("", "")):
+        check(f"« {brut[:26]}… » → contenu utile", util(sr(brut)), attendu)
+
+    # --- 6. Les marqueurs de citation fantômes -----------------------------
+    from agent.qualite import relis as relis_q
+    avec = ("Objectif moyen d'environ 47,84 € (source : Fintel et ChartMill)"
+            "【2†source】【3†source】. Voilà.")
+    net = relis_q(avec, "objectif 2crsi")
+    check("les marqueurs fantômes disparaissent", "†source" in net, False)
+    check("…et le texte reste entier", "47,84 €" in net and "Voilà." in net, True)
+    check("une note de bas de page ordinaire est épargnée",
+          relis_q("La formule f(x) = 2x [1] est simple.", "x"),
+          "La formule f(x) = 2x [1] est simple.")
 
 
 if __name__ == "__main__":
@@ -7772,7 +7900,8 @@ if __name__ == "__main__":
                test_popup_absence_en_grand_et_lu_a_voix_haute,
                test_recent_veut_dire_recent_et_la_mise_en_forme_survit,
                test_aucun_chiffre_de_marche_sans_source_et_recherche_longue_reelle,
-               test_en_vocal_nova_parle_au_lieu_de_reciter):
+               test_en_vocal_nova_parle_au_lieu_de_reciter,
+               test_le_tri_des_mails_etait_exactement_a_l_envers):
         try:
             fn()
         except Exception as e:
