@@ -8152,6 +8152,66 @@ def test_le_pilote_refuse_ce_qui_ne_se_rattrape_pas():
           "j'arrête là, je ne devine pas la suite" in local, True)
 
 
+def test_la_meteo_de_sa_ville_et_un_temps_de_trajet_va_sur_maps():
+    """Premiere journee de test reelle. Deux defauts, dont un qu'il verrait TOUS LES
+    MATINS.
+
+    1. Son briefing annoncait « 🌤️ Meteo — PARIS : couvert, 16.8 – 24.1 °C ». Il
+       habite dans les Pyrenees-Atlantiques. La ville venait d'une variable
+       d'environnement figee a « Paris » par defaut — alors que Nova SAIT ou il
+       habite : il le lui a dit, et elle l'a retenu dans son profil.
+       Une info fausse chaque matin, sur la seule ligne du briefing qu'on regarde
+       vraiment avant de sortir. Ce que Nova sait de lui doit primer sur un reglage
+       que personne n'a jamais changé — c'est tout l'interet de retenir quelque chose.
+
+    2. « Combien de temps j'ai pour de Saint-Agne aller a Heches » n'atteignait PAS
+       Maps : seuls « itineraire » et « trajet » y menaient. Nova est donc partie
+       chercher sur le WEB un temps de trajet entre deux villages des Pyrenees, et a
+       rendu « je n'ai pas trouve d'information precise » — alors qu'elle a l'outil
+       qui repond exactement a ca. Il a du lui dire « utilise Google Maps alors ».
+    """
+    import importlib
+    from unittest.mock import patch
+    B = importlib.import_module("agent.briefing")
+    A = importlib.import_module("api.agent")
+
+    # --- 1. La meteo de SA ville -------------------------------------------
+    for facts, attendu in (
+            ([{"cat": "ville", "texte": "j'habite à Pau"}], "Pau"),
+            ([{"cat": "ville", "texte": "je vis à Saint-Pé-de-Bigorre"}], "Saint-Pé-de-Bigorre"),
+            ([{"cat": "autre", "texte": "je réside à Tarbes depuis 2 ans"}], "Tarbes"),
+            ([{"cat": "ville", "texte": "je suis domicilié à Bordeaux"}], "Bordeaux")):
+        with patch("agent.profile.list_facts", return_value=facts):
+            check(f"sa ville est lue : {attendu}", B.ville_de_lohan(), attendu)
+    # …et sans rien dans le profil, on retombe sur le reglage, sans planter.
+    for facts in ([{"cat": "age", "texte": "j'ai 17 ans"}], []):
+        with patch("agent.profile.list_facts", return_value=facts):
+            check("sans ville connue, le reglage sert de repli",
+                  B.ville_de_lohan(), "Paris")
+    # Un profil illisible ne doit pas casser le briefing du matin.
+    with patch("agent.profile.list_facts", side_effect=RuntimeError("base HS")):
+        check("un profil illisible ne casse rien", B.ville_de_lohan(), "Paris")
+
+    # --- 2. Un temps de trajet va sur Maps ---------------------------------
+    for demande in ("combien de temps pour aller de saint agne a heches",
+                    "combien de temps j'ai pour de saint agne aller a heches",
+                    "combien de temps en voiture jusqu a Tarbes",
+                    "temps de trajet Pau Toulouse",
+                    "a quelle distance est Lourdes",
+                    "distance entre Pau et Bayonne",
+                    "itineraire Pau Toulouse"):
+        check(f"« {demande[:40]}… » va sur Maps", A.app_courante(demande), "googlemaps")
+
+    # ⚠️ …sans emporter ce qui n'a rien a voir. « Combien de temps dure un cours »
+    # n'est pas une question de carte.
+    for hors_sujet in ("combien de temps dure un cours de maths",
+                       "resume l actu tech du jour",
+                       "mes mails", "mon agenda de demain",
+                       "combien de temps il me reste avant le bac"):
+        check(f"« {hors_sujet[:38]} » n'ouvre pas Maps",
+              A.app_courante(hors_sujet) == "googlemaps", False)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -8220,7 +8280,8 @@ if __name__ == "__main__":
                test_le_tri_des_mails_etait_exactement_a_l_envers,
                test_un_nom_dicte_de_travers_et_l_actu_hors_sujet,
                test_une_automatisation_de_nuit_ne_peut_plus_armer_un_envoi_sur_son_chat,
-               test_le_pilote_refuse_ce_qui_ne_se_rattrape_pas):
+               test_le_pilote_refuse_ce_qui_ne_se_rattrape_pas,
+               test_la_meteo_de_sa_ville_et_un_temps_de_trajet_va_sur_maps):
         try:
             fn()
         except Exception as e:

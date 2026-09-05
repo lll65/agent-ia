@@ -5,6 +5,7 @@ actu (recherche web). Aucune invention : si une source échoue, on le dit.
 """
 import json
 import logging
+import re
 
 from config import config
 
@@ -15,10 +16,41 @@ _WCODE = {0: "ciel clair", 1: "peu nuageux", 2: "nuageux", 3: "couvert", 45: "br
           71: "neige", 80: "averses", 95: "orage"}
 
 
+# ⚠️ Son briefing du matin annonçait la météo de PARIS. Il habite dans les
+# Pyrénées-Atlantiques — il l'a dit à Nova, qui l'a retenu dans son profil, et qui
+# lisait quand même une variable d'environnement figée à « Paris » par défaut.
+# Une info fausse tous les matins, sur la seule ligne du briefing qu'on regarde
+# vraiment avant de sortir. Ce que Nova SAIT de lui doit primer sur un réglage
+# jamais changé : c'est tout l'intérêt de retenir quelque chose.
+_INDICES_VILLE = ("habite", "vis à", "vis a", "vit à", "vit a", "réside", "reside",
+                  "domicil", "j'habite", "ma ville", "chez moi")
+
+
+def ville_de_lohan() -> str:
+    """Sa ville : d'abord ce qu'il a dit à Nova, sinon le réglage, sinon Paris."""
+    try:
+        from agent.profile import list_facts
+        for f in (list_facts() or []):
+            texte = str(f.get("texte") or "")
+            if str(f.get("cat") or "").lower() == "ville" or any(
+                    i in texte.lower() for i in _INDICES_VILLE):
+                # « j'habite à Pau » → « Pau ». On garde le dernier mot significatif.
+                m = re.search(r"(?:à|a|de|sur)\s+([A-ZÀ-Ý][\wÀ-ÿ'’-]{2,}(?:[- ][A-ZÀ-Ý][\wÀ-ÿ'’-]+)*)",
+                              texte)
+                if m:
+                    return m.group(1).strip()
+                mots = [x for x in re.findall(r"[A-ZÀ-Ý][\wÀ-ÿ'’-]{2,}", texte)]
+                if mots:
+                    return mots[-1]
+    except Exception as e:
+        logger.info(f"[briefing] ville du profil illisible ({type(e).__name__})")
+    return getattr(config, "BRIEFING_CITY", "Paris") or "Paris"
+
+
 def weather_line() -> str:
-    """Météo du jour pour la ville configurée (open-meteo, gratuit)."""
+    """Météo du jour pour SA ville (open-meteo, gratuit)."""
     import requests
-    city = getattr(config, "BRIEFING_CITY", "Paris") or "Paris"
+    city = ville_de_lohan()
     try:
         g = requests.get("https://geocoding-api.open-meteo.com/v1/search",
                          params={"name": city, "count": 1, "language": "fr"}, timeout=10).json()

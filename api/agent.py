@@ -266,8 +266,19 @@ _TOOLKITS = {
     "airtable":       ("airtable",),
     "asana":          ("asana",),
     "jira":           ("jira",),
+    # ⚠️ « Combien de temps j'ai pour de Saint-Agne aller à Hèches » n'atteignait PAS
+    # Maps : seuls « itinéraire » et « trajet » y menaient. Nova est donc partie chercher
+    # sur le web un temps de trajet entre deux villages des Pyrénées, et a rendu « je
+    # n'ai pas trouvé » — alors qu'elle a l'outil qui répond exactement à ça.
+    # Une question de durée entre deux endroits est TOUJOURS une question de carte.
     "googlemaps":     ("maps", "google maps", "itinéraire", "itineraire", "trajet", "adresse",
-                       "comment aller", "temps de route", "restaurant près", "restaurant pres"),
+                       "comment aller", "temps de route", "restaurant près", "restaurant pres",
+                       "combien de temps pour aller", "combien de temps j'ai pour",
+                       "combien de temps en voiture", "combien de temps en train",
+                       "temps de trajet", "durée du trajet", "duree du trajet",
+                       "en combien de temps", "à quelle distance", "a quelle distance",
+                       "distance entre", "aller à", "aller a ", "pour rejoindre",
+                       "route jusqu", "jusqu'à combien de temps"),
     "googletasks":    ("google tasks", "ma liste de tâches", "ma liste de taches", "mes tâches",
                        "mes taches", "todo", "to-do"),
     "todoist":        ("todoist",),
