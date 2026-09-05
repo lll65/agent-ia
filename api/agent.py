@@ -1111,6 +1111,17 @@ def _resolve_app_action(message: str):
     if _demande_ecriture(message):
         return None, None
 
+    # ⚠️ UN TEMPS DE TRAJET NE PASSE PLUS PAR GOOGLE MAPS. Son message d'erreur venait
+    # de Google, pas de Composio : les API Maps Platform s'authentifient par une CLÉ
+    # liée à un projet avec facturation, pas par l'OAuth que Composio connecte. Ce
+    # n'était donc pas une connexion mal faite — et Nova lui disait quand même de
+    # « reconnecter l'app », ce qui n'y aurait jamais rien changé.
+    # On calcule avec des services gratuits et sans compte (voir agent/trajet.py).
+    from agent.trajet import lieux_demandes
+    _lieux = lieux_demandes(message)
+    if _lieux:
+        return "__TRAJET__", {"depart": _lieux[0], "arrivee": _lieux[1]}
+
     if cal_ctx:
         tmin, tmax, _ = _time_bounds(message)
         return "GOOGLECALENDAR_EVENTS_LIST", {
@@ -2021,6 +2032,12 @@ def _direct_app_prepare_brut(message: str, canal: str = "web"):
             return {"steps": g["steps"], "done_answer": g["done_answer"],
                     "echec_app": g.get("echec_app", False)}
         return None
+    if action == "__TRAJET__":
+        from agent.trajet import itineraire
+        a, b = (args or {}).get("depart", ""), (args or {}).get("arrivee", "")
+        return {"steps": [{"kind": "action", "tool": "googlemaps",
+                           "label": f"Trajet {a} → {b}"}],
+                "answer": itineraire(a, b), "ok": True}
     if action == "__RAPPORT_MAILS__":
         return {"steps": [{"kind": "action", "tool": "gmail", "label": "Tri de tes mails"}],
                 "done_answer": _rapport_mails(args)}

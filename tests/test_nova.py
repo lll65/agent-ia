@@ -8298,6 +8298,109 @@ def test_analyse_d_image_ne_dit_plus_d_ajouter_une_cle_qu_il_a_deja():
           "errors.append(f\"Groq({m}): {str(e)[:90]}\")\n                    break" in src, False)
 
 
+def test_un_temps_de_trajet_sans_cle_et_sans_facture():
+    """« Utilise Google Maps alors » → « Distance Matrix API returned status:
+    REQUEST_DENIED. You must use an API key to authenticate each request to Google
+    Maps Platform APIs. »
+
+    Ce message vient de GOOGLE, pas de Composio. Sa capture le montre : google_maps
+    est « Enabled », 2 connexions, OAuth. Tout est branché. Mais les API Maps
+    Platform s'authentifient par une CLÉ liée a un projet Google Cloud avec
+    FACTURATION, pas par l'OAuth que Composio connecte. Ce n'est donc pas une
+    connexion mal faite — et Nova lui disait quand meme de « verifier que cette
+    application est bien connectee », ce qui n'y aurait JAMAIS rien change.
+
+    Lohan s'interdit les API payantes, et Maps Platform demande une carte bancaire
+    meme pour son palier gratuit. On change donc de fournisseur, on ne repare pas :
+    open-meteo pour les coordonnees (deja utilise pour sa meteo chaque matin, donc
+    joignable depuis Render — c'est prouve, pas suppose) et OSRM pour la route.
+    """
+    import importlib
+    T = importlib.import_module("agent.trajet")
+    A = importlib.import_module("api.agent")
+
+    # --- 1. Sa phrase, dictee a la voix ------------------------------------
+    # ⚠️ Premiere version : je cherchais « de X a Y » dans la phrase entiere, et elle
+    # attrapait « de temps j'ai pour » — le depart devenait « temps j'ai ». La
+    # question et les lieux ne se lisent pas avec la meme grammaire.
+    for phrase, attendu in (
+            ("Combien de temps j'ai pour de saint agne aller à Hèches",
+             ("saint agne", "Hèches")),
+            ("combien de temps pour aller de Pau à Toulouse", ("Pau", "Toulouse")),
+            ("temps de trajet de Tarbes à Lourdes", ("Tarbes", "Lourdes")),
+            ("itineraire de Bayonne a Biarritz", ("Bayonne", "Biarritz")),
+            ("distance entre Pau et Bordeaux", ("Pau", "Bordeaux")),
+            ("combien de temps de Pau a Tarbes en voiture", ("Pau", "Tarbes"))):
+        check(f"lieux lus : {phrase[:38]}…", T.lieux_demandes(phrase), attendu)
+
+    # ⚠️ …et ce qui n'est PAS un trajet ne doit surtout pas le devenir. « De 14h a
+    # 16h » est un creneau d'agenda : le confondre deplacerait un rendez-vous.
+    for pas_un_trajet in ("deplace ma reunion de 14h a 16h",
+                          "ajoute un rdv de 10h a 11h demain",
+                          "combien de temps dure un cours de maths",
+                          "mes mails de ce matin",
+                          "combien de temps il me reste avant le bac",
+                          "de mon lycee a chez moi combien de temps"):
+        check(f"pas un trajet : {pas_un_trajet[:36]}", T.lieux_demandes(pas_un_trajet), None)
+
+    # --- 2. La demande ne part plus vers Google Maps -----------------------
+    act, args = A._resolve_app_action("Combien de temps j'ai pour de saint agne aller à Hèches")
+    check("un temps de trajet a son propre chemin", act, "__TRAJET__")
+    check("…avec le depart", args["depart"], "saint agne")
+    check("…et l'arrivee", args["arrivee"], "Hèches")
+    check("un creneau d'agenda n'y va pas",
+          A._resolve_app_action("deplace ma reunion de 14h a 16h")[0], None)
+
+    # --- 3. Le calcul, sur des reponses fabriquees -------------------------
+    class _Rep:
+        def __init__(self, d):
+            self._d = d
+
+        def json(self):
+            return self._d
+
+    class _Session:
+        def __init__(self, geo, route):
+            self.geo, self.route, self.n = geo, route, 0
+
+        def get(self, url, **k):
+            if "geocoding" in url:
+                self.n += 1
+                return _Rep(self.geo[min(self.n - 1, len(self.geo) - 1)])
+            return _Rep(self.route)
+
+    pau = {"results": [{"latitude": 43.3, "longitude": -0.37, "name": "Pau",
+                        "admin1": "Pyrénées-Atlantiques"}]}
+    hec = {"results": [{"latitude": 42.99, "longitude": 0.36, "name": "Hèches",
+                        "admin1": "Hautes-Pyrénées"}]}
+    ok = {"code": "Ok", "routes": [{"distance": 98400.0, "duration": 4380.0}]}
+
+    rep = T.itineraire("Pau", "Hèches", _Session([pau, hec], ok))
+    check("la duree est calculee", "1 h 13" in rep, True)
+    check("…et la distance", "98 km" in rep, True)
+    check("…avec les deux lieux nommes", "Pau (Pyrénées-Atlantiques)" in rep, True)
+    check("…et le departement d'arrivee", "Hèches (Hautes-Pyrénées)" in rep, True)
+    check("la source est dite", "OSRM, gratuit" in rep, True)
+    # Les durees courtes se lisent en minutes.
+    court = T.itineraire("Pau", "Hèches",
+                         _Session([pau, hec], {"code": "Ok",
+                                               "routes": [{"distance": 8200.0,
+                                                           "duration": 900.0}]}))
+    check("une durée courte est en minutes", "15 min" in court, True)
+
+    # --- 4. Aucun chiffre inventé quand ça rate ---------------------------
+    # ⚠️ Surtout pas d'estimation « à vol d'oiseau » maquillée en temps de trajet :
+    # ce serait un chiffre inventé, exactement ce qu'on traque partout ailleurs.
+    panne = T.itineraire("Pau", "Hèches", _Session([pau, hec], {"code": "NoRoute", "routes": []}))
+    check("un service muet est annoncé", "ne répond pas" in panne, True)
+    check("…et aucune durée n'est donnée", "min" in panne.split("répond pas")[0], False)
+    check("…on dit pourquoi on préfère se taire",
+          "que je n'ai pas mesurée" in panne, True)
+    inconnu = T.itineraire("Zzzzz", "Hèches", _Session([{"results": []}], ok))
+    check("un lieu introuvable est nommé", "« Zzzzz »" in inconnu, True)
+    check("…avec quoi faire", "Précise la commune" in inconnu, True)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -8368,7 +8471,8 @@ if __name__ == "__main__":
                test_une_automatisation_de_nuit_ne_peut_plus_armer_un_envoi_sur_son_chat,
                test_le_pilote_refuse_ce_qui_ne_se_rattrape_pas,
                test_la_meteo_de_sa_ville_et_un_temps_de_trajet_va_sur_maps,
-               test_analyse_d_image_ne_dit_plus_d_ajouter_une_cle_qu_il_a_deja):
+               test_analyse_d_image_ne_dit_plus_d_ajouter_une_cle_qu_il_a_deja,
+               test_un_temps_de_trajet_sans_cle_et_sans_facture):
         try:
             fn()
         except Exception as e:
