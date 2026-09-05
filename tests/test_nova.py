@@ -8212,6 +8212,92 @@ def test_la_meteo_de_sa_ville_et_un_temps_de_trajet_va_sur_maps():
               A.app_courante(hors_sujet) == "googlemaps", False)
 
 
+def test_analyse_d_image_ne_dit_plus_d_ajouter_une_cle_qu_il_a_deja():
+    """« ❌ Analyse d'image indisponible : Aucun modèle de vision disponible. Ajoute
+    GROQ_API_KEY (gratuit sur console.groq.com)… Détails : Groq: aucun modèle vision »
+
+    Sa clé Groq MARCHE — c'est elle qui fait tourner Nova, le pied de page l'affiche à
+    chaque réponse. Le message l'envoyait donc reconfigurer pour rien. Un diagnostic
+    faux coûte plus cher qu'une erreur franche : il fait chercher au mauvais endroit,
+    et c'est la troisieme fois qu'on corrige ce meme travers.
+
+    Et une cause technique derriere : a la PREMIERE erreur autre qu'un 404 — une
+    limite de debit sur le modele le plus demande, par exemple — la boucle faisait
+    « break » et abandonnait toute la liste, y compris des modeles qui auraient
+    repondu. Un quota atteint sur un modele ne dit rien des autres.
+    """
+    import importlib, sys, types, inspect
+    from unittest.mock import patch
+    C = importlib.import_module("llm.client")
+    # ⚠️ On vise LA config que llm.client a sous la main, pas « from config import
+    # config » : un autre test recharge ce module, et les deux objets divergent alors.
+    # Le test passait seul et echouait dans la suite — un test qui ment sur l'ordre.
+    config = C.config
+
+    vrai_groq, vrai_gem = config.GROQ_API_KEY, getattr(config, "GEMINI_API_KEY", "")
+
+    def message(groq, gemini, erreur):
+        config.GROQ_API_KEY, config.GEMINI_API_KEY = groq, gemini
+        essais = []
+
+        class FauxGroq:
+            def __init__(self, **k):
+                self.chat = self
+
+            @property
+            def completions(self):
+                return self
+
+            def create(self, model="", **k):
+                essais.append(model)
+                raise RuntimeError(erreur)
+
+        faux = types.ModuleType("groq")
+        faux.Groq = FauxGroq
+        with patch.dict(sys.modules, {"groq": faux}), \
+             patch.object(C, "_lister_modeles", return_value=[]):
+            try:
+                C.chat_vision("/etc/hostname")
+                return "", essais
+            except Exception as e:
+                return str(e), essais
+
+    try:
+        # --- 1. Aucune cle : la, oui, il faut en ajouter une ----------------
+        msg, _ = message("", "", "peu importe")
+        check("sans clé, on demande bien une clé", "aucune clé de vision" in msg, True)
+        check("…et on dit où la prendre", "console.groq.com" in msg, True)
+
+        # --- 2. Clé VALIDE mais plus aucun modèle de vision ----------------
+        msg, essais = message("gsk_valide", "", "model_not_found: 404 does not exist")
+        check("on ne lui demande PLUS d'ajouter une clé qu'il a",
+              "Ajoute GROQ_API_KEY" in msg, False)
+        check("…on lui dit que sa clé fonctionne", "ta clé Groq fonctionne" in msg, True)
+        check("…et que le problème est le modèle",
+              "c'est le modèle de vision qui a changé de nom" in msg, True)
+        check("…avec de quoi le corriger", "Détail technique" in msg, True)
+        # ⚠️ Tous les modèles connus doivent avoir été essayés.
+        check("les quatre modèles connus sont essayés", len(essais) >= 4, True)
+
+        # --- 3. Clé valide, modèles SATURÉS : ce n'est pas une panne -------
+        msg, essais = message("gsk_valide", "", "rate_limit_exceeded 429 too many requests")
+        check("une saturation est reconnue comme telle",
+              "modèles de vision gratuits sont saturés" in msg, True)
+        check("…et on le rassure sur sa configuration",
+              "Ta configuration est bonne" in msg, True)
+        check("…en disant quoi faire", "Redemande-moi tout à l'heure" in msg, True)
+        # ⚠️ LE défaut technique : un 429 sur le premier modèle abandonnait TOUS
+        # les suivants. Un quota atteint sur un modèle ne dit rien des autres.
+        check("un quota sur un modèle n'abandonne plus les autres",
+              len(essais) >= 4, True)
+    finally:
+        config.GROQ_API_KEY, config.GEMINI_API_KEY = vrai_groq, vrai_gem
+
+    src = inspect.getsource(C.chat_vision)
+    check("plus de « break » sur une erreur non-404",
+          "errors.append(f\"Groq({m}): {str(e)[:90]}\")\n                    break" in src, False)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -8281,7 +8367,8 @@ if __name__ == "__main__":
                test_un_nom_dicte_de_travers_et_l_actu_hors_sujet,
                test_une_automatisation_de_nuit_ne_peut_plus_armer_un_envoi_sur_son_chat,
                test_le_pilote_refuse_ce_qui_ne_se_rattrape_pas,
-               test_la_meteo_de_sa_ville_et_un_temps_de_trajet_va_sur_maps):
+               test_la_meteo_de_sa_ville_et_un_temps_de_trajet_va_sur_maps,
+               test_analyse_d_image_ne_dit_plus_d_ajouter_une_cle_qu_il_a_deja):
         try:
             fn()
         except Exception as e:
