@@ -7925,6 +7925,293 @@ def test_un_nom_dicte_de_travers_et_l_actu_hors_sujet():
           "arts = []" in src, True)
 
 
+def test_une_automatisation_de_nuit_ne_peut_plus_armer_un_envoi_sur_son_chat():
+    """Trouvaille de l'audit, VERIFIEE et reproduite avant correction. La plus grave
+    de toutes : c'est exactement ce qu'il redoutait des le debut — « tu te rends
+    compte s'il fait ca avec mes mails ! »
+
+      03h00 · l'automatisation « range mes mails » demarre        → canal = « fond »
+      03h02 · Lohan pose une question dans le chat depuis son lit → canal = « web »
+      03h03 · l'automatisation arrive sur GMAIL_SEND_EMAIL. Elle appelle le garde-fou
+              SANS lui passer de canal — la boucle ReAct ne peut pas le transmettre —
+              il lit donc la valeur GLOBALE : « web ». Le refus « en mode fond je
+              n'arme rien » est contourne, et l'envoi est arme sur le canal du CHAT.
+      07h00 · Lohan tape « ok » pour tout autre chose. Le mail part.
+
+    Le canal etait range dans un simple dictionnaire de module, partage par toutes les
+    requetes du serveur. Le garde-fou existait, il etait juste assis sur une valeur
+    que n'importe quelle autre requete pouvait changer sous lui.
+    """
+    import asyncio, importlib
+    A = importlib.import_module("api.agent")
+    K = importlib.import_module("agent.canal")
+    from agent.core import _off
+
+    def outil_qui_veut_envoyer():
+        # Ce que fait plugins/builtin/composio_tool.py : il appelle le garde-fou
+        # SANS canal, parce qu'il n'en a pas a lui passer.
+        return A._demande_confirmation("lohan", "gmail", "GMAIL_SEND_EMAIL",
+                                       {"to": "x@y.fr", "subject": "test"})
+
+    # --- 1. LE scenario : deux requetes simultanees -------------------------
+    async def scenario_concurrent():
+        A._ATTENTE.clear()
+
+        async def automatisation():
+            A._CANAL["actuel"] = "fond"
+            await asyncio.sleep(0.01)                    # elle reflechit
+            return outil_qui_veut_envoyer()
+
+        async def chat_web():
+            await asyncio.sleep(0.005)
+            A._CANAL["actuel"] = "web"                   # Lohan ecrit pendant ce temps
+            return "ok"
+
+        rep, _ = await asyncio.gather(automatisation(), chat_web())
+        return rep
+
+    rep = asyncio.run(scenario_concurrent())
+    check("l'automatisation REFUSE d'armer", rep.startswith("🛑"), True)
+    check("…et le dit franchement", "tu n'es pas là" in rep, True)
+    check("RIEN n'est arme sur le chat", ("lohan", "web") in A._ATTENTE, False)
+    check("…ni nulle part ailleurs", list(A._ATTENTE), [])
+
+    # --- 2. …y compris quand l'outil tourne dans un THREAD ------------------
+    # ⚠️ Les outils passent par run_in_executor, et un contextvar ne franchit pas
+    # cette frontiere : sans relais explicite, le thread retomberait sur la valeur
+    # globale, c'est-a-dire le canal de la derniere requete recue.
+    async def via_thread():
+        A._ATTENTE.clear()
+        A._CANAL["actuel"] = "fond"
+
+        async def bruit():
+            await asyncio.sleep(0.002)
+            A._CANAL["actuel"] = "web"
+
+        r, _ = await asyncio.gather(_off(outil_qui_veut_envoyer), bruit())
+        return r
+
+    r2 = asyncio.run(via_thread())
+    check("dans un thread aussi, le fond refuse", r2.startswith("🛑"), True)
+    check("…et rien n'est arme", ("lohan", "web") in A._ATTENTE, False)
+
+    # --- 3. Le comportement LEGITIME n'a pas bouge -------------------------
+    async def depuis_le_chat():
+        A._ATTENTE.clear()
+        A._CANAL["actuel"] = "web"
+        return await _off(outil_qui_veut_envoyer)
+
+    r3 = asyncio.run(depuis_le_chat())
+    check("depuis le chat, la confirmation est demandee", r3.startswith("⚠️"), True)
+    check("…et l'action attend sur LE BON canal", ("lohan", "web") in A._ATTENTE, True)
+    # Un accord donne dans le chat declenche bien ce qui y a ete arme.
+    check("un accord y est reconnu", A._confirmation_donnee("oui vas-y"), True)
+
+    # --- 4. Le canal est RESTITUE apres chaque travail ---------------------
+    # ⚠️ Les threads d'un pool sont reutilises : un canal laisse derriere soi
+    # contaminerait la requete suivante — le defaut qu'on repare, a l'envers.
+    def lit_le_canal():
+        return K.courant()
+
+    async def deux_a_la_suite():
+        A._CANAL["actuel"] = "fond"
+        a = await _off(lit_le_canal)
+        A._CANAL["actuel"] = "web"
+        b = await _off(lit_le_canal)
+        return a, b
+
+    a, b = asyncio.run(deux_a_la_suite())
+    check("le thread voit le canal du travail (fond)", a, "fond")
+    check("…puis celui du suivant (web)", b, "web")
+    check("hors de tout travail, le defaut est le plus prudent", K.courant(), "web")
+
+    # --- 5. Le relais est bien en place dans le code -----------------------
+    import inspect
+    from agent import core as C
+    check("le canal entre dans le thread avec le travail",
+          "_applique_canal" in inspect.getsource(C._off), True)
+    api = inspect.getsource(A._demande_confirmation)
+    check("le garde-fou lit le canal du travail, pas la derniere requete",
+          "canal_courant()" in api, True)
+
+
+def test_le_pilote_refuse_ce_qui_ne_se_rattrape_pas():
+    """« Est-ce que Nova peut prendre le controle de ma souris et de mon ordi, que je
+    voie ma souris bouger toute seule, aller sur Google, ouvrir des apps ? »
+
+    On commence par un NAVIGATEUR DEDIE. Ce sous-systeme est a part de tout le reste
+    pour une raison precise : les garde-fous existants protegent des actions passant
+    par une API — Nova « demande » a Gmail d'envoyer, et on peut refuser. Un
+    navigateur pilote ne demande rien a personne : il CLIQUE sur « Envoyer ». Aucune
+    protection existante ne s'y applique.
+
+    D'ou des regles a lui, ECRITES EN DUR plutot que confiees au modele — la lecon de
+    la journee : ce qui coute cher ne se met pas dans un prompt.
+    """
+    import importlib
+    from pathlib import Path as _P
+    P = importlib.import_module("agent.pilote")
+    racine = _P(__file__).resolve().parents[1]
+
+    # --- 1. La ou le pilote n'ira JAMAIS ------------------------------------
+    for url in ("https://www.credit-agricole.fr", "boursorama-banque.com/comptes",
+                "https://www.bnpparibas.net", "https://paypal.com/checkout",
+                "https://impots.gouv.fr", "https://www.ameli.fr",
+                "https://revolut.com", "https://binance.com",
+                "https://x.fr/paiement/valider"):
+        check(f"refus : {url[:40]}", bool(P.site_interdit(url)), True)
+        try:
+            P.verifie({"quoi": "ouvrir", "cible": url})
+            check(f"…et l'ordre est bien rejete ({url[:28]})", False, True)
+        except P.Refus as e:
+            check(f"…avec une raison lisible ({url[:24]})", "je refuse" in str(e), True)
+
+    # …sans bloquer ce qui est anodin.
+    for url in ("https://google.com", "https://fr.wikipedia.org", "zonebourse.com",
+                "https://www.lemonde.fr", "https://github.com"):
+        check(f"autorise : {url[:34]}", P.site_interdit(url), "")
+
+    # --- 2. Les gestes qu'il ne fera jamais --------------------------------
+    for geste, attendu in (
+            ({"quoi": "ecrire", "cible": "Mot de passe", "valeur": "azerty"}, "mot de passe"),
+            ({"quoi": "ecrire", "cible": "champ", "valeur": "mon code secret 1234"}, "mot de passe"),
+            ({"quoi": "ecrire", "cible": "Numéro de carte", "valeur": "4970"}, "mot de passe"),
+            ({"quoi": "clic", "cible": "Valider le paiement"}, "je ne clique pas"),
+            ({"quoi": "clic", "cible": "Supprimer mon compte"}, "je ne clique pas"),
+            ({"quoi": "telecharger", "cible": "x"}, "je ne sais pas faire"),
+            ({"quoi": "executer", "cible": "rm -rf"}, "je ne sais pas faire"),
+            ({"quoi": "ouvrir", "cible": ""}, "aucune adresse")):
+        try:
+            P.verifie(geste)
+            check(f"⚠️ AUTORISE a tort : {str(geste)[:44]}", False, True)
+        except P.Refus as e:
+            check(f"refus : {str(geste.get('quoi'))} {str(geste.get('cible'))[:24]}",
+                  attendu in str(e), True)
+
+    # --- 3. Ce qui est legitime passe --------------------------------------
+    plan = P.verifie_plan([
+        {"quoi": "ouvrir", "cible": "google.com", "pourquoi": "chercher la meteo"},
+        {"quoi": "ecrire", "cible": "", "valeur": "meteo Pau demain"},
+        {"quoi": "lire"},
+        {"quoi": "capture"}])
+    check("un plan ordinaire est accepte", len(plan), 4)
+    check("…et l'adresse est completee", plan[0]["cible"], "https://google.com")
+    # ⚠️ Il doit savoir a quoi il dit oui AVANT que ca bouge.
+    texte = P.resume(plan)
+    check("le plan se lit en francais", "ouvrir **https://google.com**" in texte, True)
+    check("…chaque geste", "écrire « meteo Pau demain »" in texte, True)
+
+    # --- 4. Un plan ne s'execute pas a moitie ------------------------------
+    # ⚠️ Un plan a moitie joue laisse le navigateur dans un etat que personne n'a voulu.
+    try:
+        P.verifie_plan([{"quoi": "ouvrir", "cible": "google.com"},
+                        {"quoi": "ouvrir", "cible": "https://credit-agricole.fr"},
+                        {"quoi": "lire"}])
+        check("⚠️ un plan avec une etape interdite est passe", False, True)
+    except P.Refus as e:
+        check("un seul geste interdit annule tout le plan", "je refuse" in str(e), True)
+    try:
+        P.verifie_plan([{"quoi": "defiler"}] * 30)
+        check("⚠️ plan trop long accepte", False, True)
+    except P.Refus as e:
+        check("un plan trop long est refuse", "trop long" in str(e), True)
+    try:
+        P.verifie_plan([])
+        check("⚠️ plan vide accepte", False, True)
+    except P.Refus as e:
+        check("un plan vide est refuse", "vide" in str(e), True)
+
+    # --- 5. La file : rien ne survit a un redemarrage ----------------------
+    # ⚠️ Un ordre de pilotage ne doit PAS survivre a une coupure : il n'aurait aucune
+    # raison de s'attendre a voir sa souris bouger pour une demande d'avant.
+    src = (racine / "agent" / "pilote.py").read_text(encoding="utf-8")
+    check("la file est en memoire, pas sur disque", "_FILE = []" in src, True)
+    check("…et les ordres perimes sont jetes", "périmé, jeté sans être joué" in src, True)
+    lot = P.depose([{"quoi": "ouvrir", "cible": "google.com"}], "cherche la meteo")
+    check("un plan depose attend", P.en_attente(), 1)
+    pris = P.prochain()
+    check("…le programme local le recupere", pris["id"], lot["id"])
+    check("…et il n'est plus en attente", P.en_attente(), 0)
+    check("plus rien a faire ensuite", P.prochain(), {})
+    P.enregistre({"id": lot["id"], "etapes": [{"quoi": "ouvrir", "ok": True}]})
+    check("le resultat reel est garde", P.derniers(1)[0]["id"], lot["id"])
+
+    # --- 6. Le programme LOCAL rejoue les memes regles ---------------------
+    # ⚠️ Une verification qui n'existe que sur le serveur disparait si le serveur se
+    # trompe. Ici, c'est SON ordinateur qui refuse — ca ne depend de personne.
+    local = (racine / "pilote" / "nova_pilote.py").read_text(encoding="utf-8")
+    check("le programme local existe", len(local) > 2000, True)
+    check("…il rejoue la liste des sites interdits", "def interdit(" in local, True)
+    check("…il verifie AUSSI apres une redirection",
+          "la page a redirigé vers un site interdit" in local, True)
+    check("…le navigateur est VISIBLE", "headless=False" in local, True)
+    check("…avec un profil vierge, sans ses cookies", "new_context(" in local, True)
+    check("…chaque geste est annonce AVANT d'etre fait",
+          "On ANNONCE avant de faire" in local, True)
+    check("…et le plan s'arrete au premier echec",
+          "j'arrête là, je ne devine pas la suite" in local, True)
+
+
+def test_la_meteo_de_sa_ville_et_un_temps_de_trajet_va_sur_maps():
+    """Premiere journee de test reelle. Deux defauts, dont un qu'il verrait TOUS LES
+    MATINS.
+
+    1. Son briefing annoncait « 🌤️ Meteo — PARIS : couvert, 16.8 – 24.1 °C ». Il
+       habite dans les Pyrenees-Atlantiques. La ville venait d'une variable
+       d'environnement figee a « Paris » par defaut — alors que Nova SAIT ou il
+       habite : il le lui a dit, et elle l'a retenu dans son profil.
+       Une info fausse chaque matin, sur la seule ligne du briefing qu'on regarde
+       vraiment avant de sortir. Ce que Nova sait de lui doit primer sur un reglage
+       que personne n'a jamais changé — c'est tout l'interet de retenir quelque chose.
+
+    2. « Combien de temps j'ai pour de Saint-Agne aller a Heches » n'atteignait PAS
+       Maps : seuls « itineraire » et « trajet » y menaient. Nova est donc partie
+       chercher sur le WEB un temps de trajet entre deux villages des Pyrenees, et a
+       rendu « je n'ai pas trouve d'information precise » — alors qu'elle a l'outil
+       qui repond exactement a ca. Il a du lui dire « utilise Google Maps alors ».
+    """
+    import importlib
+    from unittest.mock import patch
+    B = importlib.import_module("agent.briefing")
+    A = importlib.import_module("api.agent")
+
+    # --- 1. La meteo de SA ville -------------------------------------------
+    for facts, attendu in (
+            ([{"cat": "ville", "texte": "j'habite à Pau"}], "Pau"),
+            ([{"cat": "ville", "texte": "je vis à Saint-Pé-de-Bigorre"}], "Saint-Pé-de-Bigorre"),
+            ([{"cat": "autre", "texte": "je réside à Tarbes depuis 2 ans"}], "Tarbes"),
+            ([{"cat": "ville", "texte": "je suis domicilié à Bordeaux"}], "Bordeaux")):
+        with patch("agent.profile.list_facts", return_value=facts):
+            check(f"sa ville est lue : {attendu}", B.ville_de_lohan(), attendu)
+    # …et sans rien dans le profil, on retombe sur le reglage, sans planter.
+    for facts in ([{"cat": "age", "texte": "j'ai 17 ans"}], []):
+        with patch("agent.profile.list_facts", return_value=facts):
+            check("sans ville connue, le reglage sert de repli",
+                  B.ville_de_lohan(), "Paris")
+    # Un profil illisible ne doit pas casser le briefing du matin.
+    with patch("agent.profile.list_facts", side_effect=RuntimeError("base HS")):
+        check("un profil illisible ne casse rien", B.ville_de_lohan(), "Paris")
+
+    # --- 2. Un temps de trajet va sur Maps ---------------------------------
+    for demande in ("combien de temps pour aller de saint agne a heches",
+                    "combien de temps j'ai pour de saint agne aller a heches",
+                    "combien de temps en voiture jusqu a Tarbes",
+                    "temps de trajet Pau Toulouse",
+                    "a quelle distance est Lourdes",
+                    "distance entre Pau et Bayonne",
+                    "itineraire Pau Toulouse"):
+        check(f"« {demande[:40]}… » va sur Maps", A.app_courante(demande), "googlemaps")
+
+    # ⚠️ …sans emporter ce qui n'a rien a voir. « Combien de temps dure un cours »
+    # n'est pas une question de carte.
+    for hors_sujet in ("combien de temps dure un cours de maths",
+                       "resume l actu tech du jour",
+                       "mes mails", "mon agenda de demain",
+                       "combien de temps il me reste avant le bac"):
+        check(f"« {hors_sujet[:38]} » n'ouvre pas Maps",
+              A.app_courante(hors_sujet) == "googlemaps", False)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -7991,7 +8278,10 @@ if __name__ == "__main__":
                test_aucun_chiffre_de_marche_sans_source_et_recherche_longue_reelle,
                test_en_vocal_nova_parle_au_lieu_de_reciter,
                test_le_tri_des_mails_etait_exactement_a_l_envers,
-               test_un_nom_dicte_de_travers_et_l_actu_hors_sujet):
+               test_un_nom_dicte_de_travers_et_l_actu_hors_sujet,
+               test_une_automatisation_de_nuit_ne_peut_plus_armer_un_envoi_sur_son_chat,
+               test_le_pilote_refuse_ce_qui_ne_se_rattrape_pas,
+               test_la_meteo_de_sa_ville_et_un_temps_de_trajet_va_sur_maps):
         try:
             fn()
         except Exception as e:

@@ -266,8 +266,19 @@ _TOOLKITS = {
     "airtable":       ("airtable",),
     "asana":          ("asana",),
     "jira":           ("jira",),
+    # ⚠️ « Combien de temps j'ai pour de Saint-Agne aller à Hèches » n'atteignait PAS
+    # Maps : seuls « itinéraire » et « trajet » y menaient. Nova est donc partie chercher
+    # sur le web un temps de trajet entre deux villages des Pyrénées, et a rendu « je
+    # n'ai pas trouvé » — alors qu'elle a l'outil qui répond exactement à ça.
+    # Une question de durée entre deux endroits est TOUJOURS une question de carte.
     "googlemaps":     ("maps", "google maps", "itinéraire", "itineraire", "trajet", "adresse",
-                       "comment aller", "temps de route", "restaurant près", "restaurant pres"),
+                       "comment aller", "temps de route", "restaurant près", "restaurant pres",
+                       "combien de temps pour aller", "combien de temps j'ai pour",
+                       "combien de temps en voiture", "combien de temps en train",
+                       "temps de trajet", "durée du trajet", "duree du trajet",
+                       "en combien de temps", "à quelle distance", "a quelle distance",
+                       "distance entre", "aller à", "aller a ", "pour rejoindre",
+                       "route jusqu", "jusqu'à combien de temps"),
     "googletasks":    ("google tasks", "ma liste de tâches", "ma liste de taches", "mes tâches",
                        "mes taches", "todo", "to-do"),
     "todoist":        ("todoist",),
@@ -1837,7 +1848,13 @@ _ATTENTE = {}                       # (profil, canal) -> action en attente de co
 # ⚠️ Un dict de module, PAS un contextvar : les appels d'outils passent par
 # run_in_executor, et un contextvar ne franchit pas cette frontière de thread — piège
 # déjà rencontré ailleurs dans ce projet.
-_CANAL = {"actuel": "web"}
+# ⚠️ Un simple dict de module était partagé par TOUTES les requêtes du serveur : une
+# automatisation de nuit qui arrivait sur un envoi pendant que Lohan écrivait dans le
+# chat lisait « web », contournait le refus « fond », et armait l'envoi sur SON chat —
+# que son prochain « ok » faisait partir. Reproduit en trois lignes. Le canal suit
+# maintenant le travail (tâche asyncio + thread d'exécution) : voir agent/canal.py.
+from agent.canal import Registre as _RegistreCanal, courant as canal_courant
+_CANAL = _RegistreCanal({"actuel": "web"})
 # app -> instant du dernier succès. Un fait, opposable à toute explication inventée.
 _APP_OK = {}
 _APP_OK_TTL = 900.0
@@ -1892,7 +1909,8 @@ def _demande_confirmation(profil: str, slug: str, action: str, args: dict,
     serait pire que de ne rien faire.
     """
     import time as _t
-    canal = canal or _CANAL.get("actuel", "web")
+    # Le canal du travail RÉELLEMENT en cours — pas celui de la dernière requête reçue.
+    canal = canal or canal_courant()
     if canal == "fond":
         return ("🛑 Je n'ai rien envoyé : cette action est sans retour et tu n'es pas là "
                 f"pour me le confirmer.\n\n> {_resume_action(action, args)}\n\n"
@@ -5560,6 +5578,37 @@ async def voice_pending(since: float = 0.0, key: str = ""):
     import time as _t
     fresh = _WAKE["ts"] > since and (_t.time() - _WAKE["ts"]) < 60
     return {"wake": bool(fresh), "ts": _WAKE["ts"], "from": _WAKE["from"]}
+
+
+# ═══ PILOTAGE D'UN NAVIGATEUR SUR SON PC ═══
+#
+# ⚠️ Nova n'a AUCUN accès à son écran : elle tourne sur un serveur. C'est le programme
+# `pilote/nova_pilote.py`, qu'il lance lui-même sur sa machine, qui vient chercher les
+# ordres ici et bouge le curseur. Tant qu'il ne l'a pas lancé, ces routes ne pilotent
+# rien du tout — le seul interrupteur qui compte est entre ses mains.
+@router.get("/pilote/prochain")
+async def pilote_prochain(key: str = ""):
+    """Le programme local vient chercher son prochain plan. {} s'il n'y a rien."""
+    _check_key(key)
+    from agent import pilote
+    return pilote.prochain()
+
+
+@router.post("/pilote/resultat")
+async def pilote_resultat(req: dict, key: str = ""):
+    """Ce que le programme local a RÉELLEMENT fait — succès comme échec."""
+    _check_key(key)
+    from agent import pilote
+    pilote.enregistre(req or {})
+    return {"ok": True}
+
+
+@router.get("/pilote/etat")
+async def pilote_etat(key: str = ""):
+    """De quoi savoir si le pilote tourne et ce qu'il vient de faire."""
+    _check_key(key)
+    from agent import pilote
+    return {"en_attente": pilote.en_attente(), "derniers": pilote.derniers(5)}
 
 
 @router.get("/file")
