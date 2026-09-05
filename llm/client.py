@@ -937,9 +937,15 @@ def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> 
                     if any(k in txt for k in ("not_found", "does not exist", "404", "decommission")):
                         logger.warning(f"[vision] modèle Groq '{m}' indisponible, essai suivant…")
                         continue
+                    # ⚠️ On faisait « break » ici : la PREMIÈRE erreur autre qu'un 404 —
+                    # une limite de débit sur le modèle le plus demandé, par exemple —
+                    # abandonnait toute la liste, y compris des modèles qui auraient
+                    # répondu. Un quota atteint sur un modèle ne dit rien des autres.
+                    logger.warning(f"[vision] Groq '{m}' a échoué ({str(e)[:70]}), essai suivant…")
                     errors.append(f"Groq({m}): {str(e)[:90]}")
-                    break
-            errors.append("Groq: aucun modèle vision accessible")
+                    continue
+            if not any(x.startswith("Groq(") for x in errors):
+                errors.append("Groq: aucun modèle de vision sur ce compte")
         except Exception as e:
             errors.append(f"Groq: {str(e)[:120]}")
 
@@ -968,10 +974,35 @@ def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> 
         except Exception as e:
             errors.append(f"Gemini: {str(e)[:120]}")
 
+    # ⚠️ CE MESSAGE DISAIT D'AJOUTER UNE CLÉ QU'IL AVAIT DÉJÀ. « Ajoute GROQ_API_KEY »
+    # s'affichait alors que sa clé Groq marchait parfaitement pour tout le reste — il
+    # serait donc parti la reconfigurer pour rien. Un diagnostic faux coûte plus cher
+    # qu'une erreur franche : il envoie chercher au mauvais endroit.
+    # On dit maintenant ce qui manque VRAIMENT, en regardant ce qu'on a.
+    a_groq = bool(config.GROQ_API_KEY)
+    a_gemini = bool(getattr(config, "GEMINI_API_KEY", ""))
+    detail = (f" Détail technique : {' | '.join(errors)}" if errors else "")
+    if not a_groq and not a_gemini:
+        raise RuntimeError(
+            "Je ne peux pas regarder d'image : aucune clé de vision n'est configurée. "
+            "Ajoute GROQ_API_KEY (gratuit sur console.groq.com) ou GEMINI_API_KEY "
+            "(gratuit sur aistudio.google.com) dans les variables Render." + detail)
+    satures = [e for e in errors if any(k in e.lower() for k in
+                                        ("rate", "429", "quota", "limit", "capacity"))]
+    if satures:
+        raise RuntimeError(
+            "Je ne peux pas regarder cette image maintenant : les modèles de vision "
+            "gratuits sont saturés. Ta configuration est bonne — c'est une limite de "
+            "débit, ça repart généralement en quelques minutes. Redemande-moi tout à "
+            "l'heure." + detail)
+    fournisseurs = " et ".join(x for x in ("Groq" if a_groq else "",
+                                           "Gemini" if a_gemini else "") if x)
     raise RuntimeError(
-        "Aucun modèle de vision disponible. Ajoute GROQ_API_KEY (gratuit sur console.groq.com) "
-        "ou GEMINI_API_KEY (gratuit sur aistudio.google.com) dans les variables Render."
-        + (f" Détails : {' | '.join(errors)}" if errors else ""))
+        f"Je ne peux pas regarder d'image : ta clé {fournisseurs} fonctionne, mais "
+        "aucun modèle capable de LIRE une image n'est accessible avec elle. Ce n'est "
+        "donc pas une clé à ajouter — c'est le modèle de vision qui a changé de nom ou "
+        "n'est plus proposé sur ce compte. Envoie-moi le détail ci-dessous et je "
+        "mettrai la liste à jour." + detail)
 
 
 def _mistral_chat(messages: list, model: str, temperature: float) -> str:
