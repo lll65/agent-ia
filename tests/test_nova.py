@@ -8572,6 +8572,90 @@ def test_audit_trois_portes_derobees_du_garde_fou():
     check("…et surtout PAS sur le chat web", ("lohan", "web") in cles, False)
 
 
+def test_vision_troisieme_fournisseur_et_detail_qui_sert():
+    """« Détail technique : Groq: aucun modèle de vision sur ce compte | Gemini: aucun
+    modèle de vision sur ce compte »
+
+    Le message etait enfin complet — et il ne servait toujours a RIEN. Huit modeles
+    essayes, huit echecs, et pas un seul nom dans le detail : impossible de savoir
+    s'il fallait mettre la liste a jour ou chercher ailleurs. Un 404 partait en
+    silence (« continue » sans rien noter). Un diagnostic qui ne diagnostique pas est
+    un diagnostic de moins, pas un de plus.
+
+    Et « trouve des API gratuites que personne ne connait » : la reponse etait deja
+    dans son projet. OPENROUTER est DEJA un fournisseur de la chaine de modeles — la
+    cle existe donc — et il propose des modeles de vision en acces gratuit. Ajouter
+    une API obscure alors qu'un fournisseur deja branche fait le travail, ce serait
+    une dependance de plus a surveiller pour rien.
+    """
+    import importlib, sys, types
+    from unittest.mock import patch
+    import requests as _rq
+    C = importlib.import_module("llm.client")
+    cfg = C.config
+
+    sauve = (cfg.GROQ_API_KEY, getattr(cfg, "GEMINI_API_KEY", ""),
+             getattr(cfg, "OPENROUTER_API_KEY", ""))
+    try:
+        # --- 1. OpenRouter est bien un troisieme fournisseur ----------------
+        cfg.GROQ_API_KEY, cfg.GEMINI_API_KEY, cfg.OPENROUTER_API_KEY = "", "", "sk-or-valide"
+        essais = []
+
+        class _R:
+            def __init__(self, code):
+                self.status_code = code
+
+            def json(self):
+                return {}
+
+        def _post(url, **k):
+            essais.append((k.get("json") or {}).get("model", "?"))
+            return _R(404)
+
+        with patch.object(_rq, "post", _post):
+            try:
+                C.chat_vision("/etc/hostname")
+                msg = ""
+            except Exception as e:
+                msg = str(e)
+        check("OpenRouter est essaye", len(essais) >= 3, True)
+        check("…avec des modeles gratuits", all(":free" in m for m in essais), True)
+        check("…dont un modele de vision", any("vision" in m or "vl" in m for m in essais), True)
+        check("sa cle OpenRouter est reconnue comme valide",
+              "ta clé OpenRouter fonctionne" in msg, True)
+
+        # --- 2. Le detail NOMME ce qui a ete essaye ------------------------
+        check("le detail liste les modeles", "Modèles essayés" in msg, True)
+        check("…avec leur code de retour", "=404" in msg, True)
+        check("…et un nom reconnaissable", "llama-3.2-11b-vision" in msg, True)
+
+        # --- 3. Un succes s'arrete au premier modele qui repond ------------
+        essais.clear()
+
+        class _OK:
+            status_code = 200
+
+            def json(self):
+                return {"choices": [{"message": {"content": "Une capture d'ecran."}}]}
+
+        with patch.object(_rq, "post", lambda url, **k: (
+                essais.append((k.get("json") or {}).get("model", "?")) or _OK())):
+            out = C.chat_vision("/etc/hostname")
+        check("la description est rendue", out, "Une capture d'ecran.")
+        check("…sans essayer les suivants pour rien", len(essais), 1)
+
+        # --- 4. Aucune cle du tout : la, on en demande une -----------------
+        cfg.GROQ_API_KEY = cfg.GEMINI_API_KEY = cfg.OPENROUTER_API_KEY = ""
+        try:
+            C.chat_vision("/etc/hostname")
+            check("⚠️ sans cle, une reponse ?", False, True)
+        except Exception as e:
+            check("sans aucune cle, on en demande une",
+                  "aucune clé de vision" in str(e), True)
+    finally:
+        cfg.GROQ_API_KEY, cfg.GEMINI_API_KEY, cfg.OPENROUTER_API_KEY = sauve
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -8645,7 +8729,8 @@ if __name__ == "__main__":
                test_analyse_d_image_ne_dit_plus_d_ajouter_une_cle_qu_il_a_deja,
                test_un_temps_de_trajet_sans_cle_et_sans_facture,
                test_le_message_de_vision_n_est_plus_coupe_ni_contredit,
-               test_audit_trois_portes_derobees_du_garde_fou):
+               test_audit_trois_portes_derobees_du_garde_fou,
+               test_vision_troisieme_fournisseur_et_detail_qui_sert):
         try:
             fn()
         except Exception as e:
