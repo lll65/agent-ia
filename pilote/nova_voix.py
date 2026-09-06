@@ -128,6 +128,14 @@ def _commande_piper():
     return [sys.executable, "-m", "piper"]
 
 
+def _nombre(v, defaut: float) -> float:
+    """Un paramètre d'URL est du texte venu du dehors : jamais float() à sec."""
+    try:
+        return float(str(v).replace(",", "."))
+    except (TypeError, ValueError):
+        return defaut
+
+
 def _piper_installe() -> bool:
     """Piper est-il réellement là ? On le DEMANDE, on ne le suppose pas."""
     if shutil.which("piper"):
@@ -152,15 +160,25 @@ _FORMES = (
 _FORME_OK = None
 
 
-def parle(texte: str, modele: Path) -> bytes:
-    """Le WAV, ou une exception dont le message est lisible."""
+def parle(texte: str, modele: Path, vitesse: float = 1.0) -> bytes:
+    """Le WAV, ou une exception dont le message est lisible.
+
+    ⚠️ « la nouvelle voix lit trop vite ». Piper ne connaît pas la « vitesse » mais
+    la LONGUEUR des sons : --length-scale 1.2 allonge de 20 %, donc ralentit. C'est
+    l'inverse d'un débit, et se tromper de sens donnerait exactement le contraire de
+    ce qu'il demande.
+    """
     global _FORME_OK
     formes = [f for f in _FORMES if _FORME_OK is None or f[0] == _FORME_OK] or list(_FORMES)
+    v = min(1.6, max(0.6, float(vitesse or 1.0)))
+    echelle = round(1.0 / v, 3)
     echecs = []
     for nom, construit in formes:
         with tempfile.TemporaryDirectory() as d:
             sortie = Path(d) / "voix.wav"
             args, entree = construit(modele, sortie, texte)
+            if abs(echelle - 1.0) > 0.01:
+                args = args[:4] + ["--length-scale", str(echelle)] + args[4:]
             try:
                 r = subprocess.run(_commande_piper() + args, input=entree,
                                    capture_output=True, timeout=120)
@@ -223,7 +241,7 @@ class Poste(http.server.BaseHTTPRequestHandler):
         if len(texte) > MAX_TEXTE:
             texte = texte[:MAX_TEXTE]
         try:
-            wav = parle(texte, self.modele)
+            wav = parle(texte, self.modele, _nombre((q.get("vitesse") or ["1"])[0], 1.0))
         except Exception as e:
             # ⚠️ On répond une ERREUR, pas un silence. Un fichier audio vide, le
             # navigateur le joue sans rien dire : Nova aurait l'air de parler dans le
