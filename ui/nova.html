@@ -2216,7 +2216,55 @@ addEventListener("pointerdown",unlockAudio,{once:true});
 addEventListener("touchend",unlockAudio,{once:true});
 addEventListener("click",unlockAudio,{once:true});
 
+/* ═══ LECTURE PAR LA VOIX LOCALE, EN MORCEAUX ═══
+   « ya la voix qui a un gros décalage de pas mal de secondes par rapport aux autres »
+
+   Deux causes, et il fallait traiter les deux :
+     • côté PC, Piper rechargeait le modèle de 65 Mo à CHAQUE phrase (corrigé dans
+       pilote/nova_voix.py : le modèle reste en mémoire) ;
+     • ici, on demandait la réponse ENTIÈRE d'un coup. Même rapide, synthétiser 900
+       signes prend du temps, et rien ne sortait avant la fin. Les voix du navigateur
+       commencent à parler à la première syllabe : d'où l'écart qu'il entend.
+
+   On découpe donc en phrases : on joue la première dès qu'elle est prête, et on
+   FABRIQUE LA SUIVANTE PENDANT qu'elle passe. Le décalage se réduit à la durée de la
+   première phrase, et disparaît ensuite. */
+let LOCAL_FILE=null, AUDIO2=null;
+function _urlVoix(t){ return VOIX_LOCALE+"/voix?vitesse="+VITESSE.toFixed(2)
+                            +"&text="+encodeURIComponent(t); }
+function arreteLocal(){ LOCAL_FILE=null;
+  for(const a of [AUDIO, AUDIO2]) if(a){ try{ a.pause(); }catch(e){} } }
+function parleEnLocal(texte, onend){
+  arreteLocal();
+  if(!AUDIO2){ AUDIO2=new Audio(); AUDIO2.preload="auto"; }
+  // La PREMIÈRE tranche est courte exprès : c'est elle qui fixe le temps d'attente.
+  const morceaux=_morceauxLecture(texte, 160);
+  if(!morceaux.length){ if(onend) onend(); return; }
+  const etat={ morceaux:morceaux, i:0, fini:false };
+  LOCAL_FILE=etat;
+  const fin=(basculer)=>{ if(etat.fini||LOCAL_FILE!==etat) return; etat.fini=true;
+    LOCAL_FILE=null; showReplay(false);
+    // Le serveur local n'a pas répondu : on ne reste pas muet, on repasse au navigateur.
+    if(basculer){ LOCAL_TTS=false; browserSpeak(texte, onend, true); return; }
+    if(onend) onend(); };
+  const joue=(k)=>{
+    if(LOCAL_FILE!==etat || k>=etat.morceaux.length){ fin(false); return; }
+    const a=(k%2===0)?AUDIO:AUDIO2, suivant=(k%2===0)?AUDIO2:AUDIO;
+    a.onended=()=>joue(k+1);
+    a.onerror=()=>{ if(k===0) fin(true); else joue(k+1); };   // une tranche ratée en
+    a.volume=1; a.src=_urlVoix(etat.morceaux[k]);             // route : on continue
+    const pr=a.play();
+    if(pr&&pr.catch) pr.catch(()=>fin(k===0));
+    // ⚠️ C'est ICI que le décalage disparaît : la tranche d'après est demandée
+    // MAINTENANT, pendant que celle-ci se joue. Sans ça on attendrait chaque fois.
+    if(k+1<etat.morceaux.length){ try{ suivant.src=_urlVoix(etat.morceaux[k+1]);
+      suivant.load(); }catch(e){} }
+  };
+  joue(0);
+}
+
 function stopSpeaking(){ try{ speechSynthesis.cancel(); }catch(e){}
+  arreteLocal();
   if(AUDIO){ try{ AUDIO.pause(); }catch(e){} } }
 
 function speak(text,onend){
@@ -2234,19 +2282,7 @@ function speak(text,onend){
   // 1) Sa voix locale si elle tourne : la meilleure, et la seule qui ne dépende de
   //    personne. Si elle échoue, on redescend sans rien lui demander.
   if(veutVoixLocale() && AUDIO){
-    try{
-      stopListen(true);
-      let done=false;
-      const fin=()=>{ if(!done){ done=true; showReplay(false); if(onend) onend(); } };
-      AUDIO.onended=fin;
-      AUDIO.onerror=()=>{ if(!done){ done=true; LOCAL_TTS=false; browserSpeak(clean,onend); } };
-      AUDIO.volume=1;
-      AUDIO.src=VOIX_LOCALE+"/voix?vitesse="+VITESSE.toFixed(2)
-               +"&text="+encodeURIComponent(clean);
-      const pr=AUDIO.play();
-      if(pr&&pr.catch) pr.catch(()=>{ if(!done){ done=true; browserSpeak(clean,onend); } });
-      return;
-    }catch(e){}
+    try{ stopListen(true); parleEnLocal(clean, onend); return; }catch(e){}
   }
   // ⚠️ La voix du serveur est un FILET pour iOS, pas le reglage par defaut. Sur son PC,
   // le navigateur a de bien meilleures voix ; les lui refuser au nom d'une contrainte
