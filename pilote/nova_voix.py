@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+r"""
 NOVA VOIX — une vraie voix neuronale, sur TON PC, hors ligne, et gratuite pour de bon.
 
 « trouve une tech gratuite où je peux avoir des voix vraiment cool sur mon pc »
@@ -15,11 +15,26 @@ sont excellentes, et ça ne demande AUCUNE installation. Ce fichier n'a d'intér
 tu veux une voix qui ne dépend de personne : pas d'Internet, pas d'Edge, pas d'un
 service qui peut fermer.
 
-  INSTALLATION (une fois)
-      pip install piper-tts
+  INSTALLATION SUR WINDOWS (une fois), à coller telle quelle dans l'invite de commandes
+
+      mkdir C:\nova
+      cd C:\nova
+      curl -L -o nova_voix.py https://raw.githubusercontent.com/lll65/agent-ia/claude/trusting-lamport-zs5wI/pilote/nova_voix.py
+      python -m pip install piper-tts
 
   LANCEMENT
-      python pilote/nova_voix.py
+      cd C:\nova
+      python nova_voix.py
+
+⚠️ « 'pip' n'est pas reconnu en tant que commande interne ou externe. » C'est le cas le
+plus courant sous Windows : Python est installé, mais son dossier Scripts n'est pas dans
+le PATH. Rien à réparer — écris `python -m pip` au lieu de `pip`, ça passe par le Python
+que tu viens d'utiliser, donc forcément le bon.
+
+⚠️ « can't open file 'C:\Users\Lohan\pilote\nova_voix.py' ». Ce fichier vit dans le dépôt
+GitHub, pas sur ton PC : `python pilote/nova_voix.py` ne peut marcher que depuis une
+copie locale du projet. D'où le `curl` ci-dessus — un seul fichier, rien à cloner.
+
   Au premier lancement, il télécharge la voix (~65 Mo) et la range à côté de lui.
   Ensuite, plus jamais de réseau.
 
@@ -113,6 +128,18 @@ def _commande_piper():
     return [sys.executable, "-m", "piper"]
 
 
+def _piper_installe() -> bool:
+    """Piper est-il réellement là ? On le DEMANDE, on ne le suppose pas."""
+    if shutil.which("piper"):
+        return True
+    try:
+        r = subprocess.run([sys.executable, "-c", "import piper"],
+                           capture_output=True, timeout=60)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 def parle(texte: str, modele: Path) -> bytes:
     """Le WAV, ou une exception dont le message est lisible."""
     with tempfile.TemporaryDirectory() as d:
@@ -194,8 +221,19 @@ def main() -> None:
     print("  Rien ne sort de ton ordinateur : le texte n'est envoyé à personne.")
     print("=" * 64 + "\n")
 
-    if not shutil.which("piper"):
-        dis("(« piper » n'est pas dans le PATH — j'essaierai « python -m piper »)")
+    # ⚠️ Vérifier que Piper est INSTALLÉ avant de télécharger 65 Mo de voix. Sinon on
+    # fait patienter pour rien, et l'échec arrive à la fin — au pire moment.
+    if not _piper_installe():
+        raise SystemExit(
+            "\n✗ Piper n'est pas installé.\n\n"
+            "  Sous Windows, si « pip » n'est pas reconnu, écris plutôt :\n"
+            f"      {Path(sys.executable).name} -m pip install piper-tts\n"
+            "  (ça passe par le Python que tu viens d'utiliser, donc forcément le bon)\n\n"
+            f"  Ton Python : {sys.version.split()[0]}\n"
+            "  ⚠️ Si l'installation échoue en parlant de « onnxruntime » ou de « wheel »,\n"
+            "     c'est que ta version de Python est trop récente pour Piper. Installe\n"
+            "     Python 3.12 à côté (python.org) et relance avec celui-là — ou reste sur\n"
+            "     Microsoft Edge, dont les voix sont excellentes et ne demandent rien.\n")
 
     modele = telecharge(a.voix)
     dis(f"Voix : {a.voix}")

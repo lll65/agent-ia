@@ -43,8 +43,14 @@ _SMALLTALK = {
 # demande « tu peux retenir que je me lève à 6h30 ? », le point d'interrogation ne doit
 # pas faire jeter la phrase — c'est justement là qu'il tient le plus à être écouté.
 _ORDRE_MEMOIRE = (
+    # ⚠️ « ENREGISTRE que mes actions dans lesquelles j'ai investi c'est 2CRSi et DBV » —
+    # sa phrase, mot pour mot. « enregistre » ne figurait pas dans cette liste : le verbe
+    # le plus naturel pour demander de garder quelque chose, et le seul qui manquait.
+    # Une liste de synonymes écrite d'un trait a toujours ce trou-là ; on l'élargit
+    # aux verbes qu'on emploie vraiment.
     r"\b(retiens|retenir|note|noter|m[ée]morise|m[ée]moriser|souviens[- ]toi|"
-    r"rappelle[- ]toi|garde en t[êe]te|n'oublie pas)\b",
+    r"rappelle[- ]toi|garde en t[êe]te|n'oublie pas|enregistre|enregistrer|"
+    r"sauvegarde|sauvegarder|inscris|consigne)\b",
 )
 _PERSONAL_RE = (
     # Ce que je suis / ce que je fais
@@ -244,7 +250,28 @@ def _remember_fact(message: str) -> list:
             faits = [f] if f.get("id") else []
         except Exception:
             faits = []
+    # ⚠️ CE QU'IL DÉTIENT DOIT ARRIVER LÀ OÙ ÇA SE SURVEILLE. Retenir « détient 2CRSi et
+    # DBV » dans le profil et ne rien mettre dans la watchlist, c'est ranger le fait loin
+    # de l'outil qui s'en sert : la veille boursière ne lit que data/watchlist.txt. Il
+    # croirait ses valeurs suivies, et rien ne les suivrait.
+    try:
+        from agent.pea_watcher import valeurs_detenues, ajoute_valeurs
+        titres = valeurs_detenues(message)
+        for v in ajoute_valeurs(titres):
+            f = _ajoute_fait_simple("autre", f"Détient l'action {v} (Euronext Paris)")
+            if f:
+                faits.append(f)
+    except Exception as e:
+        logger.info(f"[profil] valeurs détenues non enregistrées ({type(e).__name__})")
     return [f for f in faits if isinstance(f, dict) and f.get("id")]
+
+
+def _ajoute_fait_simple(cat: str, texte: str) -> dict:
+    try:
+        from agent.profile import add_fact
+        return add_fact(cat, texte) or {}
+    except Exception:
+        return {}
 
 
 def _smalltalk_reply(message: str) -> str:

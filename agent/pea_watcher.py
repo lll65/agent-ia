@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -29,6 +30,81 @@ logger = logging.getLogger(__name__)
 _WATCHLIST_FILE = Path("data/watchlist.txt")
 _PORTFOLIOS_FILE = Path("data/portfolios.json")
 _STATE_FILE = Path("data/watcher_state.json")
+
+
+# ─── Ce qu'il DÉTIENT ─────────────────────────────────────────────────────────
+# ⚠️ « enregistre que mes actions dans lesquelles j'ai investi c'est 2CRSi et DBV »
+# Le profil (agent/profile.py) sait retenir une phrase sur lui. Mais la surveillance de
+# marché, elle, lit data/watchlist.txt — et rien ne reliait les deux. Nova aurait donc
+# « retenu » ses valeurs dans un endroit que sa propre veille boursière ne regarde
+# jamais : la même faute que les deux nettoyeurs de voix, un fait rangé loin de là où
+# il sert. Ce qu'il DÉTIENT doit atterrir là où ça se surveille.
+
+_DECLARE_DETENTION = re.compile(
+    r"(mes\s+actions|j'?ai\s+investi|j'?investis|je\s+d[ée]tiens|je\s+poss[èe]de|"
+    r"mon\s+portefeuille|j'?ai\s+achet[ée]|je\s+suis\s+actionnaire|en\s+portefeuille|"
+    r"mes\s+(?:valeurs|titres|positions))", re.I)
+
+# Ce qui ressemble à un nom de valeur : un sigle, ou un mot avec un chiffre dedans
+# (« 2CRSi », « DBV », « LVMH »). On reste strict : mieux vaut rater une valeur que
+# mettre « Euronext » ou « Paris » sous surveillance.
+_CANDIDAT = re.compile(r"\b(?:[A-Za-zÀ-ÿ]*\d[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9]*|[A-Z]{2,6})\b")
+_PAS_UNE_VALEUR = {
+    "PEA", "CTO", "ETF", "CAC", "SRD", "PME", "ISIN", "IA", "AI", "OK", "TVA", "RIB",
+    "EUR", "USD", "PDF", "SMS", "URL", "RDV", "PER", "PME", "SAS", "SA", "SARL",
+    "EURONEXT", "PARIS", "NASDAQ", "NYSE", "XETRA", "BOURSE", "ACTION", "ACTIONS",
+}
+
+
+def valeurs_detenues(message: str) -> list:
+    """Les valeurs qu'il dit DÉTENIR dans cette phrase. [] si la phrase n'en parle pas.
+
+    ⚠️ On exige une tournure de détention. « regarde le cours de 2CRSi » nomme la même
+    valeur sans rien dire de son portefeuille : la mettre sous surveillance pour ça
+    serait décider à sa place ce qu'il possède.
+    """
+    m = str(message or "")
+    if not _DECLARE_DETENTION.search(m):
+        return []
+    out = []
+    for c in _CANDIDAT.findall(m):
+        haut = c.upper()
+        if haut in _PAS_UNE_VALEUR or len(c) < 2:
+            continue
+        if haut not in [x.upper() for x in out]:
+            out.append(c)
+    return out[:12]
+
+
+def ajoute_valeurs(valeurs) -> list:
+    """Ajoute des valeurs à la watchlist. Rend celles réellement AJOUTÉES.
+
+    ⚠️ On n'écrase jamais ce qui est déjà là, et on ne dédouble pas : le fichier est
+    aussi édité à la main.
+    """
+    nouvelles = [str(v).strip() for v in (valeurs or []) if str(v).strip()]
+    if not nouvelles:
+        return []
+    _WATCHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+    presentes, lignes = set(), []
+    if _WATCHLIST_FILE.exists():
+        lignes = _WATCHLIST_FILE.read_text(encoding="utf-8").splitlines()
+        for l in lignes:
+            l = l.split("#", 1)[0].strip()
+            if l:
+                presentes.add(l.upper())
+    ajoutees = []
+    for v in nouvelles:
+        if v.upper() in presentes:
+            continue
+        presentes.add(v.upper())
+        ajoutees.append(v)
+    if not ajoutees:
+        return []
+    corps = "\n".join([l.rstrip() for l in lignes] + ajoutees).strip() + "\n"
+    _WATCHLIST_FILE.write_text(corps, encoding="utf-8")
+    logger.info(f"[Watcher] ajouté à la surveillance : {', '.join(ajoutees)}")
+    return ajoutees
 
 
 # ─── Watchlist ────────────────────────────────────────────────────────────────
