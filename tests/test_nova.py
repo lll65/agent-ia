@@ -9372,6 +9372,96 @@ def test_la_vision_ne_devine_plus_les_noms_et_la_voix_locale_est_dans_la_liste()
     NV = _iu.module_from_spec(spec)
     spec.loader.exec_module(NV)
     check("aucune forme retenue au départ", NV._FORME_OK, None)
+
+    # --- LE « GROS DÉCALAGE DE PAS MAL DE SECONDES » --------------------------------
+    # ⚠️ Lancer `piper` en sous-processus à chaque phrase, c'est RECHARGER le modèle de
+    # 65 Mo à chaque phrase : plusieurs secondes avant le premier son, pour un calcul
+    # qui en prend une fraction. Les voix du navigateur sont déjà en mémoire — d'où
+    # l'écart qu'il entend. Le modèle reste donc chargé.
+    import types as _ty
+
+    def _faux_piper(methode, accepte_vitesse, avec_config):
+        mod = _ty.ModuleType("piper")
+        vus = []
+
+        class V:
+            @staticmethod
+            def load(p):
+                vus.append("chargement")
+                return V()
+
+            def __getattr__(self, n):
+                if n != methode:
+                    raise AttributeError(n)
+
+                def f(texte, w, **kw):
+                    if kw and not accepte_vitesse:
+                        raise TypeError("signature inconnue")
+                    vus.append(kw)
+                    w.setnchannels(1); w.setsampwidth(2); w.setframerate(22050)
+                    w.writeframes(b"\0" * 2000)
+                return f
+        mod.PiperVoice = V
+        if avec_config:
+            class SC:
+                def __init__(self, length_scale=1.0):
+                    self.length_scale = length_scale
+            mod.SynthesisConfig = SC
+        return mod, vus
+
+    from unittest.mock import patch as _pa
+    for etiquette, meth, vit, cfg in (("Piper récent", "synthesize_wav", True, True),
+                                      ("Piper ancien", "synthesize", True, False)):
+        NV._VOIX_CHARGEE, NV._API_OK = None, None
+        mod, vus = _faux_piper(meth, vit, cfg)
+        with _pa.dict(_sys.modules, {"piper": mod}):
+            a = NV._parle_en_memoire("bonjour", _P("/x.onnx"), 1.0)
+            b = NV._parle_en_memoire("encore", _P("/x.onnx"), 1.0)
+        check_true(f"{etiquette} : du son sort", bool(a) and bool(b))
+        # ⚠️ LE point : un SEUL chargement pour deux phrases.
+        check(f"{etiquette} : le modèle n'est chargé qu'une fois",
+              vus.count("chargement"), 1)
+
+    # La vitesse doit passer par la voie rapide, sinon le curseur ne servirait à rien.
+    NV._VOIX_CHARGEE, NV._API_OK = None, None
+    mod, vus = _faux_piper("synthesize_wav", True, True)
+    with _pa.dict(_sys.modules, {"piper": mod}):
+        NV._parle_en_memoire("bonjour", _P("/x.onnx"), 1.25)
+    check_true("la vitesse est transmise en mémoire",
+               any(isinstance(k, dict) and k for k in vus))
+
+    # ⚠️ Une version qui IGNORE la vitesse en silence serait pire qu'une voie plus
+    # lente : le curseur ne ferait rien et il chercherait pourquoi. On renonce alors à
+    # la voie rapide — pas à la vitesse — et le sous-processus, lui, sait la régler.
+    NV._VOIX_CHARGEE, NV._API_OK = None, None
+    mod, _v = _faux_piper("synthesize_wav", False, False)
+    with _pa.dict(_sys.modules, {"piper": mod}):
+        normal = NV._parle_en_memoire("bonjour", _P("/x.onnx"), 1.0)
+        ralenti = NV._parle_en_memoire("bonjour", _P("/x.onnx"), 1.25)
+    check_true("sans réglage possible, la vitesse normale passe quand même", bool(normal))
+    check("mais une vitesse ignorée en douce est refusée", ralenti, None)
+
+    # Piper absent : on le dit et on retombe sur le sous-processus, jamais un silence.
+    NV._VOIX_CHARGEE, NV._API_OK = None, None
+    with _pa.dict(_sys.modules, {"piper": None}):
+        check("sans l'API Python, pas de voie rapide",
+              NV._parle_en_memoire("x", _P("/x.onnx"), 1.0), None)
+    check("et on ne réessaie pas à chaque phrase", NV._API_OK, False)
+    NV._VOIX_CHARGEE, NV._API_OK = None, None
+
+    # --- Côté navigateur : on ne demande plus la réponse entière d'un coup ----------
+    check_true("la lecture locale est découpée", "function parleEnLocal(" in ui)
+    # ⚠️ Une première tranche COURTE : c'est elle qui fixe le temps d'attente.
+    check_true("la première tranche est courte", "_morceauxLecture(texte, 160)" in ui)
+    # ⚠️ Et c'est ici que le décalage disparaît : la suivante est fabriquée PENDANT
+    # que la précédente se joue.
+    check_true("la tranche suivante est préparée pendant la lecture",
+               "suivant.src=_urlVoix(etat.morceaux[k+1])" in ui)
+    check_true("deux lecteurs qui alternent", "AUDIO2" in ui and "(k%2===0)?AUDIO:AUDIO2" in ui)
+    # Si le serveur local ne répond pas dès la 1re tranche, on ne reste pas muet.
+    check_true("un serveur local muet rend la main au navigateur",
+               "browserSpeak(texte, onend, true)" in ui)
+    check_true("et ⏹ arrête aussi la voix locale", "arreteLocal();" in ui)
     # ⚠️ « la nouvelle voix lit trop vite ». Piper ne connaît pas un débit mais la
     # LONGUEUR des sons : --length-scale 1.2 ralentit. C'est l'INVERSE d'une vitesse,
     # et se tromper de sens donnerait exactement le contraire de ce qu'il demande.

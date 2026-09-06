@@ -160,6 +160,89 @@ _FORMES = (
 _FORME_OK = None
 
 
+# ⚠️ LA VRAIE CAUSE DU « GROS DÉCALAGE DE PAS MAL DE SECONDES ».
+# Lancer `piper` en sous-processus à chaque phrase, c'est RECHARGER le modèle de 65 Mo
+# à chaque phrase — plusieurs secondes avant le premier son, à chaque fois, pour un
+# calcul qui en prend une fraction. Les voix du navigateur, elles, sont déjà en
+# mémoire : d'où l'écart qu'il entend.
+# On charge donc le modèle UNE FOIS et on le garde. Le sous-processus reste en secours,
+# parce que je ne peux pas exécuter Piper ici pour vérifier la forme exacte de son API.
+_VOIX_CHARGEE = None
+_API_OK = None            # None = pas encore essayé, False = inutilisable ici
+
+
+def _charge_en_memoire(modele: Path):
+    """Le modèle, chargé une seule fois. None si l'API Python n'est pas utilisable."""
+    global _VOIX_CHARGEE, _API_OK
+    if _API_OK is False:
+        return None
+    if _VOIX_CHARGEE is not None:
+        return _VOIX_CHARGEE
+    try:
+        from piper import PiperVoice
+        _VOIX_CHARGEE = PiperVoice.load(str(modele))
+        return _VOIX_CHARGEE
+    except Exception as e:
+        _API_OK = False
+        dis(f"(modèle non chargeable en mémoire : {type(e).__name__} — "
+            "je repasse par le sous-processus, ce sera plus lent)")
+        return None
+
+
+def _parle_en_memoire(texte: str, modele: Path, echelle: float):
+    """Le WAV sans relancer Piper. None si cette voie n'est pas praticable."""
+    global _API_OK
+    voix = _charge_en_memoire(modele)
+    if voix is None:
+        return None
+    import io
+    import wave
+    # ⚠️ La façon de régler la longueur a changé entre les versions de Piper. On essaie
+    # les formes connues, de la plus récente à la plus ancienne, et on retient celle qui
+    # marche — comme pour la ligne de commande. Sans réglage possible, on ne renonce pas
+    # à parler : on renonce à la vitesse, et le sous-processus reprend la main.
+    reglages = []
+    if abs(echelle - 1.0) > 0.01:
+        try:
+            from piper import SynthesisConfig
+            reglages.append({"syn_config": SynthesisConfig(length_scale=echelle)})
+        except Exception:
+            pass
+        reglages.append({"length_scale": echelle})
+    reglages.append({})
+    dernier = None
+    for kw in reglages:
+        for methode in ("synthesize_wav", "synthesize"):
+            fn = getattr(voix, methode, None)
+            if fn is None:
+                continue
+            try:
+                tampon = io.BytesIO()
+                with wave.open(tampon, "wb") as w:
+                    fn(texte, w, **kw)
+                données = tampon.getvalue()
+                if len(données) > 44:
+                    if _API_OK is not True:
+                        _API_OK = True
+                        dis(f"(modèle gardé en mémoire · {methode}"
+                            + (" + vitesse" if kw else "") + ")")
+                    # ⚠️ Un réglage de vitesse IGNORÉ en silence serait pire qu'une
+                    # voie plus lente : le curseur ne ferait rien et il chercherait
+                    # pourquoi. Si aucune forme n'a accepté la vitesse, on le dit.
+                    if not kw and abs(echelle - 1.0) > 0.01:
+                        return None
+                    return données
+            except TypeError:
+                continue          # cette signature n'existe pas dans cette version
+            except Exception as e:
+                dernier = e
+                continue
+    if dernier is not None:
+        dis(f"(synthèse en mémoire impossible : {type(dernier).__name__})")
+    _API_OK = False
+    return None
+
+
 def parle(texte: str, modele: Path, vitesse: float = 1.0) -> bytes:
     """Le WAV, ou une exception dont le message est lisible.
 
@@ -172,6 +255,10 @@ def parle(texte: str, modele: Path, vitesse: float = 1.0) -> bytes:
     formes = [f for f in _FORMES if _FORME_OK is None or f[0] == _FORME_OK] or list(_FORMES)
     v = min(1.6, max(0.6, float(vitesse or 1.0)))
     echelle = round(1.0 / v, 3)
+    # D'abord la voie rapide : modèle déjà en mémoire, aucun processus à lancer.
+    rapide = _parle_en_memoire(texte, modele, echelle)
+    if rapide:
+        return rapide
     echecs = []
     for nom, construit in formes:
         with tempfile.TemporaryDirectory() as d:
