@@ -378,6 +378,18 @@ def main() -> None:
             "  Sur Linux il faut parfois aussi :  sudo apt install espeak-ng\n")
     dis(f"✓ Piper répond ({len(wav)} octets de son).")
 
+    # ⚠️ L'essai ci-dessus se fait à vitesse normale — donc SANS réglage, donc il ne
+    # prouve rien sur le curseur de vitesse. Or si cette version de Piper n'accepte pas
+    # le réglage, chaque phrase à une autre vitesse repartirait par le sous-processus,
+    # qui recharge 65 Mo : le décalage qu'on vient de supprimer reviendrait au premier
+    # coup de curseur. Autant le savoir maintenant que le découvrir à l'usage.
+    if _parle_en_memoire("Essai.", modele, 1.25):
+        dis("✓ Le curseur de vitesse est pris en charge en mémoire (rapide).")
+    else:
+        dis("⚠️ Cette version de Piper n'accepte pas le réglage de vitesse en mémoire :")
+        dis("   toute vitesse autre que 1,00× repassera par le sous-processus, plus lent.")
+        dis("   Laisse le curseur sur 1,00× pour garder la lecture immédiate.")
+
     Poste.modele, Poste.voix = modele, a.voix
     # ⚠️ 127.0.0.1 et pas 0.0.0.0 : ce serveur ne doit être joignable que depuis CETTE
     # machine. Ouvert sur le réseau, n'importe qui du Wi-Fi pourrait le faire parler.

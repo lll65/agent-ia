@@ -9449,6 +9449,17 @@ def test_la_vision_ne_devine_plus_les_noms_et_la_voix_locale_est_dans_la_liste()
     check("et on ne réessaie pas à chaque phrase", NV._API_OK, False)
     NV._VOIX_CHARGEE, NV._API_OK = None, None
 
+    # ⚠️ L'essai de démarrage se fait à vitesse NORMALE — donc sans réglage, donc il ne
+    # prouve rien sur le curseur. Si cette version de Piper refuse le réglage, chaque
+    # phrase à une autre vitesse repartirait par le sous-processus qui recharge 65 Mo :
+    # le décalage qu'on vient de supprimer reviendrait au premier coup de curseur.
+    # Mieux vaut le dire au lancement que le lui laisser découvrir à l'usage.
+    src_v = (racine / "pilote" / "nova_voix.py").read_text(encoding="utf-8")
+    check_true("le démarrage teste AUSSI la vitesse",
+               '_parle_en_memoire("Essai.", modele, 1.25)' in src_v)
+    check_true("et dit quoi faire si elle n'est pas prise en charge",
+               "Laisse le curseur sur 1,00×" in src_v)
+
     # --- Côté navigateur : on ne demande plus la réponse entière d'un coup ----------
     check_true("la lecture locale est découpée", "function parleEnLocal(" in ui)
     # ⚠️ Une première tranche COURTE : c'est elle qui fixe le temps d'attente.
