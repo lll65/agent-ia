@@ -376,12 +376,40 @@ def _texte_lisible(sortie: str) -> str:
     return t
 
 
+def _par_fournisseur(texte: str) -> str:
+    """Les lignes « • groq : … » du message d'erreur, remises au propre.
+
+    llm/client.py construit déjà cette liste ; elle n'était simplement jamais montrée.
+    """
+    lignes = []
+    for l in (texte or "").splitlines():
+        l = l.strip()
+        if not l.startswith("•"):
+            continue
+        l = l.lstrip("• ").strip()
+        if l:
+            lignes.append("- " + l[:200])
+    return "\n".join(lignes[:8])
+
+
 def _erreur_lisible(e: Exception) -> str:
     """Dernier recours : dire ce qui se passe et QUOI FAIRE, sans jargon technique."""
     t = str(e)
     if "limite" in t.lower() or "rate" in t.lower() or "429" in t:
-        return ("⏳ Tous mes modèles gratuits sont à leur limite en ce moment. "
-                "Réessaie dans une minute — ça se débloque tout seul.")
+        # ⚠️ « ⏳ Tous mes modèles gratuits sont à leur limite » — et lui : « de plus je
+        # suis qu'à 98 pour cent des crédits ». Il avait raison de trouver ça louche.
+        # Le détail par fournisseur était CONSTRUIT (« • groq : 429 · • gemini : clé
+        # invalide ») puis jeté, remplacé par une phrase unique qui dit « attends » —
+        # alors qu'une clé morte, on peut attendre mille ans. Dire « tout est saturé »
+        # quand un seul l'est, c'est envoyer patienter pour une panne qui ne passera pas.
+        detail = _par_fournisseur(t)
+        entete = ("⏳ Mes modèles gratuits sont à leur limite en ce moment. "
+                  "Réessaie dans une minute — ça se débloque tout seul.")
+        if not detail:
+            return entete
+        return (entete + "\n\n**Ce que chacun m'a répondu :**\n" + detail +
+                "\n\n_Une limite se lève toute seule ; une clé invalide, non. "
+                "Si la même ligne revient demain, c'est la clé qu'il faut refaire._")
     manque = []
     for nom, cle, ou in (("Groq", "GROQ_API_KEY", "console.groq.com"),
                          ("Gemini", "GEMINI_API_KEY", "aistudio.google.com")):

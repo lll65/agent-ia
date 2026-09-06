@@ -8,8 +8,15 @@ load_dotenv()
 class Config:
     # API Keys cloud
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+    # ⚠️ « si il faut je recrée une deuxième clé Groq et Gemini avec des comptes diff »
+    # Oui, et c'est la façon la plus simple de doubler un quota gratuit : les limites
+    # se comptent PAR COMPTE. Une deuxième clé, posée ici, entre dans la chaîne comme
+    # un fournisseur de plus — Nova y bascule quand la première est à sa limite.
+    # Les clés vides sont ignorées : rien à désactiver, il suffit de ne pas les mettre.
+    GROQ_API_KEY_2 = os.getenv("GROQ_API_KEY_2", "")
     XAI_API_KEY = os.getenv("XAI_API_KEY", "")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")     # Google AI Studio → ai.google.dev (gratuit, sans CB)
+    GEMINI_API_KEY_2 = os.getenv("GEMINI_API_KEY_2", "")  # deuxième compte → deuxième quota
     MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
     CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY", "") # Cerebras → cloud.cerebras.ai (gratuit, inference ultra-rapide)
     HF_API_TOKEN = os.getenv("HF_API_TOKEN", "")

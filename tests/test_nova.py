@@ -9005,6 +9005,91 @@ def test_une_vraie_voix_neuronale_sur_son_pc_et_hors_ligne():
         srv.server_close()
 
 
+def test_une_deuxieme_cle_et_un_message_qui_dit_enfin_pourquoi():
+    """« ⏳ Tous mes modèles gratuits sont à leur limite en ce moment. » — et lui :
+    « de plus je suis qu'à 98 pour cent des crédits ».
+
+    Il avait raison de trouver ca louche. Le detail PAR FOURNISSEUR etait construit
+    dans llm/client.py (« • groq : 429 · • gemini : cle invalide ») puis JETE,
+    remplace par une phrase unique qui dit « attends ». Or une limite se leve toute
+    seule ; une cle morte, non. Dire « tout est sature » quand un seul l'est, c'est
+    l'envoyer patienter pour une panne qui ne passera jamais.
+
+    Et : « si il faut je recree une deuxieme cle Groq et Gemini avec des comptes diff ».
+    Oui — les limites gratuites se comptent PAR COMPTE. Une 2e cle entre dans la chaine
+    comme un fournisseur de plus.
+    """
+    import importlib
+    C = importlib.import_module("llm.client")
+    K = importlib.import_module("agent.core")
+    cfg = C.config
+    sauve = (cfg.GROQ_API_KEY, getattr(cfg, "GROQ_API_KEY_2", ""),
+             getattr(cfg, "GEMINI_API_KEY", ""), getattr(cfg, "GEMINI_API_KEY_2", ""))
+    try:
+        # --- 1. Le message dit enfin QUI a dit quoi ---------------------------------
+        e = RuntimeError("Tous les modèles sont à leur limite pour le moment.\n"
+                         "• groq : 429 rate_limit\n• gemini : clé invalide (401)")
+        m = K._erreur_lisible(e)
+        check_true("le détail par fournisseur est montré", "groq : 429" in m)
+        check_true("y compris celui qui n'est PAS saturé", "clé invalide" in m)
+        # ⚠️ « TOUS mes modèles » alors qu'un seul l'était : on ne l'affirme plus.
+        check("plus de « tous » péremptoire", "Tous mes modèles" in m, False)
+        check_true("et la différence est expliquée",
+                   "une clé invalide, non" in m or "clé invalide, non" in m)
+        # Sans détail, on ne fabrique pas une section vide.
+        court = K._erreur_lisible(RuntimeError("429 rate limit"))
+        check("aucune section vide quand il n'y a rien à dire",
+              "Ce que chacun m'a répondu" in court, False)
+
+        # --- 2. La deuxième clé -----------------------------------------------------
+        cfg.GROQ_API_KEY, cfg.GROQ_API_KEY_2 = "cle_un", "cle_deux"
+        cfg.GEMINI_API_KEY, cfg.GEMINI_API_KEY_2 = "", ""
+        check("la 2e clé est reconnue", C.cles_secondaires(), {"groq": "cle_deux"})
+        noms = [c[0] for c in C._providers_disponibles("equilibre")]
+        check_true("elle entre dans la chaîne", "groq (2e clé)" in noms)
+        # ⚠️ En FIN de chaîne : un autre fournisseur non saturé vaut mieux qu'un
+        # deuxième compte chez celui qui vient de dire 429.
+        check_true("et toujours après la première", noms.index("groq") < noms.index("groq (2e clé)"))
+
+        # ⚠️ Une 2e clé identique ne double rien : même compte, même limite.
+        cfg.GROQ_API_KEY_2 = "cle_un"
+        check("une clé identique n'est pas comptée comme un 2e quota", C.cles_secondaires(), {})
+        cfg.GROQ_API_KEY_2 = ""
+        check("aucune 2e clé → rien ne change", C.cles_secondaires(), {})
+        check("et rien dans la chaîne", "groq (2e clé)" in
+              [c[0] for c in C._providers_disponibles("equilibre")], False)
+
+        # --- 3. La bonne clé part vraiment, et elle ne déborde pas -------------------
+        cfg.GROQ_API_KEY, cfg.GROQ_API_KEY_2 = "cle_un", "cle_deux"
+        check("par défaut, la première", C._cle("groq"), "cle_un")
+        with C._AvecCle("groq", "cle_deux"):
+            check("pendant l'appel, la seconde", C._cle("groq"), "cle_deux")
+            check("les autres ne bougent pas", C._cle("mistral"),
+                  getattr(cfg, "MISTRAL_API_KEY", "") or "")
+        check("après l'appel, on rend la première", C._cle("groq"), "cle_un")
+        # Même en cas d'erreur : sinon toutes les requêtes suivantes du thread
+        # partiraient sur la 2e clé sans que personne l'ait demandé.
+        try:
+            with C._AvecCle("groq", "cle_deux"):
+                raise ValueError("boum")
+        except ValueError:
+            pass
+        check("une exception ne laisse pas la 2e clé en place", C._cle("groq"), "cle_un")
+
+        # ⚠️ Un thread-local, PAS un contextvar : les appels partent dans un
+        # run_in_executor, que les contextvars ne franchissent pas (agent/canal.py).
+        src = (Path(__file__).resolve().parents[1] / "llm" / "client.py").read_text(encoding="utf-8")
+        check_true("c'est bien un thread-local", "_CLE_LOCALE = threading.local()" in src)
+        check_true("et le pourquoi est écrit", "run_in_executor" in src)
+        # « groq (2e clé) » n'est pas un nom de fournisseur : rangé tel quel, la
+        # priorité « celui qui a répondu en dernier » s'éteignait en silence.
+        check_true("le nom est ramené à sa base avant d'être mémorisé",
+                   '_DERNIER_OK["nom"] = nom.split(" (")[0]' in src)
+    finally:
+        (cfg.GROQ_API_KEY, cfg.GROQ_API_KEY_2,
+         cfg.GEMINI_API_KEY, cfg.GEMINI_API_KEY_2) = sauve
+
+
 def _leve_systemexit(fn, *a):
     try:
         fn(*a)
@@ -9102,7 +9187,8 @@ if __name__ == "__main__":
                test_la_date_du_jour_collee_sur_une_nouvelle_de_juin,
                test_le_leclerc_du_dimanche_et_l_appart_jamais_retenu,
                test_un_bouton_pour_arreter_nova_en_plein_raisonnement,
-               test_une_vraie_voix_neuronale_sur_son_pc_et_hors_ligne):
+               test_une_vraie_voix_neuronale_sur_son_pc_et_hors_ligne,
+               test_une_deuxieme_cle_et_un_message_qui_dit_enfin_pourquoi):
         try:
             fn()
         except Exception as e:
