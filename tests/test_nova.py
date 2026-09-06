@@ -8896,6 +8896,123 @@ def test_un_bouton_pour_arreter_nova_en_plein_raisonnement():
         A_._STOPS.discard("s42")
 
 
+def test_une_vraie_voix_neuronale_sur_son_pc_et_hors_ligne():
+    """« trouve une tech gratuite ou je peux avoir des voix vraiment cool sur mon pc »
+
+    Deux reponses, et la premiere ne demande RIEN a installer : Microsoft Edge embarque
+    les voix neuronales de Microsoft (Denise, Henri), de loin les meilleures voix
+    francaises gratuites. Le selecteur de voix les listera.
+
+    ⚠️ ET JE M'ETAIS TROMPE EN LUI DISANT LE CONTRAIRE. J'avais ecrit dans les reglages
+    « Sur Windows, Parametres → Heure et langue → Voix ajoute les voix Natural ». C'est
+    vrai pour Edge ; pour Chrome, les voix Natural installees n'apparaissent pas
+    forcement dans getVoices(). Un conseil qui envoie fouiller dans les reglages de
+    Windows pour rien est pire qu'un silence.
+
+    La seconde reponse, pour une voix qui ne depend de PERSONNE : Piper, neuronal,
+    local, sur processeur, sans compte ni cle. `pilote/nova_voix.py` le lance.
+
+    ⚠️ 127.0.0.1 EN CHIFFRES. Nova est servie en HTTPS : une page HTTPS ne peut pas
+    charger du HTTP, SAUF sur l'adresse de bouclage, que Chrome exempte depuis la v53.
+    L'exemption vise l'IP litterale — « localhost » n'en beneficie pas partout.
+    """
+    racine = Path(__file__).resolve().parents[1]
+    ui = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+
+    # --- 1. L'astuce qui ne coûte rien, et la correction de mon erreur --------------
+    check_true("Edge est proposé en premier", "Microsoft Edge" in ui and "Denise" in ui)
+    check("plus de conseil faux sur les réglages Windows",
+          "Heure et langue" in ui, False)
+    check_true("les voix « Natural » remontent en tête du classement",
+               "/denise|henri|vivienne" in ui or "denise|henri|vivienne" in ui)
+
+    # --- 2. La voix locale : trouvée toute seule, jamais imposée --------------------
+    check_true("l'adresse est écrite en chiffres",
+               'const VOIX_LOCALE = "http://127.0.0.1:5111"' in ui)
+    # ⚠️ « localhost » n'a pas l'exemption de contenu mixte partout : ce serait un
+    # silence inexplicable dans certains navigateurs.
+    check("jamais « localhost » pour la voix", "http://localhost:5111" in ui, False)
+    check_true("si le programme n'est pas lancé, on ne perd rien",
+               "LOCAL_TTS=false;" in ui and "browserSpeak(clean,onend)" in ui)
+    check_true("la voix locale passe avant les autres",
+               ui.index("if(LOCAL_TTS && AUDIO){") < ui.index("if(SERVER_TTS && KEY && (IOS"))
+
+    # --- 3. Le programme local -------------------------------------------------------
+    src = (racine / "pilote" / "nova_voix.py").read_text(encoding="utf-8")
+    check_true("il n'écoute que cette machine", '("127.0.0.1", a.port)' in src)
+    # ⚠️ Ouvert sur 0.0.0.0, n'importe qui du Wi-Fi pourrait le faire parler.
+    check("jamais ouvert sur le réseau", '"0.0.0.0"' in src, False)
+    check_true("les en-têtes qui permettent à Nova de le joindre",
+               "Access-Control-Allow-Origin" in src and "Allow-Private-Network" in src)
+
+    import importlib.util as _iu
+    spec = _iu.spec_from_file_location("nova_voix", racine / "pilote" / "nova_voix.py")
+    NV = _iu.module_from_spec(spec)
+    spec.loader.exec_module(NV)
+
+    check("un nom de voix mal formé est refusé tout de suite",
+          _leve_systemexit(NV._decoupe_nom, "siwis"), True)
+    check("un nom correct est découpé", NV._decoupe_nom("fr_FR-siwis-medium"), ("siwis", "medium"))
+    check("et une autre qualité aussi", NV._decoupe_nom("fr_FR-gilles-low"), ("gilles", "low"))
+
+    # --- 4. Le serveur répond, et surtout : il ne répond JAMAIS un silence ------------
+    import http.client as _hc
+    import http.server as _hs
+    import threading as _th
+    NV.Poste.modele, NV.Poste.voix = Path("/faux/modele.onnx"), "fr_FR-siwis-medium"
+    srv = _hs.ThreadingHTTPServer(("127.0.0.1", 0), NV.Poste)
+    _th.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+    try:
+        def demande(chemin):
+            c = _hc.HTTPConnection("127.0.0.1", port, timeout=10)
+            c.request("GET", chemin)
+            r = c.getresponse()
+            return r.status, r.read(), dict(r.getheaders())
+
+        st, corps, ent = demande("/etat")
+        check("/etat répond", st, 200)
+        check_true("et nomme la voix", b"fr_FR-siwis-medium" in corps)
+        check("Nova, servie ailleurs, a le droit de le lire",
+              ent.get("Access-Control-Allow-Origin"), "*")
+
+        st, _c, _e = demande("/voix")
+        check("sans texte, on refuse", st, 400)
+
+        # ⚠️ LE CAS QUI COMPTE. Piper absent → surtout PAS un fichier audio vide : le
+        # navigateur le jouerait sans rien dire, Nova aurait l'air de parler dans le
+        # vide, et personne ne saurait pourquoi. On répond une erreur qui se lit.
+        NV.parle = lambda t, m: (_ for _ in ()).throw(RuntimeError("piper introuvable"))
+        st, corps, ent = demande("/voix?text=bonjour")
+        check("Piper cassé → une erreur, pas un silence", st, 500)
+        check_true("et l'erreur dit ce qui s'est passé", b"piper introuvable" in corps)
+        check("aucun son vide n'est renvoyé", ent.get("Content-Type"), "text/plain")
+
+        NV.parle = lambda t, m: b"RIFF....WAVEfmt "
+        st, corps, ent = demande("/voix?text=bonjour%20Lohan")
+        check("quand Piper marche, on renvoie du son", st, 200)
+        check("annoncé comme du son", ent.get("Content-Type"), "audio/wav")
+        check_true("et c'est bien le son produit", corps.startswith(b"RIFF"))
+
+        # Un texte démesuré est tronqué, pas refusé : mieux vaut parler un peu moins
+        # que se taire — mais la machine ne doit pas ramer une minute pour autant.
+        vus = []
+        NV.parle = lambda t, m: (vus.append(len(t)), b"RIFF")[1]
+        demande("/voix?text=" + "a" * 9000)
+        check_true("un texte démesuré est borné", vus and vus[0] <= NV.MAX_TEXTE)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def _leve_systemexit(fn, *a):
+    try:
+        fn(*a)
+        return False
+    except SystemExit:
+        return True
+
+
 def importlib_module(nom):
     import importlib
     return importlib.import_module(nom)
@@ -8984,7 +9101,8 @@ if __name__ == "__main__":
                test_vision_troisieme_fournisseur_et_detail_qui_sert,
                test_la_date_du_jour_collee_sur_une_nouvelle_de_juin,
                test_le_leclerc_du_dimanche_et_l_appart_jamais_retenu,
-               test_un_bouton_pour_arreter_nova_en_plein_raisonnement):
+               test_un_bouton_pour_arreter_nova_en_plein_raisonnement,
+               test_une_vraie_voix_neuronale_sur_son_pc_et_hors_ligne):
         try:
             fn()
         except Exception as e:
