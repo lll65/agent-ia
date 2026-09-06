@@ -895,6 +895,21 @@ def search_query(task: str) -> str:
             q = re.sub(r"\b\d{1,2}\s+(?:" + "|".join(_MOIS) + r")\s+\d{4}\b", "", q, flags=re.I)
             q = re.sub(r"\b(?:20\d{2})\b", "", q)
             q = re.sub(r"\s{2,}", " ", q).strip(" ,-—")
+        elif not _demande_le_jour_meme(t):
+            # ⚠️ L'AUTRE CÔTÉ DE LA MÊME RÈGLE, ET C'EST LUI QUI A FAIT LE DÉGÂT.
+            # « Des news de 2Crsi ? » nomme une entreprise : veut_actualite() rend False,
+            # donc on passait ici, où la consigne autorise la date « pour l'actualité DU
+            # JOUR ». Le modèle l'a ajoutée alors que rien ne la demandait, et a cherché
+            # « 2Crsi news 6 septembre 2026 ».
+            # Il a ensuite RELU SA PROPRE REQUÊTE comme étant la date de la nouvelle : il a
+            # daté du 6 septembre 2026 un communiqué du 9 juin 2026 — une commande de
+            # 110 M€ depuis placée sous vérification indépendante. Présentée comme
+            # tombée le jour même, la même information dit exactement le contraire.
+            # Le nettoyage n'existait que dans la branche `actu`. On ne retire QUE le
+            # jour : l'année reste utile pour écarter les pages de 2024.
+            q = re.sub(r"\b\d{1,2}\s+(?:" + "|".join(_MOIS) + r")\s+(?=\d{4}\b)", "", q, flags=re.I)
+            q = re.sub(r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b", "", q)
+            q = re.sub(r"\s{2,}", " ", q).strip(" ,-—")
         if 3 <= len(q) <= 120:
             return q
     except Exception as e:
@@ -999,6 +1014,20 @@ def veut_actualite(task: str) -> bool:
     return False
 
 
+def _demande_le_jour_meme(task: str) -> bool:
+    """La demande porte-t-elle explicitement sur AUJOURD'HUI ?
+
+    Seul ce cas justifie d'écrire la date du jour dans la requête. « Des news de
+    2Crsi ? » ne le demande pas — et la date ajoutée d'office est ensuite relue par le
+    modèle comme étant la date de la nouvelle.
+    """
+    m = _normalise(task).lower()
+    return (any(k in m for k in _MOTS_DU_JOUR)
+            # une date écrite par lui : c'est la sienne, on n'y touche pas
+            or bool(re.search(r"\b\d{1,2}\s+(?:" + "|".join(_MOIS) + r")\b", m))
+            or bool(re.search(r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b", m)))
+
+
 def requete_simple(task: str, pour_actu: bool = False) -> str:
     """Requête de recherche construite SANS modèle — donc toujours disponible.
 
@@ -1085,6 +1114,16 @@ async def run_agent(
             res["answer"] = relis_chiffres(res["answer"], observations_du_tour(), task)
     except Exception as e:
         logger.info(f"[chiffres] vérification ignorée ({type(e).__name__})")
+    # ⚠️ ET LA DATE, qui compte autant que le chiffre. Sur « Des news de 2Crsi ? », tous
+    # les nombres étaient exacts — 110 M€, 204,7 M€, 9,6 M€ — et la réponse était fausse
+    # quand même : elle datait du jour même un communiqué du 9 juin, depuis placé sous
+    # vérification indépendante. Le contrôle des chiffres ne pouvait rien voir.
+    try:
+        from agent.dates import relis as relis_dates
+        if res.get("answer") and _sujets_finance(task, res["answer"]):
+            res["answer"] = relis_dates(res["answer"], observations_du_tour())
+    except Exception as e:
+        logger.info(f"[dates] vérification ignorée ({type(e).__name__})")
     # Ni mur de caractères, ni « je ne peux pas » sans suite — sur TOUS les chemins,
     # y compris Telegram et les automatisations, pas seulement le chat.
     try:
