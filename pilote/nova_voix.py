@@ -140,17 +140,43 @@ def _piper_installe() -> bool:
         return False
 
 
+# ⚠️ DEUX FAÇONS DE DONNER LE TEXTE À PIPER, ET ELLES ONT CHANGÉ.
+# L'ancien piper lisait le texte sur l'entrée standard ; piper1-gpl le prend en
+# ARGUMENT, après « -- ». Je n'ai pas pu exécuter Piper ici (aucun réseau, aucune
+# machine Windows) : plutôt que de parier sur une des deux, on essaie, et on RETIENT
+# celle qui a marché. Un pari perdu, ce serait un serveur muet sans explication.
+_FORMES = (
+    ("argument", lambda mod, out, txt: (["-m", str(mod), "-f", str(out), "--", txt], None)),
+    ("stdin",    lambda mod, out, txt: (["-m", str(mod), "-f", str(out)], txt.encode("utf-8"))),
+)
+_FORME_OK = None
+
+
 def parle(texte: str, modele: Path) -> bytes:
     """Le WAV, ou une exception dont le message est lisible."""
-    with tempfile.TemporaryDirectory() as d:
-        sortie = Path(d) / "voix.wav"
-        cmd = _commande_piper() + ["-m", str(modele), "-f", str(sortie)]
-        r = subprocess.run(cmd, input=texte.encode("utf-8"),
-                           capture_output=True, timeout=120)
-        if r.returncode != 0 or not sortie.exists():
-            detail = (r.stderr or b"").decode("utf-8", "replace").strip()[:400]
-            raise RuntimeError(f"piper a échoué (code {r.returncode}) : {detail or 'aucun détail'}")
-        return sortie.read_bytes()
+    global _FORME_OK
+    formes = [f for f in _FORMES if _FORME_OK is None or f[0] == _FORME_OK] or list(_FORMES)
+    echecs = []
+    for nom, construit in formes:
+        with tempfile.TemporaryDirectory() as d:
+            sortie = Path(d) / "voix.wav"
+            args, entree = construit(modele, sortie, texte)
+            try:
+                r = subprocess.run(_commande_piper() + args, input=entree,
+                                   capture_output=True, timeout=120)
+            except Exception as e:
+                echecs.append(f"{nom}: {type(e).__name__}: {e}")
+                continue
+            if r.returncode == 0 and sortie.exists() and sortie.stat().st_size > 44:
+                if _FORME_OK != nom:
+                    _FORME_OK = nom
+                    dis(f"(Piper accepte le texte en « {nom} »)")
+                return sortie.read_bytes()
+            detail = (r.stderr or b"").decode("utf-8", "replace").strip()[:300]
+            echecs.append(f"{nom}: code {r.returncode} {detail or ''}".strip())
+    # ⚠️ Si la forme mémorisée cesse de marcher, on ne s'entête pas dessus.
+    _FORME_OK = None
+    raise RuntimeError("piper a échoué — " + " | ".join(echecs[:2]))
 
 
 class Poste(http.server.BaseHTTPRequestHandler):

@@ -2102,15 +2102,28 @@ function pickVoice(){ const vs=speechSynthesis.getVoices(); if(!vs.length) retur
   // enregistree n'existe plus, on retombe sur la meilleure disponible sans rien dire.
   NOVA_VOICE=VOIX.find(v=>v.name===VOIX_CHOISIE)||VOIX[0];
   remplitVoix(); }
+/* ⚠️ « je fais comment pour mettre les nouvelles voix, elles apparaissent pas dans
+   paramètres voix de Nova ? » — Il avait raison de chercher : ma voix locale ne
+   figurait NULLE PART dans la liste. Elle remplaçait le son en coulisses et
+   s'annonçait dans un petit texte à côté. Deux endroits pour une seule question
+   (« quelle voix me parle ? »), donc aucun des deux ne répond.
+   Une seule liste : les voix du navigateur ET la voix locale, au même endroit. */
 function remplitVoix(){ const s=document.getElementById("voix"); if(!s) return;
-  if(!VOIX.length){ s.innerHTML='<option value="">Aucune voix sur cet appareil</option>'; return; }
-  s.innerHTML=VOIX.map(v=>'<option value="'+esc(v.name)+'"'
-    +(NOVA_VOICE&&v.name===NOVA_VOICE.name?" selected":"")+">"+esc(v.name)+"</option>").join(""); }
+  let html="";
+  if(LOCAL_TTS) html+='<option value="__locale__"'+(VOIX_CHOISIE==="__locale__"?" selected":"")
+    +">🎙️ "+esc(VOIX_LOCALE_NOM||"Voix locale")+" — sur ton PC, hors ligne</option>";
+  if(!VOIX.length && !html){ s.innerHTML='<option value="">Aucune voix sur cet appareil</option>'; return; }
+  html+=VOIX.map(v=>'<option value="'+esc(v.name)+'"'
+    +(VOIX_CHOISIE!=="__locale__"&&NOVA_VOICE&&v.name===NOVA_VOICE.name?" selected":"")
+    +">"+esc(v.name)+"</option>").join("");
+  s.innerHTML=html; }
+const PHRASE_ESSAI="Bonjour Lohan, c'est avec cette voix que je te lirai tes mails.";
 function choisitVoix(sel){ VOIX_CHOISIE=sel.value; localStorage.setItem("nova_voix",VOIX_CHOISIE);
-  NOVA_VOICE=VOIX.find(v=>v.name===VOIX_CHOISIE)||NOVA_VOICE;
   // On la fait parler tout de suite : une liste de noms ne dit rien, une phrase si.
+  if(VOIX_CHOISIE==="__locale__"){ stopSpeaking(); speak(PHRASE_ESSAI); return; }
+  NOVA_VOICE=VOIX.find(v=>v.name===VOIX_CHOISIE)||NOVA_VOICE;
   try{ speechSynthesis.cancel();
-    const u=new SpeechSynthesisUtterance("Bonjour Lohan, c'est avec cette voix que je te lirai tes mails.");
+    const u=new SpeechSynthesisUtterance(PHRASE_ESSAI);
     u.lang="fr-FR"; u.voice=NOVA_VOICE; speechSynthesis.speak(u); }catch(e){} }
 if("speechSynthesis" in window){ speechSynthesis.onvoiceschanged=pickVoice; pickVoice(); }
 /* ═══ AUDIO SERVEUR (fiable sur iPhone, même en app installée) ═══
@@ -2129,17 +2142,22 @@ let SERVER_TTS=true, AUDIO=null, AUDIO_OK=false;
    que Chrome exempte depuis la version 53. Cette exemption vise l'IP littérale ;
    « localhost » n'en bénéficie pas partout. Le choix est technique, pas cosmétique. */
 const VOIX_LOCALE = "http://127.0.0.1:5111";
-let LOCAL_TTS=false;
+let LOCAL_TTS=false, VOIX_LOCALE_NOM="";
 function checkVoixLocale(){
   // On ne demande pas la permission, on constate : s'il n'a rien lancé, ça échoue en
   // silence et personne n'a besoin de le savoir.
   fetch(VOIX_LOCALE+"/etat",{cache:"no-store"}).then(r=>r.json())
-    .then(d=>{ LOCAL_TTS=!!(d&&d.ok);
-      if(LOCAL_TTS){ const a=document.getElementById("voixAstuce");
-        if(a) a.innerHTML="🎙️ <b>Voix locale active</b> ("+esc(d.voix||"Piper")
-          +") — elle tourne sur ton PC, rien ne sort de ta machine."; } })
-    .catch(()=>{ LOCAL_TTS=false; });
+    .then(d=>{ const avant=LOCAL_TTS; LOCAL_TTS=!!(d&&d.ok); VOIX_LOCALE_NOM=(d&&d.voix)||"Piper";
+      // Elle vient d'apparaître : la liste doit la montrer sans qu'il rouvre le panneau.
+      if(LOCAL_TTS!==avant) try{ remplitVoix(); }catch(e){} })
+    .catch(()=>{ const avant=LOCAL_TTS; LOCAL_TTS=false;
+      if(avant) try{ remplitVoix(); }catch(e){} });
 }
+// Est-ce la voix locale qu'il a choisie ? Tant qu'il n'a rien choisi, oui si elle
+// tourne : il l'a lancée exprès, c'est un choix explicite qui ne demande pas d'être
+// répété dans un menu.
+function veutVoixLocale(){ return LOCAL_TTS && VOIX_CHOISIE!=="" ? VOIX_CHOISIE==="__locale__"
+                                : LOCAL_TTS; }
 checkVoixLocale(); setInterval(checkVoixLocale, 60000);
 function checkTTS(){ if(!KEY) return;
   fetch(ORIGIN+"/agent/tts/status?key="+encodeURIComponent(KEY),{cache:"no-store"})
@@ -2176,7 +2194,7 @@ function speak(text,onend){
   if(!clean){ if(onend) onend(); return; }
   // 1) Sa voix locale si elle tourne : la meilleure, et la seule qui ne dépende de
   //    personne. Si elle échoue, on redescend sans rien lui demander.
-  if(LOCAL_TTS && AUDIO){
+  if(veutVoixLocale() && AUDIO){
     try{
       stopListen(true);
       let done=false;

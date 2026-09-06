@@ -988,21 +988,45 @@ def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> 
     if config.GROQ_API_KEY:
         candidates = []
         for m in (config.GROQ_VISION_MODEL,
+                  # ⚠️ Groq a retiré llama-4-scout ET llama-4-maverick le 17 juin 2026,
+                  # et les llama-3.2-vision avant eux : les QUATRE noms de la liste
+                  # précédente rendaient 404. Ceux-ci sont les remplaçants annoncés.
+                  "qwen/qwen3.6-27b",
                   "meta-llama/llama-4-scout-17b-16e-instruct",
-                  "meta-llama/llama-4-maverick-17b-128e-instruct",
-                  "llama-3.2-90b-vision-preview",
-                  "llama-3.2-11b-vision-preview"):
+                  "meta-llama/llama-4-maverick-17b-128e-instruct"):
             if m and m not in candidates:
                 candidates.append(m)
         try:
             from groq import Groq
             client = Groq(api_key=_cle("groq"), timeout=_timeout(TIMEOUT_LLM), max_retries=0)
-            try:  # modèles réellement disponibles sur CE compte
+            # ⚠️ L'AUTO-GUÉRISON EXISTAIT ET NE GUÉRISSAIT PLUS RIEN. Elle ne retenait
+            # de la liste du compte que les noms contenant « vision », « scout »,
+            # « maverick » ou « llava » — la convention de nommage de 2025. Le modèle
+            # multimodal actuel s'appelle « qwen/qwen3.6-27b » : aucun de ces mots.
+            # Le filtre encodait une MODE de nommage, pas une capacité.
+            # On ne devine donc plus d'après le nom : on essaie ce que le compte offre
+            # vraiment. Un modèle qui ne lit pas les images répond une erreur nette, et
+            # elle est notée — mieux vaut deux essais de trop qu'un « aucun modèle de
+            # vision » alors qu'il y en a un.
+            try:
+                indices, autres = [], []
                 for mo in _lister_modeles(client):
                     mid = getattr(mo, "id", "") or ""
-                    if mid and mid not in candidates and any(
-                            k in mid.lower() for k in ("vision", "scout", "maverick", "llava")):
-                        candidates.append(mid)
+                    bas = mid.lower()
+                    if not mid or mid in candidates:
+                        continue
+                    # Ceux-là ne liront jamais une image : inutile de les déranger.
+                    if any(k in bas for k in ("whisper", "tts", "guard", "embed",
+                                              "moderation", "compound")):
+                        continue
+                    if any(k in bas for k in ("vision", "scout", "maverick", "llava",
+                                              "vl", "multimodal", "omni")):
+                        indices.append(mid)
+                    else:
+                        autres.append(mid)
+                # Les noms qui SUGGÈRENT la vision d'abord, puis le reste du compte —
+                # borné, pour ne pas transformer une analyse d'image en attente sans fin.
+                candidates.extend(indices + autres[:6])
             except Exception:
                 pass
             for m in candidates:
@@ -1082,7 +1106,18 @@ def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> 
             except Exception as e:
                 errors.append(f"Gemini({m}): {str(e)[:90]}")
         if not any(x.startswith("Gemini(") for x in errors):
-            errors.append("Gemini: aucun modèle de vision sur ce compte")
+            # ⚠️ « aucun modèle de vision sur ce compte » était une CONCLUSION, pas une
+            # observation. Quand les quatre noms rendent 404 — y compris gemini-2.5-flash,
+            # qui existe bel et bien — ce n'est pas la liste qui est périmée : c'est la
+            # clé qui n'a pas accès à l'API Generative Language (projet sans l'API
+            # activée). Google répond 404 sur le chemin du modèle dans ce cas. Dire
+            # « ce compte n'a pas de modèle de vision » envoie chercher au mauvais endroit.
+            tous_404 = sum(1 for e in essayes if e.startswith("Gemini/")) >= 3
+            errors.append(
+                "Gemini: les 4 modèles répondent 404 — ce n'est probablement pas la "
+                "liste qui est périmée, mais la clé qui n'a pas accès à l'API "
+                "Generative Language (à activer sur aistudio.google.com)"
+                if tous_404 else "Gemini: aucun modèle de vision sur ce compte")
 
     # 3) OpenRouter — ⚠️ LA PISTE QU'IL AVAIT DÉJÀ SOUS LA MAIN. OpenRouter est déjà
     # un fournisseur de la chaîne de modèles (voir MODELES/ORDRE plus haut) : la clé
@@ -1148,12 +1183,24 @@ def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> 
     fournisseurs = " et ".join(x for x in ("Groq" if a_groq else "",
                                            "Gemini" if a_gemini else "",
                                            "OpenRouter" if a_or else "") if x)
+    # ⚠️ « Envoie-moi le détail et je mettrai la liste à jour » : c'est ce que disait ce
+    # message, et c'est une impasse — il attend une mise à jour, moi j'attends sa
+    # capture, et pendant ce temps il ne peut pas lire ses images. Il y a une action
+    # qu'il peut faire LUI, tout de suite, gratuitement et sans carte bancaire :
+    # OpenRouter donne accès à plusieurs modèles de vision libres. Quand cette clé
+    # manque, c'est ELLE qu'il faut nommer, pas une liste que je corrigerai un jour.
+    suite = (
+        "\n\n**Ce que tu peux faire maintenant :** crée une clé gratuite sur "
+        "**openrouter.ai** (aucune carte bancaire) et mets-la dans les variables Render "
+        "sous le nom `OPENROUTER_API_KEY`. Elle donne accès à plusieurs modèles capables "
+        "de lire une image, et elle servira aussi de secours quand Groq est saturé."
+        if not a_or else
+        "\n\nEnvoie-moi le détail ci-dessous : il nomme chaque modèle essayé avec son "
+        "code de retour, et je saurai lequel remplacer.")
     raise RuntimeError(
-        f"Je ne peux pas regarder d'image : ta clé {fournisseurs} fonctionne, mais "
-        "aucun modèle capable de LIRE une image n'est accessible avec elle. Ce n'est "
-        "donc pas une clé à ajouter — c'est le modèle de vision qui a changé de nom ou "
-        "n'est plus proposé sur ce compte. Envoie-moi le détail ci-dessous et je "
-        "mettrai la liste à jour." + detail)
+        f"Je ne peux pas regarder d'image : ta clé {fournisseurs} fonctionne pour le "
+        "texte, mais aucun modèle capable de LIRE une image n'est accessible avec elle. "
+        "Ce n'est donc pas une clé à refaire." + suite + detail)
 
 
 def _mistral_chat(messages: list, model: str, temperature: float) -> str:
