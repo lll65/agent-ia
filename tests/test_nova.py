@@ -8275,11 +8275,14 @@ def test_analyse_d_image_ne_dit_plus_d_ajouter_une_cle_qu_il_a_deja():
         check("on ne lui demande PLUS d'ajouter une clé qu'il a",
               "Ajoute GROQ_API_KEY" in msg, False)
         check("…on lui dit que sa clé fonctionne", "ta clé Groq fonctionne" in msg, True)
-        check("…et que le problème est le modèle",
-              "c'est le modèle de vision qui a changé de nom" in msg, True)
+        check("…et que le problème n'est pas la clé",
+              "Ce n'est donc pas une clé à refaire" in msg, True)
         check("…avec de quoi le corriger", "Détail technique" in msg, True)
+        # ⚠️ Sans clé OpenRouter, on nomme l'action qu'il peut faire LUI, tout de
+        # suite — plutôt que de lui demander d'attendre que je mette une liste à jour.
+        check("…et une action gratuite à sa portée", "openrouter.ai" in msg, True)
         # ⚠️ Tous les modèles connus doivent avoir été essayés.
-        check("les quatre modèles connus sont essayés", len(essais) >= 4, True)
+        check("les modèles connus sont essayés", len(essais) >= 3, True)
 
         # --- 3. Clé valide, modèles SATURÉS : ce n'est pas une panne -------
         msg, essais = message("gsk_valide", "", "rate_limit_exceeded 429 too many requests")
@@ -8291,7 +8294,43 @@ def test_analyse_d_image_ne_dit_plus_d_ajouter_une_cle_qu_il_a_deja():
         # ⚠️ LE défaut technique : un 429 sur le premier modèle abandonnait TOUS
         # les suivants. Un quota atteint sur un modèle ne dit rien des autres.
         check("un quota sur un modèle n'abandonne plus les autres",
-              len(essais) >= 4, True)
+              len(essais) >= 3, True)
+
+        # --- 4. LE défaut du 6 septembre : un modèle multimodal dont le NOM ne
+        # contient aucun mot « vision ». Groq a retiré scout et maverick le 17 juin
+        # 2026 ; le remplaçant s'appelle « qwen/qwen3.6-27b ». L'ancien filtre ne
+        # gardait que les noms contenant vision/scout/maverick/llava : il encodait une
+        # mode de nommage, pas une capacité — donc il ne trouvait plus rien.
+        class _Mo:
+            def __init__(self, i):
+                self.id = i
+
+        offerts = [_Mo("qwen/qwen3.6-27b"), _Mo("whisper-large-v3"),
+                   _Mo("openai/gpt-oss-120b")]
+        essais2 = []
+
+        class FauxGroq2:
+            def __init__(self, **k):
+                self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(
+                    create=self._create))
+
+            def _create(self, model=None, **k):
+                essais2.append(model)
+                raise RuntimeError("model_not_found: 404 does not exist")
+
+        faux2 = types.ModuleType("groq")
+        faux2.Groq = FauxGroq2
+        config.GROQ_API_KEY, config.GEMINI_API_KEY = "gsk_valide", ""
+        with patch.dict(sys.modules, {"groq": faux2}), \
+             patch.object(C, "_lister_modeles", return_value=offerts):
+            try:
+                C.chat_vision("/etc/hostname")
+            except Exception:
+                pass
+        check_true("un modèle multimodal sans « vision » dans le nom est essayé",
+                   "qwen/qwen3.6-27b" in essais2)
+        # ⚠️ Mais pas n'importe quoi : whisper ne lira jamais une image.
+        check("whisper n'est pas dérangé", "whisper-large-v3" in essais2, False)
     finally:
         config.GROQ_API_KEY, config.GEMINI_API_KEY = vrai_groq, vrai_gem
 
@@ -8935,7 +8974,7 @@ def test_une_vraie_voix_neuronale_sur_son_pc_et_hors_ligne():
     check_true("si le programme n'est pas lancé, on ne perd rien",
                "LOCAL_TTS=false;" in ui and "browserSpeak(clean,onend)" in ui)
     check_true("la voix locale passe avant les autres",
-               ui.index("if(LOCAL_TTS && AUDIO){") < ui.index("if(SERVER_TTS && KEY && (IOS"))
+               ui.index("if(veutVoixLocale() && AUDIO){") < ui.index("if(SERVER_TTS && KEY && (IOS"))
 
     # --- 3. Le programme local -------------------------------------------------------
     # --- 2bis. UN SEUL nettoyeur pour la voix ---------------------------------------
@@ -9207,6 +9246,115 @@ def test_ce_qu_il_detient_arrive_la_ou_ca_se_surveille():
     check_true("et le fait retenu est annoncé", "Détient l'action" in api)
 
 
+def test_la_vision_ne_devine_plus_les_noms_et_la_voix_locale_est_dans_la_liste():
+    """Le detail nommait enfin les modeles — et il disait que les HUIT rendaient 404 :
+
+        Groq/meta-llama/llama-4-scout-17b-16e-instruct=404, …-maverick…=404,
+        Groq/llama-3.2-90b-vision-preview=404, …-11b…=404,
+        Gemini/gemini-2.5-flash=404, gemini-2.0-flash=404, 2.5-pro=404, 1.5-flash=404
+
+    ⚠️ L'AUTO-GUERISON EXISTAIT ET NE GUERISSAIT PLUS RIEN. Elle interrogeait bien le
+    compte, mais ne retenait que les noms contenant « vision », « scout », « maverick »
+    ou « llava » — la convention de nommage de 2025. Groq a retire llama-4-scout ET
+    maverick le 17 juin 2026 ; le modele multimodal actuel s'appelle « qwen/qwen3.6-27b »
+    et ne contient AUCUN de ces mots. Le filtre encodait une MODE DE NOMMAGE, pas une
+    capacite — donc il ne trouvait rien, et le message concluait « aucun modele de
+    vision sur ce compte » alors qu'il y en avait un.
+
+    ⚠️ ET J'AVAIS DIT UNE BETISE. « OpenRouter est deja un fournisseur de ta chaine,
+    la cle existe donc » — non : son diagnostic liste groq, gemini, mistral, cerebras,
+    nvidia. Pas d'OpenRouter. Il n'a jamais eu cette cle, et le code de vision sautait
+    ce bloc en silence.
+
+    Et : « je fais comment pour mettre les nouvelles voix, elles apparaissent pas dans
+    parametres voix de Nova ? » — normal, ma voix locale ne figurait nulle part dans la
+    liste. Deux endroits pour une seule question (« quelle voix me parle ? »), donc
+    aucun des deux n'y repondait.
+    """
+    racine = Path(__file__).resolve().parents[1]
+    src = (racine / "llm" / "client.py").read_text(encoding="utf-8")
+
+    # --- 1. On n'exclut plus un modèle parce que son nom ne « sonne » pas vision -----
+    check_true("le remplaçant annoncé par Groq est essayé", '"qwen/qwen3.6-27b"' in src)
+    check_true("les modèles du compte sont essayés même sans mot-clé",
+               "candidates.extend(indices + autres[:6])" in src)
+    # ⚠️ Mais pas n'importe lesquels : whisper ne lira jamais une image.
+    check_true("les modèles qui ne peuvent PAS lire une image sont écartés",
+               '"whisper", "tts", "guard", "embed"' in src)
+    check_true("et la liste reste bornée", "autres[:6]" in src)
+
+    # --- 2. Un 404 partout n'est pas « pas de modèle de vision » --------------------
+    check_true("quatre 404 Gemini → on soupçonne la clé, pas la liste",
+               "n'a pas accès à l'API" in src and "tous_404" in src)
+    # --- 3. Le message propose une action qu'il peut faire LUI ----------------------
+    check_true("sans OpenRouter, on nomme la clé à créer", "openrouter.ai" in src
+               and "`OPENROUTER_API_KEY`" in src)
+    check_true("et on ne lui dit plus d'attendre ma mise à jour",
+               "Ce n'est donc pas une clé à refaire." in src)
+
+    A_ = importlib_module("llm.client")
+    cfg = A_.config
+    sauve = (cfg.GROQ_API_KEY, getattr(cfg, "GEMINI_API_KEY", ""),
+             getattr(cfg, "OPENROUTER_API_KEY", ""))
+    try:
+        cfg.GROQ_API_KEY = cfg.GEMINI_API_KEY = cfg.OPENROUTER_API_KEY = ""
+        try:
+            A_.chat_vision("/etc/hostname")
+            check("⚠️ sans aucune clé, une réponse ?", False, True)
+        except Exception as e:
+            check("sans clé, on en demande une", "aucune clé de vision" in str(e), True)
+    finally:
+        cfg.GROQ_API_KEY, cfg.GEMINI_API_KEY, cfg.OPENROUTER_API_KEY = sauve
+
+    # --- 4. La voix locale apparaît dans LA liste, pas à côté ------------------------
+    ui = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+    check_true("la voix locale est une option du menu", '"__locale__"' in ui)
+    check_true("elle est nommée par le programme local", "VOIX_LOCALE_NOM" in ui)
+    check_true("la liste se met à jour dès qu'elle apparaît", "if(LOCAL_TTS!==avant)" in ui)
+    # ⚠️ S'il choisit une voix du navigateur alors que Piper tourne, c'est SON choix
+    # qui gagne : sinon le menu ne servirait à rien.
+    check_true("son choix l'emporte sur la détection", "function veutVoixLocale()" in ui)
+    check_true("et speak() le respecte", "if(veutVoixLocale() && AUDIO){" in ui)
+    check_true("on l'entend tout de suite, locale comprise",
+               'if(VOIX_CHOISIE==="__locale__"){ stopSpeaking(); speak(PHRASE_ESSAI); return; }' in ui)
+
+    # --- 5. Piper : deux façons de recevoir le texte, on essaie les deux -------------
+    # ⚠️ L'ancien piper lisait stdin ; piper1-gpl prend le texte en argument après
+    # « -- ». Impossible de l'exécuter ici : on essaie, et on retient ce qui marche.
+    import importlib.util as _iu
+    import subprocess as _sp
+    import sys as _sys
+    import tempfile as _tf
+    from pathlib import Path as _P
+    spec = _iu.spec_from_file_location("nova_voix2", racine / "pilote" / "nova_voix.py")
+    NV = _iu.module_from_spec(spec)
+    spec.loader.exec_module(NV)
+    check("aucune forme retenue au départ", NV._FORME_OK, None)
+    with _tf.TemporaryDirectory() as d:
+        faux = _P(d) / "faux.py"
+        faux.write_text(
+            "import sys, wave\n"
+            "a=sys.argv[1:]\n"
+            "if '--' not in a: sys.exit(2)\n"          # cette version refuse stdin
+            "out=a[a.index('-f')+1]\n"
+            "w=wave.open(out,'wb'); w.setnchannels(1); w.setsampwidth(2)\n"
+            "w.setframerate(22050); w.writeframes(b'\\0'*2000); w.close()\n",
+            encoding="utf-8")
+        NV._commande_piper = lambda: [_sys.executable, str(faux)]
+        wav = NV.parle("bonjour", _P("/x.onnx"))
+        check_true("du vrai son sort", wav[:4] == b"RIFF" and len(wav) > 44)
+        check("la forme qui marche est retenue", NV._FORME_OK, "argument")
+        check_true("et réutilisée au coup suivant", NV.parle("re", _P("/x.onnx"))[:4] == b"RIFF")
+        # ⚠️ Si la forme mémorisée cesse de marcher, on ne s'entête pas dessus.
+        NV._commande_piper = lambda: [_sys.executable, "-c", "import sys; sys.exit(3)"]
+        try:
+            NV.parle("x", _P("/x.onnx"))
+            check("⚠️ un piper cassé a rendu du son ?", False, True)
+        except RuntimeError as e:
+            check_true("l'échec dit le code de retour", "code 3" in str(e))
+        check("la forme est oubliée après l'échec", NV._FORME_OK, None)
+
+
 def _leve_systemexit(fn, *a):
     try:
         fn(*a)
@@ -9306,7 +9454,8 @@ if __name__ == "__main__":
                test_un_bouton_pour_arreter_nova_en_plein_raisonnement,
                test_une_vraie_voix_neuronale_sur_son_pc_et_hors_ligne,
                test_une_deuxieme_cle_et_un_message_qui_dit_enfin_pourquoi,
-               test_ce_qu_il_detient_arrive_la_ou_ca_se_surveille):
+               test_ce_qu_il_detient_arrive_la_ou_ca_se_surveille,
+               test_la_vision_ne_devine_plus_les_noms_et_la_voix_locale_est_dans_la_liste):
         try:
             fn()
         except Exception as e:
