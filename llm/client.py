@@ -12,6 +12,7 @@ OpenAI que Groq). Si les deux échouent, l'erreur est loggée clairement.
 """
 import logging
 import os
+import threading
 import time as _t
 import re
 from config import config
@@ -340,6 +341,61 @@ def fournisseur_choisi() -> str:
     return PREFERENCE.get("fournisseur", "")
 
 
+# ── Deuxième clé, deuxième quota ─────────────────────────────────────────────
+# « si il faut je recrée une deuxième clé Groq et Gemini avec des comptes diff » — oui :
+# les limites gratuites se comptent PAR COMPTE. Une deuxième clé entre dans la chaîne
+# comme un fournisseur de plus, et Nova y bascule quand la première dit 429.
+#
+# ⚠️ POURQUOI UN THREAD-LOCAL ET PAS UN contextvar. Les appels au modèle partent dans
+# un `run_in_executor` : un contextvar ne franchit PAS cette frontière — c'est
+# exactement le piège qui avait coûté le canal des confirmations (voir agent/canal.py).
+# `_une_passe` appelle le fournisseur DANS le thread courant, donc un thread-local est
+# à la fois juste et sûr, y compris quand deux requêtes se croisent.
+_CLE_LOCALE = threading.local()
+
+
+def _cle(nom: str) -> str:
+    """La clé à utiliser pour ce fournisseur, MAINTENANT, dans ce thread."""
+    forcee = (getattr(_CLE_LOCALE, "cles", None) or {}).get(nom)
+    if forcee:
+        return forcee
+    return getattr(config, f"{nom.upper()}_API_KEY", "") or ""
+
+
+class _AvecCle:
+    """Le temps d'un appel, ce fournisseur utilise CETTE clé."""
+
+    def __init__(self, nom: str, cle: str):
+        self.nom, self.cle = nom, cle
+
+    def __enter__(self):
+        self.avant = dict(getattr(_CLE_LOCALE, "cles", None) or {})
+        d = dict(self.avant)
+        d[self.nom] = self.cle
+        _CLE_LOCALE.cles = d
+
+    def __exit__(self, *a):
+        _CLE_LOCALE.cles = self.avant
+        return False
+
+
+# Les fournisseurs qui acceptent une deuxième clé. Écrit ici, en un seul endroit :
+# une liste éparpillée finit par n'être à jour qu'à moitié.
+_SECONDES_CLES = ("groq", "gemini")
+
+
+def cles_secondaires() -> dict:
+    """{fournisseur: 2e clé} — seulement celles qui sont réellement renseignées."""
+    out = {}
+    for nom in _SECONDES_CLES:
+        c = (getattr(config, f"{nom.upper()}_API_KEY_2", "") or "").strip()
+        # Une 2e clé identique à la 1re ne double rien : c'est le même compte, donc la
+        # même limite. On l'ignore plutôt que de faire croire à un quota doublé.
+        if c and c != (getattr(config, f"{nom.upper()}_API_KEY", "") or "").strip():
+            out[nom] = c
+    return out
+
+
 def etat_fournisseurs() -> list:
     """Qui est configuré, qui répond, qui est écarté — pour le sélecteur de l'interface."""
     import time as _t
@@ -406,6 +462,29 @@ def _providers_disponibles(niveau: str = "equilibre", impose: str = ""):
         modele = force or MODELES.get(nom, {}).get(niveau) or _MODELES_OK.get(nom) or config.LLM_MODEL
         chaine.append((nom, cle_fn[1], modele))
 
+    def add_2(nom):
+        """La 2e clé du même fournisseur, ajoutée APRÈS tous les autres.
+
+        ⚠️ Volontairement en fin de chaîne. Un autre fournisseur non saturé vaut mieux
+        qu'un deuxième compte chez celui qui vient de dire 429 : quand Groq limite, ce
+        n'est pas toujours par compte (une panne, un modèle retiré), et repartir sur le
+        même service serait tomber deux fois dans le même trou.
+        """
+        cle2 = cles_secondaires().get(nom)
+        if not cle2 or not tous.get(nom):
+            return
+        force = _modele_impose(nom)
+        modele = force or MODELES.get(nom, {}).get(niveau) or _MODELES_OK.get(nom) or config.LLM_MODEL
+        fn = tous[nom][1]
+
+        def appel(messages, m, temperature, niveau=None, _fn=fn, _nom=nom, _c=cle2):
+            with _AvecCle(_nom, _c):
+                try:
+                    return _fn(messages, m, temperature, niveau)
+                except TypeError:
+                    return _fn(messages, m, temperature)
+        chaine.append((f"{nom} (2e clé)", appel, modele))
+
     # 0) Fournisseur RÉCLAMÉ par l'utilisateur dans son message → il passe avant tout.
     #    À défaut, celui qu'il a choisi dans l'interface : une consigne écrite dans la
     #    phrase reste plus précise qu'un réglage général, elle garde donc la priorité.
@@ -438,6 +517,9 @@ def _providers_disponibles(niveau: str = "equilibre", impose: str = ""):
     for nom in tous:
         add(nom)
 
+    # 4bis) Les deuxièmes clés, tout à la fin : un autre fournisseur d'abord.
+    for nom in _SECONDES_CLES:
+        add_2(nom)
     # 5) Les fournisseurs en panne récente partent en fin de liste plutôt qu'à la poubelle :
     #    si TOUS sont marqués HS, il faut quand même en tenter un.
     vivants = [c for c in chaine if not _fournisseur_hs(c[0])]
@@ -555,7 +637,10 @@ def _une_passe(messages: list, temperature: float, num_ctx: int, niveau: str,
                 if soucis:
                     logger.warning(f"[LLM] bascule sur {nom} après : {' | '.join(soucis)}")
                 DERNIER.set(f"{nom} · {_MODELES_OK.get(nom) or modele}")
-                _DERNIER_OK["nom"] = nom
+                # ⚠️ « groq (2e clé) » n'est pas un nom de fournisseur : rangé tel quel,
+                # « celui qui a répondu en dernier passe devant » ne retrouvait plus rien
+                # et l'optimisation s'éteignait en silence dès que la 2e clé servait.
+                _DERNIER_OK["nom"] = nom.split(" (")[0]
                 _FOURNISSEURS_KO.pop(nom, None)      # il remarche : on lève la sanction
                 return out
             soucis.append(f"{nom} : réponse vide")
@@ -668,7 +753,7 @@ def _groq_chat(messages: list, model: str, temperature: float) -> str:
     """Groq avec auto-guérison : les modèles sont régulièrement retirés (404).
     On essaie le modèle configuré, des noms connus, puis ceux réellement offerts au compte."""
     from groq import Groq
-    client = Groq(api_key=config.GROQ_API_KEY, timeout=_timeout(TIMEOUT_LLM), max_retries=0)
+    client = Groq(api_key=_cle("groq"), timeout=_timeout(TIMEOUT_LLM), max_retries=0)
 
     candidats = []
     for m in (_modele_memorise("groq"), model, config.GROQ_MODEL,
@@ -911,7 +996,7 @@ def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> 
                 candidates.append(m)
         try:
             from groq import Groq
-            client = Groq(api_key=config.GROQ_API_KEY, timeout=_timeout(TIMEOUT_LLM), max_retries=0)
+            client = Groq(api_key=_cle("groq"), timeout=_timeout(TIMEOUT_LLM), max_retries=0)
             try:  # modèles réellement disponibles sur CE compte
                 for mo in _lister_modeles(client):
                     mid = getattr(mo, "id", "") or ""
@@ -1168,7 +1253,7 @@ def _gemini_auth() -> dict:
     « AQ.… ». L'en-tête x-goog-api-key fonctionne pour LES DEUX — on l'utilise donc en
     priorité, et on garde ?key= en secours pour les intégrations plus anciennes.
     """
-    return {"x-goog-api-key": (config.GEMINI_API_KEY or "").strip(),
+    return {"x-goog-api-key": (_cle("gemini") or "").strip(),
             "Content-Type": "application/json"}
 
 
@@ -1185,7 +1270,7 @@ def _gemini_chat(messages: list, model: str, temperature: float) -> str:
     import requests
     import time as _t
 
-    if not config.GEMINI_API_KEY:
+    if not _cle("gemini"):
         raise RuntimeError("GEMINI_API_KEY absente — impossible d'appeler Gemini.")
 
     # ⚠️ Gemini etait le SEUL fournisseur reste hors du systeme de delais : requests
@@ -1255,7 +1340,7 @@ def _gemini_chat(messages: list, model: str, temperature: float) -> str:
         r = requests.post(url, headers=_gemini_auth(), json=payload, timeout=restant)
         if r.status_code in (400, 401, 403):          # repli : ancienne méthode ?key=
             restant = max(2.0, _echeance - _t.monotonic())
-            r = requests.post(url, params={"key": config.GEMINI_API_KEY}, json=payload,
+            r = requests.post(url, params={"key": _cle("gemini")}, json=payload,
                               timeout=restant)
         if r.status_code == 200:
             _retenir_modele("gemini", m)

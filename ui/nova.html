@@ -686,9 +686,11 @@
     <input id="key" type="password" placeholder="Ta clé API…"><button onclick="saveCfg()">Enregistrer</button>
     <h3 style="margin-top:18px">🎙️ Voix de Nova</h3>
     <p>Les voix disponibles viennent de <b>cet appareil</b>, pas de Nova. Choisis-en une :
-    tu l'entends tout de suite. Sur Windows, <i>Paramètres → Heure et langue → Voix</i>
-    ajoute les voix « Natural », nettement meilleures que celles d'origine.</p>
+    tu l'entends tout de suite.</p>
     <select id="voix" onchange="choisitVoix(this)"></select>
+    <p id="voixAstuce" style="opacity:.75">Pour les meilleures voix françaises gratuites,
+    ouvre Nova dans <b>Microsoft Edge</b> : les voix neuronales de Microsoft
+    (<i>Denise</i>, <i>Henri</i>) y sont déjà installées et apparaîtront ci-dessus.</p>
   </div></div>
 
 <script>
@@ -2086,7 +2088,10 @@ refreshUsage(); setInterval(refreshUsage, 20000);
    classement — je ne sais pas ce qui est installe chez lui. */
 let NOVA_VOICE=null, VOIX=[], VOIX_CHOISIE=localStorage.getItem("nova_voix")||"";
 function _scoreVoix(v){ let s=0; const n=(v.name||"").toLowerCase();
+  // Les voix neuronales de Microsoft, livrées avec Edge : de loin les meilleures voix
+  // françaises gratuites. Elles portent « Natural » dans leur nom.
   if(/natural|neural|online|enhanced|premium|wavenet|studio|siri/.test(n)) s+=6;
+  if(/denise|henri|vivienne|r[ée]my|[ée]loise|jacqueline|yves|brigitte/.test(n)) s+=3;
   if(/google/.test(n)) s+=4; if(v.localService===false) s+=2;
   if(/amélie|amelie|thomas|denise|céline|celine|julie|léa|lea|audrey|virginie|charlotte/.test(n)) s+=2;
   if(/f(e|é)minin|female/.test(n)) s+=1; return s; }
@@ -2113,6 +2118,29 @@ if("speechSynthesis" in window){ speechSynthesis.onvoiceschanged=pickVoice; pick
    fichier audio produit par le serveur. Astuce iOS : on "déverrouille" UN élément <audio> lors du
    premier geste, puis on réutilise TOUJOURS le même — les lectures suivantes passent sans geste. */
 let SERVER_TTS=true, AUDIO=null, AUDIO_OK=false;
+
+/* ═══ VOIX LOCALE (pilote/nova_voix.py) ═══
+   Une voix neuronale qui tourne sur SA machine : rien ne sort de son ordinateur, et
+   personne ne peut la lui retirer. Si le programme n'est pas lancé, on ne perd rien —
+   on redescend sur la voix du navigateur, puis sur celle du serveur.
+
+   ⚠️ 127.0.0.1 EN CHIFFRES, PAS « localhost ». Nova est servie en HTTPS : une page
+   HTTPS n'a pas le droit d'aller chercher du HTTP, SAUF sur l'adresse de bouclage,
+   que Chrome exempte depuis la version 53. Cette exemption vise l'IP littérale ;
+   « localhost » n'en bénéficie pas partout. Le choix est technique, pas cosmétique. */
+const VOIX_LOCALE = "http://127.0.0.1:5111";
+let LOCAL_TTS=false;
+function checkVoixLocale(){
+  // On ne demande pas la permission, on constate : s'il n'a rien lancé, ça échoue en
+  // silence et personne n'a besoin de le savoir.
+  fetch(VOIX_LOCALE+"/etat",{cache:"no-store"}).then(r=>r.json())
+    .then(d=>{ LOCAL_TTS=!!(d&&d.ok);
+      if(LOCAL_TTS){ const a=document.getElementById("voixAstuce");
+        if(a) a.innerHTML="🎙️ <b>Voix locale active</b> ("+esc(d.voix||"Piper")
+          +") — elle tourne sur ton PC, rien ne sort de ta machine."; } })
+    .catch(()=>{ LOCAL_TTS=false; });
+}
+checkVoixLocale(); setInterval(checkVoixLocale, 60000);
 function checkTTS(){ if(!KEY) return;
   fetch(ORIGIN+"/agent/tts/status?key="+encodeURIComponent(KEY),{cache:"no-store"})
     .then(r=>r.json()).then(d=>{ SERVER_TTS=!!(d&&d.enabled); }).catch(()=>{ SERVER_TTS=false; }); }
@@ -2139,6 +2167,21 @@ function speak(text,onend){
   const clean=coupeSure(clean0,900);
   LAST_SPOKEN=clean; stopSpeaking();
   if(!clean){ if(onend) onend(); return; }
+  // 1) Sa voix locale si elle tourne : la meilleure, et la seule qui ne dépende de
+  //    personne. Si elle échoue, on redescend sans rien lui demander.
+  if(LOCAL_TTS && AUDIO){
+    try{
+      stopListen(true);
+      let done=false;
+      const fin=()=>{ if(!done){ done=true; showReplay(false); if(onend) onend(); } };
+      AUDIO.onended=fin;
+      AUDIO.onerror=()=>{ if(!done){ done=true; LOCAL_TTS=false; browserSpeak(clean,onend); } };
+      AUDIO.volume=1; AUDIO.src=VOIX_LOCALE+"/voix?text="+encodeURIComponent(clean);
+      const pr=AUDIO.play();
+      if(pr&&pr.catch) pr.catch(()=>{ if(!done){ done=true; browserSpeak(clean,onend); } });
+      return;
+    }catch(e){}
+  }
   // ⚠️ La voix du serveur est un FILET pour iOS, pas le reglage par defaut. Sur son PC,
   // le navigateur a de bien meilleures voix ; les lui refuser au nom d'une contrainte
   // iPhone, c'est le pire des deux mondes. Si la synthese locale a une voix, elle passe
