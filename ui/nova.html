@@ -682,6 +682,11 @@
   <div class="modal" id="cfg"><div class="card">
     <h3>🔑 Connexion à Nova</h3><p>Colle ta clé (valeur de <b>AGENT_API_KEY</b> sur Render). Elle reste sur ton appareil.</p>
     <input id="key" type="password" placeholder="Ta clé API…"><button onclick="saveCfg()">Enregistrer</button>
+    <h3 style="margin-top:18px">🎙️ Voix de Nova</h3>
+    <p>Les voix disponibles viennent de <b>cet appareil</b>, pas de Nova. Choisis-en une :
+    tu l'entends tout de suite. Sur Windows, <i>Paramètres → Heure et langue → Voix</i>
+    ajoute les voix « Natural », nettement meilleures que celles d'origine.</p>
+    <select id="voix" onchange="choisitVoix(this)"></select>
   </div></div>
 
 <script>
@@ -690,7 +695,9 @@ let KEY = localStorage.getItem("nova_key")||"", TTS = localStorage.getItem("nova
 const chat=document.getElementById("chat"), hint=document.getElementById("hint");
 document.getElementById("ttsBtn").classList.toggle("on", TTS);
 if(!KEY) openCfg();
-function openCfg(){ document.getElementById("key").value=KEY; document.getElementById("cfg").classList.add("show"); }
+function openCfg(){ document.getElementById("key").value=KEY; document.getElementById("cfg").classList.add("show");
+  // Les voix arrivent de façon asynchrone : au premier chargement la liste est vide.
+  try{ pickVoice(); }catch(e){} }
 function saveCfg(){ KEY=document.getElementById("key").value.trim(); localStorage.setItem("nova_key",KEY);
   document.getElementById("cfg").classList.remove("show");
   // les endpoints sont protégés : on relance ce qui dépend de la clé
@@ -1063,6 +1070,22 @@ async function nouveautes(){
    Et un rapport est du MARKDOWN : lu tel quel, on entend « diese diese barre Source
    barre Information cle barre ». Les tableaux deviennent des virgules, les titres et
    les liens disparaissent. */
+/* ⚠️ « elle lit ça en mode oral mais du coup c'est moche a entendre ». Son rapport de
+   mails commence par « 🗑️ Ignorés (12) » et finit par « 🔒 Je n'ai rien envoyé ». A
+   l'ecran, ces pictogrammes remplacent un mot et font gagner une ligne. A l'oreille,
+   la synthese les ANNONCE : « corbeille Ignores douze », « cadenas ferme Je n'ai rien
+   envoye ». On les retire donc pour la voix — mais seulement pour la voix : a l'ecran
+   ils servent, et texteALire() ne touche pas au texte affiche.
+   Deux exceptions traduites plutot que supprimees, parce qu'elles PORTENT du sens :
+   la fleche d'un trajet (« Pau → Tarbes ») et le point median qui separe deux
+   informations sur une meme ligne. */
+const _EMOJI = (function(){
+  try { return new RegExp("[\\u{1F000}-\\u{1FAFF}\\u{2460}-\\u{27BF}\\u{2B00}-\\u{2BFF}"
+                        + "\\u{FE00}-\\u{FE0F}\\u{1F1E6}-\\u{1F1FF}\\u{200D}\\u{20E3}"
+                        + "\\u{2122}\\u{2139}\\u{2934}\\u{2935}\\u{3030}\\u{303D}"
+                        + "\\u{3297}\\u{3299}]", "gu"); }
+  catch(e){ return /[\uD800-\uDFFF①-➿⬀-⯿︀-️]/g; }
+})();
 function texteALire(md){
   return String(md || "")
     .replace(/```[\s\S]*?```/g, " ")                       // blocs de code : illisibles a voix haute
@@ -1070,6 +1093,11 @@ function texteALire(md){
     .replace(/^[ \t]*#{1,6}[ \t]*/gm, "")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
     .replace(/https?:\/\/\S+/g, " ")
+    // ⚠️ PAS « > » ici : en markdown c'est une citation en debut de ligne, et « > Aucun
+    // outil ne m'a repondu » serait lu « vers Aucun outil ne m'a repondu ».
+    .replace(/\s*[→⟶]\s*/g, " vers ")
+    .replace(/\s+[·•]\s+/g, ", ")
+    .replace(_EMOJI, " ")
     .replace(/\|/g, ", ")
     .replace(/^[ \t]*[-*•][ \t]+/gm, "")
     .replace(/[*#`>_~]/g, "")
@@ -1990,17 +2018,40 @@ async function refreshUsage(){ try{ const r=await fetch(ORIGIN+"/agent/usage?key
 }catch(e){ document.getElementById("utext").textContent="—"; } }
 refreshUsage(); setInterval(refreshUsage, 20000);
 
-/* ═══ VOIX ═══ */
-let NOVA_VOICE=null;
+/* ═══ VOIX ═══
+   « si j'utilise Nova sur le meme ordi tout le temps je peux pas avoir une meilleure
+   voix plus stylee ? » — Oui, et le probleme n'etait pas le choix de la voix : c'est
+   qu'on ne s'en servait pas. La voix du SERVEUR (endpoint de Google Traduction, plate
+   et monocorde) existe pour une raison precise : iOS bloque la synthese du navigateur
+   dans une app installee. Sur son PC cette raison ne s'applique pas — et il entendait
+   quand meme la voix de secours, alors que Windows et Chrome installent des voix
+   « Natural » sans commune mesure. Le repli pour iPhone s'appliquait partout.
+   On garde donc le serveur pour iOS et comme filet, et sur ordinateur on prend la
+   meilleure voix de la machine. Et surtout : il CHOISIT, il ne subit pas mon
+   classement — je ne sais pas ce qui est installe chez lui. */
+let NOVA_VOICE=null, VOIX=[], VOIX_CHOISIE=localStorage.getItem("nova_voix")||"";
+function _scoreVoix(v){ let s=0; const n=(v.name||"").toLowerCase();
+  if(/natural|neural|online|enhanced|premium|wavenet|studio|siri/.test(n)) s+=6;
+  if(/google/.test(n)) s+=4; if(v.localService===false) s+=2;
+  if(/amélie|amelie|thomas|denise|céline|celine|julie|léa|lea|audrey|virginie|charlotte/.test(n)) s+=2;
+  if(/f(e|é)minin|female/.test(n)) s+=1; return s; }
 function pickVoice(){ const vs=speechSynthesis.getVoices(); if(!vs.length) return;
   const fr=vs.filter(v=>/fr[-_]?fr|français|france|french/i.test((v.lang||"")+" "+(v.name||"")));
-  const pool=fr.length?fr:vs;
-  const score=v=>{ let s=0; const n=(v.name||"").toLowerCase();
-    if(/natural|neural|online|enhanced|premium|wavenet|studio|siri/.test(n)) s+=6;
-    if(/google/.test(n)) s+=4; if(v.localService===false) s+=2;
-    if(/amélie|amelie|thomas|denise|céline|celine|julie|léa|lea|audrey|virginie|charlotte/.test(n)) s+=2;
-    if(/f(e|é)minin|female/.test(n)) s+=1; return s; };
-  pool.sort((a,b)=>score(b)-score(a)); NOVA_VOICE=pool[0]; }
+  VOIX=(fr.length?fr:vs).slice().sort((a,b)=>_scoreVoix(b)-_scoreVoix(a));
+  // Son choix passe avant mon classement. S'il a change de machine et que la voix
+  // enregistree n'existe plus, on retombe sur la meilleure disponible sans rien dire.
+  NOVA_VOICE=VOIX.find(v=>v.name===VOIX_CHOISIE)||VOIX[0];
+  remplitVoix(); }
+function remplitVoix(){ const s=document.getElementById("voix"); if(!s) return;
+  if(!VOIX.length){ s.innerHTML='<option value="">Aucune voix sur cet appareil</option>'; return; }
+  s.innerHTML=VOIX.map(v=>'<option value="'+esc(v.name)+'"'
+    +(NOVA_VOICE&&v.name===NOVA_VOICE.name?" selected":"")+">"+esc(v.name)+"</option>").join(""); }
+function choisitVoix(sel){ VOIX_CHOISIE=sel.value; localStorage.setItem("nova_voix",VOIX_CHOISIE);
+  NOVA_VOICE=VOIX.find(v=>v.name===VOIX_CHOISIE)||NOVA_VOICE;
+  // On la fait parler tout de suite : une liste de noms ne dit rien, une phrase si.
+  try{ speechSynthesis.cancel();
+    const u=new SpeechSynthesisUtterance("Bonjour Lohan, c'est avec cette voix que je te lirai tes mails.");
+    u.lang="fr-FR"; u.voice=NOVA_VOICE; speechSynthesis.speak(u); }catch(e){} }
 if("speechSynthesis" in window){ speechSynthesis.onvoiceschanged=pickVoice; pickVoice(); }
 /* ═══ AUDIO SERVEUR (fiable sur iPhone, même en app installée) ═══
    iOS bloque la synthèse du navigateur (surtout en mode "écran d'accueil"). On lit donc un vrai
@@ -2033,14 +2084,18 @@ function speak(text,onend){
   const clean=coupeSure(clean0,900);
   LAST_SPOKEN=clean; stopSpeaking();
   if(!clean){ if(onend) onend(); return; }
-  if(SERVER_TTS && KEY){
+  // ⚠️ La voix du serveur est un FILET pour iOS, pas le reglage par defaut. Sur son PC,
+  // le navigateur a de bien meilleures voix ; les lui refuser au nom d'une contrainte
+  // iPhone, c'est le pire des deux mondes. Si la synthese locale a une voix, elle passe
+  // devant — et browserSpeak() bascule sur le serveur si elle reste muette.
+  if(SERVER_TTS && KEY && (IOS || !NOVA_VOICE)){
     unlockAudio();
     try{
       stopListen(true);                       // le micro doit lâcher la session audio
       const url=ORIGIN+"/agent/tts?key="+encodeURIComponent(KEY)+"&text="+encodeURIComponent(clean);
       let done=false; const fin=()=>{ if(!done){ done=true; showReplay(false); if(onend) onend(); } };
       AUDIO.onended=fin;
-      AUDIO.onerror=()=>{ if(!done){ done=true; browserSpeak(clean,onend); } };
+      AUDIO.onerror=()=>{ if(!done){ done=true; browserSpeak(clean,onend,true); } };
       AUDIO.volume=1; AUDIO.src=url;
       const pr=AUDIO.play();
       if(pr&&pr.catch) pr.catch(()=>{ if(!done){ showReplay(true); done=true;
@@ -2072,8 +2127,20 @@ function showReplay(show){ const b=document.getElementById("replayBtn"); if(b) b
 function replayVoice(){ primeTTS(); unlockAudio(); showReplay(false);
   if(LAST_SPOKEN) speak(LAST_SPOKEN, ()=>{ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }); }
 
-function browserSpeak(clean,onend){
+/* ⚠️ `deja` : on vient DEJA du serveur, donc pas de retour vers lui — sinon les deux
+   voix se renvoient la balle indefiniment. */
+function browserSpeak(clean,onend,deja){
   LAST_SPOKEN=clean;
+  // ⚠️ Depuis qu'on prefere la voix du navigateur sur ordinateur, un echec ici serait
+  // un silence complet : avant, le serveur avait deja parle. On lui rend donc le filet
+  // dans l'autre sens.
+  const filet=()=>{ if(deja||!(SERVER_TTS&&KEY&&AUDIO)) return false;
+    try{ const url=ORIGIN+"/agent/tts?key="+encodeURIComponent(KEY)+"&text="+encodeURIComponent(clean);
+      AUDIO.onended=()=>{ showReplay(false); if(onend) onend(); };
+      AUDIO.onerror=()=>{ showReplay(true); if(onend) onend(); };
+      AUDIO.volume=1; AUDIO.src=url; const pr=AUDIO.play();
+      if(pr&&pr.catch) pr.catch(()=>{ showReplay(true); if(onend) onend(); });
+      return true; }catch(e){ return false; } };
   try{
     stopListen(true);                       // abort() : libère la session audio immédiatement
     try{ speechSynthesis.cancel(); }catch(e){}
@@ -2089,11 +2156,12 @@ function browserSpeak(clean,onend){
       setTimeout(()=>{ if(done) return;
         if(!speechSynthesis.speaking){
           try{ speechSynthesis.resume(); speechSynthesis.speak(u); }catch(e){}
-          setTimeout(()=>{ if(!speechSynthesis.speaking && !done){ showReplay(true); fin(); } }, 900);
+          setTimeout(()=>{ if(!speechSynthesis.speaking && !done){
+            done=true; if(!filet()){ showReplay(true); if(onend) onend(); } } }, 900);
         } }, 450);
     };
     setTimeout(say, IOS ? 550 : 160);       // iOS a besoin de plus de temps après le micro
-  }catch(e){ if(onend) onend(); } }
+  }catch(e){ if(!filet() && onend) onend(); } }
 
 /* ═══ MODE VOCAL (conversation en direct) ═══ */
 let voiceMode=false, vrec=null;

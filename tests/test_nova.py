@@ -7339,7 +7339,9 @@ def test_popup_absence_en_grand_et_lu_a_voix_haute():
     # --- 3. Le texte lu : ni markdown, ni barres de tableau ----------------
     if not shutil.which("node"):
         return
-    src = ui[ui.index("function texteALire("):ui.index("function detailNouveaute(")]
+    # ⚠️ On part de `_EMOJI` et non de `texteALire` : la fonction s'en sert, et une
+    # decoupe trop tardive faisait planter node sans rien dire (stdout vide → IndexError).
+    src = ui[ui.index("const _EMOJI = "):ui.index("function detailNouveaute(")]
     md = ("## Actualités et cours du 3 septembre 2026\n\n"
           "### DBV Technologies (ticker : DBV)\n\n"
           "| Source | Information clé | Cours |\n"
@@ -8656,6 +8658,99 @@ def test_vision_troisieme_fournisseur_et_detail_qui_sert():
         cfg.GROQ_API_KEY, cfg.GEMINI_API_KEY, cfg.OPENROUTER_API_KEY = sauve
 
 
+def test_la_date_du_jour_collee_sur_une_nouvelle_de_juin():
+    """« Des news de 2Crsi ? » — « je sais pas si c'est fiable les infos là »
+
+    Il avait raison de douter. Nova a repondu :
+        • 6 septembre 2026 : vente de serveurs Godi Blackwell Ultra en Allemagne, 110 M€
+        • 26 mars 2026 : resultats du 1er semestre (204,7 M€, x9,8 ; EBITDA 9,6 M€, x4,6)
+        • 29 juin 2026 : procedure de verification independante sur le contrat allemand
+
+    TOUS les chiffres sont exacts — agent/chiffres.py n'avait rien a redire, et il avait
+    raison. La faute est ailleurs : la vente des 110 M€ a ete annoncee le 9 JUIN 2026.
+    Le 6 septembre, c'etait le jour de la conversation.
+
+    Lu dans l'ordre, ce resume dit : gros contrat tombe aujourd'hui. La realite dit :
+    contrat vieux de trois mois, place depuis sous verification independante — la
+    troisieme puce parle d'un contrat que la premiere fait naitre trois mois plus tard.
+    Les memes faits, redates, disent le contraire. C'est la-dessus qu'il decide d'acheter.
+
+    D'OU VENAIT LA DATE : de la requete de Nova elle-meme, « 2Crsi news 6 septembre
+    2026 ». Le modele a relu sa propre question comme etant la date de la reponse.
+    Et le nettoyage anti-date existait deja... dans l'AUTRE branche seulement.
+    """
+    import importlib
+    from datetime import datetime
+    C = importlib.import_module("agent.core")
+    D = importlib.import_module("agent.dates")
+
+    # --- 1. La cause : la date du jour n'entre plus dans une requete qui ne la demande pas
+    # « Des news de 2Crsi ? » nomme une entreprise → veut_actualite() rend False, donc on
+    # passait dans la branche ou la consigne autorise la date. Elle n'y etait pas nettoyee.
+    check("« news de 2Crsi » n'est pas de l'actu generale", C.veut_actualite("Des news de 2Crsi?"), False)
+    check("... et il ne demande pas le jour meme", C._demande_le_jour_meme("Des news de 2Crsi?"), False)
+    check("« l'actu 2CRSi d'aujourd'hui », si", C._demande_le_jour_meme("l'actu 2CRSi d'aujourd'hui"), True)
+    # Une date qu'il ecrit LUI-MEME est la sienne : on n'y touche pas.
+    check("sa propre date reste la sienne", C._demande_le_jour_meme("les news 2CRSi du 9 juin"), True)
+
+    # --- 2. La verification de sortie : une date annoncee doit venir d'une source ------
+    reponse = ("- 6 septembre 2026 : 2CRSi a annoncé la vente de serveurs Godì Blackwell "
+               "Ultra en Allemagne pour 110 M€.\n"
+               "- 26 mars 2026 : résultats du 1er semestre, 204,7 M€ (x9,8).\n"
+               "- 29 juin 2026 : vérification indépendante sur le contrat allemand.")
+    obs = ["2CRSi annonce une vente de 110 M€ de serveurs Godì Blackwell Ultra — 09/06/2026",
+           "Résultats S1 2025/26 publiés le 26 mars 2026 : CA 204,7 M€",
+           "2026-06-29 : mise en place d'une vérification indépendante"]
+    manquantes = D.non_sourcees(reponse, obs)
+    check("le 26 mars est bien sourcé", (26, 3, 2026) in manquantes, False)
+    # ⚠️ La source ecrit « 09/06/2026 », le texte « 9 juin » : meme date, deux ecritures.
+    check("09/06/2026 et « 9 juin 2026 » sont la même date",
+          (9, 6, 2026) in D.dates_citees("annonce du 09/06/2026"), True)
+    check("2026-06-29 lu comme le 29 juin", (29, 6, 2026) in D.dates_citees("2026-06-29 : vérification"), True)
+    check("le 29 juin est sourcé (format ISO)", (29, 6, 2026) in manquantes, False)
+    check("le 6 septembre, lui, ne l'est pas", (6, 9, 2026) in manquantes, True)
+
+    sortie = D.relis(reponse, obs, aujourdhui=(6, 9, 2026))
+    check_true("Nova dit que c'est SA date, pas celle du fait", "c'est probablement MA date" in sortie.lower()
+               or "probablement ma date" in sortie.lower())
+    check_true("elle explique ce que ça change", "trois mois" in sortie)
+    # On ne SUPPRIME pas : un fait sans date est pire qu'un fait mal daté signalé.
+    check_true("le texte d'origine est conservé", "204,7 M€" in sortie and "vérification indépendante" in sortie)
+    check_true("les dates justes ne sont pas montrées du doigt",
+               "26 mars 2026 —" not in sortie.split(reponse[:20])[0])
+
+    # Rien à signaler quand tout est sourcé : pas de bandeau pour rien.
+    check("tout sourcé → aucun bandeau", D.relis("Le 26 mars 2026, résultats publiés.",
+                                                 ["publication du 26 mars 2026"]),
+          "Le 26 mars 2026, résultats publiés.")
+    check("aucune date → texte intact", D.relis("2CRSi progresse.", ["rien"]), "2CRSi progresse.")
+    # ⚠️ Une date SANS annee appartient le plus souvent a son agenda, pas au marche.
+    check("« mardi 8 septembre » (agenda) n'est pas relevé", D.dates_citees("mardi 8 septembre : valise"), set())
+
+    # --- 3. Le bandeau general, quand ce n'est pas la date du jour --------------------
+    autre = D.relis("Le 14 février 2026, l'action a doublé.", ["aucune date ici"],
+                    aujourdhui=(6, 9, 2026))
+    check_true("date non sourcée signalée", "14 février 2026" in autre)
+    check_true("... sans confondre avec le cas « date du jour »", "MA date" not in autre)
+    check_true("le fait reste, c'est le QUAND qui est en cause", "le QUAND dont je ne réponds pas" in autre)
+
+    # --- 4. La voix : ce qui est fait pour l'oeil ne s'entend pas ---------------------
+    # « elle lit ça en mode oral mais du coup c'est moche a entendre »
+    html = (Path(__file__).resolve().parents[1] / "ui" / "nova.html").read_text(encoding="utf-8")
+    check_true("les pictogrammes sont retirés AVANT de lire", "_EMOJI" in html and "replace(_EMOJI" in html)
+    check_true("« → » devient « vers » et pas un silence", '"gu"' in html and " vers " in html)
+    check_true("mais « > » de citation n'est PAS lu « vers »", "PAS « > » ici" in html)
+    check_true("il choisit sa voix au lieu de subir la mienne", 'id="voix"' in html and "choisitVoix" in html)
+    check_true("le choix est retenu sur cet ordinateur", 'localStorage.setItem("nova_voix"' in html)
+    check_true("il l'entend tout de suite", "c'est avec cette voix que je te lirai" in html)
+    # ⚠️ La voix du serveur (Google Traduction, monocorde) est un FILET pour iOS.
+    # Elle passait devant PARTOUT, y compris sur son PC ou le navigateur fait mieux.
+    check_true("sur ordinateur, la voix de la machine passe devant",
+               "if(SERVER_TTS && KEY && (IOS || !NOVA_VOICE)){" in html)
+    check_true("et le serveur reste le filet si le navigateur est muet",
+               "const filet=" in html and "browserSpeak(clean,onend,true)" in html)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -8730,7 +8825,8 @@ if __name__ == "__main__":
                test_un_temps_de_trajet_sans_cle_et_sans_facture,
                test_le_message_de_vision_n_est_plus_coupe_ni_contredit,
                test_audit_trois_portes_derobees_du_garde_fou,
-               test_vision_troisieme_fournisseur_et_detail_qui_sert):
+               test_vision_troisieme_fournisseur_et_detail_qui_sert,
+               test_la_date_du_jour_collee_sur_une_nouvelle_de_juin):
         try:
             fn()
         except Exception as e:
