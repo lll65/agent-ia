@@ -582,7 +582,9 @@
       <button class="micbtn" id="clip" onclick="pickFile()" title="Joindre une photo ou un document">📎</button>
       <button class="micbtn" id="mic" onclick="toggleMic()" title="Parler">🎤</button>
       <textarea id="in" rows="1" placeholder="Parle à Nova…" onkeydown="keydown(event)" oninput="grow(this)"></textarea>
-      <button class="send" id="send" onclick="ask()">➤</button>
+      <!-- ⚠️ UN SEUL bouton, qui change de rôle. Pendant qu'elle réfléchit, « envoyer »
+           était grisé : un bouton mort exactement là où on veut appuyer. Il devient ⏹. -->
+      <button class="send" id="send" onclick="envoyerOuArreter()" title="Envoyer">➤</button>
     </div>
     <input type="file" id="fileInput" style="display:none"
            accept="image/*,.pdf,.txt,.md,.csv,.json,.docx,.doc,.py,.js,.ts,.html,.css"
@@ -1846,6 +1848,45 @@ function tryUICommand(msg){
   return null;
 }
 
+/* ═══ ARRÊTER LE RAISONNEMENT EN COURS ═══
+   « il faut un bouton qui permette aussi de stopper le raisonnement de nova en cours »
+
+   Le bouton « envoyer » etait simplement DESACTIVE pendant qu'elle reflechit : un
+   bouton mort, exactement a l'endroit ou on a envie d'appuyer. Il devient ⏹.
+
+   Arreter, c'est trois choses, et deux etaient faciles a oublier :
+     1. fermer le flux — il n'attend plus ;
+     2. PREVENIR LE SERVEUR — sinon il continue de travailler pour personne et brule un
+        quota gratuit qu'il paie en pannes le soir ;
+     3. garder ce qui etait deja arrive, et DIRE que c'est incomplet. Une reponse
+        interrompue qui a l'air finie, c'est le defaut qu'on traque depuis le debut. */
+let FLUX=null, SID="", BULLE=null, RECU=false, ABORT=null;
+function envoyerOuArreter(){ if(thinking) arreteReflexion(); else ask(); }
+// Échap : le geste que tout le monde fait déjà pour interrompre.
+addEventListener("keydown", e=>{ if(e.key==="Escape" && thinking) arreteReflexion(); });
+function boutonEnvoi(actif){ const b=document.getElementById("send"); if(!b) return;
+  b.disabled=false;                      // jamais grise : il sert a arreter
+  b.innerHTML=actif?"⏹":"➤";
+  b.title=actif?"Arrêter Nova":"Envoyer"; }
+function arreteReflexion(){
+  if(!thinking) return;
+  try{ if(FLUX) FLUX.close(); }catch(e){}
+  try{ if(ABORT) ABORT.abort(); }catch(e){}
+  // Le serveur, lui, ne sait rien de la fermeture d'un EventSource : on le lui dit.
+  if(SID && KEY){ try{ fetch(ORIGIN+"/agent/ask/stop?key="+encodeURIComponent(KEY)
+      +"&sid="+encodeURIComponent(SID),{cache:"no-store"}).catch(()=>{}); }catch(e){} }
+  thinking=false; document.body.classList.remove("thinking"); graphEnd(); boutonEnvoi(false);
+  stopSpeaking();
+  // Ce qui etait deja arrive RESTE : on ajoute la mention d'arret, on ne l'efface pas.
+  // Mais si rien n'etait arrive, la bulle contient encore « Nova reflechit… » — la
+  // laisser tourner indefiniment ferait croire qu'elle travaille toujours.
+  if(BULLE){
+    if(RECU) BULLE.innerHTML += '<div class="mdl">⏹ Arrêté avant la fin — '
+      + 'ce n\'est pas une réponse complète.</div>';
+    else BULLE.innerHTML=fmt("⏹ **Arrêté.** Je n'avais encore rien trouvé.");
+  }
+  if(voiceMode) finVocale("J'arrête là.");
+}
 function ask(){
   const inp=document.getElementById("in"), msg=inp.value.trim();
   if(!KEY){ openCfg(); return; }
@@ -1861,7 +1902,9 @@ function ask(){
     return; }
   document.body.classList.add("chatting");
   inp.value=""; grow(inp); addRow("me",fmt(msg)); histPush("me",msg); sndSend(); const bubble=addRow("ai",thinkHTML(THINK_PHRASES[0],"💭"));
-  document.getElementById("send").disabled=true; thinking=true; document.body.classList.add("thinking"); graphStart();
+  BULLE=bubble; RECU=false;
+  SID = "s" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  boutonEnvoi(true); thinking=true; document.body.classList.add("thinking"); graphStart();
   // ⚠️ Ces nœuds ne portent AUCUN détail inventé : afficher des mots-clés extraits de la
   // question (« salut · nova · ans ») donnait l'illusion d'un raisonnement inexistant.
   // Seules les VRAIES pensées et actions renvoyées par l'agent portent des sous-bulles.
@@ -1882,9 +1925,12 @@ function ask(){
      QUESTION, on ne récite pas un document. */
   const url=ORIGIN+"/agent/ask/stream?key="+encodeURIComponent(KEY)+"&q="+encodeURIComponent(msg)
     + (MODELE ? "&modele="+encodeURIComponent(MODELE) : "")
-    + (voiceMode ? "&vocal=1" : "");
-  const es=new EventSource(url);
+    + (voiceMode ? "&vocal=1" : "")
+    + "&sid=" + encodeURIComponent(SID);
+  const es=new EventSource(url); FLUX=es;
   es.onmessage=(e)=>{ let d; try{ d=JSON.parse(e.data);}catch{ return; }
+    if(!thinking) return;                 // ⏹ vient d'être pressé : on n'écrit plus rien
+    if(d.type==="token"||d.type==="answer") RECU=true;
     // Décisions réelles du routeur → sous-bulles du nœud « Analyse »
     if(d.type==="step" && d.kind==="route"){ graphAddSub("Analyse", d.text||"");
       // Une seule ligne de trace « Analyse », qu'on complète à chaque décision reçue
@@ -1935,9 +1981,9 @@ function ask(){
     // ⚠️ Nova apprend maintenant toute seule. Retenir en douce serait le contraire de
     // ce qu'on veut : on affiche ce qu'elle garde, avec de quoi l'enlever d'un clic.
     else if(d.type==="appris" && (d.faits||[]).length){ APPRIS = APPRIS.concat(d.faits); }
-    else if(d.type==="done"){ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false; attachReason(bubble,trace); attachModel(bubble); puceAppris(bubble.parentElement); sndReceive(); setTimeout(refreshUsage,900); }
+    else if(d.type==="done"){ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); boutonEnvoi(false); attachReason(bubble,trace); attachModel(bubble); puceAppris(bubble.parentElement); sndReceive(); setTimeout(refreshUsage,900); }
   };
-  es.onerror=()=>{ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); document.getElementById("send").disabled=false;
+  es.onerror=()=>{ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); boutonEnvoi(false);
     if(!answer) bubble.innerHTML="⚠️ Connexion interrompue. Vérifie ta clé (⚙️) et réessaie."; else attachReason(bubble,trace);
     /* ⚠️ En mode vocal, ce message est INVISIBLE : body.voice masque .chat (voir la
        règle CSS plus haut). Et ce gestionnaire ne relançait jamais le micro. Résultat,
@@ -1974,16 +2020,25 @@ function sendAttachment(question){
   addRow("me", (question?fmt(question)+"<br>":"")+'<span style="opacity:.85">📎 '+esc(name)+'</span>');
   histPush("me",(question||"")+" [fichier: "+name+"]"); sndSend();
   const bubble=addRow("ai", thinkHTML(isImg?"J'analyse ton image…":"Je lis ton document…","📎"));
-  document.getElementById("send").disabled=true; thinking=true; document.body.classList.add("thinking");
+  BULLE=bubble; RECU=false;
+  boutonEnvoi(true); thinking=true; document.body.classList.add("thinking");
   graphStart(); graphPhase("📎", isImg?"Image":"Document"); graphPhase("⚙️","Analyse");
   const fd=new FormData(); fd.append("file",file); fd.append("key",KEY); fd.append("question",question||"");
-  fetch(ORIGIN+"/agent/upload",{method:"POST",body:fd}).then(r=>r.json()).then(d=>{
+  // ⚠️ L'analyse d'un fichier est le chemin le PLUS long (vision, OCR) : c'est celui
+  // où l'on a le plus envie d'appuyer sur ⏹. Sans ce contrôleur, ⏹ rendait la main à
+  // l'écran et la réponse tardive venait quand même écraser la bulle « Arrêté ».
+  ABORT=new AbortController();
+  fetch(ORIGIN+"/agent/upload",{method:"POST",body:fd,signal:ABORT.signal}).then(r=>r.json()).then(d=>{
+    if(!thinking) return;                 // ⏹ pressé pendant l'analyse
+    RECU=true;
     const ans=(d&&d.answer)||"❌ Analyse impossible.";
     graphAdd("✍️","Rédaction"); typewrite(bubble,ans); histPush("ai",ans,trace);
     if(TTS&&!voiceMode) speak(ans);
-  }).catch(e=>{ bubble.innerHTML="⚠️ Envoi impossible : "+esc(String(e).slice(0,120)); })
-   .finally(()=>{ thinking=false; document.body.classList.remove("thinking"); graphEnd();
-     document.getElementById("send").disabled=false; sndReceive(); setTimeout(refreshUsage,900); });
+  }).catch(e=>{ if(e && e.name==="AbortError") return;   // ⏹ : déjà dit à l'écran
+    bubble.innerHTML="⚠️ Envoi impossible : "+esc(String(e).slice(0,120)); })
+   .finally(()=>{ ABORT=null; if(!thinking) return;
+     thinking=false; document.body.classList.remove("thinking"); graphEnd();
+     boutonEnvoi(false); sndReceive(); setTimeout(refreshUsage,900); });
 }
 /* Glisser-déposer sur toute la page + coller une image */
 (function(){ const dz=document.getElementById("drop"); let dragDepth=0;

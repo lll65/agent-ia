@@ -863,9 +863,14 @@ def search_query(task: str) -> str:
     # articles du jour, que les flux et moteurs d'actu trient déjà par fraîcheur.
     # La consigne donnée au modèle doit donc changer selon le cas — sinon il rajoute la
     # date lui-même et le garde-fou de requete_simple() est contourné.
+    horaires = veut_des_horaires(t)
     regle_date = (
         "• N'ajoute NI date NI année : la fraîcheur est déjà gérée par le moteur d'actualité.\n"
         if actu else
+        # Un magasin publie « Dimanche 09:00 - 12:30 », jamais « 6 septembre 2026 ».
+        f"• Heures d'ouverture → écris « horaires {_JOURS[auj.weekday()]} », JAMAIS de date "
+        f"ni d'année : une date ne ramène que des catalogues de promotions.\n"
+        if horaires else
         f"• Actualité DU JOUR (« aujourd'hui », « du jour », « ce matin ») → ajoute la date "
         f"précise « {_JOURS_COURT(auj)} » pour ne pas ramener des articles vieux de plusieurs mois.\n"
         f"• Autre information récente → ajoute simplement « {auj.year} ».\n")
@@ -895,6 +900,14 @@ def search_query(task: str) -> str:
             q = re.sub(r"\b\d{1,2}\s+(?:" + "|".join(_MOIS) + r")\s+\d{4}\b", "", q, flags=re.I)
             q = re.sub(r"\b(?:20\d{2})\b", "", q)
             q = re.sub(r"\s{2,}", " ", q).strip(" ,-—")
+        elif horaires:
+            # Là encore, le modèle désobéit : on retire la date, on remet le jour.
+            q = re.sub(r"\b\d{1,2}\s+(?:" + "|".join(_MOIS) + r")\s+\d{4}\b", "", q, flags=re.I)
+            q = re.sub(r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b", "", q)
+            q = re.sub(r"\b(?:20\d{2})\b", "", q)
+            q = re.sub(r"\s{2,}", " ", q).strip(" ,-—")
+            if _JOURS[auj.weekday()] not in q.lower() and _demande_le_jour_meme(t):
+                q = f"{q} {_JOURS[auj.weekday()]}".strip()
         elif not _demande_le_jour_meme(t):
             # ⚠️ L'AUTRE CÔTÉ DE LA MÊME RÈGLE, ET C'EST LUI QUI A FAIT LE DÉGÂT.
             # « Des news de 2Crsi ? » nomme une entreprise : veut_actualite() rend False,
@@ -1014,6 +1027,33 @@ def veut_actualite(task: str) -> bool:
     return False
 
 
+# ⚠️ « le Leclerc, est-ce qu'il est ouvert aujourd'hui ? » — un dimanche. Nova a
+# cherché « Leclerc Pau ouvert 6 septembre 2026 » et n'a rien trouvé : le moteur a
+# remonté un catalogue « du 01 sept. au 12 sept. » et une page « Ouvert le 1er novembre
+# 2026 », parce qu'une date écrite en toutes lettres, ça ne matche que des promotions.
+# Elle a conclu « je n'ai pas trouvé de confirmation » alors que PagesJaunes, Bonial et
+# e.leclerc.fr affichent tous « Dimanche 09:00 - 12:30 ».
+# Un magasin ne publie JAMAIS ses horaires à la date : il les publie au JOUR DE LA
+# SEMAINE. Pour une question d'ouverture, « dimanche » est le mot utile ; « 6 septembre
+# 2026 » est celui qui fait échouer la recherche.
+_MOTS_HORAIRES = ("ouvert", "ouverte", "ouverts", "ouvertes", "ouverture", "horaire",
+                  "horaires", "ferme", "fermeture", "quelle heure", "ca ouvre", "ca ferme")
+
+
+def veut_des_horaires(task: str) -> bool:
+    """La demande porte-t-elle sur des heures d'ouverture ?
+
+    ⚠️ On compare sur le texte SANS accents ni apostrophes : « fermé » et « ça ouvre »
+    y deviennent « ferme » et « ca ouvre ». Écrire les mots accentués dans la liste
+    ci-dessus les rendrait introuvables — un filtre qui ne filtre rien.
+    """
+    import unicodedata
+    t = unicodedata.normalize("NFD", (task or "").lower())
+    t = "".join(c for c in t if unicodedata.category(c) != "Mn")
+    t = re.sub(r"[^a-z0-9]+", " ", t)
+    return any(k in t for k in _MOTS_HORAIRES)
+
+
 def _demande_le_jour_meme(task: str) -> bool:
     """La demande porte-t-elle explicitement sur AUJOURD'HUI ?
 
@@ -1063,6 +1103,14 @@ def requete_simple(task: str, pour_actu: bool = False) -> str:
     # « 20 août 2026 » — communiqués de presse, « trading updates » — au lieu des
     # articles du jour, que les flux et moteurs d'actu trient déjà par fraîcheur.
     if pour_actu:
+        return q[:120] or t[:120]
+    # ⚠️ LES DEUX CHEMINS DOIVENT DIRE LA MÊME CHOSE. Corriger search_query() seul
+    # laisserait ce repli — celui qui sert justement quand aucun modèle ne répond —
+    # continuer à dater les questions d'horaires. C'est exactement la faute qu'on
+    # rattrape depuis ce matin : une règle appliquée d'un seul côté.
+    if veut_des_horaires(t):
+        if any(k in bas for k in _MOTS_DU_JOUR):
+            q = f"{q} {_JOURS[auj.weekday()]}".strip()  # « dimanche », pas « 6 septembre »
         return q[:120] or t[:120]
     if any(k in bas for k in _MOTS_DU_JOUR) or "du jour" in bas:
         q = f"{q} {_JOURS_COURT(auj)}".strip()          # « 19 août 2026 »

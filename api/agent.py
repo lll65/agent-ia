@@ -50,8 +50,14 @@ _PERSONAL_RE = (
     # Ce que je suis / ce que je fais
     r"\bj'?ai\s+\d{1,3}\s*ans?\b", r"\bje\s+m'?appelle\b", r"\bmon\s+(pr[ée]nom|nom)\s+(c'?est|est)\b",
     r"\bj'?habite\b", r"\bje\s+vis\s+[àa]\b",
-    r"\bje\s+suis\s+(un|une|en|au|à|a|étudiant|etudiant|lycéen|lyceen|développeur|developpeur|"
+    # ⚠️ « je suis ACTUELLEMENT à Pau dans mon appart » : un seul adverbe glissé entre le
+    # verbe et le lieu, et plus rien ne correspondait. Nova n'a donc pas retenu son
+    # adresse — « nova ne retient rien dans sa mémoire ». On tolère l'adverbe.
+    r"\bje\s+(?:suis|serai|reste|loge|r[ée]side)\s+(?:actuellement\s+|en ce moment\s+|"
+    r"toujours\s+|d[ée]sormais\s+|maintenant\s+|l[àa]\s+)?"
+    r"(un|une|en|au|à|a|dans|chez|étudiant|etudiant|lycéen|lyceen|développeur|developpeur|"
     r"allergique|passionn[ée]|n[ée]|inscrit|abonn[ée]|majeur|mineur|gaucher|droitier)\b",
+    r"\bj'?ai\s+emm[ée]nag[ée]?\b", r"\bmon\s+adresse\b",
     r"\bje\s+(travaille|bosse|[ée]tudie|joue|pratique|cherche|voudrais|veux devenir)\b",
     r"\bj'?aime\b", r"\bje\s+pr[ée]f[èe]re\b", r"\bje\s+d[ée]teste\b", r"\bje\s+n'?aime pas\b",
     r"\bje\s+fais\s+(du|de la|des)\b", r"\bje\s+me\s+l[èe]ve\b", r"\bje\s+me\s+couche\b",
@@ -61,7 +67,12 @@ _PERSONAL_RE = (
     r"\bm(on|a|es)\s+(p[èe]re|m[èe]re|parents?|fr[èe]re|s(œ|oe)ur|famille|copine|copain|"
     r"petit[e]?[- ]ami[e]?|ami[e]?s?|chien|chat|prof|classe|lyc[ée]e|coll[èe]ge|[ée]cole|"
     r"boulot|travail|anniversaire|objectif|objectifs|projet|projets|but|r[êe]ve|"
-    r"emploi du temps|niveau|taille|poids|voiture|quartier|ville)\b",
+    r"emploi du temps|niveau|taille|poids|voiture|quartier|ville|"
+    # ⚠️ « mon appart » — la façon la plus courante de dire où l'on vit — manquait,
+    # alors que « ma voiture » et « mon quartier » y étaient. Où il dort compte plus
+    # que ce qu'il conduit : c'est de là que partent ses trajets et ses courses.
+    r"appart|appartement|studio|logement|r[ée]sidence|coloc|colocation|chambre|"
+    r"maison|immeuble|adresse|domicile)\b",
     r"\bj'?ai\s+(un|une|des|deux|trois)\s+(fr[èe]re|s(œ|oe)ur|chien|chat|enfant|"
     r"voiture|permis|projet|examen|contr[ôo]le)\w*\b",
 )
@@ -72,6 +83,26 @@ def _est_ordre_memoire(message: str) -> bool:
     import re
     m = (message or "").strip().lower()
     return any(re.search(p, m) for p in _ORDRE_MEMOIRE)
+
+
+# Des tournures qu'aucune commande d'application ne peut prendre : elles AFFIRMENT,
+# elles ne demandent rien. Volontairement étroites — c'est un contournement du filtre
+# « c'est une commande », donc il ne doit s'ouvrir que sur des phrases indiscutables.
+_DECLARE_LIEU = (
+    r"\bm(on|a)\s+(adresse|appart\w*|studio|logement|r[ée]sidence|coloc\w*|chambre|"
+    r"maison|domicile)\s+(c'?est|est|se trouve|se situe)\b",
+    r"\bj'?habite\b",
+    r"\bj'?ai\s+emm[ée]nag[ée]?\b",
+    r"\bje\s+(suis|vis|loge|r[ée]side)\s+(?:actuellement\s+|en ce moment\s+|maintenant\s+|"
+    r"d[ée]sormais\s+)?(?:[àa]|au|dans|chez)\b",
+)
+
+
+def _declare_ou_il_vit(message: str) -> bool:
+    """Dit-il où il vit ? (une affirmation, jamais une commande à une app)"""
+    import re
+    m = (message or "").lower()
+    return any(re.search(p, m) for p in _DECLARE_LIEU)
 
 
 def _is_personal_fact(message: str) -> bool:
@@ -91,7 +122,12 @@ def _is_personal_fact(message: str) -> bool:
         return True
     # Une demande adressée à une app est une COMMANDE, pas une confidence :
     # « ouvre mon agenda » contient « mon agenda » sans rien dire de l'utilisateur.
-    if app_courante(m):
+    # ⚠️ SAUF quand il DIT où il vit. « mon adresse c'est 12 rue des Cordeliers » était
+    # classé « googlemaps » — à cause de « adresse » et de « rue » — et jeté sans être
+    # retenu. C'est pourtant la confidence la plus utile qu'il puisse donner : c'est de
+    # là que partent ses trajets, ses courses et son temps de marche. Une déclaration
+    # sur soi n'est jamais une commande, quel que soit le mot d'app qu'elle contient.
+    if app_courante(m) and not _declare_ou_il_vit(m):
         return False
     if len(m.split()) > 45:          # au-delà, c'est une demande, pas une confidence
         return False
@@ -4288,7 +4324,8 @@ async def ask_post(req: AskRequest, request: Request):
 
 
 @router.get("/ask/stream")
-async def ask_stream(q: str = "", key: str = "", modele: str = "", vocal: int = 0):
+async def ask_stream(q: str = "", key: str = "", modele: str = "", vocal: int = 0,
+                     sid: str = ""):
     """Streaming SSE : émet en direct les étapes du raisonnement + la réponse (pour /nova)."""
     import json as _json
     from fastapi.responses import StreamingResponse
@@ -4308,28 +4345,33 @@ async def ask_stream(q: str = "", key: str = "", modele: str = "", vocal: int = 
     from agent.chrono import demarre as _chrono_demarre, termine as _chrono_termine
     _chrono_demarre(message)
 
+    # ⚠️ `sse` vit ICI et non dans `gen()` : l'enveloppe d'arrêt (plus bas) doit
+    # pouvoir émettre le message « arrêté » par le MÊME chemin — donc en passant par
+    # les mêmes filets (secrets, qualité). Un message d'arrêt qui court-circuiterait
+    # ces relectures serait le seul de la page à ne pas être vérifié.
+    def sse(obj):
+        # ⚠️ Dernier filet : AUCUNE clé ne doit sortir, quelle que soit la branche
+        # qui a construit le message. Une clé affichée est une clé compromise —
+        # d'autant que l'utilisateur colle ses conversations ailleurs pour les
+        # faire analyser.
+        for _c in ("text", "answer", "t"):
+            if isinstance(obj.get(_c), str):
+                obj[_c] = sans_secrets(obj[_c])
+        # ⚠️ Même filet pour la QUALITÉ. « Un schéma du cours de la bourse » a
+        # produit un millier de « ▁ » à la suite : le modèle, sans chiffres,
+        # dessinait une ligne plate jusqu'à épuisement. Et « je ne peux pas
+        # répondre à cette demande », point final, sur une question de bourse
+        # parfaitement traitable. Les deux étaient déjà interdits dans les
+        # consignes : un modèle saturé les enfreint quand même, donc on relit.
+        if isinstance(obj.get("answer"), str):
+            from agent.qualite import relis as _relis_q
+            obj["answer"] = _relis_q(obj["answer"], message)
+        elif isinstance(obj.get("text"), str) and obj.get("type") == "answer":
+            from agent.qualite import relis as _relis_q
+            obj["text"] = _relis_q(obj["text"], message)
+        return f"data: {_json.dumps(obj, ensure_ascii=False)}\n\n"
+
     async def gen():
-        def sse(obj):
-            # ⚠️ Dernier filet : AUCUNE clé ne doit sortir, quelle que soit la branche
-            # qui a construit le message. Une clé affichée est une clé compromise —
-            # d'autant que l'utilisateur colle ses conversations ailleurs pour les
-            # faire analyser.
-            for _c in ("text", "answer", "t"):
-                if isinstance(obj.get(_c), str):
-                    obj[_c] = sans_secrets(obj[_c])
-            # ⚠️ Même filet pour la QUALITÉ. « Un schéma du cours de la bourse » a
-            # produit un millier de « ▁ » à la suite : le modèle, sans chiffres,
-            # dessinait une ligne plate jusqu'à épuisement. Et « je ne peux pas
-            # répondre à cette demande », point final, sur une question de bourse
-            # parfaitement traitable. Les deux étaient déjà interdits dans les
-            # consignes : un modèle saturé les enfreint quand même, donc on relit.
-            if isinstance(obj.get("answer"), str):
-                from agent.qualite import relis as _relis_q
-                obj["answer"] = _relis_q(obj["answer"], message)
-            elif isinstance(obj.get("text"), str) and obj.get("type") == "answer":
-                from agent.qualite import relis as _relis_q
-                obj["text"] = _relis_q(obj["text"], message)
-            return f"data: {_json.dumps(obj, ensure_ascii=False)}\n\n"
         if not message:
             yield sse({"type": "answer", "text": "Message vide."}); yield sse({"type": "done"}); return
         loop = asyncio.get_running_loop()
@@ -4594,8 +4636,61 @@ async def ask_stream(q: str = "", key: str = "", modele: str = "", vocal: int = 
             except Exception:
                 pass
 
-    return StreamingResponse(gen(), media_type="text/event-stream",
+    async def gen_interruptible():
+        """`gen()`, mais qui s'arrête quand il appuie sur ⏹.
+
+        ⚠️ On enveloppe au lieu de semer un test dans les quarante `yield` de `gen()` :
+        un test oublié dans une seule branche, et le bouton ne marche plus que
+        parfois — un bouton d'arrêt qui marche parfois est pire que pas de bouton.
+
+        ⚠️ CE QUE ÇA N'ARRÊTE PAS, ET IL DOIT LE SAVOIR. On reprend la main ENTRE deux
+        étapes. Un appel déjà parti — une recherche web, une requête Gmail — va jusqu'au
+        bout : on ne peut pas rappeler une requête envoyée. L'arrêt est donc immédiat à
+        l'écran, et au pire d'une étape côté serveur. Le message le dit ainsi plutôt que
+        de promettre un arrêt net qui n'existe pas.
+        """
+        try:
+            async for morceau in gen():
+                if sid and sid in _STOPS:
+                    yield sse({"type": "answer",
+                               "text": "⏹ **Arrêté à ta demande.** Ce que j'avais déjà "
+                                       "trouvé est au-dessus ; je n'ai pas fini, donc ne "
+                                       "prends pas cette réponse pour complète.",
+                               "final": True})
+                    yield sse({"type": "done"})
+                    return
+                yield morceau
+        finally:
+            _STOPS.discard(sid)
+
+    return StreamingResponse(gen_interruptible(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ⚠️ En mémoire et borné : un ordre d'arrêt qui survivrait au redémarrage du serveur
+# arrêterait une question posée APRÈS, sans rapport. Comme la file du pilote, ce qui
+# commande l'instant doit être aussi éphémère que l'instant.
+_STOPS: set = set()
+
+
+@router.get("/ask/stop")
+async def ask_stop(sid: str = "", key: str = ""):
+    """« il faut un bouton qui permette aussi de stopper le raisonnement en cours »
+
+    Fermer le flux côté navigateur suffit à ce que Lohan n'attende plus — mais le
+    serveur, lui, continuerait à travailler pour personne, et à consommer un quota
+    gratuit qu'il paie en pannes le soir. On le prévient donc explicitement.
+    """
+    _check_key(key)
+    s = (sid or "").strip()[:64]
+    if not s:
+        return {"ok": False, "raison": "aucune demande à arrêter"}
+    _STOPS.add(s)
+    if len(_STOPS) > 200:                       # jamais de fuite, même si un ⏹ se perd
+        _STOPS.clear()
+        _STOPS.add(s)
+    logger.info(f"[stop] arrêt demandé pour {s}")
+    return {"ok": True}
 
 
 @router.get("/briefing")

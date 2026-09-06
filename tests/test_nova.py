@@ -8751,6 +8751,162 @@ def test_la_date_du_jour_collee_sur_une_nouvelle_de_juin():
                "const filet=" in html and "browserSpeak(clean,onend,true)" in html)
 
 
+def test_le_leclerc_du_dimanche_et_l_appart_jamais_retenu():
+    """« je suis actuellement à Pau dans mon appart dans la résidence UXCO […] est-ce que
+    le Leclerc […] est ouvert aujourd'hui » — un dimanche.
+
+    Nova : « Je n'ai pas trouvé d'information confirmant que le magasin Leclerc de Pau
+    est ouvert le dimanche 6 septembre 2026. Le site indique simplement : Ouvert le
+    1er novembre 2026 […] Du 01 sept. au 12 sept. 2026 ».
+
+    Le magasin est ouvert le dimanche de 9h00 a 12h30, et PagesJaunes, Bonial et
+    e.leclerc.fr l'affichent tous les trois. Le numero qu'elle a donne (05 59 80 80 80)
+    est le bon — elle n'a rien invente. Elle a juste CHERCHE de travers :
+    « Leclerc Pau ouvert 6 septembre 2026 ». Une date ecrite en toutes lettres ne matche
+    que des catalogues de promotions, d'ou « du 01 sept. au 12 sept. ».
+
+    ⚠️ Un magasin ne publie JAMAIS ses horaires a la date : il les publie au JOUR DE LA
+    SEMAINE. « dimanche » est le mot utile ; « 6 septembre 2026 » est celui qui fait
+    echouer la recherche. Meme cause que 2CRSi ce matin, symptome oppose : la ce n'etait
+    pas une date fausse, c'etait une absence de reponse alors que la reponse existait.
+
+    Et : « nova ne retient rien dans sa memoire, la par exemple elle aurait pu
+    enregistrer mon adresse d'appart a la residence UXCO ».
+    """
+    import importlib
+    C = importlib.import_module("agent.core")
+
+    # --- 1. Une question d'horaires ne se date pas, elle se conjugue au jour ---------
+    check_true("« est-ce ouvert aujourd'hui » est une question d'horaires",
+               C.veut_des_horaires("le Leclerc est-ce qu'il est ouvert aujourd'hui"))
+    check_true("« fermé » aussi, malgré l'accent", C.veut_des_horaires("la pharmacie est fermée ?"))
+    check_true("« ça ouvre à quelle heure » aussi", C.veut_des_horaires("ça ouvre à quelle heure le Lidl"))
+    check("« des news de 2CRSi » n'en est pas une", C.veut_des_horaires("des news de 2CRSi"), False)
+    check("« organise ma journée » non plus", C.veut_des_horaires("organise ma journée de demain"), False)
+
+    q = C.requete_simple("le Leclerc est-ce qu'il est ouvert aujourd'hui")
+    check_true("le jour de la semaine est dans la requête", "dimanche" in q or _jour_attendu() in q)
+    check("aucune date en toutes lettres", bool(re.search(r"\d{1,2}\s+\w+\s+\d{4}", q)), False)
+    check("aucune année non plus", bool(re.search(r"\b20\d{2}\b", q)), False)
+    # ⚠️ LES DEUX CHEMINS. Corriger search_query() seul laisserait ce repli — celui qui
+    # sert quand aucun modèle ne répond — continuer à dater. C'est la faute du matin.
+    src = (Path(__file__).resolve().parents[1] / "agent" / "core.py").read_text(encoding="utf-8")
+    check_true("le repli sans modèle applique la même règle",
+               "if veut_des_horaires(t):" in src)
+    check_true("et search_query aussi", "elif horaires:" in src)
+
+    # --- 2. Son adresse : elle ne la retenait pas, et pour deux raisons --------------
+    m = ("nouveau je suis actuellement à Pau dans mon appart dans la résidence XCO "
+         "c'est une résidence étudiante husko et j'aimerais aller faire mes courses "
+         "est-ce que le Leclerc et qui est censé être à 13 minutes à pied est-ce que "
+         "il est ouvert aujourd'hui")
+    check_true("sa phrase contient bien un fait durable", A._is_personal_fact(m))
+    # ⚠️ Raison 1 : un adverbe entre le verbe et le lieu cassait tout.
+    check_true("« je suis actuellement à Pau »", A._is_personal_fact("je suis actuellement à Pau"))
+    check_true("« je suis à Pau » marchait déjà", A._is_personal_fact("je suis à Pau"))
+    check_true("« je loge chez ma tante »", A._is_personal_fact("je loge chez ma tante cette semaine"))
+    # ⚠️ Raison 2 : « mon appart » manquait, alors que « ma voiture » y était.
+    check_true("« mon appart »", A._is_personal_fact("mon appart est au 3e étage"))
+    check_true("« ma résidence »", A._is_personal_fact("ma résidence étudiante s'appelle UXCO"))
+    check_true("« mon adresse »", A._is_personal_fact("mon adresse c'est 12 rue des Cordeliers"))
+    check_true("« ma coloc »", A._is_personal_fact("ma coloc est près du campus"))
+    # Et ce qui ne doit toujours PAS être retenu : une commande n'est pas une confidence.
+    check("« ouvre mon agenda » reste une commande", A._is_personal_fact("ouvre mon agenda"), False)
+    check("une question météo n'apprend rien", A._is_personal_fact("quelle est la météo demain"), False)
+    check("« mes mails » n'est pas une confidence", A._is_personal_fact("montre-moi mes mails"), False)
+
+    # --- 3. Retenir en douce ne compte pas : il doit le VOIR -------------------------
+    # « elle aurait pu enregistrer ET ME LE DIRE ». Le canal existe déjà ; il n'était
+    # jamais emprunté parce que _is_personal_fact() disait non.
+    api = (Path(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
+    check_true("ce qui est retenu est annoncé", '"type": "appris"' in api)
+    ui = (Path(__file__).resolve().parents[1] / "ui" / "nova.html").read_text(encoding="utf-8")
+    check_true("et affiché à l'écran", 'd.type==="appris"' in ui)
+
+
+def test_un_bouton_pour_arreter_nova_en_plein_raisonnement():
+    """« il faut un bouton qui permette aussi de stopper le raisonnement de nova en cours »
+
+    Le bouton « envoyer » etait simplement DESACTIVE pendant qu'elle reflechit : un
+    bouton mort, exactement a l'endroit ou on a envie d'appuyer. Il devient ⏹.
+
+    Arreter, c'est trois choses, et deux etaient faciles a oublier :
+      1. fermer le flux — il n'attend plus ;
+      2. PREVENIR LE SERVEUR — sinon il continue de travailler pour personne et brule
+         un quota gratuit qu'il paie en pannes le soir ;
+      3. garder ce qui etait deja arrive, et DIRE que c'est incomplet. Une reponse
+         interrompue qui a l'air finie, c'est le defaut qu'on traque depuis le debut.
+    """
+    racine = Path(__file__).resolve().parents[1]
+    ui = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+
+    # --- 1. Un seul bouton, qui change de role -------------------------------------
+    check_true("le bouton envoie OU arrête", 'onclick="envoyerOuArreter()"' in ui)
+    check_true("⏹ pendant qu'elle réfléchit", 'b.innerHTML=actif?"⏹":"➤"' in ui)
+    # ⚠️ Un bouton d'arrêt qui se grise est un bouton d'arrêt qui n'existe pas.
+    check_true("il n'est jamais grisé", "b.disabled=false;" in ui)
+    check("plus aucun grisage direct du bouton",
+          'getElementById("send").disabled' in ui, False)
+    check_true("Échap arrête aussi", 'e.key==="Escape" && thinking' in ui)
+
+    # --- 2. Le serveur doit l'apprendre --------------------------------------------
+    check_true("le flux est fermé", "if(FLUX) FLUX.close();" in ui)
+    check_true("le serveur est prévenu", "/agent/ask/stop?key=" in ui)
+    check_true("l'identifiant de la demande part avec la question", '"&sid=" + encodeURIComponent(SID)' in ui)
+    # ⚠️ L'analyse d'un fichier est le chemin le PLUS long : c'est celui où l'on a le
+    # plus envie d'appuyer. Sans AbortController, la réponse tardive écrasait « Arrêté ».
+    check_true("une pièce jointe s'interrompt aussi", "ABORT=new AbortController();" in ui)
+    check_true("et son abandon n'affiche pas d'erreur", 'e.name==="AbortError"' in ui)
+
+    # --- 3. Ce qui etait arrive reste, et c'est dit incomplet ------------------------
+    check_true("rien n'est effacé", "BULLE.innerHTML +=" in ui)
+    check_true("mais c'est annoncé incomplet", "ce n'est pas une réponse complète" in ui
+               or "n\\'est pas une réponse complète" in ui)
+    check_true("et si rien n'était arrivé, on le dit aussi", "Je n'avais encore rien trouvé" in ui)
+    check_true("plus rien ne s'écrit après ⏹", "if(!thinking) return;" in ui)
+
+    # --- 4. Cote serveur ------------------------------------------------------------
+    api = (racine / "api" / "agent.py").read_text(encoding="utf-8")
+    check_true("la route d'arrêt existe", '@router.get("/ask/stop")' in api)
+    check_true("elle est protégée par la clé, comme le reste",
+               "async def ask_stop" in api and "_check_key(key)" in api)
+    check_true("le flux se coupe entre deux étapes", "gen_interruptible" in api)
+    # ⚠️ On enveloppe au lieu de semer un test dans les quarante `yield` de gen() :
+    # un test oublié dans une seule branche et le bouton ne marche que parfois.
+    check_true("l'arrêt enveloppe le générateur", "async for morceau in gen():" in api)
+    check_true("l'ordre d'arrêt ne survit pas à la demande", "_STOPS.discard(sid)" in api)
+    check_true("et la liste ne peut pas fuir", "if len(_STOPS) > 200:" in api)
+    # ⚠️ Le message d'arrêt passe par sse(), donc par les mêmes filets (secrets,
+    # qualité) que tout le reste : sinon il serait le seul message non vérifié.
+    check_true("sse() est accessible à l'enveloppe",
+               api.index("    def sse(obj):") < api.index("    async def gen():"))
+
+    A_ = importlib_module("api.agent")
+    check_true("la route est bien montée",
+               any(getattr(r, "path", "") == "/ask/stop" for r in A_.router.routes))
+    # Sans identifiant, on n'arrête rien — surtout pas la demande de quelqu'un d'autre.
+    import asyncio as _aio
+    from unittest.mock import patch as _patch
+    with _patch.object(A_, "_check_key", lambda k: None):
+        r = _aio.new_event_loop().run_until_complete(A_.ask_stop(sid="", key="x"))
+        check("un arrêt sans identifiant ne fait rien", r.get("ok"), False)
+        r2 = _aio.new_event_loop().run_until_complete(A_.ask_stop(sid="s42", key="x"))
+        check("avec identifiant, l'arrêt est enregistré", r2.get("ok"), True)
+        check_true("et il est retenu jusqu'à ce que le flux le lise", "s42" in A_._STOPS)
+        A_._STOPS.discard("s42")
+
+
+def importlib_module(nom):
+    import importlib
+    return importlib.import_module(nom)
+
+
+def _jour_attendu():
+    from datetime import datetime
+    return ("lundi", "mardi", "mercredi", "jeudi", "vendredi",
+            "samedi", "dimanche")[datetime.now().weekday()]
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -8826,7 +8982,9 @@ if __name__ == "__main__":
                test_le_message_de_vision_n_est_plus_coupe_ni_contredit,
                test_audit_trois_portes_derobees_du_garde_fou,
                test_vision_troisieme_fournisseur_et_detail_qui_sert,
-               test_la_date_du_jour_collee_sur_une_nouvelle_de_juin):
+               test_la_date_du_jour_collee_sur_une_nouvelle_de_juin,
+               test_le_leclerc_du_dimanche_et_l_appart_jamais_retenu,
+               test_un_bouton_pour_arreter_nova_en_plein_raisonnement):
         try:
             fn()
         except Exception as e:
