@@ -5271,8 +5271,19 @@ def _analyze_upload(path: str, question: str) -> str:
             from llm.client import chat_vision
             return chat_vision(str(p), question or "Décris cette image en détail, en français.")
         except Exception as e:
-            return (f"❌ Analyse d'image indisponible : {str(e)[:200]}\n"
-                    "_(Le modèle vision nécessite une clé Groq valide.)_")
+            # ⚠️ DEUX DÉFAUTS ICI, LES DEUX DE MON FAIT, VUS SUR SA CAPTURE.
+            # 1. « …c'est le modèle de vis » — la troncature à 200 signes coupait le
+            #    message EN PLEIN MOT, et surtout elle emportait le détail technique
+            #    qui est justement ce qui permet de diagnostiquer. Le message de
+            #    chat_vision est déjà écrit pour être complet et se suffire : on
+            #    l'affiche en entier.
+            # 2. « (Le modèle vision nécessite une clé Groq valide.) » était ajouté en
+            #    dur SOUS un message qui venait de dire « ta clé fonctionne ». Deux
+            #    phrases qui se contredisent, et c'est la rassurante — et fausse — qui
+            #    se lit en dernier. Même travers que le « ta journée est prête » sous
+            #    un ❌ et que le pied de page des mails : corrigé pour la troisième
+            #    fois aujourd'hui, ce qui veut dire qu'il faut arrêter d'en écrire.
+            return f"❌ Analyse d'image indisponible.\n\n{str(e)[:900]}"
     from plugins import get_loader
     from agent.self_heal import safe_tool_call
     return safe_tool_call(get_loader(), "analyze_document",

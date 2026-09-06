@@ -8401,6 +8401,91 @@ def test_un_temps_de_trajet_sans_cle_et_sans_facture():
     check("…avec quoi faire", "Précise la commune" in inconnu, True)
 
 
+def test_le_message_de_vision_n_est_plus_coupe_ni_contredit():
+    """Sa capture, apres le correctif precedent :
+
+      « ❌ Analyse d'image indisponible : Je ne peux pas regarder d'image : ta cle Groq
+        et Gemini fonctionne, mais aucun modele capable de LIRE une image n'est
+        accessible avec elle. Ce n'est donc pas une cle a ajouter — c'est le modele de vis
+        (Le modele vision necessite une cle Groq valide.) »
+
+    DEUX DEFAUTS, LES DEUX DE MON FAIT.
+
+    1. « c'est le modele de vis » — la troncature a 200 signes coupait le message EN
+       PLEIN MOT, et surtout elle emportait le DETAIL TECHNIQUE, c'est-a-dire
+       exactement ce qui permet de diagnostiquer.
+    2. « (Le modele vision necessite une cle Groq valide.) » etait ajoute EN DUR sous
+       un message qui venait de dire « ta cle fonctionne ». Deux phrases qui se
+       contredisent, et c'est la rassurante — et fausse — qui se lit en dernier.
+       Meme travers que le « ta journee est prete » sous un ❌ et que le pied de page
+       des mails : troisieme fois dans la journee.
+
+    Et un TROISIEME, symetrique de celui corrige juste avant : cote Gemini, un SEUL
+    nom de modele et aucun repli. Corriger un defaut d'un cote sans regarder le cote
+    symetrique, c'est le laisser en place la ou il fera exactement le meme mal.
+    """
+    import importlib, inspect, sys, types
+    from unittest.mock import patch
+    import requests as _rq
+    A = importlib.import_module("api.agent")
+    C = importlib.import_module("llm.client")
+
+    # --- 1. Le message n'est plus coupe ni contredit ------------------------
+    src = inspect.getsource(A._analyze_upload)
+    check("la troncature a 200 signes est partie", "str(e)[:200]" in src, False)
+    check("…le message a la place d'etre coupe", "str(e)[:900]" in src, True)
+    # ⚠️ On vise le CODE, pas le commentaire qui explique le defaut : la premiere
+    # version de cette assertion matchait ma propre explication et passait au vert
+    # pour la mauvaise raison.
+    check("la ligne qui contredisait est retiree",
+          '"_(Le modèle vision' in src, False)
+    # Bout en bout : un message long passe ENTIER.
+    long_message = ("Je ne peux pas regarder d'image : ta clé Groq fonctionne, mais aucun "
+                    "modèle capable de LIRE une image n'est accessible avec elle. Ce n'est "
+                    "donc pas une clé à ajouter — c'est le modèle de vision qui a changé de "
+                    "nom ou n'est plus proposé sur ce compte. Envoie-moi le détail ci-dessous "
+                    "et je mettrai la liste à jour. Détail technique : Groq(x): 404")
+    with patch.object(C, "chat_vision", side_effect=RuntimeError(long_message)):
+        rendu = A._analyze_upload("photo.png", "décris")
+    check("la phrase n'est plus coupee en plein mot",
+          "c'est le modèle de vision qui a changé de nom" in rendu, True)
+    check("…et le detail technique arrive jusqu'a lui",
+          "Détail technique" in rendu, True)
+    check("…sans phrase contradictoire en dessous",
+          "nécessite une clé Groq valide" in rendu, False)
+
+    # --- 2. Gemini essaie plusieurs modeles, comme Groq --------------------
+    vrai_groq, vrai_gem = C.config.GROQ_API_KEY, getattr(C.config, "GEMINI_API_KEY", "")
+    try:
+        C.config.GROQ_API_KEY, C.config.GEMINI_API_KEY = "", "AIza_valide"
+        essais = []
+
+        class _R:
+            def __init__(self, code):
+                self.status_code = code
+
+            def json(self):
+                return {}
+
+        def _post(url, **k):
+            essais.append(url.split("/models/")[1].split(":")[0])
+            return _R(404)
+
+        with patch.object(_rq, "post", _post):
+            try:
+                C.chat_vision("/etc/hostname")
+                msg = ""
+            except Exception as e:
+                msg = str(e)
+        check("plusieurs modeles Gemini sont essayes", len(set(essais)) >= 3, True)
+        check("…dont celui de la configuration", "gemini-2.5-flash" in essais, True)
+        check("…et un repli plus ancien", "gemini-1.5-flash" in essais, True)
+        check("le message dit que la cle marche", "ta clé Gemini fonctionne" in msg, True)
+        check("…et n'en reclame pas une autre", "Ajoute GEMINI_API_KEY" in msg, False)
+    finally:
+        C.config.GROQ_API_KEY, C.config.GEMINI_API_KEY = vrai_groq, vrai_gem
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -8472,7 +8557,8 @@ if __name__ == "__main__":
                test_le_pilote_refuse_ce_qui_ne_se_rattrape_pas,
                test_la_meteo_de_sa_ville_et_un_temps_de_trajet_va_sur_maps,
                test_analyse_d_image_ne_dit_plus_d_ajouter_une_cle_qu_il_a_deja,
-               test_un_temps_de_trajet_sans_cle_et_sans_facture):
+               test_un_temps_de_trajet_sans_cle_et_sans_facture,
+               test_le_message_de_vision_n_est_plus_coupe_ni_contredit):
         try:
             fn()
         except Exception as e:

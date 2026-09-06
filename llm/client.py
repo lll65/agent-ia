@@ -950,29 +950,46 @@ def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> 
             errors.append(f"Groq: {str(e)[:120]}")
 
     # 2) Gemini vision (gratuit, sans carte bancaire)
+    # ⚠️ MÊME DÉFAUT QUE CÔTÉ GROQ, ET JE VENAIS DE LE CORRIGER LÀ-BAS : un SEUL nom de
+    # modèle, aucun repli. Si celui de la configuration a été renommé, retiré, ou n'est
+    # pas disponible sur ce compte, Gemini échoue en 404 et le repli entier tombe —
+    # alors que d'autres modèles du même fournisseur savent lire une image.
+    # Corriger un défaut d'un côté sans regarder le côté symétrique, c'est le laisser
+    # en place là où il fera exactement le même mal.
     if getattr(config, "GEMINI_API_KEY", ""):
-        try:
-            import requests
-            url = ("https://generativelanguage.googleapis.com/v1beta/models/"
-                   f"{config.GEMINI_MODEL}:generateContent")
-            corps = {
-                "contents": [{"parts": [{"text": question},
-                                        {"inline_data": {"mime_type": mime, "data": b64}}]}],
-                "generationConfig": {"temperature": temperature, "maxOutputTokens": 2048},
-            }
-            r = requests.post(url, headers=_gemini_auth(), json=corps, timeout=90)
-            if r.status_code in (400, 401, 403):      # repli : ancienne méthode ?key=
-                r = requests.post(url, params={"key": config.GEMINI_API_KEY},
-                                  json=corps, timeout=90)
-            if r.status_code == 200:
-                parts = ((r.json().get("candidates") or [{}])[0]
-                         .get("content", {}).get("parts", []))
-                out = "".join(p.get("text", "") for p in parts).strip()
-                if out:
-                    return out
-            errors.append(f"Gemini: HTTP {r.status_code}")
-        except Exception as e:
-            errors.append(f"Gemini: {str(e)[:120]}")
+        candidats = []
+        for m in (getattr(config, "GEMINI_MODEL", ""), "gemini-2.5-flash",
+                  "gemini-2.0-flash", "gemini-2.5-pro", "gemini-1.5-flash"):
+            if m and m not in candidats:
+                candidats.append(m)
+        corps = {
+            "contents": [{"parts": [{"text": question},
+                                    {"inline_data": {"mime_type": mime, "data": b64}}]}],
+            "generationConfig": {"temperature": temperature, "maxOutputTokens": 2048},
+        }
+        for m in candidats:
+            try:
+                import requests
+                url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+                       f"{m}:generateContent")
+                r = requests.post(url, headers=_gemini_auth(), json=corps, timeout=90)
+                if r.status_code in (400, 401, 403):   # repli : ancienne méthode ?key=
+                    r = requests.post(url, params={"key": config.GEMINI_API_KEY},
+                                      json=corps, timeout=90)
+                if r.status_code == 200:
+                    parts = ((r.json().get("candidates") or [{}])[0]
+                             .get("content", {}).get("parts", []))
+                    out = "".join(p.get("text", "") for p in parts).strip()
+                    if out:
+                        return out
+                if r.status_code == 404:
+                    logger.warning(f"[vision] modèle Gemini '{m}' inconnu, essai suivant…")
+                    continue
+                errors.append(f"Gemini({m}): HTTP {r.status_code}")
+            except Exception as e:
+                errors.append(f"Gemini({m}): {str(e)[:90]}")
+        if not any(x.startswith("Gemini(") for x in errors):
+            errors.append("Gemini: aucun modèle de vision sur ce compte")
 
     # ⚠️ CE MESSAGE DISAIT D'AJOUTER UNE CLÉ QU'IL AVAIT DÉJÀ. « Ajoute GROQ_API_KEY »
     # s'affichait alors que sa clé Groq marchait parfaitement pour tout le reste — il
