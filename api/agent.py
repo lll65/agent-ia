@@ -4377,6 +4377,17 @@ async def ask_stream(q: str = "", key: str = "", modele: str = "", vocal: int = 
     # les mêmes filets (secrets, qualité). Un message d'arrêt qui court-circuiterait
     # ces relectures serait le seul de la page à ne pas être vérifié.
     def sse(obj):
+        # ⚠️ Le rapport de mails transporte SA VERSION À DIRE. On la détache ici, avant
+        # toute relecture : l'écran reçoit le document, la voix reçoit deux phrases.
+        # « Lire à voix haute » et « mode vocal » sont deux choses différentes — il
+        # écrit au clavier et écoute la réponse — et seul le mode vocal recevait un
+        # texte fait pour l'oreille.
+        for _c in ("text", "answer"):
+            if isinstance(obj.get(_c), str) and obj.get("type") in ("answer", None):
+                from agent.rapport_mail import separe as _sep
+                obj[_c], _dit = _sep(obj[_c])
+                if _dit:
+                    obj["vocal"] = _dit
         # ⚠️ Dernier filet : AUCUNE clé ne doit sortir, quelle que soit la branche
         # qui a construit le message. Une clé affichée est une clé compromise —
         # d'autant que l'utilisateur colle ses conversations ailleurs pour les

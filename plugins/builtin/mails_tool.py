@@ -98,13 +98,20 @@ class RapportMailsPlugin(Plugin):
         # envoyer » — en parlant de réponses qui n'existaient pas. Une phrase rassurante
         # qui décrit autre chose que ce qu'on a sous les yeux use la confiance aussi
         # sûrement qu'une erreur franche.
+        # ⚠️ Le rapport écrit part avec SA VERSION À DIRE. « Lire à voix haute » et
+        # « mode vocal » sont deux choses différentes : il écrit sa demande au clavier
+        # et écoute la réponse, et seul le mode vocal recevait un texte fait pour
+        # l'oreille. Le marqueur est retiré avant tout affichage.
+        from agent.rapport_mail import marque, resume_vocal as _rv
         if brouillons:
-            return rapport + (
+            return marque(rapport + (
                 "\n\n---\n🔒 **Aucun mail n'a été envoyé, supprimé ni archivé.** "
                 "Les réponses ci-dessus sont des propositions : dis-moi laquelle envoyer, "
                 "et je te redemanderai confirmation avant de le faire."
-            )
-        return rapport + "\n\n---\n🔒 _Je n'ai rien envoyé, supprimé ni archivé — j'ai lu, c'est tout._"
+            ), _rv(tri))
+        return marque(
+            rapport + "\n\n---\n🔒 _Je n'ai rien envoyé, supprimé ni archivé — j'ai lu, c'est tout._",
+            _rv(tri))
 
 
 def _echec(brut: str) -> bool:

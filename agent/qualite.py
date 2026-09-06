@@ -121,5 +121,18 @@ def porte_de_sortie(texte: str, demande: str = "") -> str:
 
 def relis(texte: str, demande: str = "") -> str:
     """Le passage obligé de toute réponse : ni mur de signes, ni porte fermée,
-    ni référence fantôme."""
-    return porte_de_sortie(sans_repetition(sans_citations_fantomes(texte or "")), demande)
+    ni référence fantôme — ni marqueur technique laissé à l'écran.
+
+    ⚠️ Le rapport de mails transporte sa version à dire dans un marqueur, que
+    l'interface web détache pour la voix. Telegram, les automatisations et le briefing
+    ne passent pas par là : sans ce filet, ils afficheraient le marqueur en clair.
+    Il est retiré ICI parce que c'est le seul point par lequel TOUTES les réponses
+    passent — un nettoyage placé ailleurs en manquerait forcément un.
+    """
+    t = texte or ""
+    try:
+        from agent.rapport_mail import separe
+        t = separe(t)[0]
+    except Exception:
+        pass
+    return porte_de_sortie(sans_repetition(sans_citations_fantomes(t)), demande)

@@ -9028,8 +9028,35 @@ def test_une_vraie_voix_neuronale_sur_son_pc_et_hors_ligne():
         check("plus aucun accent isolé à prononcer",
               any(_ud.combining(c) for c in recompose), False)
         check_true("et le mot reste juste", "été" in recompose and "même" in recompose)
-        check_true("le tiret cadratin devient un tiret simple", "—" not in recompose)
-        check_true("le texte utile reste", "Ignorés (12)" in lu and "rien à y faire" in lu)
+        check_true("le tiret cadratin ne se prononce pas", "—" not in recompose)
+
+        # ⚠️ MA RÉGRESSION D'HIER : « nova lit chaque tiret ». Je ramenais TOUS les
+        # tirets typographiques au tiret simple, y compris le cadratin qui sépare deux
+        # membres de phrase (« envois automatiques — rien à y faire »). À l'écran c'est
+        # une respiration ; à l'oreille, beaucoup de voix annoncent « tiret ».
+        cas = ("🗑️ **Ignorés (12)**\nPublicités et envois automatiques — rien à y faire.\n\n"
+               "Ma voix : fr_FR-siwis-medium, et mon porte-monnaie.\n")
+        with tempfile.TemporaryDirectory() as d3:
+            f3 = os.path.join(d3, "f.js")
+            open(f3, "w", encoding="utf-8").write(src_js)
+            h3 = os.path.join(d3, "h.js")
+            open(h3, "w", encoding="utf-8").write(
+                "eval(require('fs').readFileSync(%r,'utf8'));\n"
+                "console.log(JSON.stringify(texteALire(%s)));\n" % (f3, _j.dumps(cas)))
+            dit = _j.loads(subprocess.run(["node", h3], capture_output=True, text=True,
+                                          timeout=60).stdout.strip().splitlines()[-1])
+        check_true("un tiret entre deux membres de phrase devient une pause",
+                   "automatiques, rien à y faire" in dit)
+        # ⚠️ Mais un tiret DANS un mot fait partie du mot : le retirer casserait
+        # « porte-monnaie » et « siwis-medium ».
+        check_true("un tiret dans un mot est conservé",
+                   "porte-monnaie" in dit and "siwis-medium" in dit)
+        # ⚠️ « Ignorés (12) » : beaucoup de voix disent « parenthèse douze parenthèse ».
+        check_true("les parenthèses ne se prononcent pas", "(" not in dit and ")" not in dit)
+        check_true("mais le nombre reste", "Ignorés, 12" in dit)
+        # Les parenthèses sont devenues des virgules (voir plus bas) : le compte reste,
+        # c'est la ponctuation qui ne se prononce plus.
+        check_true("le texte utile reste", "Ignorés, 12" in lu and "rien à y faire" in lu)
         check_true("« → » devient « vers »", "Pau vers Tarbes" in lu)
         check_true("le point médian devient une virgule", "Tarbes, 28 min" in lu)
 
@@ -9275,6 +9302,54 @@ def test_ce_qu_il_detient_arrive_la_ou_ca_se_surveille():
                "from agent.pea_watcher import valeurs_detenues, ajoute_valeurs" in api)
     # Et il le DIT : retenir en douce serait le contraire de ce qu'on veut.
     check_true("et le fait retenu est annoncé", "Détient l'action" in api)
+
+
+def test_le_rapport_de_mails_a_enfin_une_version_a_dire():
+    """« nova lit de façon moche, genre "ignoré 12" en premier mot »
+
+    Le rapport de mails est un DOCUMENT : sections, compteurs, pictogrammes. Lu par
+    les yeux, on saute aux lignes qui comptent. Lu à voix haute, on subit tout dans
+    l'ordre, en commençant par un intitulé de section hors contexte.
+
+    ⚠️ resume_vocal() existait et disait exactement ce qu'il faut — mais il ne servait
+    QUE dans la conversation vocale (« &vocal=1 »). Or il ÉCRIT sa demande au clavier
+    et ÉCOUTE la réponse. « Lire à voix haute » et « mode vocal » sont deux choses
+    différentes, et une seule des deux recevait un texte fait pour l'oreille.
+    """
+    import importlib
+    R = importlib.import_module("agent.rapport_mail")
+    Q = importlib.import_module("agent.qualite")
+
+    ecrit = "# Mes mails\n\n🗑️ Ignorés (12)\n\n---\n🔒 _J'ai lu, c'est tout._"
+    dit = "Tu as 14 mails : 3 attendent une réponse. Je t'en lis un ?"
+    porteur = R.marque(ecrit, dit)
+    affiche, vocal = R.separe(porteur)
+
+    check("ce qui s'affiche est le rapport, intact", affiche, ecrit)
+    check("ce qui se dit est le résumé", vocal, dit)
+    check("aucun marqueur ne reste à l'écran", "nova-vocal" in affiche, False)
+    # ⚠️ Telegram, les automatisations et le briefing ne passent pas par l'interface
+    # web : sans filet, ils afficheraient le marqueur en clair. qualite.relis() est le
+    # seul point par lequel TOUTES les réponses passent.
+    check("le filet commun le retire aussi", "nova-vocal" in Q.relis(porteur), False)
+
+    check("un texte sans version à dire n'est pas touché", R.separe("bonjour"), ("bonjour", ""))
+    check("une version vide n'ajoute rien", R.marque("bonjour", ""), "bonjour")
+    check("des espaces seuls non plus", R.marque("bonjour", "   "), "bonjour")
+    # Un marqueur tronqué (réponse coupée) ne doit pas laisser de déchet à l'écran.
+    check("un marqueur incomplet est quand même retiré",
+          R.separe("texte\n<!--nova-vocal:coupé")[0], "texte")
+
+    # Le rapport écrit part bien avec sa version à dire.
+    src = (Path(__file__).resolve().parents[1] / "plugins" / "builtin"
+           / "mails_tool.py").read_text(encoding="utf-8")
+    check_true("le rapport de mails transporte les deux formes",
+               "from agent.rapport_mail import marque, resume_vocal as _rv" in src)
+    api = (Path(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
+    check_true("le flux détache la version à dire", 'obj["vocal"] = _dit' in api)
+    ui = (Path(__file__).resolve().parents[1] / "ui" / "nova.html").read_text(encoding="utf-8")
+    check_true("et c'est elle qu'on lit à voix haute", "const aDire = d.vocal || answer;" in ui)
+    check_true("y compris hors mode vocal", "else if(TTS) speak(aDire);" in ui)
 
 
 def test_la_vision_ne_devine_plus_les_noms_et_la_voix_locale_est_dans_la_liste():
@@ -9607,7 +9682,8 @@ if __name__ == "__main__":
                test_une_vraie_voix_neuronale_sur_son_pc_et_hors_ligne,
                test_une_deuxieme_cle_et_un_message_qui_dit_enfin_pourquoi,
                test_ce_qu_il_detient_arrive_la_ou_ca_se_surveille,
-               test_la_vision_ne_devine_plus_les_noms_et_la_voix_locale_est_dans_la_liste):
+               test_la_vision_ne_devine_plus_les_noms_et_la_voix_locale_est_dans_la_liste,
+               test_le_rapport_de_mails_a_enfin_une_version_a_dire):
         try:
             fn()
         except Exception as e:
