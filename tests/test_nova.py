@@ -9006,6 +9006,29 @@ def test_une_vraie_voix_neuronale_sur_son_pc_et_hors_ligne():
             lu = _j.loads(r.stdout.strip().splitlines()[-1])
         for emo in ("🗑", "🔒", "🚗", "️"):
             check(f"aucun pictogramme prononcé ({emo!r})", emo in lu, False)
+
+        # ⚠️ « elle dit les accents à l'oral, en mode "accent circonflexe" ». Un « é »
+        # s'écrit de deux façons en Unicode : un seul caractère (NFC), ou « e » + accent
+        # combinant (NFD). À l'écran c'est identique ; pour une synthèse vocale, le
+        # combinant est un caractère à part entière, et beaucoup de voix l'ANNONCENT.
+        # Le texte vient de pages web et de modèles : on ne choisit pas sa forme.
+        import unicodedata as _ud
+        decompose = _ud.normalize("NFD", "DBV a été incluse — même après la révision.")
+        check_true("l'entrée est bien décomposée",
+                   any(_ud.combining(c) for c in decompose))
+        with tempfile.TemporaryDirectory() as d2:
+            f2 = os.path.join(d2, "f.js")
+            open(f2, "w", encoding="utf-8").write(src_js)
+            h2 = os.path.join(d2, "h.js")
+            open(h2, "w", encoding="utf-8").write(
+                "eval(require('fs').readFileSync(%r,'utf8'));\n"
+                "console.log(JSON.stringify(texteALire(%s)));\n" % (f2, _j.dumps(decompose)))
+            r2 = subprocess.run(["node", h2], capture_output=True, text=True, timeout=60)
+            recompose = _j.loads(r2.stdout.strip().splitlines()[-1])
+        check("plus aucun accent isolé à prononcer",
+              any(_ud.combining(c) for c in recompose), False)
+        check_true("et le mot reste juste", "été" in recompose and "même" in recompose)
+        check_true("le tiret cadratin devient un tiret simple", "—" not in recompose)
         check_true("le texte utile reste", "Ignorés (12)" in lu and "rien à y faire" in lu)
         check_true("« → » devient « vers »", "Pau vers Tarbes" in lu)
         check_true("le point médian devient une virgule", "Tarbes, 28 min" in lu)
@@ -9061,13 +9084,13 @@ def test_une_vraie_voix_neuronale_sur_son_pc_et_hors_ligne():
         # ⚠️ LE CAS QUI COMPTE. Piper absent → surtout PAS un fichier audio vide : le
         # navigateur le jouerait sans rien dire, Nova aurait l'air de parler dans le
         # vide, et personne ne saurait pourquoi. On répond une erreur qui se lit.
-        NV.parle = lambda t, m: (_ for _ in ()).throw(RuntimeError("piper introuvable"))
+        NV.parle = lambda t, m, v=1.0: (_ for _ in ()).throw(RuntimeError("piper introuvable"))
         st, corps, ent = demande("/voix?text=bonjour")
         check("Piper cassé → une erreur, pas un silence", st, 500)
         check_true("et l'erreur dit ce qui s'est passé", b"piper introuvable" in corps)
         check("aucun son vide n'est renvoyé", ent.get("Content-Type"), "text/plain")
 
-        NV.parle = lambda t, m: b"RIFF....WAVEfmt "
+        NV.parle = lambda t, m, v=1.0: b"RIFF....WAVEfmt "
         st, corps, ent = demande("/voix?text=bonjour%20Lohan")
         check("quand Piper marche, on renvoie du son", st, 200)
         check("annoncé comme du son", ent.get("Content-Type"), "audio/wav")
@@ -9076,9 +9099,17 @@ def test_une_vraie_voix_neuronale_sur_son_pc_et_hors_ligne():
         # Un texte démesuré est tronqué, pas refusé : mieux vaut parler un peu moins
         # que se taire — mais la machine ne doit pas ramer une minute pour autant.
         vus = []
-        NV.parle = lambda t, m: (vus.append(len(t)), b"RIFF")[1]
+        NV.parle = lambda t, m, v=1.0: (vus.append((len(t), v)), b"RIFF")[1]
         demande("/voix?text=" + "a" * 9000)
-        check_true("un texte démesuré est borné", vus and vus[0] <= NV.MAX_TEXTE)
+        check_true("un texte démesuré est borné", vus and vus[0][0] <= NV.MAX_TEXTE)
+        # ⚠️ La vitesse choisie doit ARRIVER jusqu'à Piper : réglée dans le navigateur
+        # et perdue en route, le curseur ne servirait à rien.
+        vus.clear()
+        demande("/voix?vitesse=0.8&text=bonjour")
+        check("la vitesse traverse jusqu'au moteur", vus and vus[0][1], 0.8)
+        vus.clear()
+        demande("/voix?vitesse=nimportequoi&text=bonjour")
+        check("une vitesse illisible retombe sur 1", vus and vus[0][1], 1.0)
     finally:
         srv.shutdown()
         srv.server_close()
@@ -9318,6 +9349,17 @@ def test_la_vision_ne_devine_plus_les_noms_et_la_voix_locale_est_dans_la_liste()
     check_true("on l'entend tout de suite, locale comprise",
                'if(VOIX_CHOISIE==="__locale__"){ stopSpeaking(); speak(PHRASE_ESSAI); return; }' in ui)
 
+    # --- 4bis. La vitesse : un curseur, pas une constante ---------------------------
+    # ⚠️ « la nouvelle voix lit trop vite ». Les voix neuronales débitent plus vite à
+    # réglage égal, et la bonne vitesse dépend de son oreille, pas de mon avis.
+    check_true("un curseur de vitesse existe", 'id="vitesseVoix"' in ui)
+    check_true("il est retenu d'une fois sur l'autre", 'localStorage.setItem("nova_vitesse"' in ui)
+    check_true("la voix du navigateur le suit", "u.rate=VITESSE;" in ui)
+    # ⚠️ UN SEUL réglage pour TOUTES les voix : sinon changer de voix ferait repartir
+    # le débit à sa valeur d'usine, et il devrait tout recommencer.
+    check_true("la voix locale aussi", '"/voix?vitesse="+VITESSE.toFixed(2)' in ui)
+    check_true("et il l'entend en bougeant le curseur", "window._essaiVit" in ui)
+
     # --- 5. Piper : deux façons de recevoir le texte, on essaie les deux -------------
     # ⚠️ L'ancien piper lisait stdin ; piper1-gpl prend le texte en argument après
     # « -- ». Impossible de l'exécuter ici : on essaie, et on retient ce qui marche.
@@ -9330,6 +9372,15 @@ def test_la_vision_ne_devine_plus_les_noms_et_la_voix_locale_est_dans_la_liste()
     NV = _iu.module_from_spec(spec)
     spec.loader.exec_module(NV)
     check("aucune forme retenue au départ", NV._FORME_OK, None)
+    # ⚠️ « la nouvelle voix lit trop vite ». Piper ne connaît pas un débit mais la
+    # LONGUEUR des sons : --length-scale 1.2 ralentit. C'est l'INVERSE d'une vitesse,
+    # et se tromper de sens donnerait exactement le contraire de ce qu'il demande.
+    check_true("ralentir allonge les sons", "1.0 / v" in
+               (racine / "pilote" / "nova_voix.py").read_text(encoding="utf-8"))
+    check("un paramètre d'URL illisible ne fait pas tomber le serveur",
+          NV._nombre("abc", 1.0), 1.0)
+    check("la virgule décimale est acceptée", NV._nombre("0,8", 1.0), 0.8)
+    check("et rien du tout non plus", NV._nombre(None, 1.0), 1.0)
     with _tf.TemporaryDirectory() as d:
         faux = _P(d) / "faux.py"
         faux.write_text(
