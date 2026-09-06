@@ -8938,8 +8938,48 @@ def test_une_vraie_voix_neuronale_sur_son_pc_et_hors_ligne():
                ui.index("if(LOCAL_TTS && AUDIO){") < ui.index("if(SERVER_TTS && KEY && (IOS"))
 
     # --- 3. Le programme local -------------------------------------------------------
+    # --- 2bis. UN SEUL nettoyeur pour la voix ---------------------------------------
+    # ⚠️ « elle lit et décrit les emoji aussi, ça va pas » — APRÈS que je les aie
+    # retirés. J'avais corrigé texteALire(), qui ne sert QU'au bouton « 🔊 Écouter » et
+    # à l'aperçu vocal. speak() — le chemin de TOUTES les lectures — avait son propre
+    # nettoyage d'une ligne, qui enlevait le markdown et gardait les pictogrammes.
+    # Deux nettoyeurs pour un travail, et j'ai réparé celui qu'on entend le moins.
+    check_true("speak() passe par le nettoyeur commun", "coupeSure(texteALire(text),900)" in ui)
+    check("plus de second nettoyage maison dans speak()",
+          'replace(/[*#`>_|]/g,"")' in ui, False)
+    if shutil.which("node"):
+        import json as _j
+        import os
+        import subprocess
+        import tempfile
+        deb = ui.index("const _EMOJI = ")
+        src_js = ui[deb:ui.index("function detailNouveaute(")]
+        avec = ("🗑️ **Ignorés (12)**\nPublicités — rien à y faire.\n\n"
+                "🔒 Je n'ai rien envoyé.\n\n🚗 Pau → Tarbes · 28 min\n")
+        with tempfile.TemporaryDirectory() as d:
+            fjs = os.path.join(d, "f.js")
+            open(fjs, "w", encoding="utf-8").write(src_js)
+            fh = os.path.join(d, "h.js")
+            open(fh, "w", encoding="utf-8").write(
+                "eval(require('fs').readFileSync(%r,'utf8'));\n"
+                "console.log(JSON.stringify(texteALire(%r)));\n" % (fjs, avec))
+            r = subprocess.run(["node", fh], capture_output=True, text=True, timeout=60)
+            lu = _j.loads(r.stdout.strip().splitlines()[-1])
+        for emo in ("🗑", "🔒", "🚗", "️"):
+            check(f"aucun pictogramme prononcé ({emo!r})", emo in lu, False)
+        check_true("le texte utile reste", "Ignorés (12)" in lu and "rien à y faire" in lu)
+        check_true("« → » devient « vers »", "Pau vers Tarbes" in lu)
+        check_true("le point médian devient une virgule", "Tarbes, 28 min" in lu)
+
     src = (racine / "pilote" / "nova_voix.py").read_text(encoding="utf-8")
     check_true("il n'écoute que cette machine", '("127.0.0.1", a.port)' in src)
+    # ⚠️ « 'pip' n'est pas reconnu » et « can't open file …\pilote\nova_voix.py » :
+    # ses deux vraies erreurs sous Windows. Le fichier doit y répondre lui-même.
+    check_true("il explique « pip n'est pas reconnu »", "python -m pip install piper-tts" in src)
+    check_true("et comment récupérer le fichier sans cloner", "curl -L -o nova_voix.py" in src)
+    check_true("Piper est vérifié AVANT de télécharger 65 Mo",
+               src.index("if not _piper_installe():") < src.index("modele = telecharge(a.voix)"))
+    check_true("et la piste sans installation reste rappelée", "Microsoft Edge" in src)
     # ⚠️ Ouvert sur 0.0.0.0, n'importe qui du Wi-Fi pourrait le faire parler.
     check("jamais ouvert sur le réseau", '"0.0.0.0"' in src, False)
     check_true("les en-têtes qui permettent à Nova de le joindre",
@@ -9090,6 +9130,83 @@ def test_une_deuxieme_cle_et_un_message_qui_dit_enfin_pourquoi():
          cfg.GEMINI_API_KEY, cfg.GEMINI_API_KEY_2) = sauve
 
 
+def test_ce_qu_il_detient_arrive_la_ou_ca_se_surveille():
+    """« enregistre que mes actions dans lesquelles j'ai investi c'est 2CRSi et DBV
+    au cours [Rolex] Euronext Paris — pas Rolex »  (la dictée avait écorché.)
+
+    DEUX DÉFAUTS, et le second est le plus sournois.
+
+    1. « ENREGISTRE » ne figurait pas dans _ORDRE_MEMOIRE. La liste avait retiens,
+       note, mémorise, souviens-toi, rappelle-toi, garde en tête, n'oublie pas — et
+       pas le verbe le plus naturel pour demander de garder quelque chose. Une liste
+       de synonymes écrite d'un trait a toujours ce trou-là.
+
+    2. Même retenu, ça n'aurait servi à rien. Le profil garde une phrase ; la veille
+       boursière, elle, ne lit que data/watchlist.txt. Rien ne reliait les deux. Nova
+       aurait « retenu » ses valeurs dans un endroit que sa propre surveillance ne
+       regarde jamais — il aurait cru ses actions suivies, et rien ne les aurait
+       suivies. C'est la faute des deux nettoyeurs de voix, en plus coûteux : un fait
+       rangé loin de l'outil qui s'en sert.
+    """
+    import importlib
+    A_ = importlib.import_module("api.agent")
+    W = importlib.import_module("agent.pea_watcher")
+
+    m = ("enregistre que mes actions dans lesquelles j'ai investi c'est 2CRSi et DBV "
+         "au cours Euronext Paris")
+    check_true("« enregistre » est enfin un ordre de mémoire", A_._est_ordre_memoire(m))
+    check_true("et la phrase est donc retenue", A_._is_personal_fact(m))
+    for v in ("sauvegarde que j'ai 17 ans", "inscris que je suis en terminale"):
+        check_true(f"« {v.split()[0]} » aussi", A_._est_ordre_memoire(v))
+
+    # --- Les valeurs sont lues, et rien d'autre ------------------------------------
+    check("ses deux valeurs, et seulement elles", W.valeurs_detenues(m), ["2CRSi", "DBV"])
+    # ⚠️ « Euronext », « Paris », « PEA » ne sont pas des valeurs. Les surveiller
+    # serait décider à sa place ce qu'il possède.
+    for mot in ("EURONEXT", "PARIS", "PEA", "ACTIONS"):
+        check(f"« {mot} » n'est pas une valeur", mot in [x.upper() for x in W.valeurs_detenues(m)], False)
+    # ⚠️ Il faut une tournure de DÉTENTION : nommer une valeur ne veut pas dire la posséder.
+    check("« regarde le cours de 2CRSi » n'ajoute rien", W.valeurs_detenues("regarde le cours de 2CRSi"), [])
+    check("une question non plus", W.valeurs_detenues("c'est quoi DBV Technologies ?"), [])
+    check_true("« je détiens » marche aussi", W.valeurs_detenues("je détiens LVMH") == ["LVMH"])
+    check_true("« mon portefeuille » aussi",
+               "TTE" in W.valeurs_detenues("dans mon portefeuille il y a TTE"))
+
+    # --- L'écriture dans la watchlist -----------------------------------------------
+    import tempfile
+    from pathlib import Path as _P
+    sauve = W._WATCHLIST_FILE
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            W._WATCHLIST_FILE = _P(d) / "watchlist.txt"
+            check("rien à ajouter → rien d'écrit", W.ajoute_valeurs([]), [])
+            check("les deux valeurs sont ajoutées", W.ajoute_valeurs(["2CRSi", "DBV"]),
+                  ["2CRSi", "DBV"])
+            check_true("le fichier existe", W._WATCHLIST_FILE.exists())
+            # ⚠️ Le fichier s'édite aussi à la main : on n'écrase rien, on ne double rien.
+            check("un doublon n'est pas ajouté deux fois", W.ajoute_valeurs(["DBV"]), [])
+            check("la casse ne crée pas de doublon", W.ajoute_valeurs(["dbv", "2crsi"]), [])
+            check("une nouvelle valeur s'ajoute", W.ajoute_valeurs(["VLA"]), ["VLA"])
+            lu = [l.strip() for l in W._WATCHLIST_FILE.read_text(encoding="utf-8").splitlines() if l.strip()]
+            check("et tout est là, une seule fois", lu, ["2CRSi", "DBV", "VLA"])
+
+            # Ce qui existait déjà dans le fichier survit à un ajout.
+            W._WATCHLIST_FILE.write_text("# mes valeurs\nVALNEVA\n", encoding="utf-8")
+            W.ajoute_valeurs(["DBV"])
+            texte = W._WATCHLIST_FILE.read_text(encoding="utf-8")
+            check_true("le commentaire et l'existant sont conservés",
+                       "# mes valeurs" in texte and "VALNEVA" in texte and "DBV" in texte)
+    finally:
+        W._WATCHLIST_FILE = sauve
+
+    # --- Le pont est bien branché dans le chemin de mémorisation --------------------
+    api = (Path(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
+    check_true("_remember_fact alimente la surveillance",
+               "from agent.pea_watcher import valeurs_detenues, ajoute_valeurs" in api)
+    # Et il le DIT : retenir en douce serait le contraire de ce qu'on veut.
+    check_true("et le fait retenu est annoncé", "Détient l'action" in api)
+
+
 def _leve_systemexit(fn, *a):
     try:
         fn(*a)
@@ -9188,7 +9305,8 @@ if __name__ == "__main__":
                test_le_leclerc_du_dimanche_et_l_appart_jamais_retenu,
                test_un_bouton_pour_arreter_nova_en_plein_raisonnement,
                test_une_vraie_voix_neuronale_sur_son_pc_et_hors_ligne,
-               test_une_deuxieme_cle_et_un_message_qui_dit_enfin_pourquoi):
+               test_une_deuxieme_cle_et_un_message_qui_dit_enfin_pourquoi,
+               test_ce_qu_il_detient_arrive_la_ou_ca_se_surveille):
         try:
             fn()
         except Exception as e:

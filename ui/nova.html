@@ -2163,8 +2163,15 @@ function stopSpeaking(){ try{ speechSynthesis.cancel(); }catch(e){}
   if(AUDIO){ try{ AUDIO.pause(); }catch(e){} } }
 
 function speak(text,onend){
-  const clean0=(text||"").replace(/[*#`>_|]/g,"").replace(/https?:\/\/\S+/g,"");
-  const clean=coupeSure(clean0,900);
+  /* ⚠️ « elle lit et décrit les emoji aussi, ça va pas » — APRÈS que je les aie retirés.
+     J'avais corrigé texteALire()… qui ne sert QU'au bouton « 🔊 Écouter » et à l'aperçu
+     du mode vocal. speak() — le chemin de TOUTES les lectures — avait son propre
+     nettoyage, ligne unique, qui enlevait le markdown et gardait les pictogrammes.
+     Deux nettoyeurs pour un seul travail, et j'ai réparé celui qu'on entend le moins :
+     la faute que je passe la journée à traquer chez Nova, faite ici par moi.
+     Un seul nettoyeur désormais. Ce qu'on lit à l'écran et ce qu'on entend ne se
+     préparent pas pareil, mais ça se décide à UN endroit. */
+  const clean=coupeSure(texteALire(text),900);
   LAST_SPOKEN=clean; stopSpeaking();
   if(!clean){ if(onend) onend(); return; }
   // 1) Sa voix locale si elle tourne : la meilleure, et la seule qui ne dépende de
