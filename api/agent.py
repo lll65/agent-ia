@@ -1876,8 +1876,13 @@ def apps_qui_marchent() -> list:
     return sorted(s for s, t in _APP_OK.items() if _t.monotonic() - t < _APP_OK_TTL)
 _ATTENTE_TTL = 300.0                # 5 min : au-delà, on redemande
 
-_MOTS_OUI = ("oui", "ok", "d'accord", "daccord", "vas-y", "vas y", "confirme", "confirmé",
-             "confirme le", "envoie", "fais-le", "fais le", "go", "yes", "valide", "c'est bon")
+# ⚠️ « d accord » — sans apostrophe — ne valait PAS accord. Il dicte beaucoup à la voix,
+# et la reconnaissance vocale écrit régulièrement « d accord », « c est bon », « vas y ».
+# Un accord qu'on ne reconnaît pas n'est pas dangereux, mais il l'oblige à répéter, et
+# à la troisième fois on ne lit plus ce qu'on confirme.
+_MOTS_OUI = ("oui", "ok", "okay", "d'accord", "daccord", "d accord", "vas-y", "vas y",
+             "confirme", "confirmé", "confirme le", "envoie", "fais-le", "fais le",
+             "go", "yes", "valide", "c'est bon", "c est bon", "ça marche", "ca marche")
 _MOTS_NON = ("non", "annule", "laisse", "stop", "surtout pas", "n'envoie pas", "pas ça")
 
 
@@ -1951,11 +1956,27 @@ def _confirmation_donnee(message: str) -> bool:
     # Le moindre signe de refus l'emporte : dans le doute, on n'exécute pas.
     if _refus_donne(m):
         return False
-    # Un accord tient en quelques mots. Au-delà, c'est une nouvelle demande.
-    if len(m.split()) > 4:
-        return False
-    # …et la phrase doit COMMENCER par l'accord, pas le contenir au passage.
-    return any(re.match(r"^" + re.escape(w) + r"(?![\wÀ-ÿ])", m) for w in _MOTS_OUI)
+    # ⚠️ LA RÈGLE « quatre mots maximum » NE SUFFISAIT PAS. Trouvé par l'audit, puis
+    # reproduit : « ok et mon agenda ? », « ok montre mes mails », « vas-y montre mes
+    # mails » font quatre mots ou moins et commencent par un mot d'accord — ils
+    # valaient donc feu vert. Résultat : il change de sujet, le mail part, et la
+    # question qu'il vient de poser n'est jamais traitée.
+    # Un accord n'est pas « une phrase courte qui commence par oui » : c'est une phrase
+    # qui ne dit RIEN D'AUTRE que oui. Tout le reste est une nouvelle demande.
+    for w in _MOTS_OUI:
+        m2 = re.match(r"^" + re.escape(w) + r"(?![\wÀ-ÿ])", m)
+        if not m2:
+            continue
+        reste = m[m2.end():].strip(" ,;:.!?…'’")
+        if not reste or reste in _POLITESSES:
+            return True
+        return False                    # « ok montre mes mails » : une demande, pas un accord
+    return False
+
+
+# Ce qu'on tolère APRÈS un accord sans que ça cesse d'être un accord.
+_POLITESSES = ("merci", "merci beaucoup", "stp", "s'il te plaît", "s'il te plait",
+               "svp", "please", "vas-y", "allez", "go", "parfait", "nickel", "super")
 
 
 def _refus_donne(message: str) -> bool:
@@ -5899,6 +5920,9 @@ async def chat(req: ChatRequest, request: Request):
         if not agent_config:
             raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' introuvable.")
 
+    # Cette porte-ci non plus n'annonçait pas son canal — voir bots/telegram_bot.py.
+    from agent.canal import pose as _pose_canal
+    _pose_canal("api")
     result = await run_agent(req.message, agent_config, agent_id)
     mem = get_memory()
 

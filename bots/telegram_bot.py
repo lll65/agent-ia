@@ -73,6 +73,14 @@ async def run_telegram_bot():
     async def _agent_reply(text: str, user_id: str) -> str:
         from agent.core import run_agent, outils_pour_conversation
         from plugins import get_loader
+        # ⚠️ CETTE PORTE N'ANNONÇAIT AUCUN CANAL. Le garde-fou des actions
+        # irréversibles retombait donc sur son défaut, « web » : une demande d'envoi
+        # faite ICI était armée sur le canal du CHAT, et le premier « ok » tapé dans
+        # /nova — pour tout autre chose — la faisait partir. Symétriquement, le « oui »
+        # tapé sur Telegram ne déclenchait rien. Poser le canal dans ask_stream et
+        # _ask_agent ne suffit pas : il faut le poser à CHAQUE entrée.
+        from agent.canal import pose
+        pose("telegram")
         cfg = {
             "id": f"tg_{user_id}",
             "name": "MasterAgent Telegram",
