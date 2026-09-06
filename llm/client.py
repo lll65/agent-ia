@@ -896,6 +896,7 @@ def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> 
     mime = mimetypes.guess_type(image_path)[0] or "image/jpeg"
     question = prompt or "Décris cette image en détail, en français."
     errors = []
+    essayes = []          # ce qu'on a REELLEMENT tenté, pour que le détail serve à qqch
 
     # 1) Groq vision — auto-guérison : les noms de modèles changent souvent (404).
     #    On essaie le modèle configuré, des noms connus, puis ceux réellement accessibles au compte.
@@ -935,7 +936,13 @@ def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> 
                 except Exception as e:
                     txt = str(e).lower()
                     if any(k in txt for k in ("not_found", "does not exist", "404", "decommission")):
+                        # ⚠️ Un 404 partait en silence : le detail final disait « aucun
+                        # modèle de vision sur ce compte » sans dire LESQUELS avaient été
+                        # essayés. Impossible de savoir s'il fallait mettre la liste à
+                        # jour ou chercher ailleurs — c'est-à-dire un diagnostic qui ne
+                        # diagnostique rien.
                         logger.warning(f"[vision] modèle Groq '{m}' indisponible, essai suivant…")
+                        essayes.append(f"Groq/{m}=404")
                         continue
                     # ⚠️ On faisait « break » ici : la PREMIÈRE erreur autre qu'un 404 —
                     # une limite de débit sur le modèle le plus demandé, par exemple —
@@ -984,12 +991,50 @@ def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> 
                         return out
                 if r.status_code == 404:
                     logger.warning(f"[vision] modèle Gemini '{m}' inconnu, essai suivant…")
+                    essayes.append(f"Gemini/{m}=404")
                     continue
                 errors.append(f"Gemini({m}): HTTP {r.status_code}")
             except Exception as e:
                 errors.append(f"Gemini({m}): {str(e)[:90]}")
         if not any(x.startswith("Gemini(") for x in errors):
             errors.append("Gemini: aucun modèle de vision sur ce compte")
+
+    # 3) OpenRouter — ⚠️ LA PISTE QU'IL AVAIT DÉJÀ SOUS LA MAIN. OpenRouter est déjà
+    # un fournisseur de la chaîne de modèles (voir MODELES/ORDRE plus haut) : la clé
+    # existe donc, et il propose des modèles de vision en accès GRATUIT. Chercher une
+    # API obscure alors qu'un fournisseur déjà branché fait le travail, c'est ajouter
+    # une dépendance de plus à surveiller pour rien.
+    if getattr(config, "OPENROUTER_API_KEY", ""):
+        for m in ("meta-llama/llama-3.2-11b-vision-instruct:free",
+                  "qwen/qwen2.5-vl-72b-instruct:free",
+                  "google/gemma-3-27b-it:free",
+                  "mistralai/mistral-small-3.2-24b-instruct:free"):
+            try:
+                import requests
+                r = requests.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
+                             "Content-Type": "application/json"},
+                    json={"model": m, "temperature": temperature, "max_tokens": 2048,
+                          "messages": [{"role": "user", "content": [
+                              {"type": "text", "text": question},
+                              {"type": "image_url",
+                               "image_url": {"url": f"data:{mime};base64,{b64}"}}]}]},
+                    timeout=90)
+                if r.status_code == 200:
+                    out = ((r.json().get("choices") or [{}])[0]
+                           .get("message", {}).get("content") or "").strip()
+                    if out:
+                        return out
+                if r.status_code in (404, 400):
+                    logger.warning(f"[vision] modèle OpenRouter '{m}' indisponible, suivant…")
+                    essayes.append(f"OpenRouter/{m}={r.status_code}")
+                    continue
+                errors.append(f"OpenRouter({m}): HTTP {r.status_code}")
+            except Exception as e:
+                errors.append(f"OpenRouter({m}): {str(e)[:90]}")
+        if not any(x.startswith("OpenRouter(") for x in errors):
+            errors.append("OpenRouter: aucun modèle de vision accessible")
 
     # ⚠️ CE MESSAGE DISAIT D'AJOUTER UNE CLÉ QU'IL AVAIT DÉJÀ. « Ajoute GROQ_API_KEY »
     # s'affichait alors que sa clé Groq marchait parfaitement pour tout le reste — il
@@ -998,8 +1043,11 @@ def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> 
     # On dit maintenant ce qui manque VRAIMENT, en regardant ce qu'on a.
     a_groq = bool(config.GROQ_API_KEY)
     a_gemini = bool(getattr(config, "GEMINI_API_KEY", ""))
+    a_or = bool(getattr(config, "OPENROUTER_API_KEY", ""))
     detail = (f" Détail technique : {' | '.join(errors)}" if errors else "")
-    if not a_groq and not a_gemini:
+    if essayes:
+        detail += f" · Modèles essayés : {', '.join(essayes[:10])}"
+    if not a_groq and not a_gemini and not a_or:
         raise RuntimeError(
             "Je ne peux pas regarder d'image : aucune clé de vision n'est configurée. "
             "Ajoute GROQ_API_KEY (gratuit sur console.groq.com) ou GEMINI_API_KEY "
@@ -1013,7 +1061,8 @@ def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> 
             "débit, ça repart généralement en quelques minutes. Redemande-moi tout à "
             "l'heure." + detail)
     fournisseurs = " et ".join(x for x in ("Groq" if a_groq else "",
-                                           "Gemini" if a_gemini else "") if x)
+                                           "Gemini" if a_gemini else "",
+                                           "OpenRouter" if a_or else "") if x)
     raise RuntimeError(
         f"Je ne peux pas regarder d'image : ta clé {fournisseurs} fonctionne, mais "
         "aucun modèle capable de LIRE une image n'est accessible avec elle. Ce n'est "
