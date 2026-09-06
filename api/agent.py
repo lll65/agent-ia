@@ -1876,8 +1876,13 @@ def apps_qui_marchent() -> list:
     return sorted(s for s, t in _APP_OK.items() if _t.monotonic() - t < _APP_OK_TTL)
 _ATTENTE_TTL = 300.0                # 5 min : au-delà, on redemande
 
-_MOTS_OUI = ("oui", "ok", "d'accord", "daccord", "vas-y", "vas y", "confirme", "confirmé",
-             "confirme le", "envoie", "fais-le", "fais le", "go", "yes", "valide", "c'est bon")
+# ⚠️ « d accord » — sans apostrophe — ne valait PAS accord. Il dicte beaucoup à la voix,
+# et la reconnaissance vocale écrit régulièrement « d accord », « c est bon », « vas y ».
+# Un accord qu'on ne reconnaît pas n'est pas dangereux, mais il l'oblige à répéter, et
+# à la troisième fois on ne lit plus ce qu'on confirme.
+_MOTS_OUI = ("oui", "ok", "okay", "d'accord", "daccord", "d accord", "vas-y", "vas y",
+             "confirme", "confirmé", "confirme le", "envoie", "fais-le", "fais le",
+             "go", "yes", "valide", "c'est bon", "c est bon", "ça marche", "ca marche")
 _MOTS_NON = ("non", "annule", "laisse", "stop", "surtout pas", "n'envoie pas", "pas ça")
 
 
@@ -1951,11 +1956,27 @@ def _confirmation_donnee(message: str) -> bool:
     # Le moindre signe de refus l'emporte : dans le doute, on n'exécute pas.
     if _refus_donne(m):
         return False
-    # Un accord tient en quelques mots. Au-delà, c'est une nouvelle demande.
-    if len(m.split()) > 4:
-        return False
-    # …et la phrase doit COMMENCER par l'accord, pas le contenir au passage.
-    return any(re.match(r"^" + re.escape(w) + r"(?![\wÀ-ÿ])", m) for w in _MOTS_OUI)
+    # ⚠️ LA RÈGLE « quatre mots maximum » NE SUFFISAIT PAS. Trouvé par l'audit, puis
+    # reproduit : « ok et mon agenda ? », « ok montre mes mails », « vas-y montre mes
+    # mails » font quatre mots ou moins et commencent par un mot d'accord — ils
+    # valaient donc feu vert. Résultat : il change de sujet, le mail part, et la
+    # question qu'il vient de poser n'est jamais traitée.
+    # Un accord n'est pas « une phrase courte qui commence par oui » : c'est une phrase
+    # qui ne dit RIEN D'AUTRE que oui. Tout le reste est une nouvelle demande.
+    for w in _MOTS_OUI:
+        m2 = re.match(r"^" + re.escape(w) + r"(?![\wÀ-ÿ])", m)
+        if not m2:
+            continue
+        reste = m[m2.end():].strip(" ,;:.!?…'’")
+        if not reste or reste in _POLITESSES:
+            return True
+        return False                    # « ok montre mes mails » : une demande, pas un accord
+    return False
+
+
+# Ce qu'on tolère APRÈS un accord sans que ça cesse d'être un accord.
+_POLITESSES = ("merci", "merci beaucoup", "stp", "s'il te plaît", "s'il te plait",
+               "svp", "please", "vas-y", "allez", "go", "parfait", "nickel", "super")
 
 
 def _refus_donne(message: str) -> bool:
@@ -5271,8 +5292,19 @@ def _analyze_upload(path: str, question: str) -> str:
             from llm.client import chat_vision
             return chat_vision(str(p), question or "Décris cette image en détail, en français.")
         except Exception as e:
-            return (f"❌ Analyse d'image indisponible : {str(e)[:200]}\n"
-                    "_(Le modèle vision nécessite une clé Groq valide.)_")
+            # ⚠️ DEUX DÉFAUTS ICI, LES DEUX DE MON FAIT, VUS SUR SA CAPTURE.
+            # 1. « …c'est le modèle de vis » — la troncature à 200 signes coupait le
+            #    message EN PLEIN MOT, et surtout elle emportait le détail technique
+            #    qui est justement ce qui permet de diagnostiquer. Le message de
+            #    chat_vision est déjà écrit pour être complet et se suffire : on
+            #    l'affiche en entier.
+            # 2. « (Le modèle vision nécessite une clé Groq valide.) » était ajouté en
+            #    dur SOUS un message qui venait de dire « ta clé fonctionne ». Deux
+            #    phrases qui se contredisent, et c'est la rassurante — et fausse — qui
+            #    se lit en dernier. Même travers que le « ta journée est prête » sous
+            #    un ❌ et que le pied de page des mails : corrigé pour la troisième
+            #    fois aujourd'hui, ce qui veut dire qu'il faut arrêter d'en écrire.
+            return f"❌ Analyse d'image indisponible.\n\n{str(e)[:900]}"
     from plugins import get_loader
     from agent.self_heal import safe_tool_call
     return safe_tool_call(get_loader(), "analyze_document",
@@ -5888,6 +5920,9 @@ async def chat(req: ChatRequest, request: Request):
         if not agent_config:
             raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' introuvable.")
 
+    # Cette porte-ci non plus n'annonçait pas son canal — voir bots/telegram_bot.py.
+    from agent.canal import pose as _pose_canal
+    _pose_canal("api")
     result = await run_agent(req.message, agent_config, agent_id)
     mem = get_memory()
 

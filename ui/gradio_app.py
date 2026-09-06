@@ -291,6 +291,8 @@ def full_agent(message: str, history: list, sid: str) -> str:
     try:
         async def _collect():
             nonlocal final_answer, iters
+            from agent.canal import pose as _pose_canal
+            _pose_canal("gradio")
             async for step in run_agent_stream(message, cfg, _MEMORY_ID):
                 if step["type"] == "thought":
                     trace_lines.append(f"💭 **Réflexion :** {step['text']}")
@@ -397,6 +399,8 @@ async def _stream_agent(message: str, history: list, sid: str, shown_user: str, 
     yield convo, convo, "", None, None, gr.update(), gr.update(visible=False), _usage_md()
 
     try:
+        from agent.canal import pose as _pose_canal
+        _pose_canal("gradio")
         async for step in run_agent_stream(message, cfg, sid):
             if step.get("type") == "final":
                 final_answer = step.get("answer", "")

@@ -32,11 +32,32 @@ import threading
 
 _TACHE = contextvars.ContextVar("canal_nova", default="")
 _THREAD = threading.local()
+# ⚠️ Le mode VOCAL avait le même défaut que le canal, et je l'ai laissé derrière moi en
+# corrigeant l'autre : il vivait dans un dictionnaire de module, partagé par tout le
+# serveur et jamais remis à zéro. Une session vocale du chat à 9h12 faisait donc rendre
+# à l'automatisation de 18h un résumé PARLÉ de deux phrases terminé par « tu veux que je
+# te lise ceux qui attendent une réponse ? » — une question posée à personne, à la place
+# des cinq points demandés. Corriger un défaut sans regarder son jumeau, encore.
+_VOCAL_TACHE = contextvars.ContextVar("vocal_nova", default=False)
+_VOCAL_THREAD = threading.local()
 
 
 def pose(canal: str) -> None:
     """Déclare le canal de la requête en cours (sur la boucle asyncio)."""
     _TACHE.set((canal or "web").strip() or "web")
+
+
+def pose_vocal(actif: bool) -> None:
+    """Déclare que la requête en cours vient du mode vocal."""
+    _VOCAL_TACHE.set(bool(actif))
+
+
+def vocal() -> bool:
+    """La demande en cours vient-elle de la voix ? Le thread prime, comme pour le canal."""
+    du_thread = getattr(_VOCAL_THREAD, "actif", None)
+    if du_thread is not None:
+        return bool(du_thread)
+    return bool(_VOCAL_TACHE.get(False))
 
 
 def courant() -> str:
@@ -55,11 +76,14 @@ def applique(canal: str, fn, *args, **kwargs):
     exactement le défaut qu'on répare.
     """
     ancien = getattr(_THREAD, "canal", "")
+    ancien_vocal = getattr(_VOCAL_THREAD, "actif", None)
     _THREAD.canal = (canal or "").strip()
+    _VOCAL_THREAD.actif = bool(_VOCAL_TACHE.get(False))
     try:
         return fn(*args, **kwargs)
     finally:
         _THREAD.canal = ancien
+        _VOCAL_THREAD.actif = ancien_vocal
 
 
 class Registre(dict):
@@ -74,8 +98,15 @@ class Registre(dict):
         super().__setitem__(cle, valeur)
         if cle == "actuel":
             pose(str(valeur or "web"))
+        elif cle == "vocal":
+            # ⚠️ Cette clé-là restait dans le dictionnaire de module : elle échappait
+            # donc entièrement à la correction, et contaminait toutes les requêtes
+            # suivantes. Elle suit maintenant le travail, comme le canal.
+            pose_vocal(bool(valeur))
 
     def get(self, cle, defaut=None):
         if cle == "actuel":
             return courant()
+        if cle == "vocal":
+            return vocal()
         return super().get(cle, defaut)
