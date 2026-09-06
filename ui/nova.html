@@ -1112,7 +1112,15 @@ function _recompose(t){
   try{ t = t.normalize("NFC"); }catch(e){}
   return t.replace(/[̀-ͯ᪰-᫿⃐-⃰]/g, "")   // combinants restants
           .replace(/[´ˆ-˝`^¨ʰ-˿]/g, "")
-          .replace(/[‐-―−]/g, "-")      // tirets typographiques et insecables
+          // ⚠️ MA REGRESSION D'HIER. Je ramenais TOUS les tirets typographiques au
+          // tiret simple — y compris le tiret cadratin qui separe deux membres de
+          // phrase (« Publicites et envois automatiques — rien a y faire »). A l'ecran
+          // c'est une respiration ; a l'oreille, beaucoup de voix annoncent « tiret ».
+          // Un tiret ENTOURE D'ESPACES est une ponctuation : il devient une virgule,
+          // c'est-a-dire la pause qu'il represente. Un tiret DANS un mot
+          // (« porte-monnaie », « fr_FR-siwis ») reste, lui : il fait partie du mot.
+          .replace(/\s+[‐-―−-]+\s+/g, ", ")
+          .replace(/[‐-―−]/g, "-")      // les autres, ramenes au tiret simple
           .replace(/[‘’‛]/g, "'")
           .replace(/[“”]/g, '"')
           .replace(/[   ​﻿]/g, " ");
@@ -1131,6 +1139,10 @@ function texteALire(md){
     .replace(_EMOJI, " ")
     .replace(/\|/g, ", ")
     .replace(/^[ \t]*[-*•][ \t]+/gm, "")
+    // ⚠️ « Ignorés (12) » : beaucoup de voix disent « parenthèse douze parenthèse ».
+    // Une parenthèse qui n'entoure qu'un nombre ou deux mots est une précision, pas
+    // une incise : elle devient une virgule, et s'entend comme une pause.
+    .replace(/\s*\((\d+|[^()]{1,24})\)/g, ", $1")
     .replace(/[*#`>_~]/g, "")
     .replace(/[ \t]+/g, " ")
     .replace(/\n+/g, ". ")
@@ -2003,9 +2015,13 @@ function ask(){
       if(streamed){ answer=fin||answer; bubble.innerHTML=fmt(answer); }
       else { answer=fin; stopThink(); graphAdd("✍️","Rédaction"); typewrite(bubble,answer); }
       histPush("ai",answer,trace);
+      // ⚠️ Un rapport de mails arrive avec SA VERSION À DIRE : deux phrases et une
+      // question, au lieu du document. Sans elle, la lecture commençait par
+      // « Ignorés, 12 » — un intitulé de section, hors contexte, en premier mot.
+      const aDire = d.vocal || answer;
       if(voiceMode){ clearTimeout(VEILLE_VOCALE); VEILLE_VOCALE=null;
-        vSet("Nova répond…", _cut(texteALire(answer),240)); speak(answer, ()=>{ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }); }
-      else if(TTS) speak(answer); }
+        vSet("Nova répond…", _cut(texteALire(aDire),240)); speak(aDire, ()=>{ if(voiceMode){ vSet("Je t'écoute…",""); startListen(); } }); }
+      else if(TTS) speak(aDire); }
     else if(d.type==="model"){ MODELE_UTILISE=d.name||""; }
     // ⚠️ Nova apprend maintenant toute seule. Retenir en douce serait le contraire de
     // ce qu'on veut : on affiche ce qu'elle garde, avec de quoi l'enlever d'un clic.

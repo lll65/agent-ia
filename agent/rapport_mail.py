@@ -256,6 +256,43 @@ def _cle(m: dict) -> str:
 # brut, coupé en plein mot. Et elle le lisait à voix haute tel quel.
 # Parler et écrire ne demandent pas le même texte. À l'oral on dit l'essentiel en deux
 # phrases et on POSE UNE QUESTION — on ne récite pas un document.
+# ── Un même rapport, deux formes : une à lire, une à entendre ────────────────
+# ⚠️ « nova lit de façon moche, genre "ignoré 12" en premier mot ». Le rapport de mails
+# est un DOCUMENT : des sections, des compteurs, des pictogrammes. Lu par les yeux, on
+# saute aux lignes qui comptent. Lu à voix haute, on subit tout dans l'ordre, en
+# commençant par un intitulé de section hors contexte.
+#
+# resume_vocal() existait déjà et disait exactement ce qu'il faut — mais il ne servait
+# QUE dans la conversation vocale (« &vocal=1 »). Or il écrit sa demande au clavier et
+# écoute la réponse : « lire à voix haute » et « mode vocal » sont deux choses
+# différentes, et une seule des deux recevait un texte fait pour l'oreille.
+#
+# Le rapport transporte donc les DEUX. Le marqueur est retiré avant tout affichage —
+# écran, Telegram, automatisations — et seule l'interface web s'en sert pour parler.
+_MARQUE_DEBUT = "\n<!--nova-vocal:"
+_MARQUE_FIN = ":nova-vocal-->"
+
+
+def marque(texte: str, vocal: str) -> str:
+    """Attache au rapport écrit la version à dire. Sans effet si elle est vide."""
+    v = " ".join(str(vocal or "").split())
+    if not v:
+        return texte
+    return f"{texte}{_MARQUE_DEBUT}{v}{_MARQUE_FIN}"
+
+
+def separe(texte: str):
+    """(texte affichable, version à dire) — la version à dire vaut "" s'il n'y en a pas."""
+    t = str(texte or "")
+    d = t.find(_MARQUE_DEBUT)
+    if d < 0:
+        return t, ""
+    f = t.find(_MARQUE_FIN, d)
+    if f < 0:
+        return t[:d].rstrip(), ""
+    return (t[:d].rstrip() + t[f + len(_MARQUE_FIN):]).rstrip(), t[d + len(_MARQUE_DEBUT):f]
+
+
 def resume_vocal(tri: dict) -> str:
     """Ce que Nova DIT quand on lui demande ses mails à la voix. Deux phrases, une question."""
     imp = tri.get(IMPORTANT) or []
