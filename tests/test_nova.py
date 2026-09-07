@@ -9409,6 +9409,214 @@ def test_trois_sources_pour_un_seul_article_et_le_salon_du_beton():
           C.requete_simple("les news 2CRSi du 9 juin").count("2026"), 1)
 
 
+def test_son_prenom_partait_en_mot_cle_et_juillet_passait_pour_aujourd_hui():
+    """« Nova c'est quoi l'actualité de CRSI aujourd'hui » → requête :
+        « Nova CRSI actualité 2026 DBV 2 »
+
+    ⚠️ ELLE CHERCHAIT SON PROPRE NOM. Il l'appelle comme on interpelle quelqu'un, et
+    « Nova » partait comme mot-clé. Elle n'est jamais le SUJET de la recherche.
+
+    ⚠️ ET JUILLET PASSAIT POUR AUJOURD'HUI. La réponse listait « résultats du deuxième
+    trimestre le 16 juillet 2026 » et « congrès EAACI » sous une question qui dit
+    « aujourd'hui ». Aucune date n'était fausse — toutes écrites, toutes exactes. Ce
+    qui manquait, c'est ce qu'elles disent ENSEMBLE : il n'y a rien eu de récent.
+    « Je n'ai rien trouvé de récent » et « voici du vieux » se lisent pareil quand on
+    survole, et disent le contraire.
+    """
+    import importlib
+    C = importlib.import_module("agent.core")
+    D = importlib.import_module("agent.dates")
+
+    # --- 1. Son prénom n'est pas un mot-clé ----------------------------------------
+    q = C.requete_simple("Nova c'est quoi l'actualité de de CRSI aujourd'hui et le DBV de 2 CRSI")
+    check("« Nova » ne part plus dans la recherche", "nova" in q.lower(), False)
+    check_true("mais le sujet reste", "CRSI" in q and "DBV" in q)
+    check("« Salut Nova » non plus", "nova" in C.requete_simple("Salut Nova, l'actu de DBV").lower(), False)
+    check("et l'interpellation seule est retirée", C.sans_vocatif("Nova CRSI actualité 2026 DBV 2"),
+          "CRSI actualité 2026 DBV 2")
+    # ⚠️ LES DEUX CÔTÉS : le modèle recopie l'interpellation aussi bien que le repli.
+    src = (Path(__file__).resolve().parents[1] / "agent" / "core.py").read_text(encoding="utf-8")
+    check_true("le chemin avec modèle nettoie aussi",
+               "q = sans_vocatif(_premiere_ligne_utile(" in src)
+
+    # --- 2. Du vieux servi comme du frais -------------------------------------------
+    vieux = ("DBV Technologies annoncera ses résultats du deuxième trimestre le "
+             "16 juillet 2026.\nLa société a publié un communiqué le 17 juillet 2026.")
+    sortie = D.relis(vieux, ["16 juillet 2026", "17 juillet 2026"],
+                     aujourdhui=(7, 9, 2026),
+                     demande="c'est quoi l'actualité de 2CRSi aujourd'hui")
+    check_true("Nova annonce l'écart", "17 juillet 2026" in sortie and "52 jours" in sortie)
+    check_true("et dit ce que ça ne veut PAS dire", "il ne s'est rien passé" in sortie)
+    # ⚠️ L'avertissement passe DEVANT : après, on l'a déjà lu comme du frais.
+    check_true("il est en tête", sortie.index("Rien de récent") < sortie.index("DBV Technologies"))
+
+    # Ce qui est frais ne déclenche rien.
+    check("une nouvelle d'hier ne déclenche rien",
+          D.trop_vieux("Le 6 septembre 2026, hausse.", "l'actu aujourd'hui", (7, 9, 2026)), None)
+    # ⚠️ Une question qui ne demande PAS du récent n'a pas à être avertie.
+    check("« explique-moi DBV » n'est pas une demande d'actu",
+          D.trop_vieux(vieux, "explique-moi ce que fait DBV", (7, 9, 2026)), None)
+    # ⚠️ Une date FUTURE est une échéance annoncée : elle ne dit rien de la fraîcheur.
+    check("une échéance à venir n'est pas une vieille nouvelle",
+          D.trop_vieux("Résultats le 20 décembre 2026.", "actu du jour", (7, 9, 2026)), None)
+    check("un texte sans date ne déclenche rien",
+          D.trop_vieux("2CRSi progresse.", "actu du jour", (7, 9, 2026)), None)
+
+
+def test_un_appel_d_outil_ecrit_n_est_pas_un_appel_d_outil():
+    """« tu peux sur github créer un nouveau projet » + son image →
+
+        Je vais créer une application… Commençons par créer le dépôt :
+        <function_calls>
+        <invoke name="create_repository">
+        <parameter name="name">application-cours-3eme</parameter>…
+        …suivi de six cents lignes de CSS déversées dans le chat.
+
+    BONNE NOUVELLE D'ABORD : la vision marche. Elle a VU l'image et a compris ce
+    qu'il fallait construire — c'est la première fois depuis deux jours.
+
+    ⚠️ MAIS RIEN N'A ÉTÉ CRÉÉ. Ce format d'appel d'outil vient d'un autre moteur ; le
+    modèle le connaît et y retombe sous pression. Nova attend « ACTION: / PARAMS: » :
+    elle n'a rien reconnu, et a AFFICHÉ le texte. Le pire n'est pas le déversement,
+    c'est la phrase au-dessus — « commençons par créer le dépôt » annonce une action
+    qui n'a pas eu lieu, et il repart en croyant son dépôt créé.
+
+    On ne jette pas son intention : on la TRADUIT. Il voulait appeler un outil, il
+    va l'appeler pour de bon.
+    """
+    import importlib
+    C = importlib.import_module("agent.core")
+
+    brut = ("Je vais créer une application. Commençons par créer le dépôt :\n\n"
+            "<function_calls>\n"
+            '<invoke name="create_repository">\n'
+            '<parameter name="name">application-cours-3eme</parameter>\n'
+            '<parameter name="description">Application de révision</parameter>\n'
+            "</invoke>\n</function_calls>\n"
+            '<invoke name="create_file">\n'
+            '<parameter name="content"><!DOCTYPE html>… 600 lignes …</parameter>\n</invoke>')
+    traduit = C._traduit_appel_xml(brut)
+    check_true("l'appel devient une vraie action", "ACTION: create_repository" in traduit)
+    check_true("avec ses paramètres", '"name": "application-cours-3eme"' in traduit)
+    check("plus aucune balise à l'écran", "<invoke" in traduit or "<parameter" in traduit
+          or "<function_calls" in traduit, False)
+    # ⚠️ UN SEUL appel par tour : la boucle en exécute un à la fois, et en enchaîner
+    # plusieurs ferait agir Nova sans qu'on ait vu le résultat du précédent — ce qu'on
+    # refuse déjà au pilote de navigateur.
+    check("un seul appel est traduit", traduit.count("ACTION:"), 1)
+    check("le second n'est pas exécuté en douce", "create_file" in traduit, False)
+    # Le commentaire du modèle est gardé : il dit ce qu'il tente.
+    check_true("ce qu'il annonçait reste lisible", "Commençons par créer le dépôt" in traduit)
+
+    # Un appel COUPÉ (réponse tronquée) se traduit quand même : mieux vaut agir sur ce
+    # qu'on a compris que d'afficher un fragment de balise.
+    coupe = C._traduit_appel_xml('<invoke name="x"><parameter name="a">1')
+    check_true("un appel tronqué est quand même compris", "ACTION: x" in coupe)
+
+    # Et un texte normal n'est pas touché.
+    check("une réponse sans appel reste intacte",
+          C._traduit_appel_xml("Voici ta réponse."), "Voici ta réponse.")
+
+    # ⚠️ Dernier filet : même sans appel complet, aucune balise ne doit s'afficher.
+    check("une balise orpheline ne s'affiche pas",
+          "<function_calls>" in C.sans_raisonnement("Texte <function_calls> suite"), False)
+
+    # ⚠️ LE POINT QUI COMPTE : la boucle ReAct doit y voir une ACTION, pas une réponse.
+    # Avant, ce texte tombait dans le fourre-tout « aucun format reconnu » et était
+    # rendu tel quel — six cents lignes de CSS et un dépôt imaginaire.
+    action, params, final = C.parse_response(brut)
+    check("la boucle voit une action", action, "create_repository")
+    check("et surtout PAS une réponse finale", final, None)
+    check("les paramètres sont passés", (params or {}).get("name"), "application-cours-3eme")
+
+
+def test_elle_disait_c_est_note_sans_rien_noter():
+    """« quand nova enregistre des infos elles n'apparaissent pas dans mémoire »
+
+    ⚠️ J'AI CHERCHÉ AU MAUVAIS ENDROIT D'ABORD. J'ai soupçonné le stockage : une
+    écriture Supabase sans commit, une lecture peu fiable, un dédoublonnage trop
+    large. Vérifié en le rejouant : autocommit est actif, et sur huit faits ajoutés
+    sept sont conservés (le huitième remplacé exprès, même sujet). Le stockage marche.
+
+    Ce qui ne marche pas, c'est la PHRASE. Le modèle écrit « c'est noté ! » alors que
+    rien n'a été retenu. La consigne le lui interdit pourtant mot pour mot : « RIEN
+    n'a été mémorisé de ce message. Ne dis donc NI "c'est noté", NI "je retiens"… »
+    Un modèle saturé l'enfreint quand même — la leçon de toute la journée.
+
+    Et ça coûte cher : il croit son information rangée, il ne la redit pas, elle est
+    perdue. Une mémoire qui prétend retenir est pire qu'une mémoire qui avoue oublier.
+    """
+    import importlib
+    Q = importlib.import_module("agent.qualite")
+    P = importlib.import_module("agent.profile")
+
+    # --- 1. Le stockage, vérifié plutôt que soupçonné -------------------------------
+    class FauxDepot:
+        def __init__(self):
+            self.items = []
+
+        def configure(self):
+            return True
+
+        def charge(self):
+            return ([dict(x) for x in self.items], True)
+
+        def ecrit(self, items, supprimes=()):
+            self.items = [dict(x) for x in items]
+            return True
+
+    vrai = P._ENTREPOT
+    try:
+        P._ENTREPOT = FauxDepot()
+        for cat, t in (("identite", "A 17 ans"), ("lieu", "Habite à Pau"),
+                       ("autre", "Détient l'action 2CRSi (Euronext Paris)"),
+                       ("autre", "Détient l'action DBV (Euronext Paris)"),
+                       ("gouts", "Aime le football"), ("gouts", "Aime la musique")):
+            P.add_fact(cat, t)
+        gardes = P.list_facts()
+        check("six faits ajoutés, six conservés", len(gardes), 6)
+        check_true("ses deux valeurs cohabitent",
+                   sum(1 for f in gardes if "Détient" in f["texte"]) == 2)
+        # ⚠️ Le remplacement par SUJET reste : un déménagement écrase l'ancienne ville,
+        # sinon Nova aurait deux domiciles contradictoires dans son prompt.
+        P.add_fact("lieu", "Habite à Bordeaux")
+        villes = [f["texte"] for f in P.list_facts() if f["cat"] == "lieu"]
+        check("un déménagement remplace, il ne s'ajoute pas", villes, ["Habite à Bordeaux"])
+    finally:
+        P._ENTREPOT = vrai
+
+    # --- 2. La phrase, elle, mentait -------------------------------------------------
+    for phrase in ("C'est noté !", "Je retiens que tu habites à Pau.",
+                   "Je garde ça en tête.", "Bien noté !",
+                   "J'ai bien enregistré ton adresse.", "Je note que tu es en terminale."):
+        check_true(f"promesse détectée : {phrase!r}", Q.pretend_retenir(phrase))
+    # ⚠️ « je note » a deux sens. « Je note LA DATE du 9 juin » ne promet rien :
+    # corriger là serait ajouter du bruit sur une phrase juste.
+    check("« je note la date » n'est pas une promesse",
+          Q.pretend_retenir("Je note la date du 9 juin dans ta réponse."), False)
+    check("une réponse ordinaire non plus", Q.pretend_retenir("Voici la météo."), False)
+
+    corrige = Q.sans_fausse_memoire("C'est noté, Lohan !", [])
+    check_true("Nova se corrige", "je n'ai rien enregistré" in corrige.lower())
+    check_true("elle dit où il ne le trouvera pas", "🧠 Mémoire" in corrige)
+    # ⚠️ Et surtout : ce qu'il peut faire pour que ça marche à coup sûr.
+    check_true("et comment s'y prendre", "retiens que" in corrige)
+    check_true("la réponse d'origine reste", corrige.startswith("C'est noté, Lohan !"))
+
+    # Quand quelque chose A été mémorisé, on ne touche à rien.
+    check("un vrai enregistrement n'est pas contredit",
+          Q.sans_fausse_memoire("C'est noté !", [{"id": "a", "texte": "x"}]), "C'est noté !")
+    check("et une réponse sans promesse non plus",
+          Q.sans_fausse_memoire("Voici la météo.", []), "Voici la météo.")
+
+    # --- 3. Branché sur les DEUX chemins --------------------------------------------
+    api = (Path(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
+    check_true("le flux web vérifie", 'memoire_du_tour["appris"]' in api)
+    # ⚠️ Telegram et les automatisations ne passent pas par le flux web : sans ça,
+    # « c'est noté » y resterait faux.
+    check_true("le chemin conversationnel aussi", "out = _sfm(out, appris)" in api)
+
+
 def test_le_briefing_appelait_gmail_par_l_autre_porte():
     """« Erreur de récupération des mails : 404 – vérifie les autorisations et
     l'activation de l'API sur composio.dev » — alors que ses mails marchaient dans le
@@ -9856,7 +10064,10 @@ if __name__ == "__main__":
                test_la_vision_ne_devine_plus_les_noms_et_la_voix_locale_est_dans_la_liste,
                test_le_rapport_de_mails_a_enfin_une_version_a_dire,
                test_le_briefing_appelait_gmail_par_l_autre_porte,
-               test_trois_sources_pour_un_seul_article_et_le_salon_du_beton):
+               test_trois_sources_pour_un_seul_article_et_le_salon_du_beton,
+               test_son_prenom_partait_en_mot_cle_et_juillet_passait_pour_aujourd_hui,
+               test_un_appel_d_outil_ecrit_n_est_pas_un_appel_d_outil,
+               test_elle_disait_c_est_note_sans_rien_noter):
         try:
             fn()
         except Exception as e:

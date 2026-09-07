@@ -119,6 +119,48 @@ def porte_de_sortie(texte: str, demande: str = "") -> str:
             "faire plutôt que m'arrêter là.")
 
 
+# ⚠️ « quand nova enregistre des infos elles n'apparaissent pas dans mémoire ».
+# Le stockage marche : on l'a rejoué, huit faits ajoutés, sept conservés (le huitième
+# remplacé exprès, même sujet). Ce qui ne marche pas, c'est la PHRASE.
+# La consigne dit pourtant, mot pour mot : « RIEN n'a été mémorisé de ce message. Ne dis
+# donc NI "c'est noté", NI "je retiens", NI "je garde ça en tête" : ce serait faux. »
+# Un modèle saturé l'enfreint quand même — c'est la leçon de toute la journée : une
+# consigne est une intention, ce qui coûte cher se vérifie sur la sortie.
+# Et ça coûte cher : il croit son information rangée, il ne la redit pas, elle est
+# perdue. Une mémoire qui prétend retenir est pire qu'une mémoire qui avoue oublier.
+_PRETEND_RETENIR = re.compile(
+    r"((?:c'est|c est)\s+not[ée]|bien not[ée]"
+    r"|je\s+(?:retiens|m[ée]morise|garde)\b"
+    # ⚠️ « je note » a DEUX sens : « je mémorise » et « je remarque ». « Je note la
+    # date du 9 juin dans ta réponse » ne promet rien — corriger là serait ajouter du
+    # bruit sur une phrase juste. On n'attrape que la forme qui engage : « je note
+    # que… », ou « je note » en fin de phrase.
+    r"|je\s+note\s+(?:que\b|[çc]a\b|cela\b)|je\s+note\s*[.!…]"
+    r"|(?:je\s+)?garde\s+(?:[çc]a|cela)\s+en\s+t[êe]te|j'?ai\s+(?:bien\s+)?"
+    r"(?:not[ée]|retenu|m[ée]moris[ée]|enregistr[ée])|c'?est\s+enregistr[ée]"
+    r"|(?:info|information)\s+(?:bien\s+)?(?:not[ée]e|enregistr[ée]e))", re.I)
+
+
+def pretend_retenir(texte: str) -> bool:
+    return bool(_PRETEND_RETENIR.search(texte or ""))
+
+
+def sans_fausse_memoire(texte: str, appris) -> str:
+    """Si RIEN n'a été mémorisé, une phrase qui dit le contraire est corrigée.
+
+    On ne supprime pas la réponse : on retire l'affirmation fausse et on dit ce qui
+    s'est réellement passé, avec la manière de s'y prendre.
+    """
+    if appris or not texte or not pretend_retenir(texte):
+        return texte
+    return (texte.rstrip() +
+            "\n\n> ⚠️ **Correction : je n'ai rien enregistré.** Je viens de l'écrire "
+            "au-dessus, et c'est faux — tu ne le retrouveras pas dans 🧠 Mémoire.\n>\n"
+            "> Ça arrive quand je ne reconnais pas l'information comme durable, ou "
+            "quand aucun modèle ne répond pour la reformuler. Redis-la-moi en "
+            "commençant par **« retiens que… »** : là, je la range à coup sûr.")
+
+
 def relis(texte: str, demande: str = "") -> str:
     """Le passage obligé de toute réponse : ni mur de signes, ni porte fermée,
     ni référence fantôme — ni marqueur technique laissé à l'écran.

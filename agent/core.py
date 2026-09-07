@@ -243,6 +243,39 @@ _RE_THINK = re.compile(
 _RE_THINK_OUVERT = re.compile(r"<\s*(think|thinking|reasoning|scratchpad)\s*>.*$", re.S | re.I)
 
 
+# Le format d'appel d'outil d'autres moteurs, que le modèle écrit parfois en clair.
+_XML_INVOKE = re.compile(
+    r"<\s*invoke\s+name\s*=\s*[\"']([^\"']+)[\"']\s*>(.*?)(?:<\s*/\s*invoke\s*>|\Z)",
+    re.S | re.I)
+_XML_PARAM = re.compile(
+    r"<\s*parameter\s+name\s*=\s*[\"']([^\"']+)[\"']\s*>(.*?)(?:<\s*/\s*parameter\s*>|\Z)",
+    re.S | re.I)
+_XML_RESTE = re.compile(r"</?\s*(?:function_calls|invoke|parameter)\b[^>]*>", re.I)
+
+
+def _traduit_appel_xml(texte: str) -> str:
+    """« <invoke name="x"><parameter name="y">z</parameter> » → « ACTION: x / PARAMS: … ».
+
+    ⚠️ On ne traduit QUE le premier appel : la boucle ReAct en exécute un par tour, et
+    en enchaîner plusieurs d'un coup ferait agir Nova sans qu'on ait vu le résultat du
+    précédent — exactement ce qu'on refuse au pilote de navigateur.
+    """
+    t = texte or ""
+    m = _XML_INVOKE.search(t)
+    if not m:
+        return t
+    outil = m.group(1).strip()
+    params = {}
+    for p in _XML_PARAM.finditer(m.group(2)):
+        params[p.group(1).strip()] = p.group(2).strip()
+    # Ce qui précède l'appel est le commentaire du modèle (« Commençons par… ») : on le
+    # garde, mais il ne doit plus passer pour une réponse finale.
+    avant = t[:m.start()]
+    logger.info(f"[protocole] appel écrit en XML traduit : {outil} ({len(params)} paramètre(s))")
+    return (_XML_RESTE.sub("", avant).strip()
+            + f"\nACTION: {outil}\nPARAMS: {json.dumps(params, ensure_ascii=False)}\n")
+
+
 def sans_raisonnement(sortie: str) -> str:
     """Retire le brouillon interne des modèles raisonneurs.
 
@@ -252,6 +285,10 @@ def sans_raisonnement(sortie: str) -> str:
     """
     t = (sortie or "")
     t = _RE_THINK.sub("", t)
+    # ⚠️ Même famille : les balises d'appel d'outil d'un AUTRE moteur, écrites en clair.
+    # Traduites plus haut quand elles forment un appel complet ; ici on nettoie ce qui
+    # traîne (balise seule, appel coupé) pour qu'aucune ne s'affiche jamais.
+    t = _XML_RESTE.sub("", t)
     # Bloc ouvert jamais refermé (réponse coupée en cours de route) : on jette la fin,
     # sinon l'utilisateur voit un brouillon tronqué.
     if re.search(r"<\s*(think|thinking|reasoning|scratchpad)\s*>", t, re.I):
@@ -497,6 +534,11 @@ def _fin_de_reponse(txt: str) -> str:
 
 def parse_response(text: str) -> tuple:
     """Extrait (action, params, final) depuis la réponse LLM."""
+    # ⚠️ L'ORDRE COMPTE, ET JE L'AVAIS INVERSÉ. sans_raisonnement() efface les balises
+    # d'appel qui traînent — c'est son rôle pour l'affichage — donc l'appeler d'abord
+    # supprimait justement ce que la traduction devait lire. Mon propre test l'a
+    # attrapé : on TRADUIT, puis on nettoie.
+    text = _traduit_appel_xml(text or "")
     # ⚠️ Le brouillon <think> est retiré AVANT toute analyse : un « ACTION: search_web »
     # écrit dans le monologue interne du modèle (« je pourrais chercher sur le web… »)
     # déclencherait sinon un vrai appel d'outil qu'il n'a jamais demandé.
@@ -511,6 +553,19 @@ def parse_response(text: str) -> tuple:
     # placee AVANT lui l'emporte : c'est un appel d'outil, pas une conclusion.
     final_m = re.search(r"^[ \t]*\**\s*FINAL\s*\**\s*:\s*(.+)",
                         text, re.M | re.DOTALL | re.IGNORECASE)
+
+    # ⚠️ UN APPEL D'OUTIL ÉCRIT N'EST PAS UN APPEL D'OUTIL. Le 7 septembre, sur
+    # « crée un projet GitHub », le modèle a répondu :
+    #     « Commençons par créer le dépôt : »
+    #     <function_calls><invoke name="create_repository">
+    #       <parameter name="name">application-cours-3eme</parameter>…
+    # …suivi de six cents lignes de CSS. Rien n'a été créé : c'était du TEXTE, affiché
+    # tel quel. Et le pire n'est pas le déversement, c'est la phrase au-dessus — elle
+    # annonce une action qui n'a pas eu lieu, et il repart en croyant son dépôt créé.
+    # Ce format vient d'autres moteurs ; le modèle le connaît et y retombe sous
+    # pression. Plutôt que de jeter son intention, on la TRADUIT dans le protocole de
+    # Nova : il voulait appeler un outil, il va l'appeler pour de bon.
+    # (La traduction a lieu tout en haut de cette fonction, avant tout nettoyage.)
 
     # ACTION + PARAMS
     # ⚠️ Le modèle DÉCORE souvent le nom de l'outil — et c'est notre gabarit qui le lui
@@ -917,7 +972,10 @@ def search_query(task: str) -> str:
         # était la définition du verbe « think » sur Wiktionary. Le modèle avait ouvert
         # son brouillon de raisonnement, et .split("\n")[0] prenait la PREMIÈRE ligne —
         # c'est-à-dire la balise. Le raisonnement est retiré AVANT de découper.
-        q = _premiere_ligne_utile(sans_raisonnement(out))
+        # ⚠️ LES DEUX CÔTÉS, encore. Le modèle recopie l'interpellation aussi bien que
+        # le repli sans modèle : nettoyer un seul des deux la laisserait passer une
+        # fois sur deux, c'est-à-dire au pire moment — quand le modèle répond.
+        q = sans_vocatif(_premiere_ligne_utile(sans_raisonnement(out)))
         # Garde-fou : le modèle glisse parfois une année périmée (2023/2024/2025).
         # Si l'utilisateur n'a PAS demandé cette année-là, on la remplace par l'année courante.
         for vieille in range(2020, auj.year):
@@ -982,6 +1040,17 @@ _STOP_REQUETE = {
     "stp", "svp", "quel", "quelle", "quels", "quelles", "y", "et", "ou", "où", "son", "sa",
     "plait", "plaît", "merci", "please", "the", "of", "toi", "lui", "leur", "d", "l", "s",
 }
+# ⚠️ « Nova c'est quoi l'actualité de CRSI » → requête « Nova CRSI actualité 2026 DBV ».
+# Il l'appelle par son nom, comme on interpelle quelqu'un, et ce nom partait comme
+# mot-clé. Elle n'est jamais le SUJET de la recherche : on l'écarte, ainsi que les
+# formules d'adresse qui l'accompagnent.
+_VOCATIFS = {"nova", "hey", "salut", "bonjour", "bonsoir", "coucou", "hello", "ok", "dis"}
+
+
+def sans_vocatif(q: str) -> str:
+    """Retire l'interpellation d'une requête déjà construite (« Nova CRSI… »)."""
+    mots = [w for w in str(q or "").split() if w.lower().strip(",.!?;:") not in _VOCATIFS]
+    return " ".join(mots).strip()
 # Ces mots signalent qu'on veut du RÉCENT → il faut dater la requête, sinon le moteur
 # ramène des pages génériques sans rapport avec la journée en cours.
 _MOTS_DU_JOUR = ("aujourd'hui", "aujourdhui", "du jour", "ce matin", "ce soir", "cette nuit",
@@ -1134,7 +1203,7 @@ def requete_simple(task: str, pour_actu: bool = False) -> str:
     for w in re.sub(r"[^\w\sÀ-ÿ'-]", " ", nettoye).split():
         w = re.sub(r"^(?:[ldnjmtsc]|qu)'", "", w, flags=re.I)  # l'actu → actu, d'IA → IA
         nu = w.lower().strip("'-")
-        if not nu or nu in _STOP_REQUETE or nu in _VERBES_DEMANDE:
+        if not nu or nu in _STOP_REQUETE or nu in _VERBES_DEMANDE or nu in _VOCATIFS:
             continue
         # « aujourd'hui », « jour »… sont remplacés par une vraie date, plus bas
         if nu in ("jour", "journée", "journee", "aujourd'hui", "aujourdhui", "matin",
@@ -1219,7 +1288,7 @@ async def run_agent(
     try:
         from agent.dates import relis as relis_dates
         if res.get("answer") and _sujets_finance(task, res["answer"]):
-            res["answer"] = relis_dates(res["answer"], observations_du_tour())
+            res["answer"] = relis_dates(res["answer"], observations_du_tour(), demande=task)
     except Exception as e:
         logger.info(f"[dates] vérification ignorée ({type(e).__name__})")
     # ⚠️ ET LES LIENS, qui sont pires que les deux autres. Sur Valneva, Nova a cité

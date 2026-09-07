@@ -102,10 +102,63 @@ def _aujourdhui():
     return (d.day, d.month, d.year)
 
 
-def relis(texte: str, observations=None, aujourdhui=None) -> str:
+# ⚠️ « c'est quoi l'actualité de 2CRSi AUJOURD'HUI » → « DBV annoncera ses résultats du
+# deuxième trimestre le 16 juillet 2026 », « présentera de nouvelles données au congrès
+# EAACI ». Deux mois d'ancienneté, servis sous une question qui dit « aujourd'hui ».
+# Aucune date n'était fausse — elles étaient toutes écrites, toutes exactes. Ce qui
+# manquait, c'est ce qu'elles voulaient dire ENSEMBLE : il n'y a rien eu de récent.
+# « Je n'ai rien trouvé de récent » et « voici du vieux » se lisent pareil quand on
+# survole, et disent le contraire.
+_MOTS_MAINTENANT = ("aujourd'hui", "aujourdhui", "du jour", "ce matin", "ce soir",
+                    "maintenant", "en ce moment", "actuellement", "dernière", "derniere",
+                    "récent", "recent", "quoi de neuf", "actualité", "actualite",
+                    "actu", "news", "nouvelles")
+_JOURS_FRAIS = 7
+
+
+def trop_vieux(texte: str, demande: str, aujourdhui=None, jours: int = _JOURS_FRAIS):
+    """La date la plus récente citée, si TOUT est plus vieux que `jours`. Sinon None."""
+    from datetime import date
+    m = " ".join(str(demande or "").lower().split()).replace("’", "'")
+    if not any(k in m for k in _MOTS_MAINTENANT):
+        return None
+    dates = dates_citees(texte)
+    if not dates:
+        return None
+    auj = date(*reversed(aujourdhui)) if aujourdhui else date.today()
+    recentes = []
+    for j, mo, a in dates:
+        try:
+            d = date(a, mo, j)
+        except ValueError:
+            continue
+        # Une date FUTURE (une échéance annoncée) ne dit rien de la fraîcheur.
+        if d <= auj:
+            recentes.append(d)
+    if not recentes:
+        return None
+    plus_recente = max(recentes)
+    ecart = (auj - plus_recente).days
+    return (plus_recente, ecart) if ecart > jours else None
+
+
+def relis(texte: str, observations=None, aujourdhui=None, demande: str = "") -> str:
     """Signale les dates que rien n'appuie. N'efface rien : il doit pouvoir juger."""
     if not texte:
         return texte
+
+    # Le plus RÉCENT de ce qu'on raconte est vieux de deux mois, alors qu'il demandait
+    # aujourd'hui : on le dit en tête, avant qu'il lise la suite comme du frais.
+    vieux = trop_vieux(texte, demande, aujourdhui)
+    if vieux:
+        d, ecart = vieux
+        texte = (f"> ⚠️ **Rien de récent : la nouvelle la plus fraîche que j'aie trouvée "
+                 f"date du {_lisible((d.day, d.month, d.year))}, il y a {ecart} jours.**\n>\n"
+                 "> Tu m'as demandé aujourd'hui ; je n'ai rien trouvé d'aujourd'hui. Ce "
+                 "qui suit est exact, mais ce n'est pas l'actualité du jour — et « je "
+                 "n'ai rien trouvé de récent » n'est pas la même chose que « il ne s'est "
+                 "rien passé ».\n\n" + texte.strip())
+
     manquantes = non_sourcees(texte, observations)
     if not manquantes:
         return texte
