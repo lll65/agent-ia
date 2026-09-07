@@ -9530,6 +9530,93 @@ def test_un_appel_d_outil_ecrit_n_est_pas_un_appel_d_outil():
     check("les paramètres sont passés", (params or {}).get("name"), "application-cours-3eme")
 
 
+def test_elle_disait_c_est_note_sans_rien_noter():
+    """« quand nova enregistre des infos elles n'apparaissent pas dans mémoire »
+
+    ⚠️ J'AI CHERCHÉ AU MAUVAIS ENDROIT D'ABORD. J'ai soupçonné le stockage : une
+    écriture Supabase sans commit, une lecture peu fiable, un dédoublonnage trop
+    large. Vérifié en le rejouant : autocommit est actif, et sur huit faits ajoutés
+    sept sont conservés (le huitième remplacé exprès, même sujet). Le stockage marche.
+
+    Ce qui ne marche pas, c'est la PHRASE. Le modèle écrit « c'est noté ! » alors que
+    rien n'a été retenu. La consigne le lui interdit pourtant mot pour mot : « RIEN
+    n'a été mémorisé de ce message. Ne dis donc NI "c'est noté", NI "je retiens"… »
+    Un modèle saturé l'enfreint quand même — la leçon de toute la journée.
+
+    Et ça coûte cher : il croit son information rangée, il ne la redit pas, elle est
+    perdue. Une mémoire qui prétend retenir est pire qu'une mémoire qui avoue oublier.
+    """
+    import importlib
+    Q = importlib.import_module("agent.qualite")
+    P = importlib.import_module("agent.profile")
+
+    # --- 1. Le stockage, vérifié plutôt que soupçonné -------------------------------
+    class FauxDepot:
+        def __init__(self):
+            self.items = []
+
+        def configure(self):
+            return True
+
+        def charge(self):
+            return ([dict(x) for x in self.items], True)
+
+        def ecrit(self, items, supprimes=()):
+            self.items = [dict(x) for x in items]
+            return True
+
+    vrai = P._ENTREPOT
+    try:
+        P._ENTREPOT = FauxDepot()
+        for cat, t in (("identite", "A 17 ans"), ("lieu", "Habite à Pau"),
+                       ("autre", "Détient l'action 2CRSi (Euronext Paris)"),
+                       ("autre", "Détient l'action DBV (Euronext Paris)"),
+                       ("gouts", "Aime le football"), ("gouts", "Aime la musique")):
+            P.add_fact(cat, t)
+        gardes = P.list_facts()
+        check("six faits ajoutés, six conservés", len(gardes), 6)
+        check_true("ses deux valeurs cohabitent",
+                   sum(1 for f in gardes if "Détient" in f["texte"]) == 2)
+        # ⚠️ Le remplacement par SUJET reste : un déménagement écrase l'ancienne ville,
+        # sinon Nova aurait deux domiciles contradictoires dans son prompt.
+        P.add_fact("lieu", "Habite à Bordeaux")
+        villes = [f["texte"] for f in P.list_facts() if f["cat"] == "lieu"]
+        check("un déménagement remplace, il ne s'ajoute pas", villes, ["Habite à Bordeaux"])
+    finally:
+        P._ENTREPOT = vrai
+
+    # --- 2. La phrase, elle, mentait -------------------------------------------------
+    for phrase in ("C'est noté !", "Je retiens que tu habites à Pau.",
+                   "Je garde ça en tête.", "Bien noté !",
+                   "J'ai bien enregistré ton adresse.", "Je note que tu es en terminale."):
+        check_true(f"promesse détectée : {phrase!r}", Q.pretend_retenir(phrase))
+    # ⚠️ « je note » a deux sens. « Je note LA DATE du 9 juin » ne promet rien :
+    # corriger là serait ajouter du bruit sur une phrase juste.
+    check("« je note la date » n'est pas une promesse",
+          Q.pretend_retenir("Je note la date du 9 juin dans ta réponse."), False)
+    check("une réponse ordinaire non plus", Q.pretend_retenir("Voici la météo."), False)
+
+    corrige = Q.sans_fausse_memoire("C'est noté, Lohan !", [])
+    check_true("Nova se corrige", "je n'ai rien enregistré" in corrige.lower())
+    check_true("elle dit où il ne le trouvera pas", "🧠 Mémoire" in corrige)
+    # ⚠️ Et surtout : ce qu'il peut faire pour que ça marche à coup sûr.
+    check_true("et comment s'y prendre", "retiens que" in corrige)
+    check_true("la réponse d'origine reste", corrige.startswith("C'est noté, Lohan !"))
+
+    # Quand quelque chose A été mémorisé, on ne touche à rien.
+    check("un vrai enregistrement n'est pas contredit",
+          Q.sans_fausse_memoire("C'est noté !", [{"id": "a", "texte": "x"}]), "C'est noté !")
+    check("et une réponse sans promesse non plus",
+          Q.sans_fausse_memoire("Voici la météo.", []), "Voici la météo.")
+
+    # --- 3. Branché sur les DEUX chemins --------------------------------------------
+    api = (Path(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
+    check_true("le flux web vérifie", 'memoire_du_tour["appris"]' in api)
+    # ⚠️ Telegram et les automatisations ne passent pas par le flux web : sans ça,
+    # « c'est noté » y resterait faux.
+    check_true("le chemin conversationnel aussi", "out = _sfm(out, appris)" in api)
+
+
 def test_le_briefing_appelait_gmail_par_l_autre_porte():
     """« Erreur de récupération des mails : 404 – vérifie les autorisations et
     l'activation de l'API sur composio.dev » — alors que ses mails marchaient dans le
@@ -9979,7 +10066,8 @@ if __name__ == "__main__":
                test_le_briefing_appelait_gmail_par_l_autre_porte,
                test_trois_sources_pour_un_seul_article_et_le_salon_du_beton,
                test_son_prenom_partait_en_mot_cle_et_juillet_passait_pour_aujourd_hui,
-               test_un_appel_d_outil_ecrit_n_est_pas_un_appel_d_outil):
+               test_un_appel_d_outil_ecrit_n_est_pas_un_appel_d_outil,
+               test_elle_disait_c_est_note_sans_rien_noter):
         try:
             fn()
         except Exception as e:

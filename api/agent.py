@@ -279,6 +279,10 @@ def _smalltalk_reply(message: str) -> str:
     from llm.client import chat
     appris = _remember_fact(message)
     out = chat(_smalltalk_messages(message, appris), temperature=0.6)
+    # ⚠️ LE MÊME CONTRÔLE ICI. Ce chemin sert Telegram et les automatisations, qui ne
+    # passent pas par le flux web : sans ça, « c'est noté » y resterait faux.
+    from agent.qualite import sans_fausse_memoire as _sfm
+    out = _sfm(out, appris)
     if _has_invented_market_data(out) and not _finance_intent(message):
         # Dérive détectée (chiffres de marché non demandés et non sourcés) → on régénère.
         msgs = _smalltalk_messages(message, appris) + [
@@ -4376,7 +4380,20 @@ async def ask_stream(q: str = "", key: str = "", modele: str = "", vocal: int = 
     # pouvoir émettre le message « arrêté » par le MÊME chemin — donc en passant par
     # les mêmes filets (secrets, qualité). Un message d'arrêt qui court-circuiterait
     # ces relectures serait le seul de la page à ne pas être vérifié.
+    # Ce que ce tour a RÉELLEMENT mémorisé. Posé ici, hors de gen(), pour que sse() —
+    # par qui passent TOUTES les branches — puisse confronter la réponse aux faits.
+    memoire_du_tour = {"appris": []}
+
     def sse(obj):
+        # ⚠️ « quand nova enregistre des infos elles n'apparaissent pas dans mémoire ».
+        # Le stockage marche. C'est la PHRASE qui ment : le modèle écrit « c'est noté »
+        # alors que rien n'a été retenu — la consigne le lui interdit pourtant en
+        # toutes lettres. Il croit son information rangée, il ne la redit pas, elle est
+        # perdue. Une mémoire qui prétend retenir est pire qu'une mémoire qui avoue.
+        for _c in ("text", "answer"):
+            if isinstance(obj.get(_c), str) and obj.get("type") == "answer":
+                from agent.qualite import sans_fausse_memoire
+                obj[_c] = sans_fausse_memoire(obj[_c], memoire_du_tour["appris"])
         # ⚠️ Le rapport de mails transporte SA VERSION À DIRE. On la détache ici, avant
         # toute relecture : l'écran reçoit le document, la voix reçoit deux phrases.
         # « Lire à voix haute » et « mode vocal » sont deux choses différentes — il
@@ -4551,6 +4568,7 @@ async def ask_stream(q: str = "", key: str = "", modele: str = "", vocal: int = 
             # Rien dans l'aiguillage n'en dépend — ça passe après.
             with mesure("apprentissage"):
                 _appris = await _off(_remember_fact, message)
+            memoire_du_tour["appris"] = _appris or []
             # Retenir en douce serait le contraire de ce qu'on veut : Lohan doit VOIR ce
             # que Nova garde de lui, et pouvoir l'enlever d'un clic.
             if _appris:
