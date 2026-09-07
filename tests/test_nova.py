@@ -379,7 +379,10 @@ def test_modeles():
     check_true("chaîne multi-fournisseurs", hasattr(L, "_providers_disponibles"))
     check_true("402 traduit", "gratuite" in L._explique("cerebras", Exception("Error code: 402 payment_required")))
     check_true("429 traduit", "limite" in L._explique("groq", Exception("429 rate limit")))
-    check_true("404 traduit", "indisponible" in L._explique("gemini", Exception("404 model not found")))
+    # ⚠️ « modèle indisponible » se confondait avec « clé morte » et l'envoyait
+    # régénérer une clé qui marche. On nomme maintenant le vrai coupable.
+    check_true("404 traduit", "modèle n'existe plus"
+               in L._explique("gemini", Exception("404 model not found")))
     check_true("401 traduit", "invalide" in L._explique("groq", Exception("401 invalid api key")))
 
 
@@ -9697,6 +9700,60 @@ def test_son_cours_s_ouvre_dans_libreoffice():
                "tout le cours" in ui and "les tableaux du cours" in ui)
 
 
+def test_410_gone_le_seul_code_que_l_auto_guerison_ignorait():
+    """« sors les clés qui fonctionnent plus »
+
+    Son diagnostic disait :
+        ❌ nvidia · Error code: 410 - Gone - The model
+           'meta/llama-3.3-70b-instruct' has reached its end of life
+
+    ⚠️ 410 EST LE CODE LE PLUS EXPLICITE QUI EXISTE pour dire « retiré
+    définitivement »… et c'était le seul que l'auto-guérison ne reconnaissait pas.
+    Elle attrapait 404, 400, « not_found », « decommission » — pas 410. Au lieu de
+    passer au modèle suivant, la chaîne NVIDIA s'arrêtait NET sur son premier
+    candidat : le fournisseur entier disparaissait pour un mot manquant dans une
+    liste. Et sa clé NVIDIA est parfaitement valide.
+
+    ⚠️ Il y avait SIX listes de ce genre dans llm/client.py, toutes un peu
+    différentes. Une question posée six fois reçoit six réponses. On la pose une fois.
+    """
+    import importlib
+    C = importlib.import_module("llm.client")
+
+    gone = ("Error code: 410 - {'type': 'about:blank', 'title': 'Gone', 'status': 410, "
+            "'detail': \"The model 'meta/llama-3.3-70b-instruct' has reached its end of life\"}")
+    check_true("410 Gone est enfin reconnu", C.modele_mort(gone))
+    check_true("« has reached its end of life » aussi", C.modele_mort("has reached its end of life"))
+    for t in ("model_not_found: 404 does not exist", "model decommissioned",
+              "no endpoints found", "model is deprecated", "no longer available"):
+        check_true(f"toujours reconnu : {t[:32]!r}", C.modele_mort(t))
+
+    # ⚠️ ET SURTOUT CE QUI N'EN EST PAS. Traiter une saturation ou une clé morte comme
+    # un « modèle retiré » ferait passer au modèle suivant sans fin, sur un fournisseur
+    # qui ne répondra à AUCUN modèle.
+    for t in ("rate_limit_exceeded 429 too many requests",
+              "401 unauthorized invalid api key",
+              "payment_required 402 insufficient credits",
+              "502 bad gateway"):
+        check(f"pas un modèle mort : {t[:30]!r}", C.modele_mort(t), False)
+
+    # Une seule définition, employée partout.
+    src = (Path(__file__).resolve().parents[1] / "llm" / "client.py").read_text(encoding="utf-8")
+    check_true("les fournisseurs l'appellent au lieu de refaire la liste",
+               src.count("modele_mort(") >= 5)
+
+    # ⚠️ Le message qu'IL lit. « modèle indisponible » se confond avec « clé morte » et
+    # l'envoie régénérer une clé qui marche.
+    msg = C._explique("NVIDIA", RuntimeError(gone))
+    check_true("le diagnostic dit que c'est le MODÈLE", "modèle n'existe plus" in msg)
+    check_true("et que la clé n'y est pour rien", "la clé, elle, est bonne" in msg)
+    # Une vraie clé morte reste nommée comme telle.
+    check_true("une clé invalide reste une clé invalide",
+               "clé invalide" in C._explique("Gemini", RuntimeError("401 unauthorized")))
+    check_true("et une saturation reste une saturation",
+               "limite" in C._explique("Groq", RuntimeError("rate_limit_exceeded 429")).lower())
+
+
 def test_le_briefing_appelait_gmail_par_l_autre_porte():
     """« Erreur de récupération des mails : 404 – vérifie les autorisations et
     l'activation de l'API sur composio.dev » — alors que ses mails marchaient dans le
@@ -10148,7 +10205,8 @@ if __name__ == "__main__":
                test_son_prenom_partait_en_mot_cle_et_juillet_passait_pour_aujourd_hui,
                test_un_appel_d_outil_ecrit_n_est_pas_un_appel_d_outil,
                test_elle_disait_c_est_note_sans_rien_noter,
-               test_son_cours_s_ouvre_dans_libreoffice):
+               test_son_cours_s_ouvre_dans_libreoffice,
+               test_410_gone_le_seul_code_que_l_auto_guerison_ignorait):
         try:
             fn()
         except Exception as e:

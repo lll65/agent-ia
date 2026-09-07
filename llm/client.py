@@ -354,6 +354,31 @@ def fournisseur_choisi() -> str:
 _CLE_LOCALE = threading.local()
 
 
+# ── « Ce modèle n'existe plus » : UNE seule définition ───────────────────────
+# ⚠️ NVIDIA a répondu : « Error code: 410 - Gone - The model
+# 'meta/llama-3.3-70b-instruct' has reached its end of life ». 410 est le code le plus
+# EXPLICITE qui existe pour dire « retiré définitivement »… et c'était le seul que
+# l'auto-guérison ne reconnaissait pas. Elle attrapait 404, 400, « not_found »,
+# « decommission » — pas 410. Résultat : au lieu de passer au modèle suivant, la
+# chaîne NVIDIA s'arrêtait net sur son premier candidat. Le fournisseur entier
+# disparaissait pour un mot manquant dans une liste.
+#
+# Et il y avait SIX listes de ce genre dans ce fichier, toutes un peu différentes.
+# Une question posée six fois reçoit six réponses : on la pose une fois.
+_MOTS_MODELE_MORT = (
+    "not_found", "not found", "does not exist", "no endpoints", "unsupported",
+    "decommission", "deprecat", "end of life", "end-of-life", "has reached its",
+    "retired", "no longer available", "gone", "invalid_request", "not available",
+    "410", "404",
+)
+
+
+def modele_mort(err) -> bool:
+    """Ce modèle est-il retiré / inconnu ? (donc : passer au suivant, pas abandonner)"""
+    t = str(err or "").lower()
+    return any(k in t for k in _MOTS_MODELE_MORT)
+
+
 def _cle(nom: str) -> str:
     """La clé à utiliser pour ce fournisseur, MAINTENANT, dans ce thread."""
     forcee = (getattr(_CLE_LOCALE, "cles", None) or {}).get(nom)
@@ -559,8 +584,11 @@ def _explique(nom: str, err: Exception) -> str:
         return f"{nom} : offre gratuite épuisée (paiement demandé)"
     if "401" in t or "invalid api key" in t or "unauthorized" in t:
         return f"{nom} : clé invalide"
-    if "not_found" in t or "404" in t:
-        return f"{nom} : modèle indisponible"
+    if modele_mort(t):
+        # ⚠️ Cette phrase est celle qu'il LIT dans le diagnostic. « modèle
+        # indisponible » se confond avec « clé morte » et l'envoie régénérer une clé
+        # qui marche : on dit que c'est le MODÈLE, et que la clé n'y est pour rien.
+        return f"{nom} : ce modèle n'existe plus (la clé, elle, est bonne)"
     return f"{nom} : {str(err)[:70]}"
 
 
@@ -795,7 +823,7 @@ def _groq_chat(messages: list, model: str, temperature: float) -> str:
             t = str(e).lower()
             # Modèle retiré (404) OU incompatible avec un chat simple (400) → on tente le suivant.
             # Sans le cas 400, un seul modèle capricieux faisait échouer tout Groq.
-            if any(k in t for k in ("not_found", "does not exist", "404", "decommission",
+            if modele_mort(t) or any(k in t for k in (
                                     "no longer", "400", "tool choice", "unsupported",
                                     "invalid_request", "does not support")):
                 _marque_hs("groq", m)
@@ -900,8 +928,7 @@ def _nvidia_chat(messages: list, model: str, temperature: float, niveau: str = "
         except Exception as e:
             derniere = e
             t = str(e).lower()
-            if any(k in t for k in ("not_found", "does not exist", "404", "400",
-                                    "unsupported", "invalid_request", "not available")):
+            if modele_mort(t):
                 _marque_hs("nvidia", m)      # retiré/déprécié → on ne le retente pas de suite
                 logger.warning(f"[LLM] NVIDIA : modèle '{m}' inutilisable, essai suivant…")
                 continue
@@ -945,7 +972,7 @@ def _openrouter_chat(messages: list, model: str, temperature: float) -> str:
         except Exception as e:
             derniere = e
             t = str(e).lower()
-            if any(k in t for k in ("not_found", "404", "400", "no endpoints",
+            if modele_mort(t) or any(k in t for k in (
                                     "unsupported", "invalid_request", "not available")):
                 _marque_hs("openrouter", m)
                 logger.warning(f"[LLM] OpenRouter : modèle '{m}' inutilisable, essai suivant…")
@@ -1044,7 +1071,7 @@ def chat_vision(image_path: str, prompt: str = "", temperature: float = 0.4) -> 
                         return out
                 except Exception as e:
                     txt = str(e).lower()
-                    if any(k in txt for k in ("not_found", "does not exist", "404", "decommission")):
+                    if modele_mort(txt):
                         # ⚠️ Un 404 partait en silence : le detail final disait « aucun
                         # modèle de vision sur ce compte » sans dire LESQUELS avaient été
                         # essayés. Impossible de savoir s'il fallait mettre la liste à
@@ -1285,7 +1312,7 @@ def _cerebras_chat(messages: list, model: str, temperature: float) -> str:
             last_err = e
             txt = str(e).lower()
             # Modèle inexistant / non accessible → on tente le suivant
-            if "not_found" in txt or "does not exist" in txt or "404" in txt:
+            if modele_mort(txt):
                 logger.warning(f"[LLM] Cerebras: modèle '{m}' indisponible, essai suivant…")
                 continue
             raise
