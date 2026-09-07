@@ -9825,9 +9825,53 @@ def test_l_accueil_ne_montre_que_ce_qui_est_mesure():
     # ⚠️ La question part dans une DONNÉE, pas dans un onclick : ce fichier a déjà payé
     # une faille où un texte recollé dans un attribut devenait un vrai gestionnaire.
     check_true("les tuiles passent par un attribut de données", 'data-q="' in ui)
+
+    # --- L'aspect : « c'est pas du tout pareil que sur les photos » -----------------
+    # Il avait raison. Trois choses manquaient : une VRAIE carte (fond dégradé, liseré
+    # lumineux), une PASTILLE d'icône colorée par tuile, et de la place — le tableau de
+    # bord était posé sous « Nova est en veille… », à moitié hors de l'écran.
+    check_true("les tuiles ont un fond dégradé", "linear-gradient(160deg,rgba(255,255,255,.075)" in ui)
+    check_true("et un liseré lumineux", ".accT::before{" in ui)
+    check_true("chaque tuile a sa pastille d'icône", ".accT .p{" in ui)
+    check_true("et sa propre couleur", ".accT.c2 .p{" in ui and ".accT.c4 .p{" in ui)
+    # ⚠️ L'orbe de veille prenait tout l'écran et repoussait les tuiles en bas. Elle
+    # décore, elle n'informe pas : ce qui informe passe devant.
+    check_true("l'orbe recule quand l'accueil a des données", "body.aAccueil .sleeper{" in ui)
+    check_true("et « Nova est en veille » disparaît", "body.aAccueil .htxt" in ui)
+    # ⚠️ Mais SEULEMENT s'il y a des données : réduire l'orbe pour laisser du vide
+    # serait pire que l'orbe seule.
+    check_true("le recul n'a lieu qu'une fois les données reçues",
+               ui.index('z.innerHTML = h;') < ui.index('classList.add("aAccueil")'))
+    check_true("l'écran s'adapte au téléphone", "@media (max-width:560px)" in ui)
     check("aucun onclick fabriqué à la volée", "onclick=\"quickTexte(" in ui, False)
     # L'accueil est un bonus : son échec ne doit pas casser le chat.
     check_true("un accueil en échec ne casse rien", "}).catch(()=>{});" in ui)
+
+    # --- « Habite : peu nuageux, 22,9–38,0 °C » : le VERBE était devenu sa ville ----
+    # ⚠️ Vu sur son écran. Le fait retenu était « Habite dans un appartement » : aucun
+    # « à X », donc on tombait sur le repli « dernier mot en majuscule », qui valait…
+    # « Habite ». La météo affichée était celle de nulle part — plausible, donc
+    # invérifiable à l'œil. C'est la pire forme d'erreur.
+    B = importlib.import_module("agent.briefing")
+    from unittest.mock import patch as _p2
+    for faits, attendu in (
+            ([{"cat": "lieu", "texte": "Habite à Pau"}], "Pau"),
+            ([{"cat": "lieu", "texte": "Habite dans un appartement"}], None),
+            ([{"cat": "lieu", "texte": "Vit à Lons-le-Saunier"}], "Lons-le-Saunier"),
+            ([{"cat": "autre", "texte": "Habite dans un appart"},
+              {"cat": "lieu", "texte": "Habite à Pau"}], "Pau")):
+        with _p2("agent.profile.list_facts", return_value=faits):
+            v = B.ville_de_lohan()
+        if attendu:
+            check(f"ville lue : {faits[-1]['texte']!r}", v, attendu)
+        else:
+            # Sans ville lisible, on retombe sur le réglage — jamais sur le verbe.
+            check(f"aucun verbe pris pour une ville : {faits[0]['texte']!r}",
+                  v.lower() in ("habite", "vit", "réside", "appartement"), False)
+    check_true("les mots du logement sont écartés", B._PAS_UNE_VILLE.match("Appartement") is not None)
+    check_true("les verbes de lieu aussi", B._PAS_UNE_VILLE.match("Habite") is not None)
+    check("mais une vraie ville passe", B._PAS_UNE_VILLE.match("Pau") is not None, False)
+    check("Lannemezan aussi", B._PAS_UNE_VILLE.match("Lannemezan") is not None, False)
 
     api = (Path(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
     check_true("la route existe", '@router.get("/accueil")' in api)
