@@ -112,6 +112,32 @@
   .send:active{ transform:scale(.92); } .send:disabled{ opacity:.5; }
   .chips{ display:flex; gap:8px; flex-wrap:wrap; padding:2px 0 6px; }
   .chip{ font-size:12.5px; color:var(--dim); background:var(--glass); border:1px solid var(--stroke); border-radius:999px; padding:7px 13px; cursor:pointer; transition:.2s; }
+  /* ═══ ACCUEIL ═══ Tout ce qui s'affiche ici vient d'un appel réel. */
+  .acc{ width:100%; max-width:760px; margin:22px auto 0; text-align:left; }
+  .acc .accTop{ display:flex; align-items:baseline; justify-content:space-between;
+                gap:12px; flex-wrap:wrap; margin-bottom:14px; }
+  .acc .accSalut{ font-size:22px; font-weight:700; }
+  .acc .accMeteo{ font-size:13px; color:var(--dim); }
+  .accGrille{ display:grid; grid-template-columns:repeat(auto-fit,minmax(158px,1fr)); gap:10px; }
+  .accT{ background:var(--glass); border:1px solid var(--stroke); border-radius:15px;
+         padding:13px 15px; cursor:pointer; transition:.2s; text-align:left; }
+  .accT:hover{ border-color:var(--neon); transform:translateY(-2px); }
+  .accT .t{ font-size:12px; color:var(--dim); display:flex; align-items:center; gap:7px; }
+  .accT .v{ font-size:21px; font-weight:750; margin-top:5px; }
+  .accT .s{ font-size:11.5px; color:var(--dim); margin-top:2px; }
+  /* Une tuile en panne ne ressemble PAS à une tuile vide : elle se voit. */
+  .accT.ko{ border-color:rgba(251,191,36,.42); background:rgba(251,191,36,.07); cursor:default; }
+  .accT.ko:hover{ transform:none; }
+  .accT.ko .v{ font-size:13.5px; font-weight:600; color:#fde68a; line-height:1.45; }
+  .accPlan{ margin-top:12px; background:var(--glass); border:1px solid var(--stroke);
+            border-radius:15px; padding:13px 15px; }
+  .accPlan h4{ font-size:12px; color:var(--dim); font-weight:600; margin-bottom:9px; }
+  .accPlan .e{ display:flex; gap:11px; align-items:baseline; padding:5px 0;
+               border-top:1px solid rgba(255,255,255,.05); font-size:13.5px; }
+  .accPlan .e:first-of-type{ border-top:none; }
+  .accPlan .h{ color:var(--neon2); font-variant-numeric:tabular-nums; min-width:44px; font-weight:650; }
+  .accPlan .l{ color:var(--dim); font-size:11.5px; }
+  body.chatting .acc{ display:none; }
   .chip:hover{ color:#fff; border-color:var(--neon); }
   /* ═══ ÉCRAN D'ACCUEIL : « Nova en veille » ═══
      Une orbe endormie qui respire, et qui se réveille dès que tu commences à écrire. */
@@ -574,6 +600,12 @@
           <span class="core"></span></div>
         <div class="htxt" id="hintTxt">Nova est en veille…</div>
         <div class="hsub">écris ou parle pour la réveiller</div>
+        <!-- ⚠️ L'ACCUEIL NE MONTRE QUE CE QUI EST MESURÉ. La maquette proposait
+             « Temps gagné : 2h34 » et « Mails traités : 12 » : personne ne mesure ces
+             chiffres. Ici, chaque tuile vient d'un appel réel — et quand l'appel rate,
+             elle le DIT au lieu d'afficher un zéro. « Je n'ai pas pu regarder » et
+             « il n'y a rien » ne se disent pas pareil. -->
+        <div id="accueil" class="acc"></div>
       </div>
     </div>
 
@@ -992,6 +1024,85 @@ function deleteSession(id,ev){ if(ev)ev.stopPropagation(); SESSIONS=SESSIONS.fil
 function toggleSidebar(){ const sb=document.getElementById("sidebar"), sc=document.getElementById("scrim");
   const on=!sb.classList.contains("show"); sb.classList.toggle("show",on); sc.classList.toggle("show",on); if(on){ renderSessions(); sndOpen(); } }
 function closeSidebar(){ document.getElementById("sidebar").classList.remove("show"); document.getElementById("scrim").classList.remove("show"); }
+
+/* ═══ ACCUEIL ═══
+   « on garde ce qui est réaliste et fonctionnel ».
+
+   La maquette proposait « Temps gagné : 2h34 », « Mails traités : 12 », et un panneau
+   « Ma réflexion en direct » annonçant « je croise plusieurs sources fiables ». Ces
+   trois lignes ont un point commun : personne ne les mesure. Ce sont des affirmations
+   décoratives — et une interface qui AFFIRME la qualité au lieu de MONTRER ce qui
+   s'est passé, c'est le pire défaut possible, en plus joli.
+
+   Ici, chaque tuile vient d'un appel réel. Et quand l'appel rate, elle le DIT au lieu
+   d'afficher un zéro : « 0 mail » sur une boîte qu'on n'a pas pu ouvrir, il le lit
+   comme « ma boîte est vide » et il ne va pas voir. */
+/* ⚠️ La question part dans un ATTRIBUT DE DONNÉES, pas dans un onclick. Ce fichier a
+   déjà payé une faille de ce genre — un texte recollé au milieu d'un attribut HTML
+   avait produit un vrai gestionnaire d'événement. Une donnée échappée ne s'exécute
+   jamais, quel que soit ce qu'elle contient ; du code dans un attribut, si. */
+function accTuile(titre, icone, val, sous, question){
+  return '<div class="accT" data-q="' + esc(question) + '">'
+       + '<div class="t">' + icone + ' ' + esc(titre) + '</div>'
+       + '<div class="v">' + esc(val) + '</div>'
+       + (sous ? '<div class="s">' + esc(sous) + '</div>' : '') + '</div>';
+}
+function accPanne(titre, icone, raison){
+  // L'erreur commence souvent déjà par ⚠️ : on ne le met pas deux fois.
+  const r = String(raison || "indisponible").replace(/^\s*⚠️\s*/, "");
+  return '<div class="accT ko"><div class="t">' + icone + ' ' + esc(titre) + '</div>'
+       + '<div class="v">⚠️ ' + esc(_cut(r, 130)) + '</div>'
+       + '<div class="s">Je ne peux pas regarder — ce n\'est pas « rien ».</div></div>';
+}
+document.addEventListener("click", e=>{
+  const t = e.target.closest && e.target.closest(".accT[data-q]");
+  if(!t) return;
+  const i = document.getElementById("in");
+  if(!i) return;
+  i.value = t.getAttribute("data-q"); grow(i); ask();
+});
+
+function chargeAccueil(){
+  const z = document.getElementById("accueil");
+  if(!z || !KEY) return;
+  fetch(ORIGIN+"/agent/accueil?key="+encodeURIComponent(KEY),{cache:"no-store"})
+    .then(r=>r.json()).then(d=>{
+      if(!d || d.detail) return;
+      const m=d.mails||{}, a=d.agenda||{}, w=d.meteo||{}, t=d.taches||{}, c=d.cours||{};
+      let h = '<div class="accTop"><div class="accSalut">' + esc(d.salutation||"Bonjour")
+            + ' Lohan</div>';
+      // La météo n'apparaît QUE si elle a été mesurée. Pas de ligne vide décorative.
+      if(w.ok && w.ligne) h += '<div class="accMeteo">' + esc(_cut(w.ligne,90)) + '</div>';
+      h += '</div><div class="accGrille">';
+      h += m.ok ? accTuile("Mails non lus","✉️", String(m.total||0),
+                    (m.important||0) + " important" + ((m.important||0)>1?"s":""),
+                    "Résume mes mails")
+                : accPanne("Mails","✉️", m.erreur);
+      h += a.ok ? accTuile("Aujourd'hui","📅", (a.total||0) + " événement" + ((a.total||0)>1?"s":""),
+                    (a.evenements&&a.evenements[0]) ? "dès " + a.evenements[0].debut : "rien de prévu",
+                    "Qu'est-ce que j'ai de prévu aujourd'hui ?")
+                : accPanne("Agenda","📅", a.erreur);
+      h += t.ok ? accTuile("Automatisations","⚡", String(t.total||0),
+                    (t.liste&&t.liste[0]) ? t.liste[0].quand : "aucune programmée",
+                    "Montre-moi mes automatisations")
+                : accPanne("Automatisations","⚡", t.erreur);
+      h += c.ok ? accTuile("Cours enregistrés","🎓", String(c.total||0),
+                    c.dernier ? _cut(c.dernier,26) : "aucun pour l'instant",
+                    "Ouvre mes cours")
+                : accPanne("Cours","🎓", c.erreur);
+      h += '</div>';
+      // Le plan de la journée : les VRAIS événements, pas un exemple.
+      if(a.ok && (a.evenements||[]).length){
+        h += '<div class="accPlan"><h4>Ton plan de la journée</h4>'
+           + a.evenements.map(e=>'<div class="e"><span class="h">' + esc(e.debut)
+               + '</span><span>' + esc(e.titre)
+               + (e.lieu ? ' <span class="l">· ' + esc(e.lieu) + '</span>' : '')
+               + '</span></div>').join('') + '</div>';
+      }
+      z.innerHTML = h;
+    }).catch(()=>{});   // l'accueil est un bonus : son échec ne casse pas le chat
+}
+setTimeout(chargeAccueil, 400);
 
 /* Mémoire serveur (ce que Nova sait de toi) */
 /* ═══ CE QUE NOVA A FAIT PENDANT TON ABSENCE ═══
