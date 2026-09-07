@@ -169,7 +169,13 @@
       <div class="muted" id="outMeta"></div>
       <div id="outWarn" class="warn hide"></div>
       <div class="row">
+        <!-- ⚠️ « il faudrait aussi une importation sur libre office et où je choisis
+             format Calc ou normal ». Writer garde TOUT le cours (titres, texte,
+             tableaux) ; Calc ne peut porter que les tableaux — un tableur n'a pas de
+             paragraphes. C'est écrit dans le libellé plutôt que découvert à l'ouverture. -->
         <button id="dl">⬇️ Télécharger (.md)</button>
+        <button id="dlOdt" title="LibreOffice Writer — tout le cours, mis en forme">📄 Writer (.odt)</button>
+        <button id="dlOds" title="LibreOffice Calc — les tableaux du cours, une feuille chacun">📊 Calc (.ods)</button>
         <button id="copy">📋 Copier</button>
         <button id="again">🎙️ Nouveau cours</button>
       </div>
@@ -491,6 +497,8 @@ function echecSynthese(sid, e){
   $("synth").closest(".card").classList.add("hide");
   $("fichesCard").classList.add("hide");
   $("dl").onclick = () => telecharger(sid);
+  $("dlOdt").onclick = () => telecharger(sid, "odt");
+  $("dlOds").onclick = () => telecharger(sid, "ods");
   $("copy").textContent = "🔄 Réessayer la synthèse";
   $("copy").onclick = () => relancerSynthese(sid);
 }
@@ -562,6 +570,8 @@ function afficher(d, perdues){
     el.onclick = () => el.classList.toggle("open"));
   const sid = d.id || SID;
   $("dl").onclick = () => telecharger(sid);
+  $("dlOdt").onclick = () => telecharger(sid, "odt");
+  $("dlOds").onclick = () => telecharger(sid, "ods");
   $("copy").textContent = "📋 Copier";
   $("copy").onclick = async () => {
     try{ await navigator.clipboard.writeText(d.synthese || ""); $("copy").textContent = "✅ Copié"; }
@@ -569,9 +579,10 @@ function afficher(d, perdues){
     setTimeout(() => $("copy").textContent = "📋 Copier", 1800);
   };
 }
-function telecharger(sid){
+function telecharger(sid, format){
   window.location = ORIGIN + "/agent/cours/export?id=" + encodeURIComponent(sid) +
-                    "&key=" + encodeURIComponent(KEY);
+                    "&key=" + encodeURIComponent(KEY) +
+                    (format ? "&format=" + encodeURIComponent(format) : "");
 }
 $("again").onclick = () => { SID = null; show("setup"); $("go").disabled = false;
   $("titre").value = ""; $("matiere").value = ""; window.scrollTo(0,0); };
