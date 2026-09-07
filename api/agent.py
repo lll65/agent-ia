@@ -5612,6 +5612,18 @@ async def cours_detail(id: str = "", key: str = ""):
     return {k: v for k, v in s.items() if k not in ("en_attente", "condenses")}
 
 
+@router.get("/accueil")
+async def accueil_ep(key: str = ""):
+    """Les données de l'écran d'accueil — mesurées, jamais décoratives.
+
+    Chaque section porte son propre succès ou son propre échec : une tuile « 0 mail »
+    alors que Gmail n'a pas répondu serait un mensonge tranquille.
+    """
+    _check_key(key)
+    from agent.accueil import collecte
+    return await collecte()
+
+
 @router.get("/cours/export")
 async def cours_export(id: str = "", key: str = "", format: str = "md"):
     """Le cours à emporter — le disque du serveur est effacé aux redémarrages.

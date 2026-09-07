@@ -9754,6 +9754,88 @@ def test_410_gone_le_seul_code_que_l_auto_guerison_ignorait():
                "limite" in C._explique("Groq", RuntimeError("rate_limit_exceeded 429")).lower())
 
 
+def test_l_accueil_ne_montre_que_ce_qui_est_mesure():
+    """« on garde ce qui est réaliste et fonctionnel, je te fais confiance »
+
+    La maquette proposait « Temps gagné : 2h34 », « Mails traités : 12 » et un panneau
+    « Ma réflexion en direct » annonçant « je croise plusieurs sources fiables ». Ces
+    trois lignes ont un point commun : PERSONNE NE LES MESURE. Une interface qui
+    AFFIRME la qualité au lieu de MONTRER ce qui s'est passé, c'est le pire défaut
+    possible — en plus joli. Le même jour, Nova fabriquait deux liens Boursier.com.
+
+    ⚠️ LA RÈGLE : CHAQUE SECTION PORTE SON PROPRE ÉCHEC. Une tuile « 0 mail » alors que
+    Gmail n'a pas répondu est un mensonge tranquille : il lit zéro, il croit sa boîte
+    vide, il ne va pas voir.
+    """
+    import asyncio
+    import importlib
+    from unittest.mock import patch as _pa
+    A = importlib.import_module("agent.accueil")
+
+    # ⚠️ MA PREMIÈRE VERSION AVAIT LE DÉFAUT QU'ELLE DEVAIT EMPÊCHER. Je cherchais
+    # « 404 », « [erreur] », « unauthorized »… dans la réponse. Sans Composio, l'outil
+    # rend « ⚠️ Composio non configuré. Crée un compte gratuit… » — aucun de ces mots.
+    # La tuile affichait donc « 0 mail ». Une liste de pannes connues sera toujours
+    # incomplète ; une marque de SUCCÈS, non.
+    check("« Composio non configuré » n'est pas un succès",
+          A._a_reussi("⚠️ Composio non configuré. Crée un compte gratuit sur composio.dev"), False)
+    check("une réponse vide non plus", A._a_reussi(""), False)
+    check("un 404 non plus", A._a_reussi("[ERREUR] 404 No connected account"), False)
+    check_true("le ✅ de l'outil, si", A._a_reussi('✅ [GMAIL_FETCH_EMAILS] résultat : {"x":1}'))
+    check_true("« successful: true » aussi", A._a_reussi('{"successful": true, "data": []}'))
+
+    # --- Une panne d'un bloc n'emporte pas les autres --------------------------------
+    def _boom():
+        raise RuntimeError("Gmail injoignable")
+
+    with _pa.object(A, "_BLOCS", (("mails", _boom), ("cours", A._cours))):
+        d = asyncio.new_event_loop().run_until_complete(A.collecte())
+    check("le bloc en panne le dit", d["mails"]["ok"], False)
+    check_true("et nomme la panne", "Gmail injoignable" in d["mails"]["erreur"])
+    check_true("le bloc sain passe quand même", d["cours"]["ok"])
+    check_true("la salutation est là", d.get("salutation"))
+
+    # ⚠️ Un bloc qui traîne ne doit pas retenir l'écran : sur Render, un Composio lent
+    # bloquerait la météo. Chacun est borné.
+    src = (Path(__file__).resolve().parents[1] / "agent" / "accueil.py").read_text(encoding="utf-8")
+    check_true("chaque bloc est borné dans le temps", "asyncio.wait_for(_off(fn), timeout=DELAI)" in src)
+    check_true("et ils partent en parallèle", "asyncio.gather(" in src)
+    # ⚠️ Gmail répond toujours une enveloppe : grosse et illisible ≠ boîte vide.
+    check_true("une enveloppe illisible n'est pas une boîte vide",
+               "aucun message reconnu" in src)
+
+    # ⚠️ Le bonjour suit SON heure : le conteneur Render est en UTC, et Nova lui
+    # souhaitait le bonsoir à 22 h alors qu'il est minuit chez lui.
+    check_true("la salutation vient de son horloge", "from agent.horloge import maintenant" in src)
+
+    # --- L'écran : une panne se VOIT, elle ne ressemble pas à un zéro ----------------
+    ui = (Path(__file__).resolve().parents[1] / "ui" / "nova.html").read_text(encoding="utf-8")
+    check_true("une tuile en panne a son propre style", ".accT.ko{" in ui)
+    check_true("et dit que ce n'est pas « rien »", "pas « rien »" in ui)
+    check_true("le plan de la journée vient du vrai agenda", "Ton plan de la journée" in ui)
+    # ⚠️ ON NE CHERCHE QUE DANS LE CODE QUI DESSINE. Première version : je cherchais ces
+    # mots dans TOUT le fichier — et ils y sont, dans le commentaire qui explique
+    # pourquoi on les refuse. Un test qui interroge ses propres commentaires ne vérifie
+    # rien : c'est la deuxième fois aujourd'hui que je m'y prends les pieds.
+    rendu = ui[ui.index("function accTuile("):ui.index("setTimeout(chargeAccueil")]
+    for invente in ("Temps gagné", "Mails traités", "je croise plusieurs sources"):
+        check(f"« {invente} » n'est pas affiché", invente in rendu, False)
+    # Et ce qui EST affiché vient bien des données reçues.
+    check_true("les chiffres viennent de la réponse", "m.total" in rendu and "a.total" in rendu)
+    # ⚠️ La question part dans une DONNÉE, pas dans un onclick : ce fichier a déjà payé
+    # une faille où un texte recollé dans un attribut devenait un vrai gestionnaire.
+    check_true("les tuiles passent par un attribut de données", 'data-q="' in ui)
+    check("aucun onclick fabriqué à la volée", "onclick=\"quickTexte(" in ui, False)
+    # L'accueil est un bonus : son échec ne doit pas casser le chat.
+    check_true("un accueil en échec ne casse rien", "}).catch(()=>{});" in ui)
+
+    api = (Path(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
+    check_true("la route existe", '@router.get("/accueil")' in api)
+    A_ = importlib_module("api.agent")
+    check_true("et elle est montée",
+               any(getattr(r, "path", "") == "/accueil" for r in A_.router.routes))
+
+
 def test_le_briefing_appelait_gmail_par_l_autre_porte():
     """« Erreur de récupération des mails : 404 – vérifie les autorisations et
     l'activation de l'API sur composio.dev » — alors que ses mails marchaient dans le
@@ -10206,7 +10288,8 @@ if __name__ == "__main__":
                test_un_appel_d_outil_ecrit_n_est_pas_un_appel_d_outil,
                test_elle_disait_c_est_note_sans_rien_noter,
                test_son_cours_s_ouvre_dans_libreoffice,
-               test_410_gone_le_seul_code_que_l_auto_guerison_ignorait):
+               test_410_gone_le_seul_code_que_l_auto_guerison_ignorait,
+               test_l_accueil_ne_montre_que_ce_qui_est_mesure):
         try:
             fn()
         except Exception as e:
