@@ -83,11 +83,20 @@ def build_briefing() -> str:
 
     loader = get_loader()
     tmin, tmax, _ = _time_bounds("aujourd'hui")
-    ag = safe_tool_call(loader, "connected_app", {"command": "GOOGLECALENDAR_EVENTS_LIST",
-        "arguments": json.dumps({"calendarId": "primary", "timeMin": tmin, "timeMax": tmax,
-                                 "maxResults": 15, "singleEvents": True, "orderBy": "startTime"})})
-    ml = safe_tool_call(loader, "connected_app", {"command": "GMAIL_FETCH_EMAILS",
-        "arguments": json.dumps({"maxResults": 8, "query": "in:inbox is:unread"})})
+    # ⚠️ « Erreur de récupération des mails : 404 » — alors que ses mails marchaient
+    # dans le chat le jour même. Même action, DEUX chemins d'appel, et un seul faisait
+    # le travail : le briefing appelait « connected_app » directement, donc sous
+    # l'identité par défaut. Or _tool() existe précisément pour résoudre la BONNE
+    # identité — son propre commentaire l'annonce : « une app connectée depuis le
+    # dashboard n'utilise pas forcément default. Sans ça → 404 No connected account
+    # found for user ID default ». Le bug était écrit dans le code avant d'arriver.
+    from api.agent import _tool
+    ag = _tool("GOOGLECALENDAR_EVENTS_LIST",
+               {"calendarId": "primary", "timeMin": tmin, "timeMax": tmax,
+                "maxResults": 15, "singleEvents": True, "orderBy": "startTime"},
+               "googlecalendar")
+    ml = _tool("GMAIL_FETCH_EMAILS",
+               {"maxResults": 8, "query": "in:inbox is:unread"}, "gmail")
     weather = weather_line()
     news = safe_tool_call(loader, "search_web", {"query": "principales actualités du jour France", "mode": "news"})
 
@@ -100,9 +109,58 @@ def build_briefing() -> str:
     user = (f"AGENDA (réel):\n{ag[:1500]}\n\nMAILS (réel):\n{ml[:1200]}\n\n"
             f"MÉTÉO (réel):\n{weather or '(indisponible)'}\n\nACTU (réel):\n{news[:1200]}")
     try:
-        return chat([{"role": "system", "content": sys}, {"role": "user", "content": user}], temperature=0.4)
+        texte = chat([{"role": "system", "content": sys},
+                      {"role": "user", "content": user}], temperature=0.4)
     except Exception as e:
         return f"🌅 Briefing partiel (LLM indisponible : {str(e)[:100]}).\n\nAgenda:\n{ag[:600]}"
+    return _pannes_en_clair(texte, {"Agenda": ag, "Mails": ml, "Actu": news})
+
+
+# ⚠️ « Erreur de récupération des mails : 404 – vérifie les autorisations et
+# l'activation de l'API sur composio.dev. » Cette phrase n'a pas été écrite par Nova :
+# elle a été REFORMULÉE par le modèle à partir de l'erreur brute. « Vérifie les
+# autorisations » et « l'activation de l'API » sont des hypothèses du modèle — dans son
+# cas, la cause était l'identité Composio, et il serait parti fouiller le dashboard
+# pour rien. Un diagnostic inventé coûte plus cher qu'une erreur franche : il envoie
+# chercher au mauvais endroit.
+# On ne laisse donc plus le modèle raconter les pannes. Quand un outil a échoué, la
+# section porte l'erreur RÉELLE, telle qu'elle est arrivée.
+_SIGNES_ECHEC = ("[erreur]", "no connected account", "401", "403", "404",
+                 "unauthorized", "forbidden", '"successful": false', "not found")
+
+
+def _a_echoue(brut: str) -> bool:
+    b = str(brut or "").lower()
+    return any(s in b for s in _SIGNES_ECHEC)
+
+
+def _pannes_en_clair(texte: str, sources: dict) -> str:
+    """Remplace ce que le modèle a raconté d'une panne par la panne elle-même."""
+    import re as _re
+    out = str(texte or "")
+    for titre, brut in (sources or {}).items():
+        if not _a_echoue(brut):
+            continue
+        detail = " ".join(str(brut).split())[:300]
+        # La section commence à son titre et court jusqu'au prochain pictogramme de
+        # section (ou la fin) : c'est tout ce bloc que le modèle a pu réécrire.
+        # ⚠️ « [^\n] » et pas « . » pour la ligne de titre : avec re.S, le point mange
+        # les retours à la ligne, et le titre avalait tout le briefing — le bloc était
+        # alors ajouté à la fin au lieu de remplacer la bonne section. Trouvé en le
+        # faisant tourner sur son vrai briefing.
+        motif = _re.compile(r"^([^\n]*" + _re.escape(titre) + r"[^\n]*)\n"
+                            r"(.*?)(?=\n[ \t]*[\U0001F300-\U0001FAFF]|\Z)",
+                            _re.M | _re.S)
+        remplacement = ("\\1\n⚠️ Section indisponible — je te donne l'erreur exacte "
+                        "plutôt qu'une explication que j'aurais devinée :\n"
+                        f"`{detail}`\n")
+        neuf, n = motif.subn(remplacement, out, count=1)
+        if n:
+            out = neuf
+        else:
+            out += (f"\n\n⚠️ **{titre} : la récupération a échoué.** Erreur exacte, non "
+                    f"interprétée :\n`{detail}`")
+    return out
 
 
 async def morning_loop():

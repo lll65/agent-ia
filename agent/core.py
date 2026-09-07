@@ -1089,11 +1089,29 @@ def _demande_le_jour_meme(task: str) -> bool:
     2Crsi ? » ne le demande pas — et la date ajoutée d'office est ensuite relue par le
     modèle comme étant la date de la nouvelle.
     """
+    return _a_sa_propre_date(task) or _veut_aujourdhui(task)
+
+
+def _a_sa_propre_date(task: str) -> bool:
+    """Il a écrit une date lui-même. Elle reste la sienne : on n'y touche jamais."""
     m = _normalise(task).lower()
-    return (any(k in m for k in _MOTS_DU_JOUR)
-            # une date écrite par lui : c'est la sienne, on n'y touche pas
-            or bool(re.search(r"\b\d{1,2}\s+(?:" + "|".join(_MOIS) + r")\b", m))
-            or bool(re.search(r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b", m)))
+    return bool(re.search(r"\b\d{1,2}\s+(?:" + "|".join(_MOIS) + r")\b", m)
+                or re.search(r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b", m))
+
+
+def _veut_aujourdhui(task: str) -> bool:
+    """La demande porte sur LE JOUR MÊME, au point qu'écrire la date aide vraiment."""
+    m = _normalise(task).lower()
+    if not any(k in m for k in _MOTS_DU_JOUR):
+        return False
+    # ⚠️ « c'est quoi l'actualité de 2CRSi AUJOURD'HUI » → Nova a cherché « CRSI
+    # actualité 7 septembre 2026 » et est tombée sur le Concrete Reinforcing Steel
+    # Institute. Écrire la date en toutes lettres ne ramène pas les articles du jour :
+    # ça ramène les pages qui CONTIENNENT ces mots — un catalogue, un calendrier, un
+    # salon du béton. C'était déjà la leçon du Leclerc, et elle vaut ici aussi.
+    # Quand la demande NOMME une entreprise, « aujourd'hui » veut dire « récent », pas
+    # « qui contient la chaîne 7 septembre 2026 ». Le nom fait le tri, l'année suffit.
+    return not entite_nommee(task)
 
 
 def requete_simple(task: str, pour_actu: bool = False) -> str:
@@ -1136,11 +1154,15 @@ def requete_simple(task: str, pour_actu: bool = False) -> str:
     # laisserait ce repli — celui qui sert justement quand aucun modèle ne répond —
     # continuer à dater les questions d'horaires. C'est exactement la faute qu'on
     # rattrape depuis ce matin : une règle appliquée d'un seul côté.
+    # ⚠️ ET LA MÊME RÈGLE, PAS UNE COPIE. Ce repli testait _MOTS_DU_JOUR directement,
+    # donc il continuait d'écrire la date sur « l'actualité de 2CRSi aujourd'hui »
+    # alors que search_query, lui, ne le faisait plus. Une décision prise à deux
+    # endroits finit toujours par diverger : on appelle la fonction.
     if veut_des_horaires(t):
-        if any(k in bas for k in _MOTS_DU_JOUR):
+        if _veut_aujourdhui(t):
             q = f"{q} {_JOURS[auj.weekday()]}".strip()  # « dimanche », pas « 6 septembre »
         return q[:120] or t[:120]
-    if any(k in bas for k in _MOTS_DU_JOUR) or "du jour" in bas:
+    if _veut_aujourdhui(t) and not _a_sa_propre_date(t):
         q = f"{q} {_JOURS_COURT(auj)}".strip()          # « 19 août 2026 »
     elif any(k in bas for k in _MOTS_RECENT):
         q = f"{q} {auj.year}".strip()
@@ -1200,6 +1222,18 @@ async def run_agent(
             res["answer"] = relis_dates(res["answer"], observations_du_tour())
     except Exception as e:
         logger.info(f"[dates] vérification ignorée ({type(e).__name__})")
+    # ⚠️ ET LES LIENS, qui sont pires que les deux autres. Sur Valneva, Nova a cité
+    # TROIS adresses Boursier.com portant le même numéro d'article (898784) avec trois
+    # chemins différents : une seule existait. Elle avait pris le lien réellement
+    # renvoyé et fabriqué deux variantes autour. Un chiffre douteux se relit ; une
+    # adresse s'ouvre d'un clic avant qu'on ait lu l'avertissement.
+    # Ici on ne se contente donc pas de signaler : on retire.
+    try:
+        from agent.liens import relis as relis_liens
+        if res.get("answer"):
+            res["answer"] = relis_liens(res["answer"], observations_du_tour())
+    except Exception as e:
+        logger.info(f"[liens] vérification ignorée ({type(e).__name__})")
     # Ni mur de caractères, ni « je ne peux pas » sans suite — sur TOUS les chemins,
     # y compris Telegram et les automatisations, pas seulement le chat.
     try:
