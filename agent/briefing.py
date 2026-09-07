@@ -24,6 +24,14 @@ _WCODE = {0: "ciel clair", 1: "peu nuageux", 2: "nuageux", 3: "couvert", 45: "br
 # jamais changé : c'est tout l'intérêt de retenir quelque chose.
 _INDICES_VILLE = ("habite", "vis à", "vis a", "vit à", "vit a", "réside", "reside",
                   "domicil", "j'habite", "ma ville", "chez moi")
+# Ce qui ne peut JAMAIS être une ville : les verbes qui annoncent le lieu, et les mots
+# du logement. Ce sont précisément ceux qui se trouvent dans la même phrase, donc les
+# plus susceptibles d'être pris pour le nom cherché.
+_PAS_UNE_VILLE = re.compile(
+    r"^(habite|habites|habiter|vis|vit|vivre|r[ée]side|r[ée]sider|domicili[ée]?|"
+    r"d[ée]m[ée]nag[ée]?|log[ée]?|loge|appart\w*|studio|maison|r[ée]sidence|chambre|"
+    r"coloc\w*|immeuble|adresse|domicile|[ée]tudiante?|ville|chez|moi|actuellement)$",
+    re.I)
 
 
 def ville_de_lohan() -> str:
@@ -37,9 +45,17 @@ def ville_de_lohan() -> str:
                 # « j'habite à Pau » → « Pau ». On garde le dernier mot significatif.
                 m = re.search(r"(?:à|a|de|sur)\s+([A-ZÀ-Ý][\wÀ-ÿ'’-]{2,}(?:[- ][A-ZÀ-Ý][\wÀ-ÿ'’-]+)*)",
                               texte)
-                if m:
+                if m and not _PAS_UNE_VILLE.match(m.group(1)):
                     return m.group(1).strip()
-                mots = [x for x in re.findall(r"[A-ZÀ-Ý][\wÀ-ÿ'’-]{2,}", texte)]
+                # ⚠️ « Habite : peu nuageux, 22,9–38,0 °C » — vu sur son écran. Le fait
+                # retenu était « Habite dans un appartement » : aucun « à X », donc on
+                # tombait ici, et « le dernier mot en majuscule » était… « Habite ».
+                # Le VERBE lui-même devenait la ville, et la météo affichée était celle
+                # de nulle part — plausible, donc invérifiable à l'œil.
+                # On écarte les mots qui ne peuvent pas être une ville, et si rien ne
+                # reste on passe au fait suivant plutôt que de rendre n'importe quoi.
+                mots = [x for x in re.findall(r"[A-ZÀ-Ý][\wÀ-ÿ'’-]{2,}", texte)
+                        if not _PAS_UNE_VILLE.match(x)]
                 if mots:
                     return mots[-1]
     except Exception as e:
