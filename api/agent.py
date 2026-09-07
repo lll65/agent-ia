@@ -5613,8 +5613,13 @@ async def cours_detail(id: str = "", key: str = ""):
 
 
 @router.get("/cours/export")
-async def cours_export(id: str = "", key: str = ""):
-    """Le cours en Markdown — à garder chez toi : le disque du serveur est effacé aux redémarrages."""
+async def cours_export(id: str = "", key: str = "", format: str = "md"):
+    """Le cours à emporter — le disque du serveur est effacé aux redémarrages.
+
+    « il faudrait aussi une importation sur libre office et où je choisis format Calc
+    ou normal » : format=odt pour Writer (tout le cours, mis en forme), format=ods pour
+    Calc (les tableaux, une feuille chacun), format=md par défaut.
+    """
     _check_key(key)
     from fastapi.responses import Response
     from agent import cours
@@ -5625,6 +5630,14 @@ async def cours_export(id: str = "", key: str = ""):
     except Exception:
         raise HTTPException(status_code=404, detail="Session inconnue.")
     nom = re.sub(r"[^A-Za-z0-9À-ÿ _-]", "", s.get("titre", "cours"))[:60].strip() or "cours"
+    f = (format or "md").lower().strip()
+    if f in ("odt", "ods"):
+        from agent import odf
+        corps = await _off(odf.odt if f == "odt" else odf.ods, md)
+        mime = ("application/vnd.oasis.opendocument."
+                + ("text" if f == "odt" else "spreadsheet"))
+        return Response(content=corps, media_type=mime,
+                        headers={"Content-Disposition": f'attachment; filename="{nom}.{f}"'})
     return Response(content=md, media_type="text/markdown; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{nom}.md"'})
 

@@ -9617,6 +9617,86 @@ def test_elle_disait_c_est_note_sans_rien_noter():
     check_true("le chemin conversationnel aussi", "out = _sfm(out, appris)" in api)
 
 
+def test_son_cours_s_ouvre_dans_libreoffice():
+    """« il faudrait aussi une importation sur libre office et où je choisis format
+    Calc ou normal »
+
+    De VRAIS fichiers ODF, ceux que LibreOffice ouvre d'un double-clic : .odt pour
+    Writer (tout le cours), .ods pour Calc (les tableaux, une feuille chacun).
+    Pas de .csv — il perd la mise en forme et ne sait pas porter plusieurs tableaux.
+    Pas de .docx — une dépendance de plus sur une offre gratuite.
+
+    ⚠️ Je n'ai pas LibreOffice ici. Ce qui est vérifié : l'archive est valide, chaque
+    XML se parse, et la structure exigée par la norme est là — « mimetype » en PREMIER
+    et NON compressé, c'est à ça que LibreOffice reconnaît le format.
+    """
+    import importlib
+    import io
+    import zipfile
+    import xml.dom.minidom as _xml
+    O = importlib.import_module("agent.odf")
+
+    md = ("# Cours du 07/09\n## 1. Environnement\nTexte normal.\n\n"
+          "### Définition d'une organisation\n"
+          "| Élément | Description |\n| :--- | :--- |\n"
+          "| Moyens | Matériels, immatériels |\n| Règles | Gouvernance |\n\n"
+          "## 3. Management vs Gestion\n| Terme | Focus |\n|---|---|\n"
+          "| Management | Stratégie |\n| Gestion | Opérationnel |\n")
+
+    reperes = O.tableaux(md)
+    check("les deux tableaux sont repérés", len(reperes), 2)
+    # ⚠️ Le titre gardé est le DERNIER rencontré : c'est celui qui décrit le tableau
+    # qui suit. Sinon toutes les feuilles porteraient le nom du cours.
+    check("chacun garde le titre qui le précède", reperes[0][0], "Définition d'une organisation")
+    check("l'en-tête compte comme une ligne", len(reperes[0][1]), 3)
+
+    for f, mime in (("odt", "application/vnd.oasis.opendocument.text"),
+                    ("ods", "application/vnd.oasis.opendocument.spreadsheet")):
+        data = (O.odt if f == "odt" else O.ods)(md)
+        z = zipfile.ZipFile(io.BytesIO(data))
+        check(f"{f} : archive saine", z.testzip(), None)
+        # ⚠️ LA règle du format : « mimetype » d'abord, et stocké sans compression.
+        check(f"{f} : mimetype en premier", z.namelist()[0], "mimetype")
+        check(f"{f} : mimetype non compressé",
+              z.getinfo("mimetype").compress_type, zipfile.ZIP_STORED)
+        check(f"{f} : le bon type déclaré", z.read("mimetype").decode(), mime)
+        check_true(f"{f} : le manifeste est là", "META-INF/manifest.xml" in z.namelist())
+        _xml.parseString(z.read("content.xml"))          # lève si le XML est cassé
+        _xml.parseString(z.read("META-INF/manifest.xml"))
+
+    contenu = zipfile.ZipFile(io.BytesIO(O.ods(md))).read("content.xml").decode()
+    noms = re.findall(r'table:name="([^"]+)"', contenu)
+    check("une feuille par tableau", len(noms), 2)
+    # ⚠️ Calc refuse [ ] * ? : / \ et les noms trop longs : l'apostrophe saute.
+    check("le nom de feuille est accepté par Calc",
+          any(c in noms[0] for c in "[]*?:/\\'"), False)
+    check_true("il reste reconnaissable", "organisatio" in noms[0])
+    check_true("le contenu des cellules y est",
+               "Matériels, immatériels" in contenu and "Gouvernance" in contenu)
+
+    # ⚠️ Un classeur VIDE serait un fichier qui s'ouvre et ne dit rien : il croirait
+    # l'export réussi et son cours sans tableaux. On l'écrit dans la feuille.
+    vide = zipfile.ZipFile(io.BytesIO(O.ods("# Titre\nJuste du texte."))).read("content.xml").decode()
+    check_true("sans tableau, Calc le dit", "Aucun tableau" in vide and ".odt" in vide)
+
+    # Writer garde le texte que Calc ne peut pas porter.
+    doc = zipfile.ZipFile(io.BytesIO(O.odt(md))).read("content.xml").decode()
+    check_true("Writer garde les titres", "Environnement" in doc and "text:h" in doc)
+    check_true("Writer garde le texte courant", "Texte normal." in doc)
+    check_true("Writer garde aussi les tableaux", "table:table" in doc)
+    # Un caractère XML dangereux ne doit pas casser le fichier.
+    perilleux = O.odt("# A < B & C\ntexte avec <balise> & « guillemets »")
+    _xml.parseString(zipfile.ZipFile(io.BytesIO(perilleux)).read("content.xml"))
+
+    api = (Path(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
+    check_true("la route accepte le format", 'if f in ("odt", "ods"):' in api)
+    ui = (Path(__file__).resolve().parents[1] / "ui" / "cours.html").read_text(encoding="utf-8")
+    check_true("les deux boutons existent", 'id="dlOdt"' in ui and 'id="dlOds"' in ui)
+    # ⚠️ Le libellé dit ce que chacun garde : Calc ne peut pas porter de paragraphes.
+    check_true("et disent ce qu'ils emportent",
+               "tout le cours" in ui and "les tableaux du cours" in ui)
+
+
 def test_le_briefing_appelait_gmail_par_l_autre_porte():
     """« Erreur de récupération des mails : 404 – vérifie les autorisations et
     l'activation de l'API sur composio.dev » — alors que ses mails marchaient dans le
@@ -10067,7 +10147,8 @@ if __name__ == "__main__":
                test_trois_sources_pour_un_seul_article_et_le_salon_du_beton,
                test_son_prenom_partait_en_mot_cle_et_juillet_passait_pour_aujourd_hui,
                test_un_appel_d_outil_ecrit_n_est_pas_un_appel_d_outil,
-               test_elle_disait_c_est_note_sans_rien_noter):
+               test_elle_disait_c_est_note_sans_rien_noter,
+               test_son_cours_s_ouvre_dans_libreoffice):
         try:
             fn()
         except Exception as e:
