@@ -8728,7 +8728,15 @@ def test_la_date_du_jour_collee_sur_une_nouvelle_de_juin():
     # passait dans la branche ou la consigne autorise la date. Elle n'y etait pas nettoyee.
     check("« news de 2Crsi » n'est pas de l'actu generale", C.veut_actualite("Des news de 2Crsi?"), False)
     check("... et il ne demande pas le jour meme", C._demande_le_jour_meme("Des news de 2Crsi?"), False)
-    check("« l'actu 2CRSi d'aujourd'hui », si", C._demande_le_jour_meme("l'actu 2CRSi d'aujourd'hui"), True)
+    # ⚠️ CETTE ATTENTE ÉTAIT LA MIENNE, ET ELLE ÉTAIT FAUSSE. Je croyais qu'ajouter la
+    # date aidait dès qu'il dit « aujourd'hui ». Le 7 septembre l'a démenti : sur
+    # « l'actualité de 2CRSi aujourd'hui », la requête datée a ramené le Concrete
+    # Reinforcing Steel Institute. Quand une société est NOMMÉE, le nom fait le tri et
+    # la date ne fait que ramener les pages qui la contiennent.
+    check("nommer une société suffit, la date nuit",
+          C._demande_le_jour_meme("l'actu 2CRSi d'aujourd'hui"), False)
+    check("mais l'actu générale du jour, elle, se date",
+          C._demande_le_jour_meme("l'actu d'aujourd'hui"), True)
     # Une date qu'il ecrit LUI-MEME est la sienne : on n'y touche pas.
     check("sa propre date reste la sienne", C._demande_le_jour_meme("les news 2CRSi du 9 juin"), True)
 
@@ -9304,6 +9312,103 @@ def test_ce_qu_il_detient_arrive_la_ou_ca_se_surveille():
     check_true("et le fait retenu est annoncé", "Détient l'action" in api)
 
 
+def test_trois_sources_pour_un_seul_article_et_le_salon_du_beton():
+    """DEUX TRACES DU 7 SEPTEMBRE, ET LA PREMIÈRE EST LA PLUS GRAVE.
+
+    « des news sur le cours boursier de Valneva » → Nova cite TROIS « sources » :
+        1. …/valneva-se-termine-en-legere-hausse-898784.html
+        2. …/valneva-se-termine-en-forte-hausse-898784.html
+        3. …/journee-en-baisse-pour-valneva-se-898784.html
+    Le MÊME numéro d'article (898784), trois chemins. Une seule existe : elle a pris le
+    lien réellement renvoyé et fabriqué deux variantes autour. Et les deux fausses
+    annoncent une HAUSSE sous un titre qui dit une BAISSE.
+
+    ⚠️ Une adresse inventée est pire qu'un chiffre inventé : un nombre douteux se relit
+    et se juge, une adresse s'ouvre d'un clic avant qu'on ait lu l'avertissement. On ne
+    se contente donc pas de signaler — on retire.
+
+    « c'est quoi l'actualité de 2CRSi aujourd'hui » → Nova a cherché « CRSI actualité
+    7 septembre 2026 » et est tombée sur le Concrete Reinforcing Steel Institute, une
+    association américaine du béton armé. Écrire la date en toutes lettres ne ramène
+    pas les articles du jour : ça ramène les pages qui CONTIENNENT ces mots. C'était
+    déjà la leçon du Leclerc, et « aujourd'hui » la contournait encore.
+    """
+    import importlib
+    L = importlib.import_module("agent.liens")
+    C = importlib.import_module("agent.core")
+
+    # --- 1. Les liens fabriqués --------------------------------------------------
+    base = "https://www.boursier.com/actions/actualites/news/"
+    vrai = base + "journee-en-baisse-pour-valneva-se-898784.html"
+    reponse = ("Sources :\n"
+               f"1. Boursier.com – « Journée en baisse » ({base}valneva-se-termine-en-legere-hausse-898784.html)\n"
+               f"2. Boursier.com – même titre ({base}valneva-se-termine-en-forte-hausse-898784.html)\n"
+               f"3. Boursier.com – même contenu ({vrai})\n")
+    obs = [f"Résultat : Journée en baisse pour Valneva SE — {vrai}"]
+
+    faux = L.non_sources(reponse, obs)
+    check("deux des trois liens sont inventés", len(faux), 2)
+    check_true("le vrai n'est pas accusé", all("journee-en-baisse" not in u for u in faux))
+
+    sortie = L.relis(reponse, obs)
+    # ⚠️ Le bandeau NOMME les liens retirés — c'est le but : il doit savoir lesquels
+    # étaient faux. On vérifie donc le CORPS, pas la page entière.
+    corps = sortie.split("> ⚠️")[0]
+    check("le lien inventé a disparu du texte", "termine-en-legere-hausse" in corps, False)
+    check("le second aussi", "termine-en-forte-hausse" in corps, False)
+    check_true("mais le bandeau dit lesquels", "termine-en-legere-hausse" in sortie
+               and "termine-en-forte-hausse" in sortie)
+    check_true("le vrai lien reste cliquable", vrai in sortie)
+    check_true("et Nova dit qu'elle les a fabriqués", "que j'ai fabriqués" in sortie)
+    # ⚠️ Le texte porte l'information ; c'est la caution qui était fausse, pas le propos.
+    check_true("le texte des sources reste", "Boursier.com" in sortie)
+    # Une adresse retirée laisse sa ponctuation d'accueil : c'est mon déchet, pas le sien.
+    check("aucune parenthèse vide oubliée", "()" in sortie, False)
+
+    # ⚠️ Sans aucune observation, on ne sait pas si un lien est inventé ou recopié :
+    # retirer sur une ignorance serait aussi faux qu'inventer.
+    check("aucun outil n'a répondu → on ne touche à rien", L.relis(reponse, []), reponse)
+    check("rien à signaler → texte intact", L.relis("Voir " + vrai, [vrai]), "Voir " + vrai)
+    # « www. », la barre finale et le protocole ne font pas d'un lien un faux.
+    check("www et barre finale ne trompent pas",
+          L.non_sources("voir https://boursier.com/a", ["https://www.boursier.com/a/"]), [])
+    # ⚠️ Ses sources s'écrivent « titre (https://…) » : une adresse entre parenthèses
+    # SANS être un lien markdown. Ma première version les sautait toutes les trois.
+    check("une adresse entre parenthèses est bien vue",
+          len(L.liens_cites("Boursier.com – titre (https://x.fr/a)")), 1)
+    md = L.relis("Voir [le détail](https://faux.example/x) et [le vrai](https://vrai.fr/a).",
+                 ["https://vrai.fr/a"])
+    check_true("un lien markdown inventé perd son adresse, pas son texte",
+               "le détail" in md and "faux.example" not in md.split("> ⚠️")[0])
+    check_true("et le vrai garde la sienne", "(https://vrai.fr/a)" in md)
+
+    # --- 2. « aujourd'hui » n'écrit plus la date quand une société est nommée -----
+    check("« l'actualité de 2CRSi aujourd'hui » ne veut pas de date",
+          C._demande_le_jour_meme("c'est quoi l'actualité de 2CRSi aujourd'hui"), False)
+    check("« l'actu de DBV aujourd'hui » non plus",
+          C._demande_le_jour_meme("l'actu de DBV aujourd'hui"), False)
+    # Mais une demande d'actualité GÉNÉRALE, si : là, la date fait le tri.
+    check("« les actualités du jour », si",
+          C._demande_le_jour_meme("quelles sont les actualités du jour"), True)
+    # Et une date qu'il a écrite reste la sienne.
+    check("sa propre date est respectée",
+          C._demande_le_jour_meme("les news 2CRSi du 9 juin"), True)
+
+    q = C.requete_simple("c'est quoi l'actualité de 2CRSi aujourd'hui")
+    check("aucune date en toutes lettres dans la requête",
+          bool(re.search(r"\d{1,2}\s+\w+\s+\d{4}", q)), False)
+    check_true("mais l'année reste, pour écarter 2024", "2026" in q)
+    check_true("et le nom de la société est là", "2CRSi" in q)
+    # ⚠️ ET LA MÊME RÈGLE, PAS UNE COPIE. Ce repli testait _MOTS_DU_JOUR directement :
+    # il continuait d'écrire la date là où search_query ne le faisait plus.
+    src = (Path(__file__).resolve().parents[1] / "agent" / "core.py").read_text(encoding="utf-8")
+    check_true("le repli appelle la fonction au lieu de refaire le test",
+               "if _veut_aujourdhui(t) and not _a_sa_propre_date(t):" in src)
+    # Sa propre date ne doit pas se voir doubler de celle du jour.
+    check("sa date n'est pas doublée par celle du jour",
+          C.requete_simple("les news 2CRSi du 9 juin").count("2026"), 1)
+
+
 def test_le_briefing_appelait_gmail_par_l_autre_porte():
     """« Erreur de récupération des mails : 404 – vérifie les autorisations et
     l'activation de l'API sur composio.dev » — alors que ses mails marchaient dans le
@@ -9750,7 +9855,8 @@ if __name__ == "__main__":
                test_ce_qu_il_detient_arrive_la_ou_ca_se_surveille,
                test_la_vision_ne_devine_plus_les_noms_et_la_voix_locale_est_dans_la_liste,
                test_le_rapport_de_mails_a_enfin_une_version_a_dire,
-               test_le_briefing_appelait_gmail_par_l_autre_porte):
+               test_le_briefing_appelait_gmail_par_l_autre_porte,
+               test_trois_sources_pour_un_seul_article_et_le_salon_du_beton):
         try:
             fn()
         except Exception as e:
