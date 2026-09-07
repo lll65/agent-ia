@@ -9304,6 +9304,72 @@ def test_ce_qu_il_detient_arrive_la_ou_ca_se_surveille():
     check_true("et le fait retenu est annoncé", "Détient l'action" in api)
 
 
+def test_le_briefing_appelait_gmail_par_l_autre_porte():
+    """« Erreur de récupération des mails : 404 – vérifie les autorisations et
+    l'activation de l'API sur composio.dev » — alors que ses mails marchaient dans le
+    chat LE JOUR MÊME. « les mails marchaient il y a quelques jours pourtant. »
+
+    ⚠️ MÊME ACTION, DEUX CHEMINS D'APPEL, UN SEUL QUI FAIT LE TRAVAIL. Le chat passe
+    par _tool(), qui résout l'identité Composio sous laquelle l'app est réellement
+    connectée. Le briefing appelait « connected_app » en direct, donc sous l'identité
+    par défaut. Et _tool() ANNONCE ce bug dans son propre commentaire : « une app
+    connectée depuis le dashboard n'utilise pas forcément default. Sans ça → 404 No
+    connected account found for user ID default. » Le défaut était écrit dans le code
+    avant d'arriver.
+
+    ⚠️ ET LE MESSAGE D'ERREUR ÉTAIT INVENTÉ. « vérifie les autorisations et
+    l'activation de l'API » : cette phrase ne vient pas de Composio, c'est le modèle
+    qui a REFORMULÉ l'erreur brute en conseil. La vraie cause était l'identité ; il
+    serait parti fouiller le dashboard pour rien. Un diagnostic inventé coûte plus
+    cher qu'une erreur franche — il envoie chercher au mauvais endroit.
+    """
+    import importlib
+    B = importlib.import_module("agent.briefing")
+    src = (Path(__file__).resolve().parents[1] / "agent" / "briefing.py").read_text(encoding="utf-8")
+
+    # --- 1. Le briefing emprunte la MÊME porte que le chat --------------------------
+    check_true("les mails passent par _tool()", 'ml = _tool("GMAIL_FETCH_EMAILS"' in src)
+    check_true("l'agenda aussi", '_tool("GOOGLECALENDAR_EVENTS_LIST"' in src)
+    check_true("et l'app est nommée, donc l'identité résolue",
+               '"gmail")' in src and '"googlecalendar")' in src)
+    check("plus d'appel direct à connected_app pour les mails",
+          'safe_tool_call(loader, "connected_app", {"command": "GMAIL_FETCH_EMAILS"' in src, False)
+
+    # --- 2. Une panne n'est plus racontée par le modèle -----------------------------
+    for brut, attendu in (("✅ 8 mails", False),
+                          ("[ERREUR] 404 No connected account found", True),
+                          ('{"successful": false}', True),
+                          ("401 unauthorized", True)):
+        check(f"panne détectée dans {brut[:24]!r}", B._a_echoue(brut), attendu)
+
+    texte = ("🌅 Bonjour !\n\n📅 Agenda du jour\n* 12h - 13h : Déjeuner au resto\n\n"
+             "📧 Mails\nErreur de récupération des mails : 404 – vérifie les "
+             "autorisations et l'activation de l'API sur composio.dev.\n\n"
+             "🌤️ Météo\nPeu nuageux, 22,9 à 38,1 °C.\n\n💪 Tu vas assurer !")
+    corrige = B._pannes_en_clair(texte, {
+        "Agenda": "✅ 1 événement",
+        "Mails": "[ERREUR] 404 No connected account found for user ID default"})
+    check("le conseil inventé disparaît", "vérifie les autorisations" in corrige, False)
+    check_true("l'erreur réelle apparaît", "No connected account found" in corrige)
+    check_true("et elle est annoncée comme non interprétée", "j'aurais devinée" in corrige)
+    # ⚠️ Une section qui a MARCHÉ ne doit pas être touchée.
+    check_true("l'agenda reste intact", "Déjeuner au resto" in corrige)
+    check_true("la météo aussi", "22,9 à 38,1" in corrige)
+    check_true("et le mot de la fin", "Tu vas assurer" in corrige)
+    # ⚠️ « [^\\n] » et pas « . » pour la ligne de titre : avec re.S le point mange les
+    # retours à la ligne, le titre avalait tout le briefing, et le bloc atterrissait à
+    # la fin au lieu de remplacer la bonne section. Trouvé en le faisant tourner.
+    check_true("le remplacement se fait DANS la section",
+               corrige.index("erreur exacte") < corrige.index("Météo"))
+
+    # Rien à signaler → rien n'est ajouté.
+    ok = "📧 Mails\n3 non lus."
+    check("aucune panne, aucun ajout", B._pannes_en_clair(ok, {"Mails": "✅ 3 mails"}), ok)
+    # Un titre absent du texte : on n'abandonne pas l'information, on l'ajoute à la fin.
+    sans = B._pannes_en_clair("🌅 Bonjour !", {"Mails": "[ERREUR] 404"})
+    check_true("une panne sans section est dite quand même", "404" in sans)
+
+
 def test_le_rapport_de_mails_a_enfin_une_version_a_dire():
     """« nova lit de façon moche, genre "ignoré 12" en premier mot »
 
@@ -9683,7 +9749,8 @@ if __name__ == "__main__":
                test_une_deuxieme_cle_et_un_message_qui_dit_enfin_pourquoi,
                test_ce_qu_il_detient_arrive_la_ou_ca_se_surveille,
                test_la_vision_ne_devine_plus_les_noms_et_la_voix_locale_est_dans_la_liste,
-               test_le_rapport_de_mails_a_enfin_une_version_a_dire):
+               test_le_rapport_de_mails_a_enfin_une_version_a_dire,
+               test_le_briefing_appelait_gmail_par_l_autre_porte):
         try:
             fn()
         except Exception as e:
