@@ -110,6 +110,94 @@
   .micbtn{ background:var(--glass); border:1px solid var(--stroke); } .micbtn.rec{ background:var(--pink); animation:pulse .8s infinite; }
   @keyframes pulse{ 50%{ box-shadow:0 0 0 8px rgba(236,72,153,.25) } }
   .send:active{ transform:scale(.92); } .send:disabled{ opacity:.5; }
+  /* ═══ BARRE LATÉRALE PERMANENTE (grand écran) ═══
+     La maquette montre une nav verticale toujours visible. Sur téléphone elle reste un
+     panneau qui glisse : Nova s'utilise surtout au téléphone, et une colonne fixe y
+     mangerait la moitié de l'écran.
+     ⚠️ CHAQUE ENTRÉE MÈNE QUELQUE PART DE RÉEL. La maquette proposait « Fichiers »,
+     « Projets », « Outils », « Recherche » : Nova n'a rien derrière. Une entrée de menu
+     qui ne fait rien est un mensonge d'interface — on la retire plutôt que de la
+     dessiner. */
+  .sbnav{ display:flex; flex-direction:column; gap:2px; padding:2px 0 6px; }
+  .sbn{ display:flex; align-items:center; gap:11px; padding:9px 11px; border-radius:11px;
+        cursor:pointer; color:var(--dim); font-size:13.5px; font-weight:550;
+        border:1px solid transparent; background:none; text-align:left; width:100%;
+        font-family:inherit; transition:.16s; }
+  .sbn:hover{ background:rgba(255,255,255,.055); color:var(--txt); border-color:var(--stroke); }
+  .sbn i{ font-style:normal; font-size:15px; width:20px; text-align:center; }
+  .sbn b{ margin-left:auto; font-size:10.5px; font-weight:700; padding:2px 7px;
+          border-radius:999px; background:rgba(139,109,255,.22); color:#cfc4ff; }
+  .sbUser{ display:flex; align-items:center; gap:10px; padding:10px 11px; margin-top:6px;
+           border-radius:13px; border:1px solid var(--stroke); background:var(--glass); }
+  .sbUser .av{ width:32px; height:32px; border-radius:50%; display:flex; align-items:center;
+               justify-content:center; font-size:15px;
+               background:linear-gradient(135deg,var(--neon),var(--neon2)); }
+  .sbUser .n{ font-size:13px; font-weight:650; } .sbUser .e{ font-size:10.5px; color:var(--dim); }
+  /* Bandeau haut droit : date, heure, météo — comme sur les maquettes. */
+  .hMeta{ display:flex; align-items:center; gap:14px; font-size:12px; color:var(--dim); }
+  .hMeta .d{ text-align:right; line-height:1.35; }
+  .hMeta .h{ font-size:19px; font-weight:750; color:var(--txt); font-variant-numeric:tabular-nums; }
+  .hMeta .w{ display:flex; align-items:center; gap:7px; padding:7px 12px; border-radius:999px;
+             background:var(--glass); border:1px solid var(--stroke); white-space:nowrap; }
+  @media (max-width:900px){ .hMeta .d, .hMeta .w{ display:none; } }
+  /* ⚠️ « body .sidebar » et pas « .sidebar » : la règle de base (translateX(-100%))
+     est déclarée PLUS BAS dans le fichier. À spécificité égale, c'est la dernière qui
+     gagne — ma colonne fixe restait donc hors écran. Un sélecteur plus précis règle ça
+     sans avoir à déplacer trente lignes de CSS. */
+  @media (min-width:1080px){
+    body .sidebar{ transform:none; width:258px; box-shadow:none; }
+    body .app{ max-width:1240px; padding-left:280px; }
+    /* Le ☰ et le ✕ n'ont plus d'objet quand la colonne ne se ferme plus. */
+    #burger, .sbhead .ic{ display:none; }
+    #scrim{ display:none !important; }
+  }
+  /* ═══ « MA RÉFLEXION EN DIRECT » ═══ (colonne droite de la maquette A)
+     ⚠️ La maquette montrait des phrases pré-écrites : « Je croise plusieurs sources
+     fiables pour t'apporter la meilleure réponse ». Le jour même, Nova fabriquait deux
+     URL et cherchait le Concrete Reinforcing Steel Institute — pendant qu'une telle
+     phrase se serait affichée. On garde le visuel, on remplace le contenu par les VRAIS
+     événements du flux, avec leur vraie heure, échecs compris. */
+  #pense{ position:fixed; right:16px; top:84px; width:314px; z-index:9;
+          max-height:calc(100dvh - 190px); overflow-y:auto; display:none;
+          scrollbar-width:thin; scrollbar-color:var(--neon) transparent; }
+  body.thinking #pense{ display:block; animation:pop .4s cubic-bezier(.2,.9,.3,1.2); }
+  body.voice #pense{ display:none; }
+  @media (max-width:1439px){ #pense{ display:none !important; } }
+  .pCard{ background:linear-gradient(160deg,rgba(255,255,255,.06),rgba(255,255,255,.02));
+          border:1px solid var(--stroke); border-radius:18px; padding:15px 16px;
+          margin-bottom:12px; position:relative; overflow:hidden; }
+  .pCard::before{ content:""; position:absolute; inset:0 0 auto 0; height:1px;
+                  background:linear-gradient(90deg,transparent,rgba(255,255,255,.3),transparent); }
+  .pCard h4{ font-size:13px; font-weight:700; display:flex; align-items:center;
+             justify-content:space-between; gap:8px; margin-bottom:13px; }
+  .pLive{ font-size:9.5px; font-weight:700; letter-spacing:.06em; padding:3px 9px;
+          border-radius:999px; color:#8ef7ff; background:rgba(47,224,245,.14);
+          border:1px solid rgba(47,224,245,.3); }
+  .pLive::before{ content:"● "; animation:blink 1.4s ease-in-out infinite; }
+  @keyframes blink{ 50%{ opacity:.25 } }
+  /* La ligne verticale qui relie les points, comme sur la maquette. */
+  .pFil{ position:relative; padding-left:20px; }
+  .pFil::before{ content:""; position:absolute; left:4px; top:5px; bottom:6px; width:1px;
+                 background:linear-gradient(180deg,rgba(139,109,255,.55),rgba(139,109,255,.08)); }
+  .pE{ position:relative; padding:0 0 13px; animation:pop .3s ease; }
+  .pE::before{ content:""; position:absolute; left:-20px; top:5px; width:9px; height:9px;
+               border-radius:50%; background:var(--neon); box-shadow:0 0 10px rgba(139,109,255,.8); }
+  .pE.ko::before{ background:#fbbf24; box-shadow:0 0 10px rgba(251,191,36,.8); }
+  .pE.now::before{ background:var(--neon2); box-shadow:0 0 12px rgba(47,224,245,.9);
+                   animation:blink 1.2s ease-in-out infinite; }
+  .pE .hh{ font-size:10.5px; color:var(--dim); font-variant-numeric:tabular-nums; }
+  .pE .tt{ font-size:12.5px; font-weight:600; margin-top:1px; }
+  .pE .dd{ font-size:11.5px; color:var(--dim); line-height:1.45; margin-top:2px;
+           word-break:break-word; }
+  .pE.ko .tt{ color:#fde68a; }
+  .pFin{ font-size:11px; color:var(--dim); text-align:center; padding-top:4px; }
+  .pAct{ display:flex; align-items:center; gap:9px; padding:9px 11px; border-radius:11px;
+         border:1px solid var(--stroke); background:rgba(255,255,255,.035);
+         font-size:11.5px; color:var(--dim); margin-bottom:7px; }
+  .pAct:last-of-type{ margin-bottom:0; }
+  .pAct kbd{ font-family:inherit; font-size:10px; font-weight:700; color:var(--txt);
+             background:rgba(255,255,255,.09); border:1px solid var(--stroke);
+             border-radius:6px; padding:2px 6px; }
   .chips{ display:flex; gap:8px; flex-wrap:wrap; padding:2px 0 6px; }
   .chip{ font-size:12.5px; color:var(--dim); background:var(--glass); border:1px solid var(--stroke); border-radius:999px; padding:7px 13px; cursor:pointer; transition:.2s; }
   /* ═══ ACCUEIL ═══ Tout ce qui s'affiche ici vient d'un appel réel.
@@ -602,9 +690,15 @@
   <button id="graphMini" onclick="graphReopen()" title="Revoir le raisonnement">🧠</button>
   <div class="app">
     <header>
-      <button class="ic" onclick="toggleSidebar()" title="Conversations">☰</button>
+      <button class="ic" id="burger" onclick="toggleSidebar()" title="Conversations">☰</button>
       <div class="logo">NOVA<small>ASSISTANT · DU FUTUR</small></div>
       <div class="tools">
+        <!-- Date, heure et météo, comme sur les maquettes. La météo n'apparaît que si
+             elle a été mesurée : pas de pastille vide décorative. -->
+        <div class="hMeta">
+          <div class="d"><div id="hDate">—</div><div class="h" id="hHeure">--:--</div></div>
+          <div class="w" id="hMeteo" style="display:none"></div>
+        </div>
         <div class="usage" id="usage" title="Énergie restante aujourd'hui">
           <span class="bolt">⚡</span><div class="cells" id="ucells"></div><span class="pct" id="utext">…</span>
         </div>
@@ -661,6 +755,26 @@
            onchange="onFilePicked(this)">
   </div>
 
+  <!-- ⚠️ Contenu 100 % réel : chaque ligne vient d'un événement du flux, avec son heure.
+       Ce panneau ne dit jamais ce que Nova « est en train de bien faire » — il dit ce
+       qu'elle a fait, y compris quand ça rate. -->
+  <aside id="pense">
+    <div class="pCard">
+      <h4>Ma réflexion en direct <span class="pLive">LIVE</span></h4>
+      <div class="pFil" id="penseFil"></div>
+      <div class="pFin" id="penseFin">Toujours en cours…</div>
+    </div>
+    <div class="pCard">
+      <h4>Pendant que je réfléchis…</h4>
+      <!-- ⚠️ La maquette proposait « je peux déjà regarder tes mails » et « je te prépare
+           un résumé dès que j'ai fini » : Nova ne sait faire ni l'un ni l'autre pendant
+           qu'elle travaille. On n'annonce que ce qui marche vraiment. -->
+      <div class="pAct">⏹ <span>Tu peux m'arrêter — je m'arrête entre deux étapes</span></div>
+      <div class="pAct"><kbd>Échap</kbd> <span>fait la même chose</span></div>
+      <div class="pAct">💾 <span>Ce que j'ai déjà trouvé reste affiché si tu m'arrêtes</span></div>
+    </div>
+  </aside>
+
   <div id="voiceUI">
     <div class="orb"></div>
     <div class="vwrap">
@@ -679,6 +793,20 @@
     <div class="sbhead"><span class="b">NOVA</span>
       <button class="ic" onclick="toggleSidebar()" title="Fermer" style="width:32px;height:32px;font-size:13px">✕</button></div>
     <button class="newchat" onclick="newSession()"><span style="font-size:17px">＋</span> Nouvelle conversation</button>
+    <!-- ⚠️ Chaque entrée FAIT quelque chose de réel. « Fichiers », « Projets », « Outils »
+         et « Recherche » de la maquette n'ont rien derrière eux dans Nova : les dessiner
+         serait promettre ce qui n'existe pas. Elles reviendront quand la fonction
+         existera, pas avant. -->
+    <nav class="sbnav">
+      <button class="sbn" onclick="allerAccueil()"><i>🏠</i> Accueil</button>
+      <button class="sbn" data-q="Résume mes mails"><i>✉️</i> Messagerie<b id="navMails" hidden></b></button>
+      <button class="sbn" data-q="Qu'est-ce que j'ai de prévu aujourd'hui ?"><i>📅</i> Calendrier<b id="navAgenda" hidden></b></button>
+      <button class="sbn" onclick="openAuto()"><i>⚡</i> Automatisations</button>
+      <button class="sbn" onclick="location.href='/nova/cours'"><i>🎓</i> Mode Cours</button>
+      <button class="sbn" onclick="location.href='/nova/brain'"><i>🌌</i> Escouade</button>
+      <button class="sbn" onclick="openMemory()"><i>🧠</i> Mémoire</button>
+      <button class="sbn" onclick="openCfg()"><i>⚙️</i> Paramètres</button>
+    </nav>
     <input class="sbsearch" id="sbsearch" placeholder="🔎 Rechercher une conversation…"
            oninput="filterSessions(this.value)">
     <div class="sblist" id="sblist"></div>
@@ -695,6 +823,8 @@
       <div class="sbf wide" style="cursor:default;border:0;background:none;color:var(--dim);font-size:11px;padding:4px 0">
         💡 Tu peux aussi me dire : « nouvelle conversation », « ouvre mes automatisations », « réveille mon téléphone »…
       </div>
+      <div class="sbUser"><div class="av">L</div>
+        <div><div class="n">Lohan</div><div class="e" id="sbEtat">En ligne</div></div></div>
     </div>
   </aside>
 
@@ -1102,6 +1232,79 @@ document.addEventListener("click", e=>{
   i.value = t.getAttribute("data-q"); grow(i); ask();
 });
 
+/* Le bandeau haut : date, heure. L'horloge est celle de SON appareil — c'est la seule
+   dont on soit sûr, et c'est celle qu'il regarde. */
+/* ═══ TIMELINE « MA RÉFLEXION EN DIRECT » ═══
+   Alimentée par les VRAIS événements SSE. Rien n'est pré-écrit : si Nova n'a appelé
+   aucun outil, la timeline ne prétend pas qu'elle a « croisé plusieurs sources ». */
+function penseVide(){
+  const f = document.getElementById("penseFil");
+  if(f) f.innerHTML = "";
+  const fin = document.getElementById("penseFin");
+  if(fin){ fin.textContent = "Toujours en cours…"; fin.style.color = ""; }
+}
+function penseAjoute(titre, detail, etat){
+  const f = document.getElementById("penseFil");
+  if(!f || !titre) return;
+  // L'entrée précédente n'est plus « en cours » dès qu'une nouvelle arrive.
+  const enCours = f.querySelector(".pE.now");
+  if(enCours) enCours.classList.remove("now");
+  const h = new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"});
+  const d = document.createElement("div");
+  d.className = "pE " + (etat === "ko" ? "ko" : "now");
+  d.innerHTML = '<div class="hh">' + h + '</div><div class="tt">' + esc(_cut(titre,54)) + '</div>'
+              + (detail ? '<div class="dd">' + esc(_cut(detail,150)) + '</div>' : '');
+  f.appendChild(d);
+  // ⚠️ On borne : une boucle ReAct longue produirait cent entrées et ferait ramer la
+  // page. On garde les dernières, c'est là qu'est l'information utile.
+  while(f.children.length > 24) f.removeChild(f.firstChild);
+  f.parentElement.scrollTop = f.parentElement.scrollHeight;
+}
+function penseFini(txt){
+  const f = document.getElementById("penseFil");
+  const enCours = f && f.querySelector(".pE.now");
+  if(enCours) enCours.classList.remove("now");
+  const fin = document.getElementById("penseFin");
+  if(fin) fin.textContent = txt || "Terminé.";
+}
+/* Une observation d'outil dit-elle un échec ? Alors elle doit se VOIR dans la timeline :
+   une étape ratée passée sous silence, c'est ce qu'on corrige depuis deux jours. */
+function penseEchec(t){
+  return /erreur|error|404|401|403|429|indisponible|impossible|échou|aucun r[ée]sultat|not found/i
+         .test(String(t||""));
+}
+
+function ticTac(){
+  const n = new Date();
+  const d = document.getElementById("hDate"), h = document.getElementById("hHeure");
+  if(d){ const j = n.toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long"});
+    d.textContent = j.charAt(0).toUpperCase()+j.slice(1); }
+  if(h) h.textContent = n.toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"});
+}
+ticTac(); setInterval(ticTac, 20000);
+/* Sur grand écran la colonne est toujours là : la liste des conversations doit être
+   remplie au chargement, pas seulement quand on ouvre le panneau. */
+if(window.innerWidth >= 1080) setTimeout(()=>{ try{ renderSessions(); }catch(e){} }, 200);
+
+/* « Accueil » : on revient à l'écran de départ sans effacer la conversation en cours.
+   ⚠️ Ce n'est PAS « nouvelle conversation » — perdre son fil parce qu'il a cliqué sur
+   une maison serait une mauvaise surprise. On remonte, on rafraîchit, c'est tout. */
+function allerAccueil(){
+  document.body.classList.remove("chatting");
+  if(window.innerWidth < 1080) closeSidebar();
+  chargeAccueil();
+  const c = document.getElementById("chat"); if(c) c.scrollTop = 0;
+}
+/* Les entrées de nav qui posent une question passent par le même chemin que les tuiles :
+   une donnée, jamais du code dans un attribut. */
+document.addEventListener("click", e=>{
+  const b = e.target.closest && e.target.closest(".sbn[data-q]");
+  if(!b) return;
+  if(window.innerWidth < 1080) closeSidebar();
+  const i = document.getElementById("in");
+  if(i){ i.value = b.getAttribute("data-q"); grow(i); ask(); }
+});
+
 function chargeAccueil(){
   const z = document.getElementById("accueil");
   if(!z || !KEY) return;
@@ -1109,6 +1312,16 @@ function chargeAccueil(){
     .then(r=>r.json()).then(d=>{
       if(!d || d.detail) return;
       const m=d.mails||{}, a=d.agenda||{}, w=d.meteo||{}, t=d.taches||{}, c=d.cours||{};
+      // Le bandeau et les badges de nav : les MÊMES chiffres que les tuiles, pas une
+      // seconde source qui pourrait diverger. Un badge n'apparaît que s'il a été mesuré.
+      const meteoH = document.getElementById("hMeteo");
+      if(meteoH){ if(w.ok && w.ligne){ meteoH.textContent = "☀️ " + _cut(w.ligne,42);
+        meteoH.style.display = ""; } else meteoH.style.display = "none"; }
+      const badge=(id,n)=>{ const b=document.getElementById(id); if(!b) return;
+        if(n>0){ b.textContent=n; b.hidden=false; } else b.hidden=true; };
+      badge("navMails", m.ok ? (m.total||0) : 0);
+      badge("navAgenda", a.ok ? (a.total||0) : 0);
+
       const jour = new Date().toLocaleDateString("fr-FR",
                     {weekday:"long", day:"numeric", month:"long"});
       let h = '<div class="accTop"><div><div class="accSalut">'
@@ -2075,6 +2288,7 @@ function arreteReflexion(){
   if(SID && KEY){ try{ fetch(ORIGIN+"/agent/ask/stop?key="+encodeURIComponent(KEY)
       +"&sid="+encodeURIComponent(SID),{cache:"no-store"}).catch(()=>{}); }catch(e){} }
   thinking=false; document.body.classList.remove("thinking"); graphEnd(); boutonEnvoi(false);
+  penseFini("⏹ Arrêté à ta demande.");
   stopSpeaking();
   // Ce qui etait deja arrive RESTE : on ajoute la mention d'arret, on ne l'efface pas.
   // Mais si rien n'etait arrive, la bulle contient encore « Nova reflechit… » — la
@@ -2102,6 +2316,7 @@ function ask(){
   document.body.classList.add("chatting");
   inp.value=""; grow(inp); addRow("me",fmt(msg)); histPush("me",msg); sndSend(); const bubble=addRow("ai",thinkHTML(THINK_PHRASES[0],"💭"));
   BULLE=bubble; RECU=false;
+  penseVide(); penseAjoute("J'analyse ta demande", msg);
   SID = "s" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   boutonEnvoi(true); thinking=true; document.body.classList.add("thinking"); graphStart();
   // ⚠️ Ces nœuds ne portent AUCUN détail inventé : afficher des mots-clés extraits de la
@@ -2154,15 +2369,22 @@ function ask(){
       trace.push({icon:"🌐", label:d.items.length+" source"+(d.items.length>1?"s":"")+" consultée"
         +(d.items.length>1?"s":""), detail:"", html:'<div class="srcs">'+lignes+'</div>'});
       pi=trace.length-1;
+      penseAjoute(trace[pi].label,
+        d.items.map(x=>x.domaine||x.titre||"").filter(Boolean).slice(0,4).join(" · "));
       if(!answer && !streamed){ bubble.innerHTML=thinkHTML(trace[pi].label,"🌐"); }
       chat.scrollTop=chat.scrollHeight;
       return; }
     if(d.type==="step"){ const ai=agentInfo(d), ic=ai? ai.i : iconFor(d.kind,d.tool);
       graphAdd(ic, nodeLabel(d), d.q||d.text||"", d.agent||"");
+      // ⚠️ La timeline reçoit l'étape TELLE QU'ELLE EST, y compris quand elle rate :
+      // une observation en erreur doit se voir, pas disparaître derrière un point violet.
+      { const det = d.q || d.text || "";
+        penseAjoute(stepLabel(d), det, penseEchec(det) ? "ko" : ""); }
       trace.push({icon:ic, label:stepLabel(d), detail:(d.q||d.text||"")});
       if(voiceMode) vSet(stepLabel(d),"");
       if(!answer&&!streamed){ bubble.innerHTML=thinkHTML(stepLabel(d), ic); pi=trace.length-1; chat.scrollTop=chat.scrollHeight; } }
-    else if(d.type==="token"){ if(!streamed){ streamed=true; stopThink(); bubble.innerHTML=""; graphAdd("✍️","Rédaction"); }
+    else if(d.type==="token"){ if(!streamed){ streamed=true; stopThink(); bubble.innerHTML=""; graphAdd("✍️","Rédaction");
+        penseAjoute("Je rédige ma réponse", ""); }
       answer+=(d.t||""); bubble.innerHTML=fmt(answer)+'<span class="cur">▍</span>'; chat.scrollTop=chat.scrollHeight;
       /* ⚠️ On affichait le MARKDOWN BRUT du rapport écrit, coupé à 240 signes en plein
          mot : « ### 🔴 Important, sans réponse attendue (2) - ** 🚨 Marta Ferrando
@@ -2184,9 +2406,9 @@ function ask(){
     // ⚠️ Nova apprend maintenant toute seule. Retenir en douce serait le contraire de
     // ce qu'on veut : on affiche ce qu'elle garde, avec de quoi l'enlever d'un clic.
     else if(d.type==="appris" && (d.faits||[]).length){ APPRIS = APPRIS.concat(d.faits); }
-    else if(d.type==="done"){ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); boutonEnvoi(false); attachReason(bubble,trace); attachModel(bubble); puceAppris(bubble.parentElement); sndReceive(); setTimeout(refreshUsage,900); }
+    else if(d.type==="done"){ penseFini("Terminé."); es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); boutonEnvoi(false); attachReason(bubble,trace); attachModel(bubble); puceAppris(bubble.parentElement); sndReceive(); setTimeout(refreshUsage,900); }
   };
-  es.onerror=()=>{ es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); boutonEnvoi(false);
+  es.onerror=()=>{ penseFini("⚠️ Connexion interrompue."); es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); boutonEnvoi(false);
     if(!answer) bubble.innerHTML="⚠️ Connexion interrompue. Vérifie ta clé (⚙️) et réessaie."; else attachReason(bubble,trace);
     /* ⚠️ En mode vocal, ce message est INVISIBLE : body.voice masque .chat (voir la
        règle CSS plus haut). Et ce gestionnaire ne relançait jamais le micro. Résultat,
