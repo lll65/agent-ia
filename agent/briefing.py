@@ -34,30 +34,48 @@ _PAS_UNE_VILLE = re.compile(
     re.I)
 
 
+def _faits_de_lieu(faits) -> list:
+    """Ses faits qui parlent d'un lieu, LE PLUS RÉCENT D'ABORD.
+
+    ⚠️ DEUX DÉFAUTS RÉELS, CORRIGÉS ICI, QUI DONNAIENT « Paris » EN HAUT DE SON ÉCRAN
+    ALORS QU'IL VIT À PAU.
+      1. On cherchait la catégorie « ville ». Elle n'existe pas : agent/profile.py
+         n'en connaît que sept, et celle des lieux s'appelle « lieu ». Le test était
+         donc toujours faux, et seule la reconnaissance par mots-clés fonctionnait.
+      2. On prenait le PREMIER fait trouvé, dans l'ordre des catégories — c'est-à-dire
+         le plus ancien. « Nouveau : je suis actuellement à Pau » ne pouvait pas
+         remplacer un lieu plus vieux. Un profil qu'on met à jour et qui ne change
+         rien, c'est pire que pas de profil.
+    """
+    lieux = [f for f in (faits or [])
+             if str(f.get("cat") or "").lower() == "lieu"
+             or any(i in str(f.get("texte") or "").lower() for i in _INDICES_VILLE)]
+    lieux.sort(key=lambda f: float(f.get("ts") or 0), reverse=True)
+    return lieux
+
+
 def ville_de_lohan() -> str:
     """Sa ville : d'abord ce qu'il a dit à Nova, sinon le réglage, sinon Paris."""
     try:
         from agent.profile import list_facts
-        for f in (list_facts() or []):
+        for f in _faits_de_lieu(list_facts()):
             texte = str(f.get("texte") or "")
-            if str(f.get("cat") or "").lower() == "ville" or any(
-                    i in texte.lower() for i in _INDICES_VILLE):
-                # « j'habite à Pau » → « Pau ». On garde le dernier mot significatif.
-                m = re.search(r"(?:à|a|de|sur)\s+([A-ZÀ-Ý][\wÀ-ÿ'’-]{2,}(?:[- ][A-ZÀ-Ý][\wÀ-ÿ'’-]+)*)",
-                              texte)
-                if m and not _PAS_UNE_VILLE.match(m.group(1)):
-                    return m.group(1).strip()
-                # ⚠️ « Habite : peu nuageux, 22,9–38,0 °C » — vu sur son écran. Le fait
-                # retenu était « Habite dans un appartement » : aucun « à X », donc on
-                # tombait ici, et « le dernier mot en majuscule » était… « Habite ».
-                # Le VERBE lui-même devenait la ville, et la météo affichée était celle
-                # de nulle part — plausible, donc invérifiable à l'œil.
-                # On écarte les mots qui ne peuvent pas être une ville, et si rien ne
-                # reste on passe au fait suivant plutôt que de rendre n'importe quoi.
-                mots = [x for x in re.findall(r"[A-ZÀ-Ý][\wÀ-ÿ'’-]{2,}", texte)
-                        if not _PAS_UNE_VILLE.match(x)]
-                if mots:
-                    return mots[-1]
+            # « j'habite à Pau » → « Pau ». On garde le dernier mot significatif.
+            m = re.search(r"(?:à|a|de|sur)\s+([A-ZÀ-Ý][\wÀ-ÿ'’-]{2,}(?:[- ][A-ZÀ-Ý][\wÀ-ÿ'’-]+)*)",
+                          texte)
+            if m and not _PAS_UNE_VILLE.match(m.group(1)):
+                return m.group(1).strip()
+            # ⚠️ « Habite : peu nuageux, 22,9–38,0 °C » — vu sur son écran. Le fait
+            # retenu était « Habite dans un appartement » : aucun « à X », donc on
+            # tombait ici, et « le dernier mot en majuscule » était… « Habite ».
+            # Le VERBE lui-même devenait la ville, et la météo affichée était celle
+            # de nulle part — plausible, donc invérifiable à l'œil.
+            # On écarte les mots qui ne peuvent pas être une ville, et si rien ne
+            # reste on passe au fait suivant plutôt que de rendre n'importe quoi.
+            mots = [x for x in re.findall(r"[A-ZÀ-Ý][\wÀ-ÿ'’-]{2,}", texte)
+                    if not _PAS_UNE_VILLE.match(x)]
+            if mots:
+                return mots[-1]
     except Exception as e:
         logger.info(f"[briefing] ville du profil illisible ({type(e).__name__})")
     return getattr(config, "BRIEFING_CITY", "Paris") or "Paris"

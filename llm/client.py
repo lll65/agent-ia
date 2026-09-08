@@ -327,17 +327,54 @@ def fournisseur_demande(message: str) -> str:
 # dans des threads via run_in_executor, où un contextvar ne suit pas (c'est exactement ce
 # qui avait empêché l'affichage du modèle pendant des semaines). Nova est mono-utilisateur,
 # un réglage global est donc à la fois suffisant et fiable.
-PREFERENCE = {"fournisseur": ""}
+PREFERENCE = {"fournisseur": "", "_lu": False}
+
+# ⚠️ POURQUOI CE RÉGLAGE EST ÉCRIT SUR DISQUE. « quand je règle une réponse sur un modèle
+# précis, un autre modèle me répond ». Il avait raison, et ce n'était pas la chaîne de
+# secours : ce dict vit en mémoire, et Render endort l'instance gratuite au bout de
+# ~15 min sans requête. Au réveil, PREFERENCE repartait à "" — donc en choix automatique,
+# sans rien dire, alors que le sélecteur de l'interface affichait toujours son choix. Un
+# réglage qui s'efface tout seul est pire qu'un réglage absent : il ment sur l'écran.
+_REGLAGES = None
+
+
+def _boutique():
+    global _REGLAGES
+    if _REGLAGES is None:
+        from agent.entrepot import Entrepot
+        _REGLAGES = Entrepot("nova_reglages", "data/reglages.json", cle="id")
+    return _REGLAGES
 
 
 def choisir_fournisseur(nom: str) -> str:
     """Fixe le fournisseur préféré. "" ou "auto" = choix automatique."""
     nom = (nom or "").strip().lower()
     PREFERENCE["fournisseur"] = nom if nom in _NOMS_FOURNISSEURS else ""
+    PREFERENCE["_lu"] = True
+    try:
+        # ecrit_un, pas ecrit : il fusionne au lieu de réécrire le fichier à l'aveugle.
+        _boutique().ecrit_un({"id": "fournisseur", "valeur": PREFERENCE["fournisseur"]})
+    except Exception as e:
+        # On ne fait PAS échouer le réglage pour autant : il vaut pour cette session.
+        logger.warning(f"[préférence] non enregistrée ({type(e).__name__}) — "
+                       "elle sera perdue au prochain réveil de Render.")
     return PREFERENCE["fournisseur"]
 
 
 def fournisseur_choisi() -> str:
+    """Le fournisseur choisi dans l'interface — relu du disque au premier appel."""
+    if not PREFERENCE["_lu"]:
+        PREFERENCE["_lu"] = True      # même en cas d'échec : on ne réessaie pas à chaque appel
+        try:
+            items, _fiable = _boutique().charge()
+            for it in items or []:
+                if it.get("id") == "fournisseur":
+                    v = (it.get("valeur") or "").strip().lower()
+                    if v in _NOMS_FOURNISSEURS:
+                        PREFERENCE["fournisseur"] = v
+                    break
+        except Exception as e:
+            logger.info(f"[préférence] relecture impossible ({type(e).__name__})")
     return PREFERENCE.get("fournisseur", "")
 
 
@@ -421,6 +458,25 @@ def cles_secondaires() -> dict:
     return out
 
 
+def cles_presentes() -> dict:
+    """{fournisseur: clé} — uniquement ceux dont la clé est RÉELLEMENT renseignée.
+
+    ⚠️ « la fiole d'énergie pour les crédits est fausse, elle laisse encore afficher des
+    clés API que j'ai retirées, du coup ça fausse l'utilisation. » Exact : la jauge
+    additionnait le quota de quatre fournisseurs écrits en dur, clé ou pas. Retirer une
+    clé gonflait donc le dénominateur, et le pourcentage affiché ne voulait plus rien
+    dire. Un seul endroit dit désormais qui est là.
+    """
+    brut = {
+        "nvidia": getattr(config, "NVIDIA_API_KEY", ""), "groq": config.GROQ_API_KEY,
+        "gemini": getattr(config, "GEMINI_API_KEY", ""),
+        "openrouter": getattr(config, "OPENROUTER_API_KEY", ""),
+        "cerebras": config.CEREBRAS_API_KEY, "xai": getattr(config, "XAI_API_KEY", ""),
+        "mistral": getattr(config, "MISTRAL_API_KEY", ""),
+    }
+    return {n: (c or "").strip() for n, c in brut.items() if (c or "").strip()}
+
+
 def etat_fournisseurs() -> list:
     """Qui est configuré, qui répond, qui est écarté — pour le sélecteur de l'interface."""
     import time as _t
@@ -457,7 +513,10 @@ def etat_fournisseurs() -> list:
             "modele": _MODELES_OK.get(nom, "") or MODELES.get(nom, {}).get("equilibre", ""),
             "dernier_ok": _DERNIER_OK["nom"] == nom,
             "vitesse_s": (None if rapidite(nom) == float("inf") else round(rapidite(nom), 1)),
-            "choisi": PREFERENCE.get("fournisseur") == nom,
+            # fournisseur_choisi() et non PREFERENCE : après un réveil de Render, seul
+            # lui relit le choix enregistré — sinon le sélecteur affiche « Auto » alors
+            # que le réglage existe (ou l'inverse).
+            "choisi": fournisseur_choisi() == nom,
         })
     return out
 
@@ -513,7 +572,7 @@ def _providers_disponibles(niveau: str = "equilibre", impose: str = ""):
     # 0) Fournisseur RÉCLAMÉ par l'utilisateur dans son message → il passe avant tout.
     #    À défaut, celui qu'il a choisi dans l'interface : une consigne écrite dans la
     #    phrase reste plus précise qu'un réglage général, elle garde donc la priorité.
-    impose = impose or PREFERENCE.get("fournisseur", "")
+    impose = impose or fournisseur_choisi()
     if impose and impose in tous and tous[impose][0]:
         add(impose)
     # 1) Fournisseur imposé EXPLICITEMENT (LLM_PREFER=nvidia par ex.) → en tête.

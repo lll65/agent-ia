@@ -185,11 +185,24 @@
     #scrim{ display:none !important; }
     body.sbmini .sidebar{ width:62px; }
     body.sbmini .app{ padding-left:84px; }
-    body.sbmini .sbn span, body.sbmini .sbn b, body.sbmini .newchat span:last-child,
+    /* ⚠️ « ya écrit nouvelle conv, ça fait moche car il est enroulé le volet ». Le
+       libellé était un simple NŒUD DE TEXTE dans le bouton : « span:last-child » ne
+       l'atteignait pas, il masquait le ＋ et laissait « Nouvelle conversation » déborder
+       d'un rail de 62 px. Le texte a maintenant son propre span, et c'est LUI qu'on
+       masque — le ＋ reste, avec l'intitulé en infobulle. */
+    body.sbmini .sbn span, body.sbmini .sbn b, body.sbmini .newchat .lbl,
     body.sbmini .sbsearch, body.sbmini .sblist, body.sbmini .sbfoot,
     body.sbmini .sbhead .b, body.sbmini .sbUser div{ display:none; }
     body.sbmini .sbn, body.sbmini .newchat{ justify-content:center; padding:9px 0; }
     body.sbmini .sbUser{ justify-content:center; padding:9px 0; }
+    /* ⚠️ « pourquoi le bouton avec les trois barres pour le redérouler est si loin ? »
+       Parce qu'il vivait dans l'en-tête, à plus de 200 px du rail : on replie à gauche
+       et on doit aller rouvrir à droite. Replié, le ☰ se pose EN HAUT DU RAIL, là où on
+       vient de cliquer, et celui de l'en-tête s'efface pour ne pas exister en double. */
+    body.sbmini .sbhead{ justify-content:center; padding:2px 0 4px; }
+    body.sbmini .sbhead .ic{ display:grid; place-items:center; width:38px; height:38px;
+                             font-size:17px; border-radius:12px; }
+    body.sbmini #burger{ display:none; }
   }
   /* ═══ « MA RÉFLEXION EN DIRECT » ═══ (colonne droite de la maquette A)
      ⚠️ La maquette montrait des phrases pré-écrites : « Je croise plusieurs sources
@@ -252,10 +265,20 @@
                       border-top-color:transparent; animation:spin .9s linear infinite;
                       display:inline-block; }
   #cons .consSous{ font-size:11.5px; color:var(--dim); margin-bottom:12px; }
+  /* ⚠️ « c'est décentré ». Ça l'était vraiment, et la faute était à la grille : l'orbe
+     n'avait PAS de colonne assignée, il portait seulement `grid-row: span 3`. Le
+     placement automatique le posait donc dans la première cellule libre — la colonne de
+     gauche, puis celle de droite selon le nombre de cartes déjà créées. L'orbe changeait
+     de côté en cours de réflexion. Trois colonnes explicites, l'orbe cloué au milieu :
+     il ne peut plus bouger, quel que soit le nombre de cartes. */
   .consGrille{ display:grid; gap:10px;
-               grid-template-columns:1fr minmax(120px,180px) 1fr;
+               grid-template-columns:1fr minmax(150px,190px) 1fr;
                align-items:center; }
-  .consOrbe{ grid-row:span 3; display:grid; place-items:center; position:relative; min-height:150px; }
+  .consCol{ display:flex; flex-direction:column; gap:10px; min-width:0; }
+  .consCol.g{ grid-column:1; align-items:stretch; }
+  .consCol.d{ grid-column:3; align-items:stretch; }
+  .consOrbe{ grid-column:2; grid-row:1; display:grid; place-items:center;
+             position:relative; min-height:150px; }
   .consOrbe b{ width:104px; height:104px; border-radius:50%; display:grid; place-items:center;
                font-size:10px; letter-spacing:.22em; color:#e9e4ff; font-weight:700;
                background:radial-gradient(circle at 34% 30%,#cbbcff,#7c5cf5 52%,#2a1d6b);
@@ -285,9 +308,17 @@
   .consC.ko{ border-color:rgba(251,191,36,.42); }
   .consC.ko .b i{ width:100%; animation:none; background:#fbbf24; }
   @keyframes consGlisse{ 0%{ transform:translateX(-100%) } 100%{ transform:translateX(250%) } }
+  /* ⚠️ Le panneau « ma réflexion en direct » est en position fixe à droite : il ne prend
+     aucune place dans le flux, donc la constellation se centrait sur TOUTE la largeur et
+     passait dessous. D'où l'impression de décentrage. On la décale de la moitié du
+     panneau : elle est alors centrée dans ce qui reste visible. */
+  @media (min-width:1440px){
+    body.thinking #cons{ transform:translateX(-165px); }
+  }
   @media (max-width:760px){
     .consGrille{ grid-template-columns:1fr; }
-    .consOrbe{ grid-row:auto; min-height:0; order:-1; }
+    .consCol.g, .consCol.d{ grid-column:1; }
+    .consOrbe{ grid-column:1; grid-row:auto; min-height:0; order:-1; }
     .consOrbe b{ width:72px; height:72px; }
     .consOrbe::after{ width:104px; height:104px; }
   }
@@ -545,6 +576,12 @@
   body.thinking .chat .row{ opacity:.10; filter:blur(1.5px); transition:opacity .5s ease, filter .5s ease; }
   body.thinking .chat .row:last-child{ opacity:1; filter:none; }
   body.thinking .chips{ opacity:.15; }
+  /* ⚠️ « ya 3 Nova là ». Il comptait juste : TROIS affichages annonçaient la même
+     réflexion en même temps — la bulle de la conversation, la constellation au centre et
+     le panneau de droite, tous nourris des mêmes événements. La constellation est celle
+     de la maquette : c'est elle qui parle pendant la réflexion. La bulle reste dans le
+     DOM (la réponse s'y écrira) mais se tait jusqu'au premier mot reçu. */
+  body.thinking .row.attente{ display:none; }
 
   /* ═══ MODE VOCAL plein écran ═══ */
   /* Mode vocal : le contenu occupe toute la hauteur — schéma en haut, orbe et texte en bas */
@@ -821,9 +858,9 @@
       <div class="consTitre"><i></i> Nova réfléchit…</div>
       <div class="consSous" id="consSous">Je traite ta demande.</div>
       <div class="consGrille" id="consG">
-        <div></div>
+        <div class="consCol g" id="consGa"></div>
         <div class="consOrbe"><b>NOVA</b></div>
-        <div></div>
+        <div class="consCol d" id="consDr"></div>
       </div>
     </div>
 
@@ -894,8 +931,8 @@
   <div class="scrim" id="scrim" onclick="toggleSidebar()"></div>
   <aside class="sidebar" id="sidebar">
     <div class="sbhead"><span class="b">NOVA</span>
-      <button class="ic" onclick="toggleSidebar()" title="Fermer" style="width:32px;height:32px;font-size:13px">✕</button></div>
-    <button class="newchat" onclick="newSession()"><span style="font-size:17px">＋</span> Nouvelle conversation</button>
+      <button class="ic" id="sbToggle" onclick="toggleSidebar()" title="Replier le volet" style="width:32px;height:32px;font-size:13px">✕</button></div>
+    <button class="newchat" onclick="newSession()" title="Nouvelle conversation"><span class="plus">＋</span><span class="lbl">Nouvelle conversation</span></button>
     <!-- ⚠️ Chaque entrée FAIT quelque chose de réel. « Fichiers », « Projets », « Outils »
          et « Recherche » de la maquette n'ont rien derrière eux dans Nova : les dessiner
          serait promettre ce qui n'existe pas. Elles reviendront quand la fonction
@@ -1298,11 +1335,21 @@ function deleteSession(id,ev){ if(ev)ev.stopPropagation(); SESSIONS=SESSIONS.fil
                 +"&id="+encodeURIComponent(id),{method:"DELETE"}).catch(()=>{});
   _aEnvoyer.delete(id);
   saveSessions(); renderChat(); renderSessions(); }
+/* Le bouton du volet change de sens : ✕ pour replier, ☰ pour rouvrir. Un bouton qui
+   dit « fermer » alors qu'il ouvre, c'est un bouton sur lequel on n'ose pas cliquer. */
+function majBoutonVolet(){
+  const b = document.getElementById("sbToggle");
+  if(!b) return;
+  const mini = document.body.classList.contains("sbmini");
+  b.textContent = mini ? "☰" : "✕";
+  b.title = mini ? "Dérouler le volet" : "Replier le volet";
+}
 function toggleSidebar(){
   // Sur grand écran la colonne ne se ferme pas : elle se REPLIE en bande d'icônes.
   if(window.innerWidth >= 1080){
     const mini = document.body.classList.toggle("sbmini");
     try{ localStorage.setItem("nova_sbmini", mini ? "1" : "0"); }catch(e){}
+    majBoutonVolet();
     return;
   }
   const sb=document.getElementById("sidebar"), sc=document.getElementById("scrim");
@@ -1396,12 +1443,14 @@ function consEtape(cle, titre, sous, etat){
     c.className = "consC";
     c.innerHTML = '<div class="h"><i></i><span></span></div><div class="s"></div>'
                 + '<div class="b"><i></i></div>';
-    // Alternance gauche / droite autour de l'orbe, comme sur la maquette.
+    /* Alternance gauche / droite autour de l'orbe, comme sur la maquette.
+       ⚠️ Avant, on insérait la carte directement dans la grille, avant ou après l'orbe.
+       Le placement automatique décidait alors seul de la colonne — et déplaçait l'orbe
+       avec. Les cartes vont désormais dans DEUX colonnes nommées : la gauche d'abord,
+       puis la droite, et rien d'autre ne bouge. */
     const n = Object.keys(CONS).length;
-    const cellules = [...g.children];
-    const orbe = g.querySelector(".consOrbe");
-    if(n % 2 === 0) g.insertBefore(c, orbe);
-    else g.appendChild(c);
+    const col = document.getElementById(n % 2 === 0 ? "consGa" : "consDr");
+    (col || g).appendChild(c);
     CONS[cle] = c;
     // L'étape précédente n'est plus en cours dès qu'une nouvelle commence.
     Object.values(CONS).forEach(x => { if(x !== c && !x.classList.contains("ko"))
@@ -1513,6 +1562,7 @@ ticTac(); setInterval(ticTac, 20000);
 if(window.innerWidth >= 1080) setTimeout(()=>{ try{ renderSessions(); }catch(e){} }, 200);
 // L'état replié est retenu : le rouvrir à chaque visite serait ignorer son choix.
 try{ if(localStorage.getItem("nova_sbmini") === "1") document.body.classList.add("sbmini"); }catch(e){}
+majBoutonVolet();
 
 /* « Accueil » : on revient à l'écran de départ sans effacer la conversation en cours.
    ⚠️ Ce n'est PAS « nouvelle conversation » — perdre son fil parce qu'il a cliqué sur
@@ -2536,6 +2586,10 @@ function tryUICommand(msg){
      3. garder ce qui etait deja arrive, et DIRE que c'est incomplet. Une reponse
         interrompue qui a l'air finie, c'est le defaut qu'on traque depuis le debut. */
 let FLUX=null, SID="", BULLE=null, RECU=false, ABORT=null;
+/* La bulle de reponse est masquee tant que rien n'est arrive (voir .row.attente) :
+   la constellation parle pendant ce temps. Des le premier mot, elle reprend sa place. */
+function reveleBulle(){ const r = BULLE && BULLE.closest(".row");
+  if(r) r.classList.remove("attente"); }
 function envoyerOuArreter(){ if(thinking) arreteReflexion(); else ask(); }
 // Échap : le geste que tout le monde fait déjà pour interrompre.
 addEventListener("keydown", e=>{ if(e.key==="Escape" && thinking) arreteReflexion(); });
@@ -2557,6 +2611,7 @@ function arreteReflexion(){
   // Mais si rien n'etait arrive, la bulle contient encore « Nova reflechit… » — la
   // laisser tourner indefiniment ferait croire qu'elle travaille toujours.
   if(BULLE){
+    reveleBulle();
     if(RECU) BULLE.innerHTML += '<div class="mdl">⏹ Arrêté avant la fin — '
       + 'ce n\'est pas une réponse complète.</div>';
     else BULLE.innerHTML=fmt("⏹ **Arrêté.** Je n'avais encore rien trouvé.");
@@ -2578,6 +2633,11 @@ function ask(){
     return; }
   document.body.classList.add("chatting");
   inp.value=""; grow(inp); addRow("me",fmt(msg)); histPush("me",msg); sndSend(); const bubble=addRow("ai",thinkHTML(THINK_PHRASES[0],"💭"));
+  // La bulle attend son tour : la constellation dit ce qui se passe (voir .row.attente).
+  // ⚠️ On purge d'abord les anciennes : une bulle restée « en attente » après une panne
+  // réseau redeviendrait invisible à la question suivante, emportant son message d'erreur.
+  document.querySelectorAll(".row.attente").forEach(r=>r.classList.remove("attente"));
+  bubble.closest(".row").classList.add("attente");
   BULLE=bubble; RECU=false;
   consVide(); consEtape("analyse", {ico:"💭", txt:"Analyse de ta demande"}, _cut(msg,60));
   penseVide(); penseAjoute("J'analyse ta demande", msg);
@@ -2608,7 +2668,7 @@ function ask(){
   const es=new EventSource(url); FLUX=es;
   es.onmessage=(e)=>{ let d; try{ d=JSON.parse(e.data);}catch{ return; }
     if(!thinking) return;                 // ⏹ vient d'être pressé : on n'écrit plus rien
-    if(d.type==="token"||d.type==="answer") RECU=true;
+    if(d.type==="token"||d.type==="answer"){ RECU=true; reveleBulle(); }
     // Décisions réelles du routeur → sous-bulles du nœud « Analyse »
     if(d.type==="step" && d.kind==="route"){ graphAddSub("Analyse", d.text||"");
       // Une seule ligne de trace « Analyse », qu'on complète à chaque décision reçue
@@ -2721,7 +2781,7 @@ function sendAttachment(question){
   ABORT=new AbortController();
   fetch(ORIGIN+"/agent/upload",{method:"POST",body:fd,signal:ABORT.signal}).then(r=>r.json()).then(d=>{
     if(!thinking) return;                 // ⏹ pressé pendant l'analyse
-    RECU=true;
+    RECU=true; reveleBulle();
     const ans=(d&&d.answer)||"❌ Analyse impossible.";
     graphAdd("✍️","Rédaction"); typewrite(bubble,ans); histPush("ai",ans,trace);
     if(TTS&&!voiceMode) speak(ans);
@@ -2749,17 +2809,29 @@ function fmtK(n){ n=+n||0; if(n>=1e6) return (n/1e6).toFixed(1).replace(/\.0$/,'
 /* Jauge d'énergie : 10 cellules qui s'éteignent au fil de la consommation du jour */
 const CELLS=10;
 async function refreshUsage(){ try{ const r=await fetch(ORIGIN+"/agent/usage?key="+encodeURIComponent(KEY),{cache:"no-store"}); const d=await r.json();
+  const el=document.getElementById("usage"), box=document.getElementById("ucells");
+  /* ⚠️ « la fiole d'énergie est fausse, elle laisse encore afficher des clés API que
+     j'ai retirées ». Le serveur ne compte plus que les clés réellement présentes ; ici
+     on refuse d'inventer un pourcentage quand il n'y a RIEN à mesurer. Une jauge à
+     100 % sans aucune clé, c'est le genre de chiffre rassurant et faux qu'on retire. */
+  if(d.mesurable===false){
+    if(box.children.length!==CELLS){ box.innerHTML=Array.from({length:CELLS},()=>'<i class="cell"></i>').join(""); }
+    [...box.children].forEach(c=>c.classList.remove("on"));
+    document.getElementById("utext").textContent="—";
+    el.classList.remove("mid","low");
+    el.title="Aucune clé dont je puisse mesurer le quota — je préfère ne rien afficher que d'inventer un pourcentage.";
+    return;
+  }
   const t=d.total||{used:0,limit:1}, lim=Math.max(1,t.limit);
   const left=Math.max(0, Math.min(100, 100 - (t.used/lim*100)));      // énergie restante
-  const el=document.getElementById("usage"), box=document.getElementById("ucells");
   const on=Math.max(left>0?1:0, Math.round(left/100*CELLS));
   if(box.children.length!==CELLS){ box.innerHTML=Array.from({length:CELLS},()=>'<i class="cell"></i>').join(""); }
   [...box.children].forEach((c,i)=>c.classList.toggle("on", i<on));
   document.getElementById("utext").textContent=Math.round(left)+"%";
   el.classList.toggle("mid", left<=40 && left>15); el.classList.toggle("low", left<=15);
-  // Détail par fournisseur (Gemini inclus : il manquait alors qu'il sert de secours)
-  const detail=["nvidia","cerebras","groq","gemini"].filter(k=>d[k])
-    .map(k=>k.charAt(0).toUpperCase()+k.slice(1)+" "+fmtK(d[k].used)+"/"+fmtK(d[k].limit)).join(" · ");
+  /* Le détail suit la liste que le SERVEUR a réellement comptée : plus de nom écrit en
+     dur ici, sinon un fournisseur retiré continuerait de s'afficher. */
+  const detail=(d.comptes||[]).map(k=>k.charAt(0).toUpperCase()+k.slice(1)+" "+fmtK(d[k].used)+"/"+fmtK(d[k].limit)).join(" · ");
   el.title="Énergie restante aujourd'hui : "+Math.round(left)+"%\n"+detail+"\n(se recharge chaque jour)";
 }catch(e){ document.getElementById("utext").textContent="—"; } }
 refreshUsage(); setInterval(refreshUsage, 20000);

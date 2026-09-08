@@ -1153,8 +1153,13 @@ def test_sans_modele():
         check_true("le lien est conservé", "https://dcod.ch" in rep)
         check("aucune erreur technique affichée", "LLM indisponible" in rep, False)
         check("pas de liste de fournisseurs en panne", "offre gratuite épuisée" in rep, False)
+        # ⚠️ Le texte a change parce qu'il MENTAIT : « Aucun modele n'est disponible »
+        # s'affichait pour n'importe quelle exception du LLM. L'intention du test reste
+        # la meme — ce n'est pas le motif du delai — et elle est desormais verifiee sur
+        # la vraie cause.
         check_true("le motif est le bon (pas « pas eu le temps »)",
-                   "Aucun modèle n'est disponible" in rep)
+                   "Je n'ai pas pu rédiger la synthèse" in rep)
+        check("et surtout pas le motif du délai", "pas eu le temps" in rep, False)
 
         # …mais si RIEN n'a été trouvé, le message doit rester utile et actionnable
         SH.safe_tool_call = lambda l, n, p, f="", e=0.0: "⚠️ Aucun résultat exploitable pour « x »"
@@ -10635,7 +10640,10 @@ def test_la_constellation_de_cartes_meritees():
     # s'afficherait même quand l'étape n'a pas eu lieu.
     bloc = ui[ui.index("<!-- ⚠️ Les cartes sont créées par le JS"):
               ui.index('<div class="chat" id="chat">')]
-    check("aucune carte pré-écrite", "consC" in bloc, False)
+    # ⚠️ On teste la CLASSE exacte, pas le prefixe : « consC » est aussi le debut de
+    # « consCol », la colonne (vide) qui accueille les cartes. Un test qui se declenche
+    # sur un prefixe finit par interdire de nommer quoi que ce soit.
+    check("aucune carte pré-écrite", 'class="consC"' in bloc, False)
     check_true("et le pourquoi est dit", "Rien n'est écrit d'avance" in bloc)
     # ⚠️ La barre ne prétend pas mesurer un avancement : on ne connaît pas la durée
     # totale. Un pourcentage inventé serait un chiffre de plus qui a l'air d'une mesure.
@@ -10678,9 +10686,14 @@ class El{ constructor(t){ this.t=t; this.children=[]; this.className=''; this.te
     contains:(c)=> self.className.split(' ').includes(c) }; }
 }
 const G=new El('g'), ORBE=new El('o'); ORBE.className='consOrbe';
-G.children=[ORBE]; G._q={'.consOrbe':ORBE};
+/* ⚠️ Les cartes ne sont plus deposees dans la grille elle-meme : elles vont dans DEUX
+   colonnes nommees, de part et d'autre de l'orbe. Sans elles, le faux DOM laissait le
+   code retomber sur la grille et le test ne verifiait plus le placement reel. */
+const GA=new El('d'), DR=new El('d'); GA.className='consCol g'; DR.className='consCol d';
+G.children=[GA,ORBE,DR]; G._q={'.consOrbe':ORBE};
 const SOUS=new El('s');
-global.document={ getElementById:(i)=> i==='consG'?G : i==='consSous'?SOUS : null,
+global.document={ getElementById:(i)=> i==='consG'?G : i==='consSous'?SOUS
+                    : i==='consGa'?GA : i==='consDr'?DR : null,
                   createElement:(t)=> new El(t) };
 """ + "eval(require('fs').readFileSync(%r,'utf8'));\n" % f + """
 consVide();
@@ -10689,12 +10702,15 @@ consEvenement({kind:'action', tool:'gmail', q:'in:inbox is:unread'});
 consEvenement({kind:'obs', tool:'gmail', text:'20 messages'});
 consEvenement({kind:'action', tool:'search_web', q:'météo Pau'});
 consEvenement({kind:'obs', tool:'notion', text:'[ERREUR] 404 introuvable'});
-const c = G.children.filter(x=>x.className && x.className.includes('consC'));
+const carte = x => x.className && x.className.split(' ').includes('consC');
+const c = [...GA.children.filter(carte), ...DR.children.filter(carte)];
 const avant = c.map(x=>x.className);
 consFini();
 console.log(JSON.stringify({
   cartes: c.map(x=>({t:x.querySelector('.h span').textContent,
                      s:x.querySelector('.s').textContent, c:x.className})),
+  gauche: GA.children.filter(carte).length, droite: DR.children.filter(carte).length,
+  dansGrille: G.children.filter(carte).length,
   avant: avant, sous: SOUS.textContent}));
 """)
         out = subprocess.run(["node", h], capture_output=True, text=True, timeout=60)
@@ -10712,6 +10728,12 @@ console.log(JSON.stringify({
     # ⚠️ Un outil inconnu obtient sa propre carte, à SON nom : mieux vaut une carte
     # honnête de plus qu'un rangement forcé dans une case qui ment.
     check_true("un outil inconnu garde son nom", "notion" in titres)
+    # ⚠️ « c'est décentré » : quatre cartes doivent se répartir DEUX à gauche et DEUX à
+    # droite de l'orbe, et aucune ne doit atterrir dans la grille elle-même — c'est ce
+    # placement libre qui faisait glisser l'orbe hors du centre.
+    check("deux cartes à gauche", r["gauche"], 2)
+    check("deux cartes à droite", r["droite"], 2)
+    check("aucune carte lâchée dans la grille", r["dansGrille"], 0)
     ko = [c for c in r["cartes"] if "ko" in c["c"]]
     check("l'échec est marqué", len(ko), 1)
     check_true("et c'est le bon", ko[0]["t"] == "notion")
@@ -11182,6 +11204,335 @@ def _jour_attendu():
             "samedi", "dimanche")[datetime.now().weekday()]
 
 
+def test_le_keyerror_action_et_les_trois_nova():
+    """« quel est mon dernier mail » → « ❌ Erreur : KeyError: 'action' ».
+
+    Une panne franche, en pleine figure, sur une question ordinaire — et de mon fait.
+    Six pseudo-actions (trajet, meteo, diagnostic, recherche de cours, cours vers Notion,
+    dernier mail) rendaient {steps, answer, ok}. Le chemin du chat, lui, attend
+    {steps, done_answer} : sa docstring le dit noir sur blanc. Ne trouvant pas la cle, il
+    passait a la branche « vrai appel d'app » et lisait direct["action"] — absente.
+
+    ⚠️ ET LE SECOND CHEMIN ETAIT PIRE. _direct_app_run_brut — celui de Siri, des webhooks
+    et des automatisations — ne traitait AUCUNE de ces six actions. « __METEO__ » y
+    partait vers Composio comme si c'etait une app, avec un slug vide.
+
+    Les deux chemins lisent desormais la MEME table. C'est le defaut recurrent du
+    projet : corriger un cote et pas son symetrique.
+    """
+    import inspect
+    doc = inspect.getdoc(A._direct_app_prepare_brut) or ""
+    check_true("le contrat du chemin chat est ecrit", "done_answer" in doc)
+
+    # 1. Les deux chemins passent par la meme table, et rendent CHACUN sa forme.
+    vus = []
+    vrais = (A._pseudo_action, A._resolve_app_action, A._traite_attente, A._complex_app_flow)
+    try:
+        def bouchon(action, args):
+            vus.append(action)
+            return {"steps": [{"kind": "action", "tool": "t", "label": action}],
+                    "texte": f"reponse de {action}"}
+        A._pseudo_action = bouchon
+        A._resolve_app_action = lambda m: ("__METEO__", {"message": m})
+        A._traite_attente = lambda m, c: None
+        A._complex_app_flow = lambda m, c: None
+        prep = A._direct_app_prepare_brut("quel temps demain", "web")
+        check("le chemin chat rend done_answer", sorted(prep.keys()), ["done_answer", "steps"])
+        check("…et jamais 'answer', que l'appelant ne lit pas", "answer" in prep, False)
+        run = A._direct_app_run_brut("quel temps demain", "passerelle")
+        check("le chemin Siri rend answer", sorted(run.keys()), ["answer", "ok", "steps"])
+        check("les deux passent par la table", vus, ["__METEO__", "__METEO__"])
+    finally:
+        (A._pseudo_action, A._resolve_app_action,
+         A._traite_attente, A._complex_app_flow) = vrais
+
+    # 2. Les SEPT pseudo-actions produites ailleurs sont toutes connues de la table.
+    src = inspect.getsource(A)
+    produites = set(re.findall(r'return "(__[A-Z_]+__)"', src))
+    connues = set(re.findall(r'action == "(__[A-Z_]+__)"', inspect.getsource(A._pseudo_action)))
+    check("aucune pseudo-action orpheline", sorted(produites - connues), [])
+    check_true("et il y en a bien sept", len(produites) == 7)
+
+    # 3. Une pseudo-action inconnue ne part JAMAIS vers Composio : le slug serait vide.
+    r = A._pseudo_action("__PAS_ENCORE_ECRITE__", {})
+    check_true("une pseudo-action inconnue est interceptee", r is not None)
+    check_true("…et elle le dit franchement", "❌" in r["texte"])
+    check("une vraie action d'app n'est pas interceptee",
+          A._pseudo_action("GMAIL_FETCH_EMAILS", {}), None)
+
+
+def test_trois_societes_deux_recherches():
+    """« est-ce que c'est une bonne idee d'acheter CRSI et DBV, et que penses-tu de
+    Valneva ? » — et sur son ecran :
+
+        🔍 Recherche sur le web… Valneva action cours actualite septembre 2026
+        🔍 Recherche sur le web… CRSI 2CRSi action cours actualite septembre 2026 (6)…
+
+    La recherche « Valneva » affichait les resultats « 2CRSi ». Ce n'etait pas un bug
+    d'affichage : le plafond de DEUX recherches etait atteint (2CRSi, puis DBV), et la
+    troisieme recevait en guise d'observation la CONCATENATION des precedentes, en-tete
+    compris. Le modele a donc relance la meme recherche en boucle jusqu'a epuiser le
+    temps, puis a rendu « Aucun modele n'est disponible pour rediger ».
+
+    Trois societes, deux recherches : la troisieme ne POUVAIT pas etre renseignee.
+    """
+    import agent.core as C
+    # 1. Le plafond n'est plus un compteur aveugle : tant qu'il reste de quoi rediger,
+    #    un sujet de plus a droit a sa recherche.
+    deja = {"a": "r1", "b": "r2"}
+    check("3e recherche permise s'il reste du temps",
+          C._peut_encore_chercher(deja, 2, 60.0), True)
+    check("…refusee s'il ne reste plus de quoi rediger",
+          C._peut_encore_chercher(deja, 2, 5.0), False)
+    check("sous le plafond, toujours permise",
+          C._peut_encore_chercher({"a": "r1"}, 2, 1.0), True)
+    # 2. Un plafond DUR reste : au-dela, ce n'est plus un sujet de plus, c'est une boucle.
+    beaucoup = {str(i): "r" for i in range(C.MAX_RECHERCHES_DUR)}
+    check("la boucle reste bornee", C._peut_encore_chercher(beaucoup, 2, 999.0), False)
+
+    # 3. Et surtout : le refus DIT qu'il n'est pas le resultat demande.
+    txt = C._plafond_atteint({"crsi": "Resultats web : 2CRSi …"})
+    check_true("le refus s'annonce avant les resultats", txt.startswith("[SYSTÈME]"))
+    check_true("…il dit que la recherche n'a pas eu lieu", "n'a PAS été lancée" in txt)
+    check_true("…et que ce qui suit vient d'ailleurs", "PRÉCÉDENTES" in txt)
+
+
+def test_la_cause_de_l_echec_n_est_plus_devinee():
+    """« ET J'AI AJOUTE OPENROUTER_API_KEY » — et Nova affichait quand meme
+    « 🔌 Aucun modele n'est disponible pour redire ». La meme question a marche a
+    l'essai suivant : le diagnostic etait faux.
+
+    Il l'etait par construction : ce message s'affichait pour N'IMPORTE QUELLE exception
+    du LLM — un delai, un contexte trop long, une coupure reseau. Un message d'echec qui
+    se trompe de cause l'envoie chercher une panne qui n'existe pas. C'est arrive quatre
+    fois cette semaine, a chaque fois avec des heures perdues au bout.
+    """
+    import asyncio
+    import agent.core as C
+    check("un delai se dit comme un delai",
+          C._cause_lisible(asyncio.TimeoutError()),
+          "aucun modèle n'a répondu dans le temps imparti")
+    check("une limite gratuite se nomme",
+          C._cause_lisible(RuntimeError("429 rate limit exceeded")),
+          "tes fournisseurs ont atteint leur limite gratuite du moment")
+    check("une cle refusee se nomme",
+          C._cause_lisible(RuntimeError("401 Unauthorized")), "une clé a été refusée")
+    check_true("un cas inconnu ne pretend rien",
+               "ValueError" in C._cause_lisible(ValueError("bizarre")))
+    # Et le texte rendu porte la vraie cause, pas la formule toute faite.
+    obs = ["🔎 Résultats web : Valneva (3)\n1. Boursier — 2,97 €"]
+    sortie = C._repli_observations(obs, "valneva", C._cause_lisible(asyncio.TimeoutError()))
+    check_true("la vraie cause est affichee", "temps imparti" in sortie)
+    check("…et plus l'affirmation fausse", "Aucun modèle n'est disponible" in sortie, False)
+
+
+def test_notion_prenait_l_identifiant_du_robot():
+    """Sur son ecran, mot pour mot :
+
+        📝 Notion a refuse la creation de la page. Je ne te dis pas que c'est fait.
+        Reponse de NOTION_CREATE_NOTION_PAGE : ❌ echec : {"error": "Parent id
+        'aa92e55a-7284-4a57-9741-6712586d8608' is neither a page nor a database"}
+
+    Notion avait raison, et l'identifiant venait de nous : _parent() prenait le PREMIER
+    identifiant croise dans la reponse brute, avec une simple expression reguliere. Une
+    reponse de recherche Notion en contient une douzaine — l'integration elle-meme,
+    l'auteur, le bloc parent, chaque propriete. Le premier n'est presque jamais une page.
+
+    « tout est connecte sur Composio depuis des semaines et a chaque fois ya un truc
+    defaillant et c'est ni moi ni Composio » : cette fois-ci non plus.
+    """
+    from agent import vers_notion as N
+    piege = ('{"bot":{"object":"bot","id":"aa92e55a-7284-4a57-9741-6712586d8608"},'
+             '"results":[{"object":"page","id":"11111111-2222-3333-4444-555555555555",'
+             '"parent":{"page_id":"99999999-9999-9999-9999-999999999999"}}]}')
+    check("l'identifiant du robot est ecarte", N.pages_candidates(piege),
+          ["11111111-2222-3333-4444-555555555555"])
+    check("un parent n'est pas la page rendue",
+          "99999999-9999-9999-9999-999999999999" in N.pages_candidates(piege), False)
+    check("aucune page → aucune invention", N.pages_candidates('{"object":"bot","id":"x"}'), [])
+
+    # Et quand la premiere page refuse, on essaie la suivante au lieu d'abandonner.
+    brut = ('{"results":[{"object":"page","id":"11111111-2222-3333-4444-555555555555"},'
+            '{"object":"page","id":"22222222-3333-4444-5555-666666666666"}]}')
+    essais = []
+
+    def appeler(nom, args, slug):
+        if "SEARCH" in nom:
+            return brut
+        essais.append(args.get("parent_id"))
+        if args.get("parent_id") == "11111111-2222-3333-4444-555555555555":
+            return '❌ {"error": "Parent id is neither a page nor a database"}'
+        return '✅ {"successful": true, "url": "https://www.notion.so/ok"}'
+
+    actions = [{"name": "NOTION_CREATE_NOTION_PAGE"}, {"name": "NOTION_SEARCH_PAGES"}]
+    out = N.envoie("Cours du 08/09", "# Titre", lambda s: actions, appeler)
+    check("la page suivante est essayee", len(essais), 2)
+    check_true("…et la creation aboutit", "est dans Notion" in out)
+
+    # Un echec qui n'a RIEN a voir avec le parent ne declenche pas de nouvel essai.
+    essais.clear()
+
+    def appeler2(nom, args, slug):
+        if "SEARCH" in nom:
+            return brut
+        essais.append(args.get("parent_id"))
+        return '❌ {"error": "title is too long"}'
+
+    out2 = N.envoie("T", "# T", lambda s: actions, appeler2)
+    check("un echec sans rapport n'est pas retente", len(essais), 1)
+    check("…et il n'est jamais annonce comme fait", "est dans Notion" in out2, False)
+
+
+def test_la_ville_du_profil_et_la_jauge_des_cles_retirees():
+    """Deux chiffres faux, cote a cote en haut de son ecran :
+
+        ☀️ Paris : averses, 16.5–26.1°C     ⚡ ████████ 88%
+
+    1. « Paris », alors que son profil dit Pau depuis des semaines. Le code cherchait la
+       categorie « ville » — elle n'existe pas : celle des lieux s'appelle « lieu ». Le
+       test etait donc TOUJOURS faux. Et il prenait le PREMIER fait trouve, dans l'ordre
+       des categories, c'est-a-dire le plus ancien : « nouveau, je suis a Pau » ne
+       pouvait rien remplacer.
+
+    2. « la fiole d'energie est fausse, elle laisse encore afficher des cles API que
+       j'ai retirees, du coup ca fausse l'utilisation. » Exact : la jauge additionnait le
+       quota de quatre fournisseurs ecrits en dur, cle presente ou non.
+    """
+    import agent.briefing as B
+    import agent.profile as P
+    vrai = P.list_facts
+    try:
+        P.list_facts = lambda: [
+            {"cat": "lieu", "texte": "Habite dans un appartement", "ts": 100},
+            {"cat": "lieu", "texte": "A grandi a Paris", "ts": 200},
+            {"cat": "lieu", "texte": "Est actuellement a Pau, residence UXCO", "ts": 900}]
+        check("le lieu le plus recent gagne", B.ville_de_lohan(), "Pau")
+        # La categorie « lieu » suffit : c'est la vraie, « ville » n'a jamais existe.
+        P.list_facts = lambda: [{"cat": "lieu", "texte": "Installe a Bordeaux", "ts": 5}]
+        check("la categorie lieu est enfin lue", B.ville_de_lohan(), "Bordeaux")
+        P.list_facts = lambda: []
+        check("sans fait, le reglage par defaut", B.ville_de_lohan(), "Paris")
+    finally:
+        P.list_facts = vrai
+
+    # La jauge ne compte que les cles REELLEMENT presentes.
+    from llm.client import cles_presentes
+    # ⚠️ On modifie l'objet config que llm.client utilise VRAIMENT : un test precedent
+    # peut lui en avoir substitue un autre, et on testerait alors une variable que
+    # personne ne lit.
+    import llm.client as _L
+    cfg = _L.config
+    avant = getattr(cfg, "GROQ_API_KEY", "")
+    try:
+        cfg.GROQ_API_KEY = ""
+        check("une cle retiree ne compte plus", "groq" in cles_presentes(), False)
+        cfg.GROQ_API_KEY = "gsk_test"
+        check("une cle presente compte", "groq" in cles_presentes(), True)
+        cfg.GROQ_API_KEY = "   "
+        check("une cle vide de blancs ne compte pas", "groq" in cles_presentes(), False)
+    finally:
+        cfg.GROQ_API_KEY = avant
+    import inspect
+    src = inspect.getsource(A.usage)
+    check_true("l'endpoint saute les fournisseurs sans cle", "if p not in presentes" in src)
+    check_true("…et dit quand rien n'est mesurable", '"mesurable"' in src)
+    # L'interface ne doit plus nommer de fournisseur en dur : elle suit le serveur.
+    ui = open("ui/nova.html", encoding="utf-8").read()
+    rendu = ui.split("async function refreshUsage")[1].split("refreshUsage();")[0]
+    check('plus de liste ecrite en dur dans la jauge',
+          '["nvidia","cerebras","groq","gemini"]' in rendu, False)
+    check_true("elle refuse d'inventer un pourcentage", "d.mesurable===false" in rendu)
+
+
+def test_le_reglage_de_modele_ne_s_efface_plus_la_nuit():
+    """« quand je regle une reponse sur un modele precis, un autre modele me repond ! »
+
+    Ce n'etait pas la chaine de secours : le reglage vivait dans un simple dict de
+    module. Render endort l'instance gratuite au bout de ~15 min sans requete ; au
+    reveil, PREFERENCE repartait a vide — donc en choix automatique, sans rien dire,
+    pendant que le selecteur de l'interface affichait toujours son choix.
+
+    Un reglage qui s'efface tout seul est pire qu'un reglage absent : il ment a l'ecran.
+    """
+    import inspect
+    import llm.client as L
+    from pathlib import Path
+    fichier = Path("data/reglages.json")
+    avant = fichier.read_text(encoding="utf-8") if fichier.exists() else None
+    try:
+        L.choisir_fournisseur("groq")
+        # On simule le reveil de Render : la memoire du processus est repartie a zero.
+        L.PREFERENCE["fournisseur"], L.PREFERENCE["_lu"] = "", False
+        check("le choix survit au reveil", L.fournisseur_choisi(), "groq")
+        # Et « auto » se conserve aussi : sinon on ne pourrait plus revenir en arriere.
+        L.choisir_fournisseur("auto")
+        L.PREFERENCE["fournisseur"], L.PREFERENCE["_lu"] = "", False
+        check("le retour a auto survit aussi", L.fournisseur_choisi(), "")
+        # Le selecteur de l'interface lit la MEME source que la chaine de modeles.
+        src = inspect.getsource(L.etat_fournisseurs)
+        check_true("le selecteur relit le choix enregistre", "fournisseur_choisi()" in src)
+    finally:
+        if avant is None:
+            fichier.unlink(missing_ok=True)
+        else:
+            fichier.write_text(avant, encoding="utf-8")
+        L.PREFERENCE["fournisseur"], L.PREFERENCE["_lu"] = "", True
+
+
+def test_les_trois_nova_et_le_volet_enroule():
+    """« ya 3 Nova la sur la 3eme photo » — il comptait juste.
+
+    TROIS affichages annoncaient la meme reflexion en meme temps : la bulle de la
+    conversation (« Nova reflechit… »), la constellation au centre (« Nova reflechit… »)
+    et le panneau de droite, tous nourris des memes evenements SSE.
+
+    « c'est decentre » : la grille assignait `grid-row: span 3` a l'orbe SANS colonne. Le
+    placement automatique le posait donc ou il restait de la place — il changeait de cote
+    selon le nombre de cartes deja creees.
+
+    « ya ecrit nouvelle conv ca fait moche car il est enroule le volet » : le libelle
+    etait un simple NOEUD DE TEXTE, que `span:last-child` n'atteignait pas. La regle
+    masquait le ＋ et laissait le texte deborder d'un rail de 62 px.
+
+    « pk le bouton avec les trois barres pour le rederouler est si loin ? » : il vivait
+    dans l'en-tete, a plus de 200 px du rail.
+    """
+    ui = open("ui/nova.html", encoding="utf-8").read()
+    # ⚠️ On ne lit que le RENDU : mes propres commentaires ont deja fait passer ce test
+    # trois fois pour de bonnes raisons qui n'en etaient pas.
+    # ⚠️ Et le retrait des commentaires doit exiger un DEBUT DE LIGNE : sans ca,
+    # accept="image/*,.pdf…" ouvre un faux commentaire CSS qui avale les 200 lignes
+    # suivantes — dont le bouton qu'on vient justement de corriger. Un test qui efface
+    # ce qu'il cherche echoue en accusant le code.
+    rendu = re.sub(r"(?m)^[ \t]*/\*.*?\*/", "", ui, flags=re.S)
+    rendu = re.sub(r"<!--.*?-->", "", rendu, flags=re.S)
+
+    # 1. Une seule voix pendant la reflexion.
+    check_true("la bulle se tait tant que rien n'est arrive",
+               "body.thinking .row.attente{ display:none; }" in rendu)
+    check_true("…et elle reprend sa place au premier mot", "function reveleBulle()" in rendu)
+    check_true("…des le premier jeton", 'd.type==="token"||d.type==="answer"){ RECU=true; reveleBulle(); }' in rendu)
+    check_true("…et pour porter le message d'arret",
+               rendu.split("if(BULLE){")[1].split("}")[0].count("reveleBulle()") == 1)
+    check_true("une bulle restee en attente est purgee",
+               '.row.attente").forEach(r=>r.classList.remove("attente"))' in rendu)
+
+    # 2. L'orbe ne peut plus changer de colonne.
+    check_true("l'orbe est cloue au milieu", "grid-column:2" in rendu)
+    check_true("les cartes ont leurs propres colonnes", 'class="consCol g" id="consGa"' in rendu)
+    check_true("…et le JS y depose alternativement",
+               'n % 2 === 0 ? "consGa" : "consDr"' in rendu)
+    check("plus d'insertion a l'aveugle dans la grille", "g.insertBefore(c, orbe)" in rendu, False)
+
+    # 3. Le volet replie.
+    check_true("le libelle a enfin son propre span", '<span class="lbl">Nouvelle conversation</span>' in rendu)
+    check_true("…et c'est LUI qu'on masque", "body.sbmini .newchat .lbl" in rendu)
+    check("plus de span:last-child qui masquait le +", ".newchat span:last-child" in rendu, False)
+    check_true("le ☰ se pose dans le rail", "body.sbmini .sbhead .ic{ display:grid" in rendu)
+    check_true("…et celui de l'en-tete s'efface", "body.sbmini #burger{ display:none; }" in rendu)
+    check_true("le bouton dit ce qu'il fait", "function majBoutonVolet()" in rendu)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -11213,6 +11564,13 @@ if __name__ == "__main__":
                test_discord_ferme_et_outils_dangereux_hors_de_portee,
                test_automatisations_fouillees_et_envoi_verifiable,
                test_la_cle_ne_peut_pas_quitter_le_telephone,
+               test_le_keyerror_action_et_les_trois_nova,
+               test_trois_societes_deux_recherches,
+               test_la_cause_de_l_echec_n_est_plus_devinee,
+               test_notion_prenait_l_identifiant_du_robot,
+               test_la_ville_du_profil_et_la_jauge_des_cles_retirees,
+               test_le_reglage_de_modele_ne_s_efface_plus_la_nuit,
+               test_les_trois_nova_et_le_volet_enroule,
                test_conversations_partagees_entre_appareils,
                test_une_tache_de_fond_ne_meurt_plus_en_silence,
                test_un_accord_ne_declenche_que_ce_qu_il_confirme,

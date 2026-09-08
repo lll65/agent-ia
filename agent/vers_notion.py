@@ -84,8 +84,79 @@ _CHERCHE = (r"^NOTION_SEARCH", r"^NOTION_.*SEARCH", r"^NOTION_LIST.*PAGE",
 _ID = re.compile(r"\b[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}\b", re.I)
 
 
-def _parent(actions, appeler) -> str:
-    """L'identifiant d'une page où créer. "" si aucune n'est accessible.
+def pages_candidates(obs: str) -> list:
+    """Les identifiants qui sont VRAIMENT des pages (ou des bases) dans une réponse Notion.
+
+    ⚠️ LE DÉFAUT QUE CETTE FONCTION SUPPRIME. On prenait le PREMIER identifiant croisé
+    dans la réponse brute, avec une simple expression régulière. Une réponse de recherche
+    Notion en contient une douzaine : l'intégration elle-même, l'auteur, le bloc parent,
+    chaque propriété… Le premier n'est presque jamais une page. D'où, à l'écran :
+    « Parent id 'aa92e55a-7284-4a57-9741-6712586d8608' is neither a page nor a database ».
+    Le message était juste ; l'identifiant venait de nous.
+
+    On lit donc la structure : seul un objet qui se déclare `"object": "page"` (ou
+    `"database"`) et porte un `id` est retenu — dans l'ordre où Notion les rend.
+    """
+    import json as _json
+    trouves = []
+
+    def visite(n):
+        if isinstance(n, dict):
+            genre = str(n.get("object") or "").lower()
+            ident = str(n.get("id") or "")
+            # `parent` porte lui aussi un id, mais il désigne le CONTENANT, pas l'objet
+            # rendu : on ne le prend jamais pour la page cherchée.
+            if genre in ("page", "database") and _ID.fullmatch(ident) and ident not in trouves:
+                trouves.append(ident)
+            for c, v in n.items():
+                if c != "parent":
+                    visite(v)
+        elif isinstance(n, list):
+            for v in n:
+                visite(v)
+
+    txt = str(obs or "")
+    # La réponse arrive souvent enrobée de texte : on tente le JSON le plus large.
+    for d, f in ((txt.find("{"), txt.rfind("}")), (txt.find("["), txt.rfind("]"))):
+        if d >= 0 and f > d:
+            try:
+                visite(_json.loads(txt[d:f + 1]))
+                if trouves:
+                    return trouves
+            except Exception:
+                pass
+    # Pas de JSON exploitable : on exige au moins que « "object": "page" » précède l'id
+    # de près.
+    for m in re.finditer(r'"object"\s*:\s*"(page|database)"', txt, re.I):
+        fenetre = txt[m.end():m.end() + 400]
+        mi = re.search(r'"id"\s*:\s*"([^"]+)"', fenetre)
+        if mi and _ID.fullmatch(mi.group(1)) and mi.group(1) not in trouves:
+            trouves.append(mi.group(1))
+    if trouves:
+        return trouves
+    # ⚠️ DERNIER RECOURS, ET IL RESTE NÉCESSAIRE. Certaines actions Composio rendent
+    # simplement { "id": "…" } sans dire de quel objet il s'agit : exiger « object »
+    # ferait perdre le parent là où l'ancien code, lui, le trouvait. On accepte donc les
+    # identifiants nus — mais JAMAIS ceux qui sont annoncés comme autre chose (le robot,
+    # l'auteur, l'espace de travail), car c'est précisément l'un d'eux qui produisait
+    # « aa92e55a-… is neither a page nor a database ».
+    interdits = set()
+    for m in re.finditer(r'"object"\s*:\s*"(?!page"|database")[a-z_]+"', txt, re.I):
+        mi = re.search(r'"id"\s*:\s*"([^"]+)"', txt[m.end():m.end() + 400])
+        if mi:
+            interdits.add(mi.group(1))
+    for m in re.finditer(r'"(?:bot_?id|user_?id|owner|workspace_?id|parent_?id)"\s*:\s*"([^"]+)"',
+                         txt, re.I):
+        interdits.add(m.group(1))
+    for m in _ID.finditer(txt):
+        v = m.group(0)
+        if v not in interdits and v not in trouves:
+            trouves.append(v)
+    return trouves
+
+
+def _parents_possibles(actions, appeler) -> list:
+    """Les pages où créer, la meilleure d'abord. Vide si aucune n'est accessible.
 
     ⚠️ D'abord son réglage s'il en a un : il sait mieux que moi où ranger ses cours.
     Sinon on DEMANDE à Notion quelles pages l'intégration voit — plutôt que d'inventer
@@ -95,10 +166,11 @@ def _parent(actions, appeler) -> str:
         from config import config
         fixe = (getattr(config, "NOTION_PARENT_ID", "") or "").strip()
         if fixe:
-            return fixe
+            return [fixe]
     except Exception:
         pass
     noms = [str((a or {}).get("name") or "") for a in (actions or [])]
+    out = []
     for motif in _CHERCHE:
         for n in noms:
             if not re.search(motif, n, re.I):
@@ -107,10 +179,30 @@ def _parent(actions, appeler) -> str:
                 obs = str(appeler(n, {"query": "", "page_size": 5}, "notion") or "")
             except Exception:
                 continue
-            m = _ID.search(obs)
-            if m:
-                return m.group(0)
-    return ""
+            for ident in pages_candidates(obs):
+                if ident not in out:
+                    out.append(ident)
+            if out:
+                return out
+    return out
+
+
+def _parent(actions, appeler) -> str:
+    """La meilleure page où créer, ou "" — conservée pour les appelants existants."""
+    lot = _parents_possibles(actions, appeler)
+    return lot[0] if lot else ""
+
+
+# Les refus qui parlent du PARENT, et eux seuls : réessayer ailleurs n'a de sens que
+# pour ceux-là. Un quota dépassé ou un titre invalide se reproduiraient à l'identique.
+_REFUS_PARENT = re.compile(
+    r"neither a page nor a database|parent_?id|could not find (page|database)|"
+    r"make sure the relevant pages and databases are shared|"
+    r"missing.{0,40}parent|invalid parent", re.I)
+
+
+def _parent_refuse(txt: str) -> bool:
+    return bool(_REFUS_PARENT.search(str(txt or "")))
 
 
 def envoie(titre: str, md: str, lister_actions, appeler) -> str:
@@ -138,25 +230,40 @@ def envoie(titre: str, md: str, lister_actions, appeler) -> str:
     # une page ou une base PARENTE. Et une intégration Notion ne voit que ce qu'on lui a
     # explicitement partagé — d'où l'échec, alors que tout est « connecté » côté Composio.
     # Ce n'était donc ni lui, ni Composio : il manquait un paramètre.
-    parent = _parent(actions, appeler)
-    args = {"title": titre[:100], "children": corps}
-    if parent:
-        # On envoie les DEUX orthographes : Composio a changé de nom de champ selon les
-        # versions, et une clé en trop est ignorée alors qu'une clé manquante bloque.
-        args["parent_id"] = parent
-        args["parent"] = {"page_id": parent}
-    obs = appeler(nom, args, "notion")
-    txt = str(obs or "")
-    if not parent and "parent_id" in txt:
+    candidats = _parents_possibles(actions, appeler)
+    # ⚠️ On ESSAIE plusieurs pages plutôt qu'une seule. La recherche Notion rend d'abord
+    # ce qu'elle veut, et une page à laquelle l'intégration n'a qu'un accès en lecture
+    # refuse la création. Deux essais coûtent une seconde ; un échec lui coûte sa séance.
+    essais = candidats[:3] or [""]
+    txt, parent = "", ""
+    for parent in essais:
+        args = {"title": titre[:100], "children": corps}
+        if parent:
+            # On envoie les DEUX orthographes : Composio a changé de nom de champ selon
+            # les versions, et une clé en trop est ignorée alors qu'une clé manquante
+            # bloque.
+            args["parent_id"] = parent
+            args["parent"] = {"page_id": parent}
+        txt = str(appeler(nom, args, "notion") or "")
+        if "✅" in txt or '"successful": true' in txt.lower():
+            break
+        if not _parent_refuse(txt):
+            break      # l'échec ne vient pas du parent : réessayer ailleurs n'aiderait pas
+    if "✅" not in txt and '"successful": true' not in txt.lower() and (
+            not parent or _parent_refuse(txt)):
         return (
-            "📝 Notion refuse de créer la page : il lui faut une **page parente**, et je "
-            "n'en ai trouvé aucune que ton intégration puisse voir.\n\n"
+            "📝 Notion refuse de créer la page : il lui faut une **page parente** à "
+            "laquelle ton intégration a accès, et "
+            + (f"aucune des {len(candidats)} pages que je vois ne l'accepte"
+               if candidats else "je n'en ai trouvé aucune qu'elle puisse voir") + ".\n\n"
             "C'est une particularité de Notion, pas une panne : une intégration ne voit "
             "que les pages qu'on lui a **explicitement partagées**.\n\n"
             "**Ce qu'il faut faire, une fois pour toutes :** dans Notion, ouvre la page "
             "où tu veux ranger tes cours → menu « … » en haut à droite → "
             "**Connexions / Ajouter des connexions** → choisis Composio. Ensuite je "
-            "saurai créer dedans."
+            "saurai créer dedans.\n\n"
+            "_Tu peux aussi coller l'identifiant de cette page dans la variable "
+            "`NOTION_PARENT_ID` sur Render : je n'aurai plus à la chercher._"
             + (f"\n\n_Réponse de {nom} : {' '.join(txt.split())[:200]}_" if txt else ""))
     if "✅" not in txt and '"successful": true' not in txt.lower():
         return ("📝 Notion a refusé la création de la page. Je ne te dis pas que c'est "
