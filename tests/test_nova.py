@@ -9880,6 +9880,101 @@ def test_l_accueil_ne_montre_que_ce_qui_est_mesure():
                any(getattr(r, "path", "") == "/accueil" for r in A_.router.routes))
 
 
+def test_la_mise_en_page_des_maquettes_sans_les_phrases_qui_rassurent():
+    """« je veux pendant que je pose une question une interface identique à la photo,
+    à part les options qu'on ne peut pas ajouter. Et pareil pour la deuxième photo. »
+
+    Il ne demandait pas les données dans mes tuiles : il demandait LA MISE EN PAGE.
+    Barre latérale permanente, bandeau date/heure/météo, et la colonne « Ma réflexion
+    en direct » pendant qu'elle travaille.
+
+    ⚠️ UNE SEULE CHOSE EST ADAPTÉE, ET C'EST LA PLUS IMPORTANTE. La maquette montrait,
+    dans cette colonne, des phrases écrites d'avance : « Je croise plusieurs sources
+    fiables pour t'apporter la meilleure réponse ». Le jour même, Nova fabriquait deux
+    URL Boursier.com et cherchait le Concrete Reinforcing Steel Institute — pendant
+    qu'une telle phrase se serait affichée. On garde le visuel exact ; le contenu vient
+    des VRAIS événements du flux, avec leur vraie heure, échecs compris.
+    """
+    ui = (Path(__file__).resolve().parents[1] / "ui" / "nova.html").read_text(encoding="utf-8")
+
+    # --- La barre latérale permanente (les deux maquettes) --------------------------
+    check_true("la colonne est fixe sur grand écran", "body .sidebar{ transform:none;" in ui)
+    check_true("et le contenu se décale", "body .app{ max-width:1240px; padding-left:280px; }" in ui)
+    # ⚠️ La règle de base (translateX(-100%)) est déclarée PLUS BAS. À spécificité
+    # égale c'est la dernière qui gagne : la colonne restait hors écran.
+    check_true("le pourquoi du sélecteur renforcé est écrit", "c'est la dernière qui" in ui)
+    # Sur téléphone elle reste un panneau qui glisse : Nova s'utilise surtout au tél.
+    check_true("le téléphone garde le panneau coulissant", "@media (min-width:1080px)" in ui)
+    check_true("le ☰ disparaît quand la colonne ne se ferme plus", "#burger, .sbhead .ic{ display:none; }" in ui)
+
+    # ⚠️ CHAQUE ENTRÉE DE NAV MÈNE QUELQUE PART. La maquette proposait « Fichiers »,
+    # « Projets », « Outils », « Recherche » : Nova n'a rien derrière. Une entrée de
+    # menu qui ne fait rien est un mensonge d'interface.
+    nav = ui[ui.index('<nav class="sbnav">'):ui.index("</nav>")]
+    for absent in ("Fichiers", "Projets", "Outils"):
+        check(f"« {absent} » n'est pas dessiné", absent in nav, False)
+    for present in ("Accueil", "Messagerie", "Calendrier", "Automatisations",
+                    "Mode Cours", "Escouade", "Mémoire", "Paramètres"):
+        check_true(f"« {present} » est là", present in nav)
+    # Chaque entrée a soit une action, soit une question — jamais rien.
+    import re as _re
+    boutons = _re.findall(r'<button class="sbn"([^>]*)>', nav)
+    check_true("aucune entrée sans comportement",
+               all(("onclick=" in b or "data-q=" in b) for b in boutons))
+    check("et le nombre d'entrées correspond", len(boutons), 8)
+    # ⚠️ La question part dans une donnée, pas dans un onclick fabriqué.
+    check_true("les entrées qui posent une question passent par data-q",
+               '.sbn[data-q]' in ui)
+
+    # --- Le bandeau haut : date, heure, météo ----------------------------------------
+    check_true("l'heure est celle de son appareil", 'id="hHeure"' in ui and "toLocaleTimeString" in ui)
+    check_true("la date aussi", 'id="hDate"' in ui)
+    # ⚠️ La météo n'apparaît QUE si elle a été mesurée : pas de pastille vide décorative.
+    check_true("la météo ne s'affiche que mesurée",
+               'meteoH.style.display = "none"' in ui and "w.ok && w.ligne" in ui)
+    # Les badges de nav viennent des MÊMES chiffres que les tuiles, pas d'une 2e source.
+    check_true("les badges viennent des données d'accueil", 'badge("navMails"' in ui)
+    check_true("et disparaissent quand il n'y a rien", "else b.hidden=true;" in ui)
+
+    # --- « Ma réflexion en direct » : le visuel de la maquette, le contenu réel -------
+    check_true("le panneau existe", 'id="pense"' in ui)
+    check_true("avec son badge Live", 'class="pLive"' in ui)
+    check_true("et la ligne verticale qui relie les points", ".pFil::before{" in ui)
+    check_true("il n'apparaît que pendant qu'elle réfléchit", "body.thinking #pense{ display:block;" in ui)
+    # ⚠️ En mode vocal l'écran est masqué : ce panneau n'a rien à y faire.
+    check_true("et jamais en mode vocal", "body.voice #pense{ display:none; }" in ui)
+
+    # ⚠️ LE POINT CENTRAL : aucune phrase pré-écrite sur la qualité du travail.
+    # ⚠️ On retire les commentaires HTML avant de chercher : ils CITENT les phrases
+    # refusées pour expliquer pourquoi on les refuse. Un test qui interroge ses propres
+    # commentaires ne vérifie rien — troisième fois aujourd'hui que je m'y reprends.
+    import re as _re2
+    panneau = _re2.sub(r"<!--.*?-->", "",
+                       ui[ui.index('<aside id="pense">'):ui.index("</aside>")], flags=_re2.S)
+    for menteuse in ("sources fiables", "la meilleure réponse", "Je croise plusieurs",
+                     "je peux déjà regarder tes mails", "Je te prépare un résumé"):
+        check(f"« {menteuse} » n'est pas affiché", menteuse in panneau, False)
+    # Ce qui EST annoncé est vrai : le bouton ⏹ existe, Échap aussi, et le partiel reste.
+    check_true("on n'annonce que ce qui marche", "je m'arrête entre deux étapes" in panneau)
+    check_true("Échap est bien réel", "<kbd>Échap</kbd>" in panneau)
+
+    # --- La timeline est alimentée par les VRAIS événements --------------------------
+    check_true("chaque étape du flux y entre", "penseAjoute(stepLabel(d), det," in ui)
+    # ⚠️ Une observation en erreur doit se VOIR, pas disparaître derrière un point violet.
+    check_true("les échecs sont marqués", "penseEchec(det)" in ui and ".pE.ko::before{" in ui)
+    check_true("les sources consultées aussi", "penseAjoute(trace[pi].label," in ui)
+    check_true("la rédaction aussi", 'penseAjoute("Je rédige ma réponse"' in ui)
+    check_true("une nouvelle question repart d'une timeline vide", "penseVide(); penseAjoute" in ui)
+    # ⚠️ « Toujours en cours… » qui reste affiché après une coupure serait un mensonge.
+    check_true("une coupure réseau le dit", 'penseFini("⚠️ Connexion interrompue.")' in ui)
+    check_true("un arrêt manuel aussi", 'penseFini("⏹ Arrêté à ta demande.")' in ui)
+    check_true("et la fin normale aussi", 'penseFini("Terminé.")' in ui)
+    # ⚠️ Une boucle longue produirait cent entrées : on borne, sinon la page rame.
+    check_true("le nombre d'entrées est borné", "while(f.children.length > 24)" in ui)
+    # Le texte des étapes vient du serveur : il passe par l'échappement.
+    check_true("le contenu est échappé", "esc(_cut(titre,54))" in ui)
+
+
 def test_le_briefing_appelait_gmail_par_l_autre_porte():
     """« Erreur de récupération des mails : 404 – vérifie les autorisations et
     l'activation de l'API sur composio.dev » — alors que ses mails marchaient dans le
@@ -10333,7 +10428,8 @@ if __name__ == "__main__":
                test_elle_disait_c_est_note_sans_rien_noter,
                test_son_cours_s_ouvre_dans_libreoffice,
                test_410_gone_le_seul_code_que_l_auto_guerison_ignorait,
-               test_l_accueil_ne_montre_que_ce_qui_est_mesure):
+               test_l_accueil_ne_montre_que_ce_qui_est_mesure,
+               test_la_mise_en_page_des_maquettes_sans_les_phrases_qui_rassurent):
         try:
             fn()
         except Exception as e:
