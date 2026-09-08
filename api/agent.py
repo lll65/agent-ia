@@ -1263,6 +1263,14 @@ def _resolve_app_action(message: str):
             "maxResults": 25, "singleEvents": True, "orderBy": "startTime",
         }
     if any(h in m for h in mail):
+        # ⚠️ « lis mon dernier mail » rendait le TRI COMPLET de la boîte — exactement la
+        # même réponse que « résume mes mails », au mot près. Il a demandé UN mail et
+        # reçu un rapport de treize. Lire un message précis et trier une boîte sont deux
+        # demandes différentes ; les confondre, c'est ne répondre à aucune des deux.
+        if re.search(r"\b(lis|lit|lire|ouvre|montre|affiche)\b[^.]{0,30}"
+                     r"\b(dernier|derniere|dernière|premier)\b", m) or \
+           re.search(r"\b(dernier|dernière|derniere)\s+(mail|message|courriel|mel)\b", m):
+            return "__DERNIER_MAIL__", {}
         # ⚠️ On rendait la liste BRUTE des sujets. Résultat vu en vrai : dix
         # notifications Instagram alignées dans un tableau, avec « Alerte de
         # sécurité » noyée en 3ᵉ position — donc l'inverse d'un service. La demande
@@ -2209,6 +2217,13 @@ def _direct_app_prepare_brut(message: str, canal: str = "web"):
         return {"steps": [{"kind": "action", "tool": "meteo",
                            "label": f"Météo de {ville}"}],
                 "answer": repond(msg, ville), "ok": True}
+    if action == "__DERNIER_MAIL__":
+        from agent.rapport_mail import dernier_mail
+        from plugins.builtin.mails_tool import _extraire
+        brut = _tool("GMAIL_FETCH_EMAILS", {"maxResults": 5, "query": "in:inbox"}, "gmail")
+        return {"steps": [{"kind": "action", "tool": "gmail", "label": "Ton dernier mail"}],
+                "answer": dernier_mail(_extraire(str(brut or "")), str(brut or "")),
+                "ok": True}
     if action == "__RAPPORT_MAILS__":
         return {"steps": [{"kind": "action", "tool": "gmail", "label": "Tri de tes mails"}],
                 "done_answer": _rapport_mails(args)}

@@ -9705,14 +9705,19 @@ def test_son_cours_s_ouvre_dans_libreoffice():
     pages = re.findall(r'draw:name="([^"]+)"', z.read("content.xml").decode())
     # ⚠️ Une diapo par SECTION : découper tous les N mots donnerait des diapos qui
     # commencent au milieu d'une phrase.
-    # ⚠️ Attente corrigée : on découpe désormais jusqu'au niveau 4, parce que ses
-    # cours sont structurés en « ### ». Avec ce markdown-là, ça fait quatre diapos —
-    # « ### Définition d'une organisation » en ouvre une, et c'est le but.
-    check("une diapo par section, tous niveaux compris", len(pages), 4)
+    # ⚠️ Attente corrigée DEUX FOIS. D'abord parce qu'on découpe jusqu'au niveau 4
+    # (ses cours sont en « ### »). Puis parce qu'une section AVEC un titre et SANS
+    # contenu — « ## Le cours » — ne fait plus de diapo : il en avait une vide sous
+    # les yeux, avec un titre et rien dessous. Un intitulé de structure n'est pas une
+    # diapo.
+    check("une diapo par section NON VIDE", len(pages), 3)
+    check("et la section vide est écartée", "Le cours" in pages, False)
     check_true("nommées d'après les titres du cours", "1. Environnement" in pages)
     # ⚠️ Une section trop longue est RECOUPÉE, pas tronquée : rien ne se perd.
     longue = O.sections("## Grande section\n" + "\n".join(f"ligne {i}" for i in range(30)))
-    check("la section longue est recoupée", len(longue), 3)
+    # ⚠️ Neuf lignes par diapo, pas douze : avec douze lignes longues le texte
+    # débordait encore du cadre — il l'a eu à l'écran.
+    check("la section longue est recoupée", len(longue), 4)
     check_true("et la suite est annoncée", "(suite)" in longue[1][0])
     check("aucune ligne perdue", sum(len(l) for _t, l in longue), 30)
 
@@ -10288,6 +10293,37 @@ def test_deplacer_un_cours_dans_notion_sans_se_tromper_de_cours():
                         lambda s: [{"name": "NOTION_CREATE_NOTION_PAGE"}],
                         lambda a, ar, s: "✅ ok https://www.notion.so/abc")
     check_true("la troncature est annoncée", "n'ont pas été envoyées" in long_msg)
+
+    # --- La mise en forme du diaporama ----------------------------------------------
+    # ⚠️ « regarde cette mise en forme toujours catastrophique quand j'exporte ». Il
+    # avait raison : je ne déclarais AUCUN style. Impress appliquait son gabarit par
+    # défaut — bloc bleu, texte minuscule, et surtout du texte qui DÉBORDE du cadre
+    # parce que rien ne lui disait de s'adapter.
+    import importlib
+    import io
+    import zipfile
+    import xml.dom.minidom as _x
+    O2 = importlib.import_module("agent.odf")
+    md2 = ("## En bref\nCe cours analyse les normes.\n\n## Le cours\n\n"
+           "### 1. Typologie\n- **Identité** : même chose.\n  - *Exemple* : États islamiques.\n")
+    z2 = zipfile.ZipFile(io.BytesIO(O2.odp(md2)))
+    check_true("une feuille de styles est jointe", "styles.xml" in z2.namelist())
+    # ⚠️ Un fichier absent du manifeste est un fichier IGNORÉ par LibreOffice : le fond
+    # serait dans l'archive et n'aurait aucun effet, sans le moindre message d'erreur.
+    check_true("et déclarée au manifeste",
+               "styles.xml" in z2.read("META-INF/manifest.xml").decode())
+    _x.parseString(z2.read("styles.xml"))
+    st = z2.read("styles.xml").decode()
+    check_true("le fond est défini", "fondNova" in st and "draw:fill=\"gradient\"" in st)
+    check_true("la diapo est en 16:9", 'fo:page-width="28.0cm"' in st)
+    c2 = z2.read("content.xml").decode()
+    check_true("les titres ont leur style", 'text:style-name="pTitre"' in c2)
+    check_true("les puces sont indentées", 'text:style-name="pPuce"' in c2)
+    check_true("les sous-puces davantage", 'text:style-name="pPuce2"' in c2)
+    # ⚠️ Le texte qui déborde était le plus visible sur sa capture.
+    check_true("le texte s'adapte au cadre", 'style:shrink-to-fit="true"' in c2)
+    check_true("et les diapos sont numérotées", 'text:style-name="pNum"' in c2)
+    check_true("chaque page porte le gabarit", 'draw:master-page-name="Nova"' in c2)
     check_true("et il sait où trouver le cours entier", "téléchargement" in long_msg)
 
     # --- 3. Jamais un succès supposé -------------------------------------------------
