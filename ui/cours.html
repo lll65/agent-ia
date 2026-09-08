@@ -95,6 +95,22 @@
   .fiche.open .r{ display:block; }
   .row{ display:flex; gap:10px; flex-wrap:wrap; margin-top:16px; }
   .row button{ flex:1; min-width:130px; }
+  /* Le menu de téléchargement. Il s'ouvre VERS LE HAUT : ces boutons sont en bas de
+     page, et un menu qui descend sort de l'écran sur téléphone. */
+  .ddwrap{ position:relative; flex:1; min-width:130px; display:flex; }
+  .ddwrap>button{ width:100%; }
+  .ddmenu{ display:none; position:absolute; bottom:calc(100% + 8px); left:0;
+           min-width:250px; z-index:30; padding:6px; border-radius:14px;
+           background:rgba(14,14,28,.98); border:1px solid var(--stroke);
+           box-shadow:0 14px 40px rgba(0,0,0,.55); backdrop-filter:blur(14px); }
+  .ddmenu.show{ display:block; }
+  .ddmenu button{ display:block; width:100%; text-align:left; border:0; background:none;
+                  border-radius:10px; padding:9px 11px; font-size:13.5px; color:var(--txt); }
+  .ddmenu button:hover{ background:rgba(255,255,255,.07); }
+  .ddmenu button span{ display:block; font-size:11px; color:var(--dim); margin-top:1px; }
+  /* Sans base persistante, un cours de deux heures disparaît dans la nuit. Il doit le
+     savoir AVANT d'enregistrer, pas le lendemain. */
+  #persoWarn{ margin-bottom:14px; }
 
   .hist{ font-size:13.5px; }
   .hist a{ display:flex; justify-content:space-between; gap:10px; align-items:center; color:var(--txt);
@@ -173,9 +189,21 @@
              format Calc ou normal ». Writer garde TOUT le cours (titres, texte,
              tableaux) ; Calc ne peut porter que les tableaux — un tableur n'a pas de
              paragraphes. C'est écrit dans le libellé plutôt que découvert à l'ouverture. -->
-        <button id="dl">⬇️ Télécharger (.md)</button>
-        <button id="dlOdt" title="LibreOffice Writer — tout le cours, mis en forme">📄 Writer (.odt)</button>
-        <button id="dlOds" title="LibreOffice Calc — les tableaux du cours, une feuille chacun">📊 Calc (.ods)</button>
+        <!-- ⚠️ « faut un mini déroulant avec télécharger, ou alors LibreOffice diapo, ou
+             Writer, ou Calc ». Trois boutons côte à côte poussaient « Copier » et
+             « Nouveau cours » à la ligne suivante sur téléphone. Un seul bouton, un
+             menu. Chaque ligne dit ce qu'elle EMPORTE : un tableur n'a pas de
+             paragraphes, un diaporama n'a pas de tableaux. Le lire avant vaut mieux
+             que le découvrir à l'ouverture. -->
+        <div class="ddwrap">
+          <button id="dl">⬇️ Télécharger ▾</button>
+          <div class="ddmenu" id="dlMenu">
+            <button data-fmt="md">📝 Markdown (.md)<span>le texte brut, tout est dedans</span></button>
+            <button data-fmt="odt">📄 Writer (.odt)<span>tout le cours, mis en forme</span></button>
+            <button data-fmt="odp">📊 Impress (.odp)<span>une diapo par section</span></button>
+            <button data-fmt="ods">🔢 Calc (.ods)<span>les tableaux seulement</span></button>
+          </div>
+        </div>
         <button id="copy">📋 Copier</button>
         <button id="again">🎙️ Nouveau cours</button>
       </div>
@@ -496,9 +524,7 @@ function echecSynthese(sid, e){
   $("synth").innerHTML = "";
   $("synth").closest(".card").classList.add("hide");
   $("fichesCard").classList.add("hide");
-  $("dl").onclick = () => telecharger(sid);
-  $("dlOdt").onclick = () => telecharger(sid, "odt");
-  $("dlOds").onclick = () => telecharger(sid, "ods");
+  brancheTelechargement(sid);
   $("copy").textContent = "🔄 Réessayer la synthèse";
   $("copy").onclick = () => relancerSynthese(sid);
 }
@@ -569,9 +595,7 @@ function afficher(d, perdues){
   [...document.querySelectorAll(".fiche")].forEach(el =>
     el.onclick = () => el.classList.toggle("open"));
   const sid = d.id || SID;
-  $("dl").onclick = () => telecharger(sid);
-  $("dlOdt").onclick = () => telecharger(sid, "odt");
-  $("dlOds").onclick = () => telecharger(sid, "ods");
+  brancheTelechargement(sid);
   $("copy").textContent = "📋 Copier";
   $("copy").onclick = async () => {
     try{ await navigator.clipboard.writeText(d.synthese || ""); $("copy").textContent = "✅ Copié"; }
@@ -579,6 +603,22 @@ function afficher(d, perdues){
     setTimeout(() => $("copy").textContent = "📋 Copier", 1800);
   };
 }
+/* Un seul bouton, un menu. Le format choisi part dans l'URL ; le menu se referme
+   dès qu'on clique ailleurs, sinon il reste ouvert par-dessus la synthèse. */
+function brancheTelechargement(sid){
+  const b = $("dl"), m = $("dlMenu");
+  if(!b || !m) return;
+  b.onclick = (e)=>{ e.stopPropagation(); m.classList.toggle("show"); };
+  m.querySelectorAll("button[data-fmt]").forEach(x=>{
+    x.onclick = ()=>{ m.classList.remove("show");
+      const f = x.getAttribute("data-fmt");
+      telecharger(sid, f === "md" ? "" : f); };
+  });
+}
+document.addEventListener("click", ()=>{
+  const m = document.getElementById("dlMenu");
+  if(m) m.classList.remove("show");
+});
 function telecharger(sid, format){
   window.location = ORIGIN + "/agent/cours/export?id=" + encodeURIComponent(sid) +
                     "&key=" + encodeURIComponent(KEY) +
@@ -587,11 +627,30 @@ function telecharger(sid, format){
 $("again").onclick = () => { SID = null; show("setup"); $("go").disabled = false;
   $("titre").value = ""; $("matiere").value = ""; window.scrollTo(0,0); };
 
+function avertitPersistance(ok){
+  let z = document.getElementById("persoWarn");
+  if(ok){ if(z) z.remove(); return; }
+  if(!z){ z = document.createElement("div"); z.id = "persoWarn"; z.className = "warn bad";
+    const h = document.getElementById("hist");
+    (h && h.parentElement ? h.parentElement : document.body).prepend(z); }
+  z.innerHTML = "⚠️ <b>Tes cours ne survivront pas à la nuit.</b> Aucune base "
+    + "persistante n'est configurée : ils ne sont gardés que sur le disque du serveur, "
+    + "qui est effacé à chaque redéploiement. Télécharge-les après chaque séance, ou "
+    + "renseigne <b>SUPABASE_DB_URL</b> dans les variables Render.";
+}
+
 /* ── Historique ────────────────────────────────────────────────────────── */
 async function charger(){
   if(!KEY) return;
   try{
     const d = await (await fetch(ORIGIN + "/agent/cours?key=" + encodeURIComponent(KEY))).json();
+    /* ⚠️ « mes cours doivent rester enregistrés ». Ils le sont — mais SEULEMENT si une
+       base persistante est configurée. Sans elle, ils ne vivent que sur le disque de
+       Render, effacé à chaque redéploiement et après quelques heures de veille. Cette
+       absence ne se voyait NULLE PART : il l'aurait apprise le lendemain, après avoir
+       enregistré deux heures de cours. Une perte de données silencieuse est la pire de
+       toutes — on le dit AVANT d'appuyer sur enregistrer. */
+    avertitPersistance(d.persistant !== false);
     const S = d.sessions || [];
     if(!S.length){ $("hist").innerHTML = "<p class='muted'>Aucun cours enregistré pour l'instant.</p>"; return; }
     $("hist").innerHTML = S.map(s => {

@@ -22,10 +22,16 @@
     opacity:.62; transition:opacity 1.3s ease, filter 1.3s ease; }
   /* ⚠️ Sur un fond quasi noir, les mêmes taches bavaient et délavaient le texte.
      On baisse leur opacité : le noir doit rester noir pour que l'accent ressorte. */
-  #aurora .blob{ position:absolute; border-radius:50%; opacity:.42; mix-blend-mode:screen; will-change:transform; }
-  #aurora .b1{ width:60vw; height:60vw; left:-12vw; top:-16vh; background:radial-gradient(circle,#8b6dff,transparent 68%); animation:float1 22s ease-in-out infinite; }
-  #aurora .b2{ width:52vw; height:52vw; right:-10vw; top:2vh; background:radial-gradient(circle,#2fe0f5,transparent 68%); animation:float2 26s ease-in-out infinite; }
-  #aurora .b3{ width:46vw; height:46vw; left:22vw; bottom:-18vh; background:radial-gradient(circle,#ec4899,transparent 70%); animation:float3 30s ease-in-out infinite; }
+  #aurora .blob{ position:absolute; border-radius:50%; opacity:.34; mix-blend-mode:screen; will-change:transform; }
+  /* ⚠️ « niveau couleur ce n'est pas du tout pareil ». Sur sa capture, le fond partait
+     en magenta à gauche et en vert d'eau à droite : trois taches saturées, en
+     mix-blend-mode:screen, qui délavent tout. Les maquettes sont d'un BLEU NUIT profond
+     et homogène, avec le violet en accent, pas en nappe. On garde le mouvement — c'est
+     joli — mais dans une gamme resserrée : indigo, bleu, un soupçon de violet.
+     Le rose est retiré : c'est lui qui tirait tout vers le mauve. */
+  #aurora .b1{ width:64vw; height:64vw; left:-16vw; top:-20vh; background:radial-gradient(circle,#4f46e5,transparent 70%); animation:float1 22s ease-in-out infinite; }
+  #aurora .b2{ width:54vw; height:54vw; right:-14vw; top:0; background:radial-gradient(circle,#1e40af,transparent 72%); animation:float2 26s ease-in-out infinite; }
+  #aurora .b3{ width:48vw; height:48vw; left:24vw; bottom:-22vh; background:radial-gradient(circle,#7c3aed,transparent 74%); animation:float3 30s ease-in-out infinite; }
   @keyframes float1{ 0%,100%{ transform:translate(0,0) scale(1) } 50%{ transform:translate(7vw,6vh) scale(1.15) } }
   @keyframes float2{ 0%,100%{ transform:translate(0,0) scale(1) } 50%{ transform:translate(-6vw,5vh) scale(.9) } }
   @keyframes float3{ 0%,100%{ transform:translate(0,0) scale(1) } 50%{ transform:translate(5vw,-6vh) scale(1.1) } }
@@ -119,12 +125,36 @@
      qui ne fait rien est un mensonge d'interface — on la retire plutôt que de la
      dessiner. */
   .sbnav{ display:flex; flex-direction:column; gap:2px; padding:2px 0 6px; }
-  .sbn{ display:flex; align-items:center; gap:11px; padding:9px 11px; border-radius:11px;
-        cursor:pointer; color:var(--dim); font-size:13.5px; font-weight:550;
+  /* ⚠️ « niveau esthétique couleur et tout n'est pas du tout pareil ». Sur sa capture,
+     la colonne écrasait tout : bouton géant, nav en 13,5 px avec 9 px de marge, et les
+     mêmes entrées répétées plus bas. Les maquettes sont COMPACTES et sombres — c'est
+     la densité qui fait l'allure, pas la taille. On resserre. */
+  .sbn{ display:flex; align-items:center; gap:10px; padding:7px 10px; border-radius:9px;
+        cursor:pointer; color:var(--dim); font-size:12.5px; font-weight:550;
         border:1px solid transparent; background:none; text-align:left; width:100%;
         font-family:inherit; transition:.16s; }
   .sbn:hover{ background:rgba(255,255,255,.055); color:var(--txt); border-color:var(--stroke); }
-  .sbn i{ font-style:normal; font-size:15px; width:20px; text-align:center; }
+  .sbn i{ font-style:normal; font-size:13.5px; width:18px; text-align:center; opacity:.9; }
+  .ico{ width:17px; height:17px; flex:0 0 17px; opacity:.72; transition:.16s; }
+  .sbn:hover .ico{ opacity:1; color:var(--neon2); }
+  /* Le logo des maquettes : une petite sphère, le mot, une ligne de service dessous.
+     Pas un titre de 26 px en dégradé qui prend le tiers du bandeau. */
+  .logoOrbe{ width:26px; height:26px; border-radius:50%; flex:0 0 26px;
+             background:radial-gradient(circle at 32% 30%, #c7b8ff, #6d4df0 55%, #241a5c);
+             box-shadow:0 0 16px rgba(139,109,255,.55), inset 0 0 8px rgba(255,255,255,.25); }
+  .logoBloc{ display:flex; align-items:center; gap:10px; }
+  .logoBloc .logo{ font-size:17px; letter-spacing:.24em; }
+  .logoBloc .logo small{ letter-spacing:.12em; font-size:8.5px; }
+  @media (min-width:1080px){
+    /* La colonne fixe des maquettes : sobre, resserrée, sans bouton qui crie. */
+    body .newchat{ padding:9px 12px; font-size:12.5px; border-radius:11px;
+                   box-shadow:0 3px 14px rgba(139,109,255,.28); }
+    body .sbhead .b{ font-size:14px; }
+    body .sidebar{ gap:9px; padding-top:16px; }
+    body .sbsearch{ padding:7px 11px; font-size:11.5px; }
+    body .sbf{ padding:7px 8px; font-size:11.5px; }
+    body .sbitem{ padding:8px 10px; font-size:12px; }
+  }
   .sbn b{ margin-left:auto; font-size:10.5px; font-weight:700; padding:2px 7px;
           border-radius:999px; background:rgba(139,109,255,.22); color:#cfc4ff; }
   .sbUser{ display:flex; align-items:center; gap:10px; padding:10px 11px; margin-top:6px;
@@ -234,6 +264,11 @@
   .accT .t{ font-size:11.5px; color:var(--dim); font-weight:600; letter-spacing:.02em; }
   .accT .v{ font-size:25px; font-weight:800; margin-top:3px; letter-spacing:-.02em; }
   .accT .s{ font-size:11.5px; color:var(--dim); margin-top:3px; }
+  /* La case en attente : la même forme, en sourdine. La mise en page ne bougera plus
+     quand les chiffres arriveront — seuls les chiffres changent. */
+  .accT.sk{ cursor:default; opacity:.55; animation:skPulse 1.5s ease-in-out infinite; }
+  .accT.sk:hover{ transform:none; box-shadow:none; border-color:var(--stroke); }
+  @keyframes skPulse{ 50%{ opacity:.32 } }
   /* ⚠️ Une tuile en panne ne doit PAS ressembler à une tuile vide : c'est tout l'enjeu. */
   .accT.ko{ border-color:rgba(251,191,36,.40); cursor:default;
             background:linear-gradient(160deg,rgba(251,191,36,.10),rgba(251,191,36,.03)); }
@@ -691,7 +726,8 @@
   <div class="app">
     <header>
       <button class="ic" id="burger" onclick="toggleSidebar()" title="Conversations">☰</button>
-      <div class="logo">NOVA<small>ASSISTANT · DU FUTUR</small></div>
+      <div class="logoBloc"><span class="logoOrbe"></span>
+        <div class="logo">NOVA<small>PLUS QU'UN ASSISTANT</small></div></div>
       <div class="tools">
         <!-- Date, heure et météo, comme sur les maquettes. La météo n'apparaît que si
              elle a été mesurée : pas de pastille vide décorative. -->
@@ -797,24 +833,30 @@
          et « Recherche » de la maquette n'ont rien derrière eux dans Nova : les dessiner
          serait promettre ce qui n'existe pas. Elles reviendront quand la fonction
          existera, pas avant. -->
+    <!-- ⚠️ « ça fait enfantin ». Le coupable principal, ce sont les EMOJI dans le
+         châssis : 🏠 ✉️ 📅 sont dessinés par le système, en couleurs vives et en style
+         cartoon, et ils jurent avec tout le reste. Les maquettes utilisent des icônes
+         AU TRAIT, monochromes, qui prennent la couleur du texte. C'est ce seul détail
+         qui sépare « application » de « jouet ».
+         Les emoji restent dans les RÉPONSES — là ils portent du sens et il les lit. -->
     <nav class="sbnav">
-      <button class="sbn" onclick="allerAccueil()"><i>🏠</i> Accueil</button>
-      <button class="sbn" data-q="Résume mes mails"><i>✉️</i> Messagerie<b id="navMails" hidden></b></button>
-      <button class="sbn" data-q="Qu'est-ce que j'ai de prévu aujourd'hui ?"><i>📅</i> Calendrier<b id="navAgenda" hidden></b></button>
-      <button class="sbn" onclick="openAuto()"><i>⚡</i> Automatisations</button>
-      <button class="sbn" onclick="location.href='/nova/cours'"><i>🎓</i> Mode Cours</button>
-      <button class="sbn" onclick="location.href='/nova/brain'"><i>🌌</i> Escouade</button>
-      <button class="sbn" onclick="openMemory()"><i>🧠</i> Mémoire</button>
-      <button class="sbn" onclick="openCfg()"><i>⚙️</i> Paramètres</button>
+      <button class="sbn" onclick="allerAccueil()">{{i:home}} Accueil</button>
+      <button class="sbn" data-q="Résume mes mails">{{i:mail}} Messagerie<b id="navMails" hidden></b></button>
+      <button class="sbn" data-q="Qu'est-ce que j'ai de prévu aujourd'hui ?">{{i:cal}} Calendrier<b id="navAgenda" hidden></b></button>
+      <button class="sbn" onclick="openAuto()">{{i:bolt}} Automatisations</button>
+      <button class="sbn" onclick="location.href='/nova/cours'">{{i:cap}} Mode Cours</button>
+      <button class="sbn" onclick="location.href='/nova/brain'">{{i:net}} Escouade</button>
+      <button class="sbn" onclick="openMemory()">{{i:brain}} Mémoire</button>
+      <button class="sbn" onclick="openCfg()">{{i:cog}} Paramètres</button>
     </nav>
     <input class="sbsearch" id="sbsearch" placeholder="🔎 Rechercher une conversation…"
            oninput="filterSessions(this.value)">
     <div class="sblist" id="sblist"></div>
     <div class="sbfoot">
-      <button class="sbf" onclick="openAuto()">🌙 Automatisations</button>
-      <button class="sbf" onclick="location.href='/nova/brain'">🌌 Escouade</button>
-      <button class="sbf" onclick="location.href='/nova/cours'">🎓 Mode Cours</button>
-      <button class="sbf" onclick="openMemory()">🧠 Mémoire</button>
+      <!-- ⚠️ Automatisations, Escouade, Mode Cours et Mémoire figuraient ICI **et** dans
+           la nav : chaque entrée apparaissait deux fois dans la même colonne. Elles sont
+           dans la nav, qui est l'endroit qu'on regarde ; il ne reste ici que ce qui n'y
+           est pas. -->
       <button class="sbf" onclick="openModeles()">🎛️ Modèle</button>
       <button class="sbf" onclick="diagLLM()">🩺 Diagnostic</button>
       <button class="sbf" id="soundBtn" onclick="toggleSound()">🔉 Sons</button>
@@ -1274,6 +1316,37 @@ function penseEchec(t){
          .test(String(t||""));
 }
 
+/* ═══ ICÔNES AU TRAIT ═══
+   ⚠️ « ça fait enfantin ». Les emoji du châssis (🏠 ✉️ 📅 ⚙️) sont dessinés par le
+   système en style cartoon : c'est ce qui sépare « application » de « jouet ». Les
+   maquettes utilisent des icônes au trait, monochromes, qui prennent la couleur du
+   texte alentour. Elles sont écrites en SVG ici même — aucune police à télécharger,
+   aucune dépendance, et elles restent nettes à toutes les tailles. */
+const ICONES = {
+  home:"M3 10.5 12 3l9 7.5M5.5 9.5V20h13V9.5M9.5 20v-6h5v6",
+  mail:"M3 6.5h18v11H3zM3 7l9 6.5L21 7",
+  cal:"M3.5 5.5h17v15h-17zM3.5 10h17M8 3v4M16 3v4",
+  bolt:"M13.5 2.5 5 13.5h6l-1.5 8 8.5-11h-6z",
+  cap:"M12 4 2.5 9 12 14l9.5-5zM6.5 11.2V16c0 1.4 2.5 2.6 5.5 2.6s5.5-1.2 5.5-2.6v-4.8",
+  net:"M12 5.5a2.2 2.2 0 1 0 0-.1zM5 17.5a2.2 2.2 0 1 0 0-.1zM19 17.5a2.2 2.2 0 1 0 0-.1zM10.4 7.3 6.6 15M13.6 7.3 17.4 15M7.3 17.5h9.4",
+  brain:"M9 4.5A2.8 2.8 0 0 0 6.2 7 2.6 2.6 0 0 0 4.5 9.5c0 1 .5 1.8 1.2 2.3-.5.5-.8 1.2-.8 2 0 1.6 1.4 2.9 3 2.9.2 1.3 1.4 2.3 2.8 2.3h.3V4.5zM15 4.5A2.8 2.8 0 0 1 17.8 7a2.6 2.6 0 0 1 1.7 2.5c0 1-.5 1.8-1.2 2.3.5.5.8 1.2.8 2 0 1.6-1.4 2.9-3 2.9-.2 1.3-1.4 2.3-2.8 2.3H13V4.5z",
+  cog:"M12 9.2a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6zM19.3 14.2a1.5 1.5 0 0 0 .3 1.7l.1.1a1.8 1.8 0 1 1-2.6 2.6l-.1-.1a1.5 1.5 0 0 0-2.5 1v.2a1.8 1.8 0 1 1-3.6 0v-.1a1.5 1.5 0 0 0-2.6-1l-.1.1a1.8 1.8 0 1 1-2.6-2.6l.1-.1a1.5 1.5 0 0 0-1-2.5h-.2a1.8 1.8 0 1 1 0-3.6h.1a1.5 1.5 0 0 0 1-2.6l-.1-.1a1.8 1.8 0 1 1 2.6-2.6l.1.1a1.5 1.5 0 0 0 2.5-1v-.2a1.8 1.8 0 1 1 3.6 0v.1a1.5 1.5 0 0 0 2.6 1l.1-.1a1.8 1.8 0 1 1 2.6 2.6l-.1.1a1.5 1.5 0 0 0 1 2.5h.2a1.8 1.8 0 1 1 0 3.6h-.1a1.5 1.5 0 0 0-1.4.9z",
+};
+function ico(nom){
+  const d = ICONES[nom];
+  if(!d) return "";
+  return '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+       + 'stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+       + '<path d="' + d + '"/></svg>';
+}
+/* Les gabarits {{i:nom}} sont remplacés au chargement : le HTML reste lisible, et une
+   icône inconnue disparaît au lieu d'afficher son gabarit en clair. */
+(function poseIcones(){
+  document.querySelectorAll(".sbn").forEach(el=>{
+    el.innerHTML = el.innerHTML.replace(/\{\{i:(\w+)\}\}/g, (_, n)=>ico(n));
+  });
+})();
+
 function ticTac(){
   const n = new Date();
   const d = document.getElementById("hDate"), h = document.getElementById("hHeure");
@@ -1305,9 +1378,30 @@ document.addEventListener("click", e=>{
   if(i){ i.value = b.getAttribute("data-q"); grow(i); ask(); }
 });
 
+/* ⚠️ « ça met du temps à arriver les cases ». Normal : la route interroge Gmail et
+   l'agenda via Composio, et sur l'offre gratuite de Render ça prend plusieurs secondes —
+   pendant lesquelles l'écran ne montrait RIEN. Un écran vide ne dit pas « je charge »,
+   il dit « il n'y a rien ». On dessine donc les cases tout de suite, en attente, et on
+   les remplit à l'arrivée. La mise en page ne bouge plus, seuls les chiffres changent. */
+function accSquelette(){
+  const z = document.getElementById("accueil");
+  if(!z || z.dataset.rempli) return;
+  const t = (ic,lib)=>'<div class="accT sk"><div class="p">'+ic+'</div><div class="t">'
+      + lib + '</div><div class="v">…</div><div class="s">je regarde…</div></div>';
+  z.innerHTML = '<div class="accTop"><div><div class="accSalut">Bonjour Lohan</div>'
+    + '<div class="accJour" id="accJourSk"></div></div></div><div class="accGrille">'
+    + t("✉️","Mails non lus") + t("📅","Aujourd'hui")
+    + t("⚡","Automatisations") + t("🎓","Cours enregistrés") + '</div>';
+  const j = new Date().toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long"});
+  const e = document.getElementById("accJourSk");
+  if(e) e.textContent = j.charAt(0).toUpperCase()+j.slice(1);
+  document.body.classList.add("aAccueil");
+}
+
 function chargeAccueil(){
   const z = document.getElementById("accueil");
   if(!z || !KEY) return;
+  accSquelette();
   fetch(ORIGIN+"/agent/accueil?key="+encodeURIComponent(KEY),{cache:"no-store"})
     .then(r=>r.json()).then(d=>{
       if(!d || d.detail) return;
@@ -1356,9 +1450,9 @@ function chargeAccueil(){
                + '</span></div>').join('') + '</div>';
       }
       z.innerHTML = h;
-      // L'accueil a des données : l'orbe de veille recule, le tableau de bord passe
-      // devant. Tant qu'il n'y a rien, on ne touche à rien — un écran à moitié réduit
-      // avec une zone vide serait pire que l'orbe seule.
+      // Marqué rempli : un second passage ne doit pas remettre le squelette par-dessus
+      // des chiffres déjà affichés.
+      z.dataset.rempli = "1";
       document.body.classList.add("aAccueil");
     }).catch(()=>{});   // l'accueil est un bonus : son échec ne casse pas le chat
 }
@@ -2229,8 +2323,17 @@ const UI_COMMANDS=[
     run:()=>{ if(TTS) toggleTTS(); return "🔇 Je n'utiliserai plus la voix."; } },
   { re:/(active|remets).*(voix|parle)/,
     run:()=>{ if(!TTS) toggleTTS(); return "🔊 Voix réactivée."; } },
-  { re:/(mode )?vocal|parle(-| )moi|(é|e)coute(-| )moi/,
-    run:()=>{ if(!voiceMode) setTimeout(toggleVoiceMode,400); return "🎙️ J'active le mode vocal."; } },
+  /* ⚠️ « arrête le mode vocal s'il te plaît » → « 🎙️ J'active le mode vocal. »
+     La règle d'activation cherchait « mode vocal » n'importe où dans la phrase, sans
+     regarder le VERBE. Elle attrapait donc l'ordre inverse — et il n'existait aucune
+     commande pour en SORTIR. On met l'arrêt AVANT, et on interdit à l'activation de
+     se déclencher quand la phrase commence par un verbe d'arrêt. */
+  { re:/(arr(ê|e)te|quitte|coupe|sors|d(é|e)sactive|ferme|stop|enl(è|e)ve|d(é|e)connecte)[^.]{0,18}(mode )?vocal/,
+    run:()=>{ if(voiceMode){ toggleVoiceMode(); return "🎙️ Mode vocal arrêté."; }
+              return "Le mode vocal n'était pas activé."; } },
+  { re:/^(?!.*(arr(ê|e)te|quitte|coupe|sors|d(é|e)sactive|ferme|stop|pas de|plus de))(.*)((mode )?vocal|parle(-| )moi|(é|e)coute(-| )moi)/,
+    run:()=>{ if(voiceMode) return "Le mode vocal est déjà activé.";
+              setTimeout(toggleVoiceMode,400); return "🎙️ J'active le mode vocal."; } },
   { re:/(r(é|e)veille|lance|ouvre).*(t(é|e)l(é|e)phone|mobile|autres? appareils?)/,
     run:()=>{ wakeDevices(); return "📱 Mode vocal lancé sur tes autres appareils."; } },
   { re:/(active|allume).*(mot(-| )cl(é|e)|d(é|e)tection)/,
