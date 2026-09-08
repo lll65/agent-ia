@@ -24,6 +24,7 @@ from xml.sax.saxutils import escape
 
 _MIME_TEXTE = "application/vnd.oasis.opendocument.text"
 _MIME_TABLEUR = "application/vnd.oasis.opendocument.spreadsheet"
+_MIME_DIAPO = "application/vnd.oasis.opendocument.presentation"
 
 _NS = (
     'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
@@ -206,3 +207,73 @@ def ods(md: str) -> bytes:
                '<office:body><office:spreadsheet>' + "".join(feuilles) +
                '</office:spreadsheet></office:body></office:document-content>')
     return _archive(None, _MIME_TABLEUR, contenu)
+
+
+# ── Impress ──────────────────────────────────────────────────────────────────
+# ⚠️ « faut un mini déroulant avec télécharger, ou alors LibreOffice diapo, ou Writer,
+# ou Calc ». Un diaporama découpe le cours en SECTIONS : un titre de niveau 1 ou 2 ouvre
+# une diapo, ce qui suit en fait le contenu. Découper autrement — une diapo tous les
+# N mots, par exemple — donnerait des diapos qui commencent au milieu d'une phrase, et
+# un cours illisible qu'il faudrait reprendre entièrement à la main.
+_NS_DIAPO = (_NS + ' xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" '
+             'xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" '
+             'xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0"')
+
+# Une diapo au-delà de ça devient un mur de texte : on la coupe et on numérote la suite.
+_LIGNES_MAX = 12
+
+
+def sections(md: str) -> list:
+    """[(titre, [lignes])] — le cours découpé aux titres, dans l'ordre."""
+    titre, corps, out = "", [], []
+    for ligne in (md or "").splitlines():
+        m = _TITRE.match(ligne)
+        if m and len(m.group(1)) <= 2:
+            if titre or corps:
+                out.append((titre, corps))
+            titre, corps = _sans_markdown(m.group(2)), []
+            continue
+        t = _sans_markdown(ligne)
+        # Les lignes de séparation d'un tableau n'ont rien à dire sur une diapo.
+        if t and not _SEPARATEUR.match(ligne):
+            corps.append(t.replace("|", " · ") if _LIGNE_TABLEAU.match(ligne) else t)
+    if titre or corps:
+        out.append((titre, corps))
+    # Une diapo trop longue est recoupée plutôt que tronquée : rien ne se perd.
+    final = []
+    for t, lignes in out:
+        if not t and not lignes:
+            continue
+        if len(lignes) <= _LIGNES_MAX:
+            final.append((t, lignes))
+            continue
+        for i in range(0, len(lignes), _LIGNES_MAX):
+            bout = lignes[i:i + _LIGNES_MAX]
+            final.append((t if i == 0 else f"{t} (suite)", bout))
+    return final
+
+
+def odp(md: str) -> bytes:
+    """Le cours en diaporama, pour LibreOffice Impress."""
+    pages = sections(md) or [("Cours", ["(aucun contenu)"])]
+    diapos = []
+    for i, (titre, lignes) in enumerate(pages, 1):
+        cadres = []
+        if titre:
+            cadres.append(
+                '<draw:frame draw:layer="layout" svg:width="24cm" svg:height="2.4cm" '
+                'svg:x="1.5cm" svg:y="1.2cm"><draw:text-box>'
+                f'<text:p>{escape(titre)}</text:p></draw:text-box></draw:frame>')
+        if lignes:
+            corps = "".join(f"<text:p>{escape(l)}</text:p>" for l in lignes)
+            cadres.append(
+                '<draw:frame draw:layer="layout" svg:width="24cm" svg:height="12cm" '
+                'svg:x="1.5cm" svg:y="4.2cm"><draw:text-box>'
+                + corps + '</draw:text-box></draw:frame>')
+        nom = escape((titre or f"Diapo {i}")[:40])
+        diapos.append(f'<draw:page draw:name="{nom}">' + "".join(cadres) + "</draw:page>")
+    contenu = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+               f'<office:document-content {_NS_DIAPO} office:version="1.3">'
+               '<office:body><office:presentation>' + "".join(diapos) +
+               '</office:presentation></office:body></office:document-content>')
+    return _archive(None, _MIME_DIAPO, contenu)

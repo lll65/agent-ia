@@ -5618,10 +5618,22 @@ async def cours_stop(req: CoursReq):
 
 @router.get("/cours")
 async def cours_liste(key: str = ""):
+    """La liste des cours — ET s'ils survivront à la nuit.
+
+    ⚠️ « mes cours doivent rester enregistrés ». Ils le sont : chaque tranche part sur
+    le disque ET dans Supabase, avec un numéro de révision pour qu'une coupure réseau
+    n'écrase pas la version la plus avancée.
+    MAIS tout cela ne vaut QUE si SUPABASE_DB_URL est renseignée. Sans elle, les cours
+    ne vivent que sur le disque de Render — effacé à chaque redéploiement et après
+    quelques heures de veille. Aujourd'hui, cette absence ne se voyait nulle part : il
+    l'apprendrait le lendemain, après avoir enregistré deux heures de cours.
+    Une perte de données silencieuse est la pire de toutes. On le DIT, avant.
+    """
     _check_key(key)
     from agent import cours
     from agent.core import _off
-    return {"sessions": await _off(cours.lister)}
+    return {"sessions": await _off(cours.lister),
+            "persistant": bool(getattr(config, "SUPABASE_DB_URL", ""))}
 
 
 @router.get("/cours/detail")
@@ -5652,9 +5664,9 @@ async def accueil_ep(key: str = ""):
 async def cours_export(id: str = "", key: str = "", format: str = "md"):
     """Le cours à emporter — le disque du serveur est effacé aux redémarrages.
 
-    « il faudrait aussi une importation sur libre office et où je choisis format Calc
-    ou normal » : format=odt pour Writer (tout le cours, mis en forme), format=ods pour
-    Calc (les tableaux, une feuille chacun), format=md par défaut.
+    « faut un mini déroulant avec télécharger ou alors libre office diapo ou writer ou
+    calc » : format=odt pour Writer (tout le cours), format=ods pour Calc (les tableaux),
+    format=odp pour Impress (une diapo par section), format=md par défaut.
     """
     _check_key(key)
     from fastapi.responses import Response
@@ -5667,11 +5679,11 @@ async def cours_export(id: str = "", key: str = "", format: str = "md"):
         raise HTTPException(status_code=404, detail="Session inconnue.")
     nom = re.sub(r"[^A-Za-z0-9À-ÿ _-]", "", s.get("titre", "cours"))[:60].strip() or "cours"
     f = (format or "md").lower().strip()
-    if f in ("odt", "ods"):
+    if f in ("odt", "ods", "odp"):
         from agent import odf
-        corps = await _off(odf.odt if f == "odt" else odf.ods, md)
+        corps = await _off({"odt": odf.odt, "ods": odf.ods, "odp": odf.odp}[f], md)
         mime = ("application/vnd.oasis.opendocument."
-                + ("text" if f == "odt" else "spreadsheet"))
+                + {"odt": "text", "ods": "spreadsheet", "odp": "presentation"}[f])
         return Response(content=corps, media_type=mime,
                         headers={"Content-Disposition": f'attachment; filename="{nom}.{f}"'})
     return Response(content=md, media_type="text/markdown; charset=utf-8",

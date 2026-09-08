@@ -9691,13 +9691,51 @@ def test_son_cours_s_ouvre_dans_libreoffice():
     perilleux = O.odt("# A < B & C\ntexte avec <balise> & « guillemets »")
     _xml.parseString(zipfile.ZipFile(io.BytesIO(perilleux)).read("content.xml"))
 
+    # --- Impress, et un menu au lieu de trois boutons -------------------------------
+    # ⚠️ « faut un mini déroulant avec télécharger, ou alors LibreOffice diapo, ou
+    # Writer, ou Calc ». Trois boutons côte à côte poussaient « Copier » et « Nouveau
+    # cours » à la ligne suivante sur téléphone.
+    data = O.odp(md)
+    z = zipfile.ZipFile(io.BytesIO(data))
+    check("odp : archive saine", z.testzip(), None)
+    check("odp : mimetype en premier", z.namelist()[0], "mimetype")
+    check("odp : le bon type", z.read("mimetype").decode(),
+          "application/vnd.oasis.opendocument.presentation")
+    _xml.parseString(z.read("content.xml"))
+    pages = re.findall(r'draw:name="([^"]+)"', z.read("content.xml").decode())
+    # ⚠️ Une diapo par SECTION : découper tous les N mots donnerait des diapos qui
+    # commencent au milieu d'une phrase.
+    check("une diapo par section", len(pages), 3)
+    check_true("nommées d'après les titres du cours", "1. Environnement" in pages)
+    # ⚠️ Une section trop longue est RECOUPÉE, pas tronquée : rien ne se perd.
+    longue = O.sections("## Grande section\n" + "\n".join(f"ligne {i}" for i in range(30)))
+    check("la section longue est recoupée", len(longue), 3)
+    check_true("et la suite est annoncée", "(suite)" in longue[1][0])
+    check("aucune ligne perdue", sum(len(l) for _t, l in longue), 30)
+
     api = (Path(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
-    check_true("la route accepte le format", 'if f in ("odt", "ods"):' in api)
+    check_true("la route accepte les trois formats", 'if f in ("odt", "ods", "odp"):' in api)
     ui = (Path(__file__).resolve().parents[1] / "ui" / "cours.html").read_text(encoding="utf-8")
-    check_true("les deux boutons existent", 'id="dlOdt"' in ui and 'id="dlOds"' in ui)
-    # ⚠️ Le libellé dit ce que chacun garde : Calc ne peut pas porter de paragraphes.
+    check_true("un seul bouton, un menu", 'id="dlMenu"' in ui and 'data-fmt="odp"' in ui)
+    check_true("les quatre formats sont proposés",
+               all(f'data-fmt="{f}"' in ui for f in ("md", "odt", "ods", "odp")))
+    # ⚠️ Chaque ligne dit ce qu'elle EMPORTE : un tableur n'a pas de paragraphes, un
+    # diaporama n'a pas de tableaux. Le lire avant vaut mieux que le découvrir après.
     check_true("et disent ce qu'ils emportent",
-               "tout le cours" in ui and "les tableaux du cours" in ui)
+               "tout le cours, mis en forme" in ui and "les tableaux seulement" in ui
+               and "une diapo par section" in ui)
+    # ⚠️ Le menu s'ouvre VERS LE HAUT : ces boutons sont en bas de page.
+    check_true("le menu s'ouvre vers le haut", "bottom:calc(100% + 8px)" in ui)
+    check_true("et se referme si on clique ailleurs", 'm.classList.remove("show")' in ui)
+
+    # --- « mes cours doivent rester enregistrés » ------------------------------------
+    # ⚠️ Ils le sont — mais SEULEMENT si une base persistante est configurée. Sans elle
+    # ils ne vivent que sur le disque de Render, effacé à chaque redéploiement. Cette
+    # absence ne se voyait NULLE PART : il l'aurait apprise le lendemain, après avoir
+    # enregistré deux heures de cours.
+    check_true("la route dit si les cours survivent", '"persistant": bool(' in api)
+    check_true("et la page le dit avant d'enregistrer", "ne survivront pas à la nuit" in ui)
+    check_true("avec quoi faire", "SUPABASE_DB_URL" in ui and "Télécharge-les" in ui)
 
 
 def test_410_gone_le_seul_code_que_l_auto_guerison_ignorait():
