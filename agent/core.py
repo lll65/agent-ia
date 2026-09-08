@@ -1281,6 +1281,18 @@ async def run_agent(
             res["answer"] = relis_chiffres(res["answer"], observations_du_tour(), task)
     except Exception as e:
         logger.info(f"[chiffres] vérification ignorée ({type(e).__name__})")
+    # ⚠️ ET LES CHIFFRES QUI SE CONTREDISENT ENTRE EUX. Son automatisation « Suivi
+    # action » a rendu 2CRSi « Cours 28,60 €, en baisse » ET « autre cotation 26,74 €,
+    # en hausse », l'une sous l'autre. chiffres.py ne pouvait rien voir : les DEUX
+    # venaient d'une source. Ce qui cloche n'est pas leur origine, c'est qu'elles ne
+    # peuvent pas être vraies ensemble. Empiler les deux, c'est se couvrir en lui
+    # laissant le travail — il lit la première, décide, et découvre la seconde trop tard.
+    try:
+        from agent.contradiction import relis as relis_contra
+        if res.get("answer") and _sujets_finance(task, res["answer"]):
+            res["answer"] = relis_contra(res["answer"])
+    except Exception as e:
+        logger.info(f"[contradiction] vérification ignorée ({type(e).__name__})")
     # ⚠️ ET LA DATE, qui compte autant que le chiffre. Sur « Des news de 2Crsi ? », tous
     # les nombres étaient exacts — 110 M€, 204,7 M€, 9,6 M€ — et la réponse était fausse
     # quand même : elle datait du jour même un communiqué du 9 juin, depuis placé sous
