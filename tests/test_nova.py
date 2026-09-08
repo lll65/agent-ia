@@ -10410,6 +10410,60 @@ def test_deux_cours_pour_la_meme_action_et_la_section_qui_n_apprend_rien():
     check_true("la relecture est branchée", "from agent.synthese import relis" in src)
 
 
+def test_le_diagnostic_cherchait_une_variable_impossible():
+    """« ⚪ groq (2e clé) ↳ aucune clé configurée sur Render »
+    — « la deuxième clé Groq est bien configurée pourtant ».
+
+    ⚠️ IL AVAIT RAISON, ET LE DIAGNOSTIC MENTAIT. Il construisait le nom de la variable
+    à partir du LIBELLÉ AFFICHÉ : « groq (2e clé) ».upper() + "_API_KEY" donne
+    « GROQ (2E CLÉ)_API_KEY », qui ne peut évidemment pas exister. Il répondait donc
+    « aucune clé configurée » quoi qu'il ait mis dans Render, et l'envoyait vérifier un
+    réglage déjà bon.
+
+    C'est la troisième fois cette semaine qu'un diagnostic faux l'envoie chercher au
+    mauvais endroit : « ajoute GROQ_API_KEY » alors qu'elle marchait, « modèle
+    indisponible » pour une clé valide, et maintenant celui-ci. Une erreur franche
+    coûte moins cher qu'un diagnostic qui se trompe de coupable.
+    """
+    import importlib
+    A_ = importlib.import_module("api.agent")
+    cfg = A_.config
+    sauve = (cfg.GROQ_API_KEY, getattr(cfg, "GROQ_API_KEY_2", ""))
+    try:
+        # 1) Vraiment absente : on NOMME la variable à créer.
+        cfg.GROQ_API_KEY, cfg.GROQ_API_KEY_2 = "gsk_premiere", ""
+        d = A_._diag_un_llm("groq (2e clé)")
+        check("clé absente reconnue", d["cle_presente"], False)
+        check_true("et la variable est nommée", "GROQ_API_KEY_2" in d["conseil"])
+
+        # 2) ⚠️ Présente mais IDENTIQUE à la première : la chaîne l'ignore exprès (même
+        # compte, même limite). Sans ce cas, elle apparaîtrait « configurée » et il ne
+        # comprendrait pas pourquoi rien ne change.
+        cfg.GROQ_API_KEY_2 = "gsk_premiere"
+        d = A_._diag_un_llm("groq (2e clé)")
+        check("clé identique détectée", d["cle_presente"], True)
+        check_true("et expliquée", "MÊME clé" in d["conseil"] and "second compte" in d["conseil"])
+
+        # 3) Une vraie seconde clé est enfin VUE.
+        cfg.GROQ_API_KEY_2 = "gsk_une_autre_cle"
+        d = A_._diag_un_llm("groq (2e clé)")
+        check("une seconde clé distincte est vue", d["cle_presente"], True)
+        check("et sans reproche", d["conseil"], "")
+        check_true("avec son aperçu", d.get("cle_apercu", "").startswith("gsk_"))
+
+        # La première clé continue de se lire normalement.
+        d1 = A_._diag_un_llm("groq")
+        check("le fournisseur normal n'est pas cassé", d1["cle_presente"], True)
+    finally:
+        cfg.GROQ_API_KEY, cfg.GROQ_API_KEY_2 = sauve
+
+    # ⚠️ Le modèle se cherche sous le nom du FOURNISSEUR, pas sous le libellé : sinon on
+    # testait la 2e clé avec le modèle par défaut, et l'échec n'aurait rien eu à voir
+    # avec la clé.
+    src = (Path(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
+    check_true("le modèle est cherché sous le bon nom", 'MODELES.get(base, {})' in src)
+
+
 def test_le_briefing_appelait_gmail_par_l_autre_porte():
     """« Erreur de récupération des mails : 404 – vérifie les autorisations et
     l'activation de l'API sur composio.dev » — alors que ses mails marchaient dans le
@@ -10868,7 +10922,8 @@ if __name__ == "__main__":
                test_le_kine_qui_n_existait_pas_et_la_meteo_cherchee_sur_le_web,
                test_les_diapos_en_markdown_brut_et_les_cours_qu_on_range,
                test_deplacer_un_cours_dans_notion_sans_se_tromper_de_cours,
-               test_deux_cours_pour_la_meme_action_et_la_section_qui_n_apprend_rien):
+               test_deux_cours_pour_la_meme_action_et_la_section_qui_n_apprend_rien,
+               test_le_diagnostic_cherchait_une_variable_impossible):
         try:
             fn()
         except Exception as e:
