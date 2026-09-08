@@ -51,7 +51,13 @@ def _mails() -> dict:
     from api.agent import _tool
     from plugins.builtin.mails_tool import _extraire
     from agent.rapport_mail import trier, IMPORTANT, A_LIRE, IGNORER
-    brut = _tool("GMAIL_FETCH_EMAILS", {"maxResults": 20, "query": "in:inbox is:unread"},
+    # ⚠️ « elle marque 20 mails mais c'est les mails du jour ? c'est quoi ? c'est faux ».
+    # Il avait raison de douter : 20, c'était le PLAFOND de la requête, pas un compte.
+    # Avec 57 non lus, la tuile affichait « 20 » — un nombre faux qui a l'air exact.
+    # On demande plus, et quand le plafond est atteint on écrit « 50+ » : un chiffre
+    # rond qui ne peut pas être vrai vaut mieux qu'un chiffre précis qui est faux.
+    PLAFOND = 50
+    brut = _tool("GMAIL_FETCH_EMAILS", {"maxResults": PLAFOND, "query": "in:inbox is:unread"},
                  "gmail")
     b = str(brut or "")
     if not _a_reussi(b):
@@ -63,7 +69,7 @@ def _mails() -> dict:
         return {"ok": False,
                 "erreur": f"Gmail a répondu {len(b)} octets, aucun message reconnu"}
     tri = trier(mails)
-    return {"ok": True, "total": len(mails),
+    return {"ok": True, "total": len(mails), "plafond": len(mails) >= PLAFOND,
             "important": len(tri.get(IMPORTANT) or []),
             "a_lire": len(tri.get(A_LIRE) or []),
             "ignores": len(tri.get(IGNORER) or []),

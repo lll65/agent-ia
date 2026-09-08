@@ -9958,7 +9958,12 @@ def test_la_mise_en_page_des_maquettes_sans_les_phrases_qui_rassurent():
     check_true("le pourquoi du sélecteur renforcé est écrit", "c'est la dernière qui" in ui)
     # Sur téléphone elle reste un panneau qui glisse : Nova s'utilise surtout au tél.
     check_true("le téléphone garde le panneau coulissant", "@media (min-width:1080px)" in ui)
-    check_true("le ☰ disparaît quand la colonne ne se ferme plus", "#burger, .sbhead .ic{ display:none; }" in ui)
+    # ⚠️ Attente corrigée : le ☰ ne DISPARAÎT plus, il REPLIE la colonne. « le menu côté
+    # gauche il faut pouvoir le dérouler et inversement » — une colonne fixe de 258 px
+    # prise en permanence, sans moyen de la ranger, c'était mon erreur.
+    check_true("le ☰ replie la colonne au lieu de disparaître", "body.sbmini .sidebar{ width:62px; }" in ui)
+    check_true("et il reste une bande d'icônes", "body.sbmini .sbn span" in ui)
+    check_true("le choix est retenu", 'localStorage.setItem("nova_sbmini"' in ui)
 
     # ⚠️ CHAQUE ENTRÉE DE NAV MÈNE QUELQUE PART. La maquette proposait « Fichiers »,
     # « Projets », « Outils », « Recherche » : Nova n'a rien derrière. Une entrée de
@@ -10464,6 +10469,111 @@ def test_le_diagnostic_cherchait_une_variable_impossible():
     check_true("le modèle est cherché sous le bon nom", 'MODELES.get(base, {})' in src)
 
 
+def test_notion_sans_parent_les_boutons_partout_et_la_memoire_qui_se_salit():
+    """« j'en ai vraiment marre » — et cinq reproches précis, tous fondés.
+
+    1. « Notion a refusé : Following fields are missing: {'parent_id'} ». Notion ne sait
+       pas créer une page « quelque part » : il lui faut une page PARENTE, et une
+       intégration ne voit que ce qu'on lui a explicitement partagé. Ce n'était donc ni
+       lui, ni Composio — il manquait un paramètre.
+    2. « tu mets des nouveaux boutons à l'écran au lieu de mettre "…" ». Trois icônes
+       par ligne sur six cours : dix-huit boutons pour trois actions rares.
+    3. « le menu côté gauche il faut pouvoir le dérouler et inversement ».
+    4. « ce que Nova enregistre, c'est quoi ces phrases de merde » — son profil
+       contenait « c'est faux ce que tu dis je suis à 700 m… » et « c'est un bon
+       coiffeur ou pas ils disent quoi les avis… ».
+    5. « elle marque 20 mails, c'est faux ». 20 était le PLAFOND de la requête.
+    """
+    import importlib
+    N = importlib.import_module("agent.vers_notion")
+    A_ = importlib.import_module("api.agent")
+    racine = Path(__file__).resolve().parents[1]
+
+    # --- 1. Notion : la page parente -------------------------------------------------
+    ACT = [{"name": "NOTION_CREATE_NOTION_PAGE"}, {"name": "NOTION_SEARCH_NOTION_PAGE"}]
+    vus = []
+
+    def appel(a, ar, s):
+        vus.append((a, sorted(ar)))
+        if "SEARCH" in a:
+            return '✅ {"id": "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"}'
+        return "✅ [NOTION_CREATE_NOTION_PAGE] https://www.notion.so/abc"
+
+    msg = N.envoie("Cours", "# T\ntexte", lambda s: ACT, appel)
+    check_true("la page est créée", "est dans Notion" in msg)
+    # ⚠️ Le parent est CHERCHÉ, pas inventé : un identifiant fabriqué produirait une
+    # erreur incompréhensible.
+    check_true("une page parente a été cherchée", any("SEARCH" in a for a, _ in vus))
+    check_true("et transmise à la création",
+               any("parent_id" in args for a, args in vus if "CREATE" in a))
+
+    def appel_vide(a, ar, s):
+        if "SEARCH" in a:
+            return '{"results": []}'
+        return "❌ échec : Following fields are missing: {'parent_id'}"
+
+    ko = N.envoie("Cours", "# T\ntexte", lambda s: ACT, appel_vide)
+    check("aucun succès annoncé", "est dans Notion" in ko, False)
+    # ⚠️ « tout est connecté sur Composio et à chaque fois il y a un truc défaillant » :
+    # le message doit dire que ce n'est ni lui ni Composio, et quoi faire exactement.
+    check_true("ce n'est pas présenté comme une panne", "pas une panne" in ko)
+    check_true("et la manœuvre est donnée", "Ajouter des connexions" in ko)
+
+    # --- 2. Un seul « … » par ligne --------------------------------------------------
+    cours_ui = (racine / "ui" / "cours.html").read_text(encoding="utf-8")
+    check_true("un point d'entrée unique", 'data-menu="${s.id}"' in cours_ui)
+    for parti in ('data-act="ren" data-id="${s.id}" title=', 'title="Envoyer dans Notion">N<'):
+        check(f"plus de bouton isolé ({parti[:22]!r})", parti in cours_ui, False)
+    check_true("le menu se referme si on clique ailleurs", '.cmenu.show' in cours_ui)
+    # ⚠️ Le glisser-déposer ne marche pas au doigt : le menu reste le chemin principal.
+    check_true("on peut glisser un cours dans un dossier", 'a.addEventListener("dragstart"' in cours_ui)
+    check_true("la cible se voit", ".dossier.cible" in cours_ui)
+    check_true("et le pourquoi du double chemin est écrit", "au doigt sur téléphone" in cours_ui)
+
+    # --- 3. La colonne se replie -----------------------------------------------------
+    ui = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+    check_true("repliable sur grand écran", "body.sbmini .sidebar{ width:62px; }" in ui)
+    check_true("les icônes restent", "body.sbmini .sbn, body.sbmini .newchat" in ui)
+
+    # --- 4. La mémoire ne se salit plus ----------------------------------------------
+    for sale in ("c'est faux ce que tu dis je suis à 700 m de l'université et c'est pas "
+                 "normal que tu trouves pas la météo de demain de Pau",
+                 "c'est un bon coiffeur ou pas ils disent quoi les avis tu me lis les avis",
+                 "tu peux me dire combien de temps à pied ?"):
+        check(f"pas gardable : {sale[:34]!r}", A_._phrase_gardable(sale), False)
+    for propre in ("j'habite à Pau", "j'ai 17 ans", "je suis en terminale",
+                   "je suis actuellement à Pau dans mon appart résidence UXCO"):
+        check_true(f"gardable : {propre!r}", A_._phrase_gardable(propre))
+    # ⚠️ Ce repli existe pour ne pas perdre une confidence quand tout est saturé — mais
+    # recopier trente mots de reproche dans le profil, ce n'est pas la sauver.
+    api = (racine / "api" / "agent.py").read_text(encoding="utf-8")
+    check_true("le repli passe par le filtre", "if not faits and _phrase_gardable(message):" in api)
+
+    # --- 5. L'agenda, et le compte de mails -------------------------------------------
+    # ⚠️ C'est le libellé EXACT du bouton « Calendrier » que j'ai posé : mon propre
+    # raccourci menait à « je n'ai pas accès à ton agenda ».
+    act, args = A_._resolve_app_action("Qu'est-ce que j'ai de prévu aujourd'hui ?")
+    check("le bouton Calendrier route enfin", act, "GOOGLECALENDAR_EVENTS_LIST")
+    # ⚠️ « mon agenda du jour » rendait la SEMAINE : il a demandé aujourd'hui et reçu
+    # lundi ET mardi — une réponse juste à une question qu'il n'a pas posée.
+    t0, t1, lib = A_._time_bounds("mon agenda du jour")
+    check("« du jour » veut dire aujourd'hui", lib, "aujourd'hui")
+    check("et couvre une seule journée", t0[:10] != t1[:10], True)
+    from datetime import datetime
+    d0 = datetime.fromisoformat(t0.replace("Z", "+00:00"))
+    d1 = datetime.fromisoformat(t1.replace("Z", "+00:00"))
+    check("exactement 24 h", (d1 - d0).days, 1)
+    check("« cette semaine » reste la semaine",
+          A_._time_bounds("mon agenda cette semaine")[2] != "aujourd'hui", True)
+
+    # ⚠️ « 20 » était le plafond de la requête, pas un compte : avec 57 non lus la tuile
+    # affichait 20. Un chiffre précis et faux est pire qu'un chiffre rond et honnête.
+    acc = (racine / "agent" / "accueil.py").read_text(encoding="utf-8")
+    check_true("le plafond est remonté et nommé", "PLAFOND = 50" in acc)
+    check_true("et signalé quand il est atteint", '"plafond": len(mails) >= PLAFOND' in acc)
+    check_true("l'écran écrit « 50+ »", '(m.plafond ? "+" : "")' in ui)
+
+
 def test_le_briefing_appelait_gmail_par_l_autre_porte():
     """« Erreur de récupération des mails : 404 – vérifie les autorisations et
     l'activation de l'API sur composio.dev » — alors que ses mails marchaient dans le
@@ -10923,7 +11033,8 @@ if __name__ == "__main__":
                test_les_diapos_en_markdown_brut_et_les_cours_qu_on_range,
                test_deplacer_un_cours_dans_notion_sans_se_tromper_de_cours,
                test_deux_cours_pour_la_meme_action_et_la_section_qui_n_apprend_rien,
-               test_le_diagnostic_cherchait_une_variable_impossible):
+               test_le_diagnostic_cherchait_une_variable_impossible,
+               test_notion_sans_parent_les_boutons_partout_et_la_memoire_qui_se_salit):
         try:
             fn()
         except Exception as e:
