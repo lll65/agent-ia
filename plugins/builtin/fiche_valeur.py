@@ -40,6 +40,66 @@ def _n(v, fmt=".2f", suffixe=""):
     return "N/D" if v is None else (format(v, fmt) + suffixe)
 
 
+def _plat(t):
+    """Minuscules sans accents ni ponctuation — pour comparer deux noms de société."""
+    import re as _re
+    import unicodedata as _u
+    t = _u.normalize("NFD", str(t or "").lower())
+    t = "".join(c for c in t if _u.category(c) != "Mn")
+    return _re.sub(r"[^a-z0-9]+", " ", t).strip()
+
+
+# Ce qui figure dans presque toutes les raisons sociales et n'identifie donc personne.
+# ⚠️ Les mots de SECTEUR en font partie. « After Energy » et « Energy Transfer LP »
+# partagent « energy » : sans ça, le second passait pour le premier — et c'est
+# exactement ce que la recherche web lui avait déjà servi.
+_HABILLAGE = {"sa", "s a", "sas", "se", "plc", "ltd", "limited", "inc", "corp",
+              "corporation", "nv", "ag", "spa", "group", "groupe", "holding",
+              "holdings", "company", "co", "technologies", "technology", "the",
+              "energy", "energie", "energies", "solutions", "systems", "systemes",
+              "international", "france", "industries", "partners", "capital"}
+
+
+def _meme_societe(nom_trouve: str, demande: str) -> bool:
+    """Le titre trouvé est-il PLAUSIBLEMENT celui qu'il a nommé ?
+
+    ⚠️ LE CAS RÉEL, ET IL EST GRAVE. Il demande « hafner énergie ». Le modèle propose le
+    code HAFN ; Yahoo répond, la fiche s'affiche « 8,96 USD ». Sauf que HAFN, c'est
+    Hafnia Limited — un armateur de pétroliers coté à New York. Haffner Energy, c'est
+    ALHAF, à 0,67 € sur Euronext Growth. Deux sociétés sans aucun rapport, et Nova a
+    rendu les deux chiffres dans la MÊME conversation sans jamais s'en apercevoir.
+
+    Sur une question d'argent, un titre confondu avec un autre est le pire défaut
+    possible : tout a l'air juste — le cours est réel, la source est réelle — mais il ne
+    parle pas de la bonne entreprise.
+
+    On ne cherche pas l'égalité : « Haffner Energy SA » et « haffner énergie » doivent
+    s'accorder. Il suffit qu'un mot porteur soit commun, ou qu'un nom commence comme
+    l'autre.
+    """
+    a, b = _plat(nom_trouve), _plat(demande)
+    if not a or not b:
+        return True                    # rien à comparer : on ne crie pas au loup
+    if a == b or a.startswith(b) or b.startswith(a):
+        return True
+    ma = [m for m in a.split() if m not in _HABILLAGE and len(m) > 2]
+    mb = [m for m in b.split() if m not in _HABILLAGE and len(m) > 2]
+    if not ma or not mb:
+        return True
+    from difflib import SequenceMatcher
+    for x in mb:
+        for y in ma:
+            # ⚠️ PAS de comparaison par PRÉFIXE. « hafnia » et « hafner » partagent
+            # « hafn » : le préfixe de quatre lettres faisait passer un armateur pour un
+            # producteur d'hydrogène. On compare les mots ENTIERS, avec juste assez de
+            # tolérance pour « haffner » / « hafner » (une lettre doublée) — 0,93 de
+            # ressemblance — et pas assez pour « hafnia » / « hafner », qui plafonne
+            # à 0,67.
+            if x == y or SequenceMatcher(None, x, y).ratio() >= 0.85:
+                return True
+    return False
+
+
 class FicheValeurPlugin(Plugin):
     name = "fiche_valeur"
     description = ("Fiche d'information sur une action : cours, volume inhabituel, "
@@ -49,19 +109,23 @@ class FicheValeurPlugin(Plugin):
     parameters = {
         "ticker": {"type": "string", "description": "Code boursier (2CRSI → AL2SI.PA)",
                    "required": True},
+        "societe": {"type": "string", "required": False, "description":
+                    "Le nom de société tel que l'utilisateur l'a écrit. Toujours le "
+                    "transmettre : il sert à vérifier que le code boursier désigne bien "
+                    "CETTE entreprise."},
     }
 
-    def run(self, ticker: str = "", **_) -> str:
+    def run(self, ticker: str = "", societe: str = "", **_) -> str:
         tk = (ticker or "").strip().upper()
         if not tk:
             return "[ERREUR] Quel titre ?"
         try:
-            return self._fiche(tk)
+            return self._fiche(tk, societe)
         except Exception as e:
             logger.warning(f"[fiche_valeur] {tk} : {type(e).__name__}: {e}")
             return f"[ERREUR] Impossible de constituer la fiche de {tk} ({type(e).__name__})."
 
-    def _fiche(self, tk: str) -> str:
+    def _fiche(self, tk: str, societe: str = "") -> str:
         from plugins.builtin.finance import _fetch_ticker_http, _rsi_liste, _volatilite_liste
         infos, closes, devise, source = {}, [], "", ""
 
@@ -109,7 +173,25 @@ class FicheValeurPlugin(Plugin):
 
         prix = closes[-1]
         veille = closes[-2] if len(closes) > 1 else prix
-        L = [f"## 📇 {infos.get('nom', tk)} ({tk})", ""]
+        nom = infos.get("nom") or tk
+        # ⚠️ AVANT TOUT CHIFFRE : ce code désigne-t-il bien la société qu'il a nommée ?
+        # Un cours exact sur la mauvaise entreprise est plus dangereux qu'une erreur
+        # visible — rien ne permet de s'en rendre compte à la lecture.
+        if societe and not _meme_societe(nom, societe):
+            return (f"[ERREUR] Le code **{tk}** correspond à **{nom}**"
+                    + (f" (coté en {devise})" if devise else "")
+                    + f", pas à « {societe} ». Je ne te donne PAS ces chiffres : ils sont "
+                      "réels, mais ils ne parlent pas de la bonne entreprise. Redonne-moi "
+                      "le code exact, ou le nom complet et je le cherche.")
+        if societe and nom == tk:
+            # Yahoo n'a pas rendu la raison sociale : on ne PEUT pas vérifier. On le dit,
+            # au lieu de laisser croire que la concordance a été contrôlée.
+            L = [f"## 📇 {tk}", "",
+                 f"⚠️ **Je n'ai pas pu confirmer que {tk} est bien « {societe} »** — "
+                 "Yahoo ne m'a pas rendu la raison sociale. Vérifie le code avant de "
+                 "t'appuyer sur ces chiffres.", ""]
+        else:
+            L = [f"## 📇 {nom} ({tk})", ""]
         L.append(f"**{prix:,.2f} {devise}**  ·  {_pct(prix, veille):+.2f} % sur la séance"
                  if _pct(prix, veille) is not None else f"**{prix:,.2f} {devise}**")
         L.append("")

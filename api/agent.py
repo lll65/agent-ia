@@ -1263,6 +1263,16 @@ def _resolve_app_action(message: str):
                  r"sentinelle)\b", m):
         return "__SENTINELLE__", {}
 
+    # ⚠️ « il me reste combien de token pour aujourd'hui » → Nova est partie chercher
+    # « quota token OpenAI 8 septembre 2026 » sur le WEB, a lu des tarifs d'API qui ne
+    # la concernent pas, et a conclu « consulte ton tableau de bord OpenAI ». Elle
+    # n'utilise pas OpenAI, et la réponse était sous sa main : c'est la jauge de
+    # l'en-tête, la même que /agent/usage. Chercher dehors ce qu'on sait déjà, c'est le
+    # meilleur moyen de rendre une réponse fausse avec des sources vraies.
+    if re.search(r"\b(token|jeton|quota|cr[ée]dit|[ée]nergie)s?\b", m) and \
+       re.search(r"\b(reste|restant|combien|consomm|utilis|encore|plus de|dispo)\w*\b", m):
+        return "__ENERGIE__", {}
+
     from agent.recherche_cours import veut_chercher
     if veut_chercher(message):
         return "__CHERCHE_COURS__", {"question": message}
@@ -2191,6 +2201,52 @@ def _traite_attente(message: str, canal: str = "web"):
     return None
 
 
+def _rapport_energie() -> str:
+    """Ce qu'il lui reste vraiment aujourd'hui — mesuré chez SES fournisseurs.
+
+    ⚠️ Et on ne compte que les clés présentes : additionner le quota d'un fournisseur
+    dont il a retiré la clé gonflerait le total et donnerait un pourcentage rassurant et
+    faux — exactement ce qu'il avait repéré sur la jauge de l'en-tête.
+    """
+    from llm import usage as U
+    from llm.client import cles_presentes, cles_secondaires
+    presentes, secondes = cles_presentes(), cles_secondaires()
+    lignes, tu, tl = [], 0, 0
+    for p in ("nvidia", "cerebras", "groq", "gemini"):
+        if p not in presentes:
+            continue
+        try:
+            used, limit = U.get_usage(p)
+        except Exception as e:
+            lignes.append(f"- **{p}** : quota illisible ({type(e).__name__})")
+            continue
+        if p in secondes:
+            limit *= 2                      # 2 comptes = 2 quotas gratuits
+        tu += int(used); tl += int(limit)
+        reste = max(0, int(limit) - int(used))
+        lignes.append(f"- **{p}**{' (2 clés)' if p in secondes else ''} : "
+                      f"{reste:,} jetons restants sur {int(limit):,}".replace(",", " "))
+    # Les fournisseurs sans compteur : on les nomme au lieu de les passer sous silence.
+    sans = [p for p in presentes if p not in ("nvidia", "cerebras", "groq", "gemini")]
+    if not lignes:
+        return ("⚡ Je ne peux mesurer aucun quota : aucune des clés dont je sais compter "
+                "les jetons n'est configurée."
+                + (f"\n\nTu as bien {', '.join(sans)}, mais ces fournisseurs ne me donnent "
+                   "pas de compteur — je ne vais pas inventer un chiffre." if sans else ""))
+    pct = round(100 * (1 - tu / tl)) if tl else 0
+    out = [f"⚡ **Il te reste {pct} % de ton énergie du jour** "
+           f"({max(0, tl - tu):,} jetons sur {tl:,}).".replace(",", " "), ""]
+    out += lignes
+    if sans:
+        out.append("")
+        out.append(f"_{', '.join(sans)} : configuré(s), mais sans compteur de jetons — "
+                   "je ne les compte donc pas ici._")
+    out.append("")
+    out.append("_Ces quotas se rechargent chaque jour. Ce sont les miens, pas ceux d'un "
+               "compte OpenAI : je n'en utilise aucun._")
+    return "\n".join(out)
+
+
 def _pseudo_action(action: str, args: dict):
     """Les actions qui ne sont PAS des appels Composio : trajet, météo, diagnostic…
 
@@ -2254,6 +2310,8 @@ def _pseudo_action(action: str, args: dict):
                    dernier_mail(_extraire(str(brut or "")), str(brut or "")))
     if action == "__RAPPORT_MAILS__":
         return _et("gmail", "Tri de tes mails", _rapport_mails(a))
+    if action == "__ENERGIE__":
+        return _et("energie", "Ce qu'il te reste aujourd'hui", _rapport_energie())
     # ⚠️ Une pseudo-action inconnue ne doit PAS filer vers Composio : le slug déduit
     # serait vide et l'appel partirait dans le vide. On le dit franchement.
     logger.warning(f"[pseudo-action] {action} n'est traitée nulle part")

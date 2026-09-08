@@ -11250,8 +11250,12 @@ def test_le_keyerror_action_et_les_trois_nova():
     src = inspect.getsource(A)
     produites = set(re.findall(r'return "(__[A-Z_]+__)"', src))
     connues = set(re.findall(r'action == "(__[A-Z_]+__)"', inspect.getsource(A._pseudo_action)))
+    # ⚠️ On compare les ENSEMBLES, pas un nombre : un compte figé casse ce test à chaque
+    # pseudo-action ajoutée, et on finit par le corriger machinalement sans le lire.
+    # Ce qui compte, c'est qu'aucune ne soit produite sans être traitée.
     check("aucune pseudo-action orpheline", sorted(produites - connues), [])
-    check_true("et il y en a bien sept", len(produites) == 7)
+    check_true("et la table en connaît au moins autant", len(connues) >= len(produites))
+    check_true("il y en a bien plusieurs", len(produites) >= 7)
 
     # 3. Une pseudo-action inconnue ne part JAMAIS vers Composio : le slug serait vide.
     r = A._pseudo_action("__PAS_ENCORE_ECRITE__", {})
@@ -11533,6 +11537,81 @@ def test_les_trois_nova_et_le_volet_enroule():
     check_true("le bouton dit ce qu'il fait", "function majBoutonVolet()" in rendu)
 
 
+def test_le_brouillon_affiche_en_entier_et_le_titre_confondu():
+    """Trois defauts d'une seule capture, et le premier est le plus humiliant.
+
+    ⚠️ 1. LE MONOLOGUE INTERNE, AFFICHE EN ENTIER. « fais une recherche approfondie
+    s'il te plait » → Nova lui a rendu deux pages du brouillon du modele : « Je vais
+    envoyer. » repete vingt fois, ses propres regles recitees, et la phrase coupee au
+    milieu d'un mot. La cause tenait en trois mots — `... or llm_out`. Le bloc <think>
+    n'ayant jamais ete referme (jetons epuises), le nettoyage rendait une chaine vide ;
+    aucune observation a montrer ; et le dernier repli affichait LA SORTIE BRUTE. Un
+    repli concu pour « montrer quelque chose plutot que rien » montrait la pire chose.
+
+    ⚠️ 2. UN TITRE PRIS POUR UN AUTRE. Il demande « hafner energie ». Le modele propose
+    HAFN, Yahoo repond, la fiche affiche 8,96 USD. Sauf que HAFN c'est Hafnia Limited,
+    un armateur de petroliers cote a New York ; Haffner Energy c'est ALHAF, a 0,67 EUR
+    sur Euronext Growth. Nova a rendu les DEUX chiffres dans la meme conversation sans
+    jamais s'en apercevoir. Sur une question d'argent, c'est le pire defaut possible :
+    le cours est reel, la source est reelle, et l'entreprise n'est pas la bonne.
+
+    ⚠️ 3. CHERCHER DEHORS CE QU'ELLE SAIT DEJA. « il me reste combien de token
+    aujourd'hui » → recherche web « quota token OpenAI », lecture de tarifs d'API, et
+    « consulte ton tableau de bord OpenAI ». Elle n'utilise pas OpenAI, et la reponse
+    etait dans sa propre jauge.
+    """
+    import inspect
+    import agent.core as C
+    from plugins.builtin.fiche_valeur import _meme_societe
+
+    # 1. Plus jamais la sortie brute.
+    for boucle in (C._run_agent_brut, C.run_agent_stream):
+        src = inspect.getsource(boucle)
+        # ⚠️ On vise la ligne d'AFFICHAGE, pas « response_text = final or llm_out » qui
+        # sert a detecter une reponse paresseuse et ne sort jamais a l'ecran. Un test
+        # qui confond les deux interdit un usage legitime.
+        affichage = [l for l in src.splitlines() if "propre = " in l or "propre=" in l]
+        check_true(f"{boucle.__name__} a bien sa ligne d'affichage", affichage)
+        check(f"{boucle.__name__} n'affiche plus llm_out brut",
+              any("or llm_out" in l for l in affichage), False)
+        check_true(f"{boucle.__name__} a un repli honnete",
+                   "_brouillon_seulement(llm_out)" in src)
+    coupe = C._brouillon_seulement("<think>Je vais envoyer. Je vais envoyer. Sur quel ti")
+    check_true("un brouillon coupe est annonce comme tel", "coupée en plein raisonnement" in coupe)
+    check("…et le brouillon n'y figure pas", "Je vais envoyer" in coupe, False)
+    check_true("sans <think>, le message reste honnete",
+               "pas une réponse" in C._brouillon_seulement("THOUGHT: bla"))
+
+    # 2. Le code boursier doit designer la bonne societe.
+    check("Hafnia n'est pas Haffner",
+          _meme_societe("Hafnia Limited", "hafner energie t'en pense quoi ?"), False)
+    check_true("Haffner reste Haffner malgre le double f",
+               _meme_societe("Haffner Energy SA", "hafner energie t'en pense quoi ?"))
+    # ⚠️ « energy » est un mot de SECTEUR : sans ca, Energy Transfer passait pour
+    # After Energy — la recherche web lui avait deja servi cette confusion-la.
+    check("un mot de secteur ne suffit pas",
+          _meme_societe("Energy Transfer LP", "l'action after energie"), False)
+    for nom, q in (("2CRSi SA", "acheter de CRSI et DBV maintenant"),
+                   ("DBV Technologies SA", "acheter de CRSI et DBV maintenant"),
+                   ("Valneva SE", "que penses-tu de valneva"),
+                   ("Air Liquide SA", "la fiche d'air liquide")):
+        check_true(f"{nom} : aucune fausse alerte", _meme_societe(nom, q))
+    # Et la question part AVEC l'appel : on ne compte pas sur le modele pour la donner.
+    p = C._params_outil("fiche_valeur", {"ticker": "HAFN"}, "hafner energie faut acheter ?")
+    check_true("la question accompagne la fiche", "hafner" in p.get("societe", ""))
+    check("un autre outil n'est pas touche",
+          "societe" in C._params_outil("search_web", {"query": "x"}, "hafner"), False)
+
+    # 3. Le quota se lit chez elle, pas sur le web.
+    for q in ("il me reste combien de token pour aujourd'hui",
+              "combien de credits il me reste", "il me reste de l'energie ?"):
+        check(f"« {q[:30]} » ne part pas sur le web",
+              A._resolve_app_action(q)[0], "__ENERGIE__")
+    txt = A._rapport_energie()
+    check_true("elle dit que ce ne sont pas des jetons OpenAI",
+               "OpenAI" in txt or "aucune des clés" in txt)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -11571,6 +11650,7 @@ if __name__ == "__main__":
                test_la_ville_du_profil_et_la_jauge_des_cles_retirees,
                test_le_reglage_de_modele_ne_s_efface_plus_la_nuit,
                test_les_trois_nova_et_le_volet_enroule,
+               test_le_brouillon_affiche_en_entier_et_le_titre_confondu,
                test_conversations_partagees_entre_appareils,
                test_une_tache_de_fond_ne_meurt_plus_en_silence,
                test_un_accord_ne_declenche_que_ce_qu_il_confirme,
