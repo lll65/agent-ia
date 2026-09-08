@@ -190,6 +190,17 @@ def resume_markdown(tri: dict, brouillons: dict = None) -> str:
     a_repondre = [m for m in imp if m.get("repondre")]
     autres_imp = [m for m in imp if not m.get("repondre")]
 
+    # ⚠️ VU SUR SON ÉCRAN : le rapport ne montrait que « 🗑️ Ignorés (13) » suivi de la
+    # ligne de sûreté. Rien d'autre. Les treize mails étaient bien tous des publicités —
+    # donc le tri avait RAISON — mais un écran qui n'affiche qu'une corbeille se lit
+    # comme une panne, pas comme une bonne nouvelle. Le silence n'est pas une réponse :
+    # on DIT qu'il n'y a rien d'important, c'est justement l'information utile.
+    if not imp and not lire and rien:
+        L.append(f"### ✅ Rien à traiter")
+        L.append(f"Tes **{len(rien)}** mails non lus sont tous des publicités ou des "
+                 "envois automatiques. **Aucun n'attend de réponse.**")
+        L.append("")
+
     if a_repondre:
         L.append(f"### ✍️ À répondre ({len(a_repondre)})")
         for m in a_repondre:
@@ -338,3 +349,45 @@ _UNITES = ("zéro", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "hui
 def _nombre(n: int) -> str:
     """« 3 » se lit mal quand la voix hésite : on l'écrit en toutes lettres."""
     return _UNITES[n] if 0 <= n < len(_UNITES) else str(n)
+
+
+def dernier_mail(mails, brut: str = "") -> str:
+    """Le message le plus récent, lu en entier — pas un tri de la boîte.
+
+    ⚠️ « lis mon dernier mail » rendait le rapport complet, identique au mot près à
+    « résume mes mails ». Il a demandé UN message et reçu un tri de treize. Lire et
+    trier sont deux demandes différentes ; les confondre, c'est ne répondre à aucune.
+    """
+    if not mails:
+        # ⚠️ « je n'ai pas su lire » et « ta boîte est vide » ne se disent pas pareil.
+        if len(str(brut or "")) > 400:
+            return ("⚠️ **Gmail m'a répondu, mais je n'ai pas su lire ses messages.** "
+                    "Je ne te dis donc PAS que ta boîte est vide.\n\n"
+                    f"_Réponse reçue : {len(str(brut))} octets, aucun message reconnu._")
+        return "📭 Je n'ai trouvé aucun message dans ta boîte de réception."
+    m = mails[0]
+    c = classer(m)
+    corps = " ".join(str(m.get("body") or m.get("corps") or m.get("snippet")
+                         or m.get("apercu") or "").split())
+    L = [f"### {_sujet(m)}",
+         f"**De :** {_expediteur(m) or 'expéditeur inconnu'}"]
+    date = m.get("date") or m.get("recu") or m.get("receivedAt") or ""
+    if date:
+        L.append(f"**Reçu :** {date}")
+    L.append("")
+    if corps:
+        # On coupe à la fin d'une phrase : un mail tronqué en plein mot se relit deux fois.
+        if len(corps) > 1500:
+            coupe = corps.rfind(". ", 0, 1500)
+            corps = corps[:coupe + 1] if coupe > 700 else corps[:1500] + "…"
+            L.append(corps)
+            L.append("")
+            L.append("_(message tronqué — ouvre Gmail pour la suite)_")
+        else:
+            L.append(corps)
+    else:
+        L.append("_Ce message n'a pas de corps lisible : seul l'objet est disponible._")
+    L.append("")
+    L.append(f"---\n🔒 _Je n'ai rien envoyé ni supprimé — j'ai lu, c'est tout._ "
+             f"Classement : {c['pourquoi']}.")
+    return "\n".join(L)

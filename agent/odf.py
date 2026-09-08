@@ -42,7 +42,12 @@ _STYLES = (
 )
 
 
-def _manifeste(mime: str) -> str:
+def _manifeste(mime: str, styles: bool = False) -> str:
+    # ⚠️ Un fichier absent du manifeste est un fichier que LibreOffice IGNORE : la
+    # feuille de styles serait dans l'archive et n'aurait aucun effet — un fond de page
+    # qui ne s'applique pas, sans le moindre message d'erreur.
+    sup = ('<manifest:file-entry manifest:full-path="styles.xml" '
+           'manifest:media-type="text/xml"/>') if styles else ""
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<manifest:manifest '
@@ -50,19 +55,21 @@ def _manifeste(mime: str) -> str:
         'manifest:version="1.3">'
         f'<manifest:file-entry manifest:full-path="/" manifest:media-type="{mime}"/>'
         '<manifest:file-entry manifest:full-path="content.xml" '
-        'manifest:media-type="text/xml"/>'
+        'manifest:media-type="text/xml"/>' + sup +
         '</manifest:manifest>')
 
 
-def _archive(chemin_ou_flux, mime: str, contenu: str) -> bytes:
+def _archive(chemin_ou_flux, mime: str, contenu: str, styles: str = "") -> bytes:
     """L'archive ODF. Le « mimetype » DOIT être le premier fichier et NON compressé —
     c'est ce que la norme exige, et c'est à ça que LibreOffice reconnaît le format."""
     import io
     tampon = io.BytesIO()
     with zipfile.ZipFile(tampon, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr(zipfile.ZipInfo("mimetype"), mime, compress_type=zipfile.ZIP_STORED)
-        z.writestr("META-INF/manifest.xml", _manifeste(mime))
+        z.writestr("META-INF/manifest.xml", _manifeste(mime, bool(styles)))
         z.writestr("content.xml", contenu)
+        if styles:
+            z.writestr("styles.xml", styles)
     return tampon.getvalue()
 
 
@@ -220,7 +227,7 @@ _NS_DIAPO = (_NS + ' xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1
              'xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0"')
 
 # Une diapo au-delà de ça devient un mur de texte : on la coupe et on numérote la suite.
-_LIGNES_MAX = 12
+_LIGNES_MAX = 9
 
 
 def _ligne_de_diapo(ligne: str) -> str:
@@ -291,27 +298,131 @@ def sections(md: str) -> list:
     return final
 
 
+# ── Mise en forme du diaporama ───────────────────────────────────────────────
+# ⚠️ « regarde cette mise en forme toujours catastrophique quand j'exporte ». Il a
+# raison : je ne déclarais AUCUN style. Impress appliquait donc son gabarit par défaut —
+# un bloc bleu, du texte minuscule, et surtout du texte qui DÉBORDE du cadre parce que
+# rien ne lui disait de s'adapter. Un export illisible ne fait pas gagner de temps :
+# il en fait perdre, puisqu'il faut tout reprendre à la main.
+_FOND = "#0f1024"          # bleu nuit, comme le reste de Nova
+_ACCENT = "#8b6dff"
+_TEXTE = "#f2f2fa"
+_DOUX = "#b9c0d4"
+
+# 16:9. Une diapo 4:3 sur un écran moderne, c'est deux bandes noires sur les côtés.
+_L, _H = 28.0, 15.75
+
+_STYLES_DIAPO = f"""<office:automatic-styles>
+ <style:style style:name="cadreT" style:family="presentation">
+  <style:graphic-properties draw:fill="none" draw:stroke="none"
+    fo:padding-left="0cm" fo:padding-right="0cm" draw:auto-grow-height="false"/>
+ </style:style>
+ <style:style style:name="cadreC" style:family="presentation">
+  <style:graphic-properties draw:fill="none" draw:stroke="none"
+    draw:auto-grow-height="false" draw:fit-to-size="false"
+    style:shrink-to-fit="true" fo:padding-top="0cm"/>
+ </style:style>
+ <style:style style:name="pTitre" style:family="paragraph">
+  <style:paragraph-properties fo:margin-bottom="0.2cm"/>
+  <style:text-properties fo:font-size="27pt" fo:font-weight="bold" fo:color="{_TEXTE}"/>
+ </style:style>
+ <style:style style:name="pTrait" style:family="paragraph">
+  <style:paragraph-properties fo:margin-top="0.05cm" fo:margin-bottom="0.35cm"
+    fo:border-bottom="0.06cm solid {_ACCENT}" fo:padding-bottom="0.1cm"/>
+  <style:text-properties fo:font-size="4pt" fo:color="{_ACCENT}"/>
+ </style:style>
+ <style:style style:name="pTexte" style:family="paragraph">
+  <style:paragraph-properties fo:margin-bottom="0.16cm" fo:line-height="118%"/>
+  <style:text-properties fo:font-size="15pt" fo:color="{_TEXTE}"/>
+ </style:style>
+ <style:style style:name="pPuce" style:family="paragraph">
+  <style:paragraph-properties fo:margin-left="0.7cm" fo:margin-bottom="0.14cm"
+    fo:line-height="118%"/>
+  <style:text-properties fo:font-size="15pt" fo:color="{_TEXTE}"/>
+ </style:style>
+ <style:style style:name="pPuce2" style:family="paragraph">
+  <style:paragraph-properties fo:margin-left="1.6cm" fo:margin-bottom="0.12cm"/>
+  <style:text-properties fo:font-size="13.5pt" fo:color="{_DOUX}"/>
+ </style:style>
+ <style:style style:name="pNum" style:family="paragraph">
+  <style:paragraph-properties fo:margin-bottom="0cm"/>
+  <style:text-properties fo:font-size="10pt" fo:color="{_DOUX}"/>
+ </style:style>
+</office:automatic-styles>"""
+
+# Le fond de page vit dans styles.xml : c'est lui qui donne sa couleur au diaporama.
+_STYLES_XML = f"""<?xml version="1.0" encoding="UTF-8"?>
+<office:document-styles {_NS_DIAPO} office:version="1.3">
+ <office:styles>
+  <draw:gradient draw:name="fondNova" draw:style="linear" draw:start-color="{_FOND}"
+    draw:end-color="#1b1444" draw:angle="450"/>
+ </office:styles>
+ <office:automatic-styles>
+  <style:page-layout style:name="PL">
+   <style:page-layout-properties fo:page-width="{_L}cm" fo:page-height="{_H}cm"
+     style:print-orientation="landscape" fo:margin="0cm"/>
+  </style:page-layout>
+  <style:style style:name="fondPage" style:family="drawing-page">
+   <style:drawing-page-properties draw:fill="gradient" draw:fill-gradient-name="fondNova"
+     presentation:background-visible="true" presentation:background-objects-visible="true"/>
+  </style:style>
+ </office:automatic-styles>
+ <office:master-styles>
+  <style:master-page style:name="Nova" style:page-layout-name="PL"
+    draw:style-name="fondPage"/>
+ </office:master-styles>
+</office:document-styles>"""
+
+
+def _style_de(ligne: str) -> str:
+    """Le style de paragraphe d'une ligne, d'après sa forme."""
+    if ligne.startswith("    • ") or ligne.startswith("        "):
+        return "pPuce2"
+    if ligne.startswith("• "):
+        return "pPuce"
+    return "pTexte"
+
+
 def odp(md: str) -> bytes:
-    """Le cours en diaporama, pour LibreOffice Impress."""
-    pages = sections(md) or [("Cours", ["(aucun contenu)"])]
+    """Le cours en diaporama, pour LibreOffice Impress — lisible, coloré, sans débordement."""
+    pages = [(t, l) for t, l in sections(md) if l or t]
+    # ⚠️ Une section AVEC un titre et SANS contenu (« Le cours ») donnait une diapo
+    # vide : il l'a eue sous les yeux. Un intitulé de structure n'est pas une diapo.
+    pages = [(t, l) for t, l in pages if l] or [("Cours", ["(aucun contenu)"])]
     diapos = []
+    total = len(pages)
     for i, (titre, lignes) in enumerate(pages, 1):
         cadres = []
         if titre:
             cadres.append(
-                '<draw:frame draw:layer="layout" svg:width="24cm" svg:height="2.4cm" '
-                'svg:x="1.5cm" svg:y="1.2cm"><draw:text-box>'
-                f'<text:p>{escape(titre)}</text:p></draw:text-box></draw:frame>')
-        if lignes:
-            corps = "".join(f"<text:p>{escape(l)}</text:p>" for l in lignes)
-            cadres.append(
-                '<draw:frame draw:layer="layout" svg:width="24cm" svg:height="12cm" '
-                'svg:x="1.5cm" svg:y="4.2cm"><draw:text-box>'
-                + corps + '</draw:text-box></draw:frame>')
+                '<draw:frame presentation:style-name="cadreT" draw:layer="layout" '
+                f'svg:width="{_L - 3:.1f}cm" svg:height="2.6cm" svg:x="1.5cm" svg:y="1.0cm">'
+                '<draw:text-box>'
+                f'<text:p text:style-name="pTitre">{escape(titre)}</text:p>'
+                '<text:p text:style-name="pTrait"> </text:p>'
+                '</draw:text-box></draw:frame>')
+        corps = "".join(
+            f'<text:p text:style-name="{_style_de(l)}">{escape(l)}</text:p>'
+            for l in lignes)
+        cadres.append(
+            '<draw:frame presentation:style-name="cadreC" draw:layer="layout" '
+            f'svg:width="{_L - 3:.1f}cm" svg:height="{_H - 5.4:.2f}cm" '
+            'svg:x="1.5cm" svg:y="4.1cm"><draw:text-box>'
+            + (corps or '<text:p text:style-name="pTexte"> </text:p>')
+            + '</draw:text-box></draw:frame>')
+        # Le numéro de diapo : sur un cours de trente diapos, savoir où l'on en est aide.
+        cadres.append(
+            '<draw:frame presentation:style-name="cadreT" draw:layer="layout" '
+            f'svg:width="4cm" svg:height="0.7cm" svg:x="{_L - 5.2:.1f}cm" '
+            f'svg:y="{_H - 1.3:.2f}cm"><draw:text-box>'
+            f'<text:p text:style-name="pNum">{i} / {total}</text:p>'
+            '</draw:text-box></draw:frame>')
         nom = escape((titre or f"Diapo {i}")[:40])
-        diapos.append(f'<draw:page draw:name="{nom}">' + "".join(cadres) + "</draw:page>")
+        diapos.append(f'<draw:page draw:name="{nom}" draw:master-page-name="Nova" '
+                      f'draw:style-name="fondPage">' + "".join(cadres) + "</draw:page>")
     contenu = ('<?xml version="1.0" encoding="UTF-8"?>\n'
                f'<office:document-content {_NS_DIAPO} office:version="1.3">'
+               + _STYLES_DIAPO +
                '<office:body><office:presentation>' + "".join(diapos) +
                '</office:presentation></office:body></office:document-content>')
-    return _archive(None, _MIME_DIAPO, contenu)
+    return _archive(None, _MIME_DIAPO, contenu, styles=_STYLES_XML)
