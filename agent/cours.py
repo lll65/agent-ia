@@ -592,7 +592,14 @@ _SYS_SYNTHESE = (
     "## Le cours\n(le contenu structuré en parties avec des titres ###, "
     "les termes importants en **gras**, les formules dans des blocs de code)\n"
     "## À retenir absolument\n(liste des points que l'enseignant a soulignés)\n"
-    "## Zones à éclaircir\n(ce qui était inaudible ou pas clair — écris « rien à signaler » si tout est net)"
+    "## Zones à éclaircir\n"
+    "(⚠️ NE TE CONTENTE PAS de répéter les titres suivis de « [passage peu clair] » : "
+    "ça n'apprend rien. Pour chaque doute, DIS LEQUEL et POURQUOI. Signale en "
+    "particulier les termes qui te paraissent invraisemblables dans ce contexte — la "
+    "transcription confond les mots qu'elle ne connaît pas, et un mot inventé appris "
+    "par cœur coûte plus cher qu'un trou assumé. Exemple de ce qu'on attend : "
+    "« Terme luthère : n'est pas standard en droit, probablement adultère mal "
+    "entendu ». Écris « rien à signaler » si tout est net.)"
 )
 
 _SYS_FICHES = (
@@ -772,7 +779,18 @@ def markdown(sid: str) -> str:
         perdu = sum(t.get("secondes", 0) for t in s["trous"])
         L += [f"> ⚠️ {len(s['trous'])} tranche(s) n'ont pas pu être transcrites "
               f"(≈ {int(perdu)} s manquantes).", ""]
-    L += ["---", "", s.get("synthese") or "_Synthèse non générée._", ""]
+    # ⚠️ La section « Zones à éclaircir » du modèle se réduit parfois à une liste de
+    # titres suivis de « [passage peu clair] » : treize lignes qui n'apprennent rien.
+    # On la reconstruit alors à partir des marqueurs réellement présents — combien, où,
+    # et quoi faire. Quand elle est déjà informative, on n'y touche pas.
+    _syn = s.get("synthese") or ""
+    if _syn:
+        try:
+            from agent.synthese import relis as _relis_syn
+            _syn = _relis_syn(_syn, len(s.get("trous") or []))
+        except Exception as e:
+            logger.info(f"[cours] relecture de la synthèse ignorée ({type(e).__name__})")
+    L += ["---", "", _syn or "_Synthèse non générée._", ""]
     if s.get("fiches"):
         L += ["---", "", "## Fiches de révision", ""]
         for i, f in enumerate(s["fiches"], 1):

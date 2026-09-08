@@ -10319,6 +10319,97 @@ def test_deplacer_un_cours_dans_notion_sans_se_tromper_de_cours():
     check("aucun cours → rien à envoyer", V.choisit("envoie ce cours dans Notion", []), {})
 
 
+def test_deux_cours_pour_la_meme_action_et_la_section_qui_n_apprend_rien():
+    """« les infos des automatisations sont fausses !!! » — son « Suivi action » :
+
+        2CRSI (AL2SI)
+        • Cours : 28,60 €   • Variation : ‑1,72 % (baisse)   • Source : Boursorama
+        • Autre cotation trouvée : 26,74 €, +1,27 % (hausse) — analyse XTB
+
+    Une baisse à 28,60 € ET une hausse à 26,74 €, l'une sous l'autre.
+
+    ⚠️ agent/chiffres.py NE POUVAIT RIEN VOIR : il vérifie qu'un nombre vient d'une
+    source, et les DEUX en viennent. Ce qui cloche n'est pas leur origine, c'est
+    qu'elles ne peuvent pas être vraies ensemble. Empiler les deux, c'est se couvrir en
+    lui laissant le travail : il lit la première, décide, et découvre la seconde trop
+    tard — ou jamais.
+
+    Et : « améliore ce qu'il y a à améliorer » sur ses deux cours du jour. Le second
+    est très bon ; le premier finit par treize lignes « **Titre** : [passage peu
+    clair] » qui répètent les intitulés et n'apprennent rien.
+    """
+    import importlib
+    K = importlib.import_module("agent.contradiction")
+    S = importlib.import_module("agent.synthese")
+
+    # --- 1. Deux valeurs incompatibles ----------------------------------------------
+    sien = ("DBV Technologies (DBV)\n\n* Cours : 2,306 €\n* Variation : -2,54 %\n"
+            "* Date de la donnée : 4 septembre 2026\n\n"
+            "2CRSI (AL2SI)\n\n* Cours : 28,60 €\n* Variation : -1,72 % (baisse)\n"
+            "* Source : Boursorama\n\n"
+            "* Autre cotation trouvée : 26,74 €, +1,27 % (hausse) - analyse XTB.\n")
+    d = K.desaccords(sien)
+    check("un seul désaccord relevé", len(d), 1)
+    # ⚠️ Et il porte sur la BONNE action : DBV n'a qu'une cotation, elle n'est pas mise
+    # en cause. Un avertissement qui déborde sur ce qui va bien devient du bruit.
+    check_true("sur 2CRSi, pas sur DBV", "2CRSI" in d[0][0])
+    check("et sur le cours", d[0][1], "cours")
+    sortie = K.relis(sien)
+    check_true("les deux valeurs sont nommées", "28,60" in sortie and "26,74" in sortie)
+    check_true("Nova dit qu'elle ne sait pas", "Je ne sais pas laquelle" in sortie)
+    # ⚠️ Elle ne choisit pas à sa place, et elle dit quoi faire.
+    check_true("et ne choisit pas", "je ne choisis pas à ta place" in sortie)
+    check_true("l'avertissement passe devant", sortie.index("ne peuvent pas être vraies")
+               < sortie.index("DBV Technologies"))
+
+    # Une seule valeur par action : rien ne se déclenche.
+    propre = "DBV Technologies\n\n* Cours : 2,306 €\n* Variation : -2,54 %\n"
+    check("aucun désaccord → texte intact", K.relis(propre), propre)
+    # ⚠️ Un arrondi n'est pas un désaccord : « 28,60 € » et « 28.6 EUR », c'est pareil.
+    arr = "2CRSI\n\n* Cours : 28,60 €\n* Cotation : 28,6 EUR\n"
+    check("un arrondi n'est pas une contradiction", K.relis(arr), arr)
+
+    # --- 2. La section « Zones à éclaircir » qui n'apprend rien ----------------------
+    cours1 = ("## Le cours\n\n### Euthanasie\n- La loi est une mise à jour.\n"
+              "- [passage peu clair]\n\n### Morale vs Droit\n- Le droit est un ensemble.\n"
+              "- [passage peu clair]\n\n## Zones à éclaircir\n"
+              "- **Euthanasie** : [passage peu clair]\n"
+              "- **Morale vs Droit** : [passage peu clair]\n")
+    flous = S.passages_flous(cours1)
+    # ⚠️ On ne compte QUE le corps : sinon la liste finale, qui répète un marqueur par
+    # ligne, doublerait le total et on annoncerait deux fois trop de trous.
+    check("les passages sont comptés une seule fois", sum(n for _s, n in flous), 2)
+    check("et localisés", [s for s, _n in flous], ["Euthanasie", "Morale vs Droit"])
+
+    neuf = S.relis(cours1, trous=1)
+    z = neuf[neuf.index("## Zones à éclaircir"):]
+    check_true("le nombre est dit", "2 passage(s)" in z)
+    check_true("les sections concernées aussi", "Euthanasie" in z and "Morale vs Droit" in z)
+    check_true("les tranches perdues sont distinguées", "tranche(s) d'audio" in z)
+    check_true("et il sait quoi vérifier", "Un mot qui te paraît étrange" in z)
+    # ⚠️ Les marqueurs RESTENT dans le texte : ils disent OÙ, et c'est justement ce qui
+    # manque quand on ne garde qu'une liste à la fin.
+    check("le corps n'est pas touché", neuf.count("[passage peu clair]") >= 2, True)
+    check_true("les titres du cours survivent", "### Morale vs Droit" in neuf)
+
+    # ⚠️ ET SURTOUT : une section DÉJÀ bonne ne doit pas être écrasée. C'est ce que le
+    # second cours a produit tout seul, et c'est mieux que ce que je saurais reconstruire.
+    cours2 = ("## Le cours\n### Mariage\n- Le mariage n'est pas un sacrement.\n\n"
+              "## Zones à éclaircir\n"
+              "*   **Nature du mariage catholique** : les notes disent que le mariage "
+              "« n'est pas un sacrement ». Cette formulation est théologiquement "
+              "inexacte et contredit la logique de l'indissolubilité : probablement une "
+              "erreur de transcription.\n")
+    check("une bonne section est laissée intacte", S.relis(cours2), cours2)
+
+    # La consigne demande explicitement ce que le cours 2 a fait spontanément.
+    src = (Path(__file__).resolve().parents[1] / "agent" / "cours.py").read_text(encoding="utf-8")
+    check_true("la consigne interdit la liste de titres", "NE TE CONTENTE PAS" in src)
+    check_true("et demande de signaler les termes invraisemblables",
+               "invraisemblables" in src)
+    check_true("la relecture est branchée", "from agent.synthese import relis" in src)
+
+
 def test_le_briefing_appelait_gmail_par_l_autre_porte():
     """« Erreur de récupération des mails : 404 – vérifie les autorisations et
     l'activation de l'API sur composio.dev » — alors que ses mails marchaient dans le
@@ -10776,7 +10867,8 @@ if __name__ == "__main__":
                test_la_mise_en_page_des_maquettes_sans_les_phrases_qui_rassurent,
                test_le_kine_qui_n_existait_pas_et_la_meteo_cherchee_sur_le_web,
                test_les_diapos_en_markdown_brut_et_les_cours_qu_on_range,
-               test_deplacer_un_cours_dans_notion_sans_se_tromper_de_cours):
+               test_deplacer_un_cours_dans_notion_sans_se_tromper_de_cours,
+               test_deux_cours_pour_la_meme_action_et_la_section_qui_n_apprend_rien):
         try:
             fn()
         except Exception as e:
