@@ -9840,8 +9840,20 @@ def test_l_accueil_ne_montre_que_ce_qui_est_mesure():
     check_true("et « Nova est en veille » disparaît", "body.aAccueil .htxt" in ui)
     # ⚠️ Mais SEULEMENT s'il y a des données : réduire l'orbe pour laisser du vide
     # serait pire que l'orbe seule.
-    check_true("le recul n'a lieu qu'une fois les données reçues",
-               ui.index('z.innerHTML = h;') < ui.index('classList.add("aAccueil")'))
+    # ⚠️ « ça met du temps à arriver les cases » : la route interroge Gmail et l'agenda,
+    # et pendant ce temps l'écran ne montrait RIEN. Un écran vide ne dit pas « je
+    # charge », il dit « il n'y a rien ». Les cases sont donc dessinées tout de suite en
+    # attente — donc l'orbe recule dès le squelette : la zone n'est plus vide, et la
+    # mise en page ne bouge plus quand les chiffres arrivent.
+    check_true("les cases sont dessinées avant la réponse", "function accSquelette()" in ui)
+    check_true("et le squelette dit qu'il regarde", "je regarde…" in ui)
+    check_true("le squelette est posé avant l'appel",
+               ui.index("accSquelette();") < ui.index('fetch(ORIGIN+"/agent/accueil'))
+    check_true("le recul accompagne du contenu, pas du vide",
+               ui.index("function accSquelette()") < ui.index('classList.add("aAccueil")'))
+    # Un second passage ne doit pas écraser des données déjà affichées par un squelette.
+    check_true("le squelette ne réécrit pas par-dessus les vraies données",
+               "if(!z || z.dataset.rempli) return;" in ui)
     check_true("l'écran s'adapte au téléphone", "@media (max-width:560px)" in ui)
     check("aucun onclick fabriqué à la volée", "onclick=\"quickTexte(" in ui, False)
     # L'accueil est un bonus : son échec ne doit pas casser le chat.
@@ -9973,6 +9985,107 @@ def test_la_mise_en_page_des_maquettes_sans_les_phrases_qui_rassurent():
     check_true("le nombre d'entrées est borné", "while(f.children.length > 24)" in ui)
     # Le texte des étapes vient du serveur : il passe par l'échappement.
     check_true("le contenu est échappé", "esc(_cut(titre,54))" in ui)
+
+
+def test_le_kine_qui_n_existait_pas_et_la_meteo_cherchee_sur_le_web():
+    """DEUX DÉFAUTS D'UNE MÊME CONVERSATION, ET LE PREMIER EST LE PLUS GRAVE DE TOUS.
+
+    « trouve-moi le kiné le plus proche à Pau, sachant que j'habite résidence UXCO » →
+        « Le kiné le plus proche se trouve à la clinique du Parc, 12 rue du Parc,
+          à deux minutes à pied. »
+    AUCUNE RECHERCHE N'A ÉTÉ LANCÉE. Pas un outil appelé. Le cabinet, la rue, le numéro
+    et le temps de marche ont été écrits de mémoire. Plus loin :
+        « Adresse de la résidence XCO : 10 rue du 8 Mai 1945 (source : recherche
+          d'adresse) »  ← la caution aussi était inventée
+        « ≈ 650 m, soit 8 minutes de marche », « 1,2 km, 15-20 minutes »
+    et lui : « c'est faux, je suis à 700 m de l'université ».
+
+    ⚠️ Un cours de bourse faux lui coûte de l'argent et il peut le recouper. Une adresse
+    fausse, il s'y REND. Il a 17 ans et vient d'emménager dans une ville qu'il ne
+    connaît pas. chiffres.py surveillait les cotations ; personne ne surveillait ce sur
+    quoi il pose les pieds.
+
+    SECOND DÉFAUT : « la météo à Pau demain » → recherche WEB → « je n'ai pas trouvé de
+    prévision précise », sources AccuWeather « Monthly Weather » et WeatherSpark
+    « climat par mois ». Un moteur ne rend pas une prévision. Or open-meteo alimente
+    déjà son briefing et son accueil : la source était là, branchée nulle part sur une
+    QUESTION.
+    """
+    import importlib
+    T = importlib.import_module("agent.terrain")
+    M = importlib.import_module("agent.meteo")
+    A_ = importlib.import_module("api.agent")
+
+    # --- 1. Le terrain : rien sans source ------------------------------------------
+    kine = ("Le kiné le plus proche de la résidence XCO se trouve à la clinique du Parc, "
+            "12 rue du Parc, à deux minutes à pied.")
+    aff = dict((e, g) for e, g in T.affirmations(kine))
+    check_true("l'adresse est relevée en entier", "12 rue du Parc" in aff)
+    check("et classée comme adresse", aff.get("12 rue du Parc"), "adresse")
+    check_true("le temps de marche aussi", "deux minutes à pied" in aff)
+
+    sortie = T.relis(kine, [])
+    # ⚠️ Le bandeau est en TÊTE : une mise en garde placée après l'adresse arrive quand
+    # il a déjà noté la rue.
+    check_true("l'avertissement passe devant", sortie.index("aucune recherche") < sortie.index("kiné"))
+    check_true("elle dit qu'elle n'a rien cherché", "Je n'ai lancé aucune recherche" in sortie)
+    check_true("et lui dit de ne pas y aller", "N'y va pas sur cette base" in sortie)
+    check_true("avec la manière de faire autrement", "en disant « cherche »" in sortie)
+    check_true("le texte d'origine reste", "clinique du Parc" in sortie)
+
+    # ⚠️ Une adresse RÉELLEMENT trouvée ne doit pas être accusée. Les sources écrivent
+    # « 15, place de la Liberation » là où le modèle écrit « 15 place de la Libération ».
+    salon = "Le Salon Johann se situe au 15 place de la Libération, 64000 Pau."
+    obs = ["SALON JOHANN — 15, place de la Liberation, 64000 Pau — yelp.com, "
+           "page complète avec les avis des clients et les horaires du salon"]
+    check("une adresse sourcée n'est pas signalée", T.non_sourcees(salon, obs), [])
+    check("et le texte n'est pas touché", T.relis(salon, obs), salon)
+
+    # Des sources existent, mais pas pour CE chiffre : le message est différent.
+    d = T.relis("Distance ≈ 650 m, soit 8 minutes de marche.",
+                ["Une page d'avis sans la moindre distance, mais assez longue pour compter."])
+    check_true("un chiffre inventé parmi des sources réelles est nommé", "650 m" in d)
+    check("... sans prétendre qu'aucune recherche n'a eu lieu",
+          "aucune recherche" in d, False)
+
+    # ⚠️ Ce qui n'est PAS du terrain ne doit pas déclencher de bandeau : sinon le
+    # signal devient du bruit et il finira par le sauter.
+    for neutre in ("Le cours dure 50 minutes et j'ai 3 événements aujourd'hui.",
+                   "Il fait 22 °C et il y a 0 % de pluie.",
+                   "L'action a pris 2,4 % à 26,30 €."):
+        check(f"pas un fait de terrain : {neutre[:34]!r}", T.affirmations(neutre), [])
+
+    # --- 2. La météo passe par l'outil, plus par le web -----------------------------
+    check_true("« la météo à Pau demain » est reconnue", M.veut_la_meteo("la météo à Pau demain"))
+    check_true("« quel temps il fait » aussi", M.veut_la_meteo("quel temps il fait"))
+    # ⚠️ « combien de temps » n'est pas une question de météo malgré le mot « temps ».
+    check("« combien de temps pour aller à Tarbes » n'en est pas une",
+          M.veut_la_meteo("combien de temps pour aller à Tarbes"), False)
+    check("« temps de trajet » non plus", M.veut_la_meteo("temps de trajet Pau Tarbes"), False)
+
+    # ⚠️ « à chaque fois tu me donnes la météo de Paris » : la ville de SA phrase prime.
+    check("la ville de la phrase est lue", M.ville_demandee("la météo à Pau demain"), "Pau")
+    # Et elle n'avale pas l'adverbe qui suit : « Pau demain » n'existe pas sur une carte.
+    check("les noms composés survivent",
+          M.ville_demandee("la météo à Saint-Jean-de-Luz demain"), "Saint-Jean-de-Luz")
+    check("aucune ville nommée → on ne devine pas", M.ville_demandee("la météo demain"), "")
+    check("demain est reconnu", M.quand_demande("la météo demain"), 1)
+    check("après-demain aussi", M.quand_demande("la météo après-demain"), 2)
+    check("et aujourd'hui par défaut", M.quand_demande("la météo"), 0)
+
+    # La demande est bien routée vers l'outil, pas vers une recherche web.
+    action, args = A_._resolve_app_action("la météo à Pau demain")
+    check("la météo a sa propre route", action, "__METEO__")
+
+    # ⚠️ Si open-meteo ne répond pas, on ne dit pas « il fera doux » — c'est exactement
+    # la phrase qu'elle a sortie quand il a insisté, et elle ne reposait sur rien.
+    class _KO:
+        def get(self, *a, **k):
+            raise RuntimeError("réseau coupé")
+    msg = M.previsions("Pau", 1, _KO())
+    check_true("une panne se dit", "je n'ai pas pu" in msg.lower() or "pas trouvé" in msg.lower())
+    check("et aucune prévision n'est inventée",
+          any(w in msg.lower() for w in ("doux", "nuageux", "ensoleillé", "°c")), False)
 
 
 def test_le_briefing_appelait_gmail_par_l_autre_porte():
@@ -10429,7 +10542,8 @@ if __name__ == "__main__":
                test_son_cours_s_ouvre_dans_libreoffice,
                test_410_gone_le_seul_code_que_l_auto_guerison_ignorait,
                test_l_accueil_ne_montre_que_ce_qui_est_mesure,
-               test_la_mise_en_page_des_maquettes_sans_les_phrases_qui_rassurent):
+               test_la_mise_en_page_des_maquettes_sans_les_phrases_qui_rassurent,
+               test_le_kine_qui_n_existait_pas_et_la_meteo_cherchee_sur_le_web):
         try:
             fn()
         except Exception as e:

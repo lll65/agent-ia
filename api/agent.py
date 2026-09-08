@@ -1189,6 +1189,19 @@ def _resolve_app_action(message: str):
     if _lieux:
         return "__TRAJET__", {"depart": _lieux[0], "arrivee": _lieux[1]}
 
+    # ⚠️ « dis-moi la météo à Pau demain » → Nova partait en RECHERCHE WEB et rendait
+    # « je n'ai pas trouvé de prévision précise », avec AccuWeather « Monthly Weather »
+    # et WeatherSpark « climat par mois » en sources. Un moteur ne rend pas une
+    # prévision : il rend des pages qui PARLENT de météo.
+    # Or open-meteo alimente déjà son briefing du matin et son écran d'accueil —
+    # gratuit, sans clé, joignable depuis Render, c'est prouvé tous les jours. Personne
+    # n'avait branché cette source sur une QUESTION : elle servait quand Nova parlait
+    # toute seule, pas quand il demandait. Lui : « c'est pas normal que tu trouves pas
+    # la météo de demain de Pau ». Il avait raison.
+    from agent.meteo import veut_la_meteo
+    if veut_la_meteo(message):
+        return "__METEO__", {"message": message}
+
     if cal_ctx:
         tmin, tmax, _ = _time_bounds(message)
         return "GOOGLECALENDAR_EVENTS_LIST", {
@@ -2126,6 +2139,17 @@ def _direct_app_prepare_brut(message: str, canal: str = "web"):
         return {"steps": [{"kind": "action", "tool": "googlemaps",
                            "label": f"Trajet {a} → {b}"}],
                 "answer": itineraire(a, b), "ok": True}
+    if action == "__METEO__":
+        from agent.meteo import repond, ville_demandee
+        from agent.briefing import ville_de_lohan
+        msg = (args or {}).get("message", "")
+        # ⚠️ « à chaque fois tu me donnes la météo de Paris » : la ville écrite dans SA
+        # phrase l'emporte sur le profil, et le profil sur le réglage. « Paris » n'est
+        # qu'un tout dernier recours.
+        ville = ville_demandee(msg) or ville_de_lohan()
+        return {"steps": [{"kind": "action", "tool": "meteo",
+                           "label": f"Météo de {ville}"}],
+                "answer": repond(msg, ville), "ok": True}
     if action == "__RAPPORT_MAILS__":
         return {"steps": [{"kind": "action", "tool": "gmail", "label": "Tri de tes mails"}],
                 "done_answer": _rapport_mails(args)}

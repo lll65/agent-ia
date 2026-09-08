@@ -1303,6 +1303,16 @@ async def run_agent(
             res["answer"] = relis_liens(res["answer"], observations_du_tour())
     except Exception as e:
         logger.info(f"[liens] vérification ignorée ({type(e).__name__})")
+    # ⚠️ ET LE TERRAIN, qui est le plus coûteux de tous. « trouve-moi le kiné le plus
+    # proche » → « clinique du Parc, 12 rue du Parc, à deux minutes à pied », sans qu'AUCUN
+    # outil n'ait été appelé. Un cours de bourse faux se recoupe ; une adresse fausse, il
+    # s'y REND. Il a 17 ans et vient d'emménager dans une ville qu'il ne connaît pas.
+    try:
+        from agent.terrain import relis as relis_terrain
+        if res.get("answer"):
+            res["answer"] = relis_terrain(res["answer"], observations_du_tour(), task)
+    except Exception as e:
+        logger.info(f"[terrain] vérification ignorée ({type(e).__name__})")
     # Ni mur de caractères, ni « je ne peux pas » sans suite — sur TOUS les chemins,
     # y compris Telegram et les automatisations, pas seulement le chat.
     try:
