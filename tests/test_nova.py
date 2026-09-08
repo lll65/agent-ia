@@ -10574,6 +10574,119 @@ def test_notion_sans_parent_les_boutons_partout_et_la_memoire_qui_se_salit():
     check_true("l'écran écrit « 50+ »", '(m.plafond ? "+" : "")' in ui)
 
 
+def test_la_constellation_de_cartes_meritees():
+    """« regarde bien la deuxième image, c'est ce design que je voulais pendant que Nova
+    fait une recherche, au lieu de dessiner un schéma. Et ça je te l'avais déjà demandé,
+    c'est la 3ᵉ fois que je dois y revenir dessus. »
+
+    ⚠️ IL A RAISON, ET LA CAUSE EST UN CHOIX DE FACILITÉ. Les deux premières fois, j'ai
+    gardé le schéma dessiné au canvas parce qu'il existait déjà. Ce sont des CARTES
+    qu'il veut — titre, sous-titre, barre — disposées autour de l'orbe.
+
+    ⚠️ ET CHAQUE CARTE DOIT ÊTRE MÉRITÉE. Sur la maquette, les six sont là d'emblée :
+    « Analyse des mails · 3 nouveaux, 12 non lus » s'afficherait même si Nova n'a jamais
+    ouvert Gmail. Ce serait la même faute que « je croise plusieurs sources fiables » —
+    une interface qui AFFIRME au lieu de MONTRER. Une carte n'apparaît donc que si
+    l'étape a réellement eu lieu, et son sous-titre dit ce qui s'est passé.
+    """
+    racine = Path(__file__).resolve().parents[1]
+    ui = (racine / "ui" / "nova.html").read_text(encoding="utf-8")
+
+    check_true("la constellation existe", 'id="cons"' in ui and ".consGrille{" in ui)
+    check_true("avec l'orbe au centre", ".consOrbe" in ui)
+    check_true("et de vraies cartes", ".consC .h{" in ui and ".consC .s{" in ui)
+    # ⚠️ Aucune carte n'est écrite dans le HTML : une carte présente d'avance
+    # s'afficherait même quand l'étape n'a pas eu lieu.
+    bloc = ui[ui.index("<!-- ⚠️ Les cartes sont créées par le JS"):
+              ui.index('<div class="chat" id="chat">')]
+    check("aucune carte pré-écrite", "consC" in bloc, False)
+    check_true("et le pourquoi est dit", "Rien n'est écrit d'avance" in bloc)
+    # ⚠️ La barre ne prétend pas mesurer un avancement : on ne connaît pas la durée
+    # totale. Un pourcentage inventé serait un chiffre de plus qui a l'air d'une mesure.
+    check_true("la barre ondule au lieu de mentir", "@keyframes consGlisse" in ui)
+    check("aucun pourcentage affiché", "consPct" in ui or "%</" in bloc, False)
+    check_true("elle se remplit à la fin", ".consC.fini .b i{ width:100%" in ui)
+    check_true("et vire à l'ambre en cas d'échec", ".consC.ko .b i{" in ui)
+    # Le canvas ne double plus la constellation dans le chat.
+    check_true("le schéma dessiné ne sert plus qu'au mode vocal",
+               "function graphStart(){ if(!voiceMode) return;" in ui)
+    check_true("elle tient sur téléphone", "@media (max-width:760px){\n    .consGrille" in ui)
+
+    if not shutil.which("node"):
+        return
+    import json as _j
+    import os
+    import subprocess
+    import tempfile
+    src = ui[ui.index("const CARTES = ["):ui.index("/* ═══ TIMELINE")]
+    with tempfile.TemporaryDirectory() as d:
+        f = os.path.join(d, "f.js")
+        open(f, "w", encoding="utf-8").write(
+            "function penseEchec(t){return /erreur|404|indisponible/i.test(String(t||''));}\n"
+            "function _cut(s,n){s=String(s||'').trim();return s.length>n?s.slice(0,n)+'…':s;}\n"
+            + src)
+        h = os.path.join(d, "h.js")
+        open(h, "w", encoding="utf-8").write("""
+class El{ constructor(t){ this.t=t; this.children=[]; this.className=''; this.textContent='';
+  this._html=''; }
+  set innerHTML(v){ this._html=v; this.children=[]; }
+  get innerHTML(){ return this._html; }
+  querySelector(s){ if(!this._q) this._q={}; return this._q[s] || (this._q[s]=new El(s)); }
+  querySelectorAll(s){ return this._all||[]; }
+  insertBefore(c){ this.children.splice(Math.max(0,this.children.length-1),0,c); }
+  appendChild(c){ this.children.push(c); }
+  get classList(){ const self=this; return {
+    add:(c)=>{ if(!self.className.includes(c)) self.className=(self.className+' '+c).trim(); },
+    remove:(c)=>{ self.className=self.className.split(' ').filter(x=>x!==c).join(' '); },
+    toggle:(c,on)=>{ on?self.classList.add(c):self.classList.remove(c); },
+    contains:(c)=> self.className.split(' ').includes(c) }; }
+}
+const G=new El('g'), ORBE=new El('o'); ORBE.className='consOrbe';
+G.children=[ORBE]; G._q={'.consOrbe':ORBE};
+const SOUS=new El('s');
+global.document={ getElementById:(i)=> i==='consG'?G : i==='consSous'?SOUS : null,
+                  createElement:(t)=> new El(t) };
+""" + "eval(require('fs').readFileSync(%r,'utf8'));\n" % f + """
+consVide();
+consEtape('analyse',{ico:'💭',txt:'Analyse de ta demande'},'résume mes mails');
+consEvenement({kind:'action', tool:'gmail', q:'in:inbox is:unread'});
+consEvenement({kind:'obs', tool:'gmail', text:'20 messages'});
+consEvenement({kind:'action', tool:'search_web', q:'météo Pau'});
+consEvenement({kind:'obs', tool:'notion', text:'[ERREUR] 404 introuvable'});
+const c = G.children.filter(x=>x.className && x.className.includes('consC'));
+const avant = c.map(x=>x.className);
+consFini();
+console.log(JSON.stringify({
+  cartes: c.map(x=>({t:x.querySelector('.h span').textContent,
+                     s:x.querySelector('.s').textContent, c:x.className})),
+  avant: avant, sous: SOUS.textContent}));
+""")
+        out = subprocess.run(["node", h], capture_output=True, text=True, timeout=60)
+        r = _j.loads(out.stdout.strip().splitlines()[-1])
+
+    titres = [c["t"] for c in r["cartes"]]
+    # Une carte par étape RÉELLE, et rien d'autre.
+    check("quatre étapes ont eu lieu, quatre cartes", len(titres), 4)
+    check_true("les mails y sont", "Analyse des mails" in titres)
+    check_true("la recherche web aussi", "Recherche web" in titres)
+    # ⚠️ « Contexte » et « Planning & agenda » sont dans la maquette mais n'ont PAS eu
+    # lieu : les afficher serait exactement la faute qu'on corrige.
+    for absente in ("Contexte", "Planning & agenda"):
+        check(f"« {absente} » n'a pas eu lieu, donc pas de carte", absente in titres, False)
+    # ⚠️ Un outil inconnu obtient sa propre carte, à SON nom : mieux vaut une carte
+    # honnête de plus qu'un rangement forcé dans une case qui ment.
+    check_true("un outil inconnu garde son nom", "notion" in titres)
+    ko = [c for c in r["cartes"] if "ko" in c["c"]]
+    check("l'échec est marqué", len(ko), 1)
+    check_true("et c'est le bon", ko[0]["t"] == "notion")
+    # ⚠️ Un échec ne doit PAS devenir « terminé » quand tout se termine.
+    check("un échec le reste après la fin", "fini" in ko[0]["c"], False)
+    check_true("le sous-titre dit la dernière étape réelle", r["sous"])
+    # Le sous-titre d'une carte porte ce qui s'est VRAIMENT passé.
+    mails = [c for c in r["cartes"] if c["t"] == "Analyse des mails"][0]
+    check_true("avec le détail de l'outil", "20 messages" in mails["s"])
+
+
 def test_le_briefing_appelait_gmail_par_l_autre_porte():
     """« Erreur de récupération des mails : 404 – vérifie les autorisations et
     l'activation de l'API sur composio.dev » — alors que ses mails marchaient dans le
@@ -11034,7 +11147,8 @@ if __name__ == "__main__":
                test_deplacer_un_cours_dans_notion_sans_se_tromper_de_cours,
                test_deux_cours_pour_la_meme_action_et_la_section_qui_n_apprend_rien,
                test_le_diagnostic_cherchait_une_variable_impossible,
-               test_notion_sans_parent_les_boutons_partout_et_la_memoire_qui_se_salit):
+               test_notion_sans_parent_les_boutons_partout_et_la_memoire_qui_se_salit,
+               test_la_constellation_de_cartes_meritees):
         try:
             fn()
         except Exception as e:

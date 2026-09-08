@@ -231,6 +231,66 @@
            word-break:break-word; }
   .pE.ko .tt{ color:#fde68a; }
   .pFin{ font-size:11px; color:var(--dim); text-align:center; padding-top:4px; }
+  /* ═══ CONSTELLATION DE RÉFLEXION ═══ (le cœur de la maquette A)
+     ⚠️ C'est la TROISIÈME fois qu'il me la redemande. Les deux premières, j'ai gardé le
+     schéma dessiné au canvas parce qu'il existait déjà — un choix de facilité qui lui a
+     coûté deux allers-retours. Ce sont des CARTES qu'il veut, avec un titre, un
+     sous-titre et une barre.
+
+     ⚠️ ET CHAQUE CARTE DOIT ÊTRE MÉRITÉE. Sur la maquette, les six sont là d'emblée :
+     « Analyse des mails · 3 nouveaux, 12 non lus » s'afficherait même si Nova n'a jamais
+     ouvert Gmail. Une carte n'apparaît donc QUE si l'étape a réellement eu lieu, et son
+     sous-titre dit ce qui s'est passé — l'outil appelé, la requête envoyée. La
+     constellation se construit sous ses yeux au lieu d'être un décor. */
+  #cons{ display:none; position:relative; margin:4px auto 10px; max-width:820px;
+         padding:6px 2px 2px; }
+  body.thinking #cons{ display:block; animation:pop .45s cubic-bezier(.2,.9,.3,1.2); }
+  body.voice #cons, body.chatting.thinking #cons{ display:block; }
+  #cons .consTitre{ display:flex; align-items:center; gap:9px; font-size:13.5px;
+                    font-weight:650; margin-bottom:3px; }
+  #cons .consTitre i{ width:15px; height:15px; border-radius:50%; border:2px solid var(--neon2);
+                      border-top-color:transparent; animation:spin .9s linear infinite;
+                      display:inline-block; }
+  #cons .consSous{ font-size:11.5px; color:var(--dim); margin-bottom:12px; }
+  .consGrille{ display:grid; gap:10px;
+               grid-template-columns:1fr minmax(120px,180px) 1fr;
+               align-items:center; }
+  .consOrbe{ grid-row:span 3; display:grid; place-items:center; position:relative; min-height:150px; }
+  .consOrbe b{ width:104px; height:104px; border-radius:50%; display:grid; place-items:center;
+               font-size:10px; letter-spacing:.22em; color:#e9e4ff; font-weight:700;
+               background:radial-gradient(circle at 34% 30%,#cbbcff,#7c5cf5 52%,#2a1d6b);
+               box-shadow:0 0 42px rgba(139,109,255,.65), inset 0 0 22px rgba(255,255,255,.22);
+               animation:orbPulse 2.6s ease-in-out infinite; }
+  .consOrbe::after{ content:""; position:absolute; width:150px; height:150px; border-radius:50%;
+                    border:1px solid rgba(139,109,255,.28); animation:spin 14s linear infinite; }
+  .consC{ border:1px solid var(--stroke); border-radius:15px; padding:11px 13px;
+          background:linear-gradient(160deg,rgba(255,255,255,.07),rgba(255,255,255,.022));
+          animation:pop .35s cubic-bezier(.2,.9,.3,1.2); position:relative; overflow:hidden; }
+  .consC::before{ content:""; position:absolute; inset:0 0 auto 0; height:1px;
+                  background:linear-gradient(90deg,transparent,rgba(255,255,255,.32),transparent); }
+  .consC .h{ display:flex; align-items:center; gap:8px; font-size:12.5px; font-weight:650; }
+  .consC .h i{ font-style:normal; font-size:14px; }
+  .consC .s{ font-size:11px; color:var(--dim); margin-top:3px; line-height:1.4;
+             overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* ⚠️ La barre ne prétend PAS mesurer un avancement : on ne connaît pas la durée
+     totale. Elle ONDULE tant que l'étape tourne, et se remplit quand elle est finie.
+     Un pourcentage inventé serait un chiffre de plus qui a l'air d'une mesure. */
+  .consC .b{ height:3px; border-radius:3px; margin-top:9px; background:rgba(255,255,255,.09);
+             overflow:hidden; }
+  .consC .b i{ display:block; height:100%; width:40%; border-radius:3px;
+               background:linear-gradient(90deg,var(--neon),var(--neon2));
+               animation:consGlisse 1.25s ease-in-out infinite; }
+  .consC.fini .b i{ width:100%; animation:none; }
+  .consC.fini{ border-color:rgba(52,211,153,.34); }
+  .consC.ko{ border-color:rgba(251,191,36,.42); }
+  .consC.ko .b i{ width:100%; animation:none; background:#fbbf24; }
+  @keyframes consGlisse{ 0%{ transform:translateX(-100%) } 100%{ transform:translateX(250%) } }
+  @media (max-width:760px){
+    .consGrille{ grid-template-columns:1fr; }
+    .consOrbe{ grid-row:auto; min-height:0; order:-1; }
+    .consOrbe b{ width:72px; height:72px; }
+    .consOrbe::after{ width:104px; height:104px; }
+  }
   .chips{ display:flex; gap:8px; flex-wrap:wrap; padding:2px 0 6px; }
   .chip{ font-size:12.5px; color:var(--dim); background:var(--glass); border:1px solid var(--stroke); border-radius:999px; padding:7px 13px; cursor:pointer; transition:.2s; }
   /* ═══ ACCUEIL ═══ Tout ce qui s'affiche ici vient d'un appel réel.
@@ -752,6 +812,19 @@
       <span class="chip" onclick="quick(this)">Mon agenda cette semaine ?</span>
       <span class="chip" onclick="quick(this)">Quand suis-je libre cette semaine ?</span>
       <span class="chip" onclick="quick(this)">Résume l'actu tech du jour</span>
+    </div>
+
+    <!-- ⚠️ Les cartes sont créées par le JS à mesure que les VRAIES étapes arrivent.
+         Rien n'est écrit d'avance ici : une carte présente dans le HTML s'afficherait
+         même quand l'étape n'a pas eu lieu, et c'est précisément ce qu'on refuse. -->
+    <div id="cons">
+      <div class="consTitre"><i></i> Nova réfléchit…</div>
+      <div class="consSous" id="consSous">Je traite ta demande.</div>
+      <div class="consGrille" id="consG">
+        <div></div>
+        <div class="consOrbe"><b>NOVA</b></div>
+        <div></div>
+      </div>
     </div>
 
     <div class="chat" id="chat">
@@ -1277,6 +1350,85 @@ document.addEventListener("click", e=>{
 
 /* Le bandeau haut : date, heure. L'horloge est celle de SON appareil — c'est la seule
    dont on soit sûr, et c'est celle qu'il regarde. */
+/* ═══ CONSTELLATION DE RÉFLEXION ═══
+   Les six cartes de la maquette, mais MÉRITÉES : une carte n'apparaît que si l'étape a
+   réellement eu lieu, et son sous-titre dit ce qui s'est passé. Sur la maquette,
+   « Analyse des mails · 3 nouveaux, 12 non lus » est écrit d'avance — il s'afficherait
+   même si Nova n'a jamais ouvert Gmail. */
+const CARTES = [
+  { cle:"analyse", titre:"Analyse de ta demande",   ico:"💭" },
+  { cle:"mails",   titre:"Analyse des mails",       ico:"✉️" },
+  { cle:"agenda",  titre:"Planning & agenda",       ico:"📅" },
+  { cle:"web",     titre:"Recherche web",           ico:"🌐" },
+  { cle:"contexte",titre:"Contexte",                ico:"🧩" },
+  { cle:"raison",  titre:"Raisonnement & stratégie",ico:"🧠" },
+  { cle:"redac",   titre:"Préparation de réponse",  ico:"✍️" },
+];
+/* Quelle carte pour quel événement RÉEL. On regarde l'outil appelé, pas ce qu'on
+   aimerait afficher. Un outil inconnu obtient sa propre carte, à son nom : mieux vaut
+   une carte honnête de plus qu'un rangement forcé dans une case qui ment. */
+function consCle(d){
+  const t = String((d && (d.tool || d.agent)) || "").toLowerCase();
+  if(d && d.kind === "route") return "analyse";
+  if(d && d.kind === "thought") return "raison";
+  if(/gmail|mail/.test(t)) return "mails";
+  if(/calendar|agenda/.test(t)) return "agenda";
+  if(/search|web|actu|rss|tavily/.test(t)) return "web";
+  if(/profil|memoire|mémoire|contexte/.test(t)) return "contexte";
+  return t ? "outil:" + t : "raison";
+}
+let CONS = {};
+function consVide(){
+  CONS = {};
+  const g = document.getElementById("consG");
+  if(!g) return;
+  // On garde la trame (colonne gauche, orbe, colonne droite) et on vide les cartes.
+  [...g.querySelectorAll(".consC")].forEach(x => x.remove());
+  const s = document.getElementById("consSous");
+  if(s) s.textContent = "Je traite ta demande.";
+}
+function consEtape(cle, titre, sous, etat){
+  const g = document.getElementById("consG");
+  if(!g || !cle) return;
+  let c = CONS[cle];
+  if(!c){
+    c = document.createElement("div");
+    c.className = "consC";
+    c.innerHTML = '<div class="h"><i></i><span></span></div><div class="s"></div>'
+                + '<div class="b"><i></i></div>';
+    // Alternance gauche / droite autour de l'orbe, comme sur la maquette.
+    const n = Object.keys(CONS).length;
+    const cellules = [...g.children];
+    const orbe = g.querySelector(".consOrbe");
+    if(n % 2 === 0) g.insertBefore(c, orbe);
+    else g.appendChild(c);
+    CONS[cle] = c;
+    // L'étape précédente n'est plus en cours dès qu'une nouvelle commence.
+    Object.values(CONS).forEach(x => { if(x !== c && !x.classList.contains("ko"))
+      x.classList.add("fini"); });
+  }
+  c.querySelector(".h i").textContent = titre.ico || "•";
+  c.querySelector(".h span").textContent = titre.txt || "";
+  if(sous) c.querySelector(".s").textContent = sous;
+  c.classList.toggle("ko", etat === "ko");
+  if(etat === "ko") c.classList.remove("fini");
+  const s = document.getElementById("consSous");
+  if(s && titre.txt) s.textContent = titre.txt + (sous ? " — " + sous : "");
+}
+function consEvenement(d){
+  const cle = consCle(d);
+  const connue = CARTES.find(x => x.cle === cle);
+  const det = (d && (d.q || d.text)) || "";
+  const titre = connue ? {ico: connue.ico, txt: connue.titre}
+                       : {ico: "🔧", txt: String((d && d.tool) || "Outil").slice(0, 28)};
+  consEtape(cle, titre, det, penseEchec(det) ? "ko" : "");
+}
+function consFini(){
+  Object.values(CONS).forEach(x => { if(!x.classList.contains("ko")) x.classList.add("fini"); });
+  const s = document.getElementById("consSous");
+  if(s) s.textContent = "Terminé.";
+}
+
 /* ═══ TIMELINE « MA RÉFLEXION EN DIRECT » ═══
    Alimentée par les VRAIS événements SSE. Rien n'est pré-écrit : si Nova n'a appelé
    aucun outil, la timeline ne prétend pas qu'elle a « croisé plusieurs sources ». */
@@ -2048,7 +2200,8 @@ if (window.visualViewport){
   visualViewport.addEventListener("resize", ()=>{ if(gAnim) gResize(); });
   visualViewport.addEventListener("scroll", ()=>{ if(gAnim) gResize(); });
 }
-function graphStart(){ gw.classList.remove("mini"); gw.classList.add("show");
+function graphStart(){ if(!voiceMode) return;   // ⚠️ remplacé par la constellation
+  gw.classList.remove("mini"); gw.classList.add("show");
   const mb=document.getElementById("graphMini"); if(mb) mb.classList.remove("show");
   clearTimeout(window._gTimer);
   gResize(); GT=0; phaseCount=0;
@@ -2398,7 +2551,7 @@ function arreteReflexion(){
   if(SID && KEY){ try{ fetch(ORIGIN+"/agent/ask/stop?key="+encodeURIComponent(KEY)
       +"&sid="+encodeURIComponent(SID),{cache:"no-store"}).catch(()=>{}); }catch(e){} }
   thinking=false; document.body.classList.remove("thinking"); graphEnd(); boutonEnvoi(false);
-  penseFini("⏹ Arrêté à ta demande.");
+  penseFini("⏹ Arrêté à ta demande."); consFini();
   stopSpeaking();
   // Ce qui etait deja arrive RESTE : on ajoute la mention d'arret, on ne l'efface pas.
   // Mais si rien n'etait arrive, la bulle contient encore « Nova reflechit… » — la
@@ -2426,6 +2579,7 @@ function ask(){
   document.body.classList.add("chatting");
   inp.value=""; grow(inp); addRow("me",fmt(msg)); histPush("me",msg); sndSend(); const bubble=addRow("ai",thinkHTML(THINK_PHRASES[0],"💭"));
   BULLE=bubble; RECU=false;
+  consVide(); consEtape("analyse", {ico:"💭", txt:"Analyse de ta demande"}, _cut(msg,60));
   penseVide(); penseAjoute("J'analyse ta demande", msg);
   SID = "s" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   boutonEnvoi(true); thinking=true; document.body.classList.add("thinking"); graphStart();
@@ -2489,12 +2643,14 @@ function ask(){
       // ⚠️ La timeline reçoit l'étape TELLE QU'ELLE EST, y compris quand elle rate :
       // une observation en erreur doit se voir, pas disparaître derrière un point violet.
       { const det = d.q || d.text || "";
-        penseAjoute(stepLabel(d), det, penseEchec(det) ? "ko" : ""); }
+        penseAjoute(stepLabel(d), det, penseEchec(det) ? "ko" : "");
+        consEvenement(d); }
       trace.push({icon:ic, label:stepLabel(d), detail:(d.q||d.text||"")});
       if(voiceMode) vSet(stepLabel(d),"");
       if(!answer&&!streamed){ bubble.innerHTML=thinkHTML(stepLabel(d), ic); pi=trace.length-1; chat.scrollTop=chat.scrollHeight; } }
     else if(d.type==="token"){ if(!streamed){ streamed=true; stopThink(); bubble.innerHTML=""; graphAdd("✍️","Rédaction");
-        penseAjoute("Je rédige ma réponse", ""); }
+        penseAjoute("Je rédige ma réponse", "");
+        consEtape("redac", {ico:"✍️", txt:"Préparation de réponse"}, "rédaction en cours"); }
       answer+=(d.t||""); bubble.innerHTML=fmt(answer)+'<span class="cur">▍</span>'; chat.scrollTop=chat.scrollHeight;
       /* ⚠️ On affichait le MARKDOWN BRUT du rapport écrit, coupé à 240 signes en plein
          mot : « ### 🔴 Important, sans réponse attendue (2) - ** 🚨 Marta Ferrando
@@ -2516,9 +2672,9 @@ function ask(){
     // ⚠️ Nova apprend maintenant toute seule. Retenir en douce serait le contraire de
     // ce qu'on veut : on affiche ce qu'elle garde, avec de quoi l'enlever d'un clic.
     else if(d.type==="appris" && (d.faits||[]).length){ APPRIS = APPRIS.concat(d.faits); }
-    else if(d.type==="done"){ penseFini("Terminé."); es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); boutonEnvoi(false); attachReason(bubble,trace); attachModel(bubble); puceAppris(bubble.parentElement); sndReceive(); setTimeout(refreshUsage,900); }
+    else if(d.type==="done"){ penseFini("Terminé."); consFini(); es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); boutonEnvoi(false); attachReason(bubble,trace); attachModel(bubble); puceAppris(bubble.parentElement); sndReceive(); setTimeout(refreshUsage,900); }
   };
-  es.onerror=()=>{ penseFini("⚠️ Connexion interrompue."); es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); boutonEnvoi(false);
+  es.onerror=()=>{ penseFini("⚠️ Connexion interrompue."); consFini(); es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); boutonEnvoi(false);
     if(!answer) bubble.innerHTML="⚠️ Connexion interrompue. Vérifie ta clé (⚙️) et réessaie."; else attachReason(bubble,trace);
     /* ⚠️ En mode vocal, ce message est INVISIBLE : body.voice masque .chat (voir la
        règle CSS plus haut). Et ce gestionnaire ne relançait jamais le micro. Résultat,
