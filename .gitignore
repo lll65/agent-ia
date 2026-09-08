@@ -30,6 +30,7 @@ agent-ia.zip
 data/uploads/
 data/documents.json
 data/profile.json
+data/reglages.json
 data/competences.json
 
 # ── Donnees PERSONNELLES ecrites par l'application ────────────────────────────

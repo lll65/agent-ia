@@ -177,6 +177,52 @@ def _cle_requete(q: str) -> str:
 # consommait tout le temps imparti sans jamais rédiger.
 MAX_RECHERCHES = 2
 
+# Plafond DUR, quel que soit le temps restant : au-delà, ce n'est plus une question à
+# plusieurs sujets, c'est une boucle.
+MAX_RECHERCHES_DUR = 6
+
+# Ce qu'on garde en réserve pour RÉDIGER. Une recherche de plus qui ne laisse pas le
+# temps d'écrire la réponse ne sert à rien : on aura les données et pas la synthèse.
+RESERVE_REDACTION = 22.0
+
+
+def _peut_encore_chercher(deja: dict, plafond: int, temps_restant: float) -> bool:
+    """Une recherche de PLUS a-t-elle du sens ?
+
+    ⚠️ POURQUOI PAS UN SIMPLE COMPTEUR À 2. C'est ce qu'il y avait, et voici ce que ça
+    donnait sur « est-ce une bonne idée d'acheter 2CRSi et DBV, et que penses-tu de
+    Valneva ? » : recherche 1 = 2CRSi, recherche 2 = DBV, et la troisième — Valneva —
+    tombait sous le plafond. Trois sociétés, deux recherches : la troisième ne pouvait
+    PAS être renseignée. Le nombre de recherches utiles dépend du nombre de sujets
+    posés, pas d'une constante.
+
+    Le vrai garde-fou n'est pas le compte, c'est le TEMPS : une recherche de plus est
+    légitime tant qu'il reste de quoi rédiger derrière. Les requêtes identiques, elles,
+    ne passent jamais ici — elles sortent du cache et ne coûtent rien.
+    """
+    if len(deja) >= MAX_RECHERCHES_DUR:
+        return False
+    if len(deja) < plafond:
+        return True
+    return temps_restant > RESERVE_REDACTION
+
+
+def _plafond_atteint(deja: dict) -> str:
+    """L'observation rendue quand on refuse une recherche de plus.
+
+    ⚠️ ELLE DOIT DIRE QU'ELLE N'EST PAS LE RÉSULTAT DEMANDÉ. Avant, on recollait
+    simplement les résultats précédents : le modèle — et l'écran — recevaient donc les
+    résultats « 2CRSi » en réponse à la requête « Valneva », en-tête compris. Lohan a vu
+    « 🔍 Recherche sur le web… Valneva » suivi de « Résultats web : 2CRSi » ; le modèle,
+    lui, a relancé la même recherche en boucle jusqu'à épuiser le temps. Un résultat
+    d'une autre question rendu sans le dire, c'est la pire des réponses.
+    """
+    return ("[SYSTÈME] ⛔ Cette recherche n'a PAS été lancée : le temps imparti ne le "
+            f"permet plus (déjà {len(deja)} recherches). Ce qui suit est le résultat des "
+            "recherches PRÉCÉDENTES, pas de celle-ci. Réponds MAINTENANT avec FINAL: à "
+            "partir de ces éléments, et dis franchement ce que tu n'as pas pu vérifier.\n\n"
+            + "\n\n".join(deja.values())[:1200])
+
 # ── Mode FOND : personne n'attend devant l'écran ─────────────────────────────
 # ⚠️ Une automatisation qui part à 17 h était bornée EXACTEMENT comme une question
 # posée en direct : 75 s et deux recherches. C'est le bon réglage quand Lohan regarde
@@ -458,6 +504,29 @@ def _erreur_lisible(e: Exception) -> str:
             "variables Render.\n\n_Détail technique :_\n```\n" + t[:400] + "\n```")
 
 
+def _cause_lisible(e) -> str:
+    """En une ligne : ce qui a VRAIMENT empêché de rédiger.
+
+    ⚠️ « 🔌 Aucun modèle n'est disponible pour rédiger » était affiché pour N'IMPORTE
+    QUELLE exception du LLM. Lohan venait d'ajouter OPENROUTER_API_KEY, la même question
+    a marché à l'essai suivant : le diagnostic était donc faux, et il l'a envoyé chercher
+    une panne de clés qui n'existait pas. Un message d'échec qui se trompe de cause coûte
+    plus cher que pas de message du tout.
+    """
+    nom, txt = type(e).__name__, str(e).lower()
+    if "timeout" in nom.lower() or "timeout" in txt or "timed out" in txt:
+        return "aucun modèle n'a répondu dans le temps imparti"
+    if "429" in txt or "rate limit" in txt or "quota" in txt:
+        return "tes fournisseurs ont atteint leur limite gratuite du moment"
+    if "401" in txt or "403" in txt or "unauthorized" in txt or "invalid api key" in txt:
+        return "une clé a été refusée"
+    if "context" in txt and ("length" in txt or "token" in txt):
+        return "la conversation dépassait ce que le modèle accepte d'un coup"
+    if "connect" in txt or "network" in txt or "dns" in txt or "ssl" in txt:
+        return "je n'ai pas réussi à joindre les fournisseurs (réseau)"
+    return f"la rédaction a échoué ({nom})"
+
+
 def _repli_observations(observations: list, task: str = "", raison: str = "delai") -> str:
     """Réponse de secours bâtie sur ce que les outils ont RÉELLEMENT rapporté.
 
@@ -489,14 +558,18 @@ def _repli_observations(observations: list, task: str = "", raison: str = "delai
     corps = "\n\n".join(utiles[-2:])[:2600]
     # Le motif compte : « pas eu le temps » et « plus aucun modèle » n'appellent pas la
     # même réaction de ta part.
-    entete = ("⏱️ Je n'ai pas eu le temps de rédiger la synthèse, mais **voici ce que j'ai "
-              "trouvé** — les sources sont réelles et vérifiables :"
-              if raison == "delai" else
-              "🔌 Aucun modèle n'est disponible pour rédiger, mais **la recherche a marché** — "
-              "voici ce que j'ai trouvé, sources à l'appui :")
-    pied = ("\n\n_Redemande-moi de résumer ces résultats si tu veux une synthèse rédigée._"
-            if raison == "delai" else
-            "\n\n_Réessaie dans un moment : dès qu'un modèle répond, je te rédige la synthèse._")
+    # Le motif est repris TEL QUEL quand l'appelant en connaît un : lui seul a
+    # l'exception sous la main. « delai » et le mot-clé « sans_modele » restent acceptés.
+    if raison == "delai":
+        entete = ("⏱️ Je n'ai pas eu le temps de rédiger la synthèse, mais **voici ce que "
+                  "j'ai trouvé** — les sources sont réelles et vérifiables :")
+        pied = "\n\n_Redemande-moi de résumer ces résultats si tu veux une synthèse rédigée._"
+    else:
+        cause = ("aucun modèle n'est disponible pour rédiger"
+                 if raison == "sans_modele" else raison)
+        entete = (f"🔌 Je n'ai pas pu rédiger la synthèse — {cause}. Mais **la recherche a "
+                  "marché** : voici ce que j'ai trouvé, sources à l'appui :")
+        pied = "\n\n_Réessaie dans un moment : dès qu'un modèle répond, je te rédige la synthèse._"
     return entete + "\n\n" + corps + pied
 
 
@@ -803,7 +876,7 @@ async def _run_agent_brut(
             llm_out = await llm_call(messages, temperature=temperature,
                                      impose=agent_config.get('fournisseur', ''))
         except Exception as e:
-            secours = _repli_observations(observations, task, "sans_modele")
+            secours = _repli_observations(observations, task, _cause_lisible(e))
             if secours:
                 logger.warning(f"[core] aucun modèle → on rend les trouvailles ({str(e)[:90]})")
                 await _remember_safe(mem, agent_id, secours[:350])
@@ -843,13 +916,9 @@ async def _run_agent_brut(
             if cle and cle in deja_cherche:
                 observation = deja_cherche[cle]
                 logger.info("[core] recherche identique déjà faite → résultat réutilisé")
-            elif cle and len(deja_cherche) >= _plafond_recherches:
-                # Le modèle relançait des recherches jusqu'à épuiser le temps imparti sans
-                # jamais rédiger. On lui rend ce qu'il a déjà et on lui coupe l'échappatoire.
-                observation = ("\n\n".join(deja_cherche.values())[:1200] +
-                               "\n\n[SYSTÈME] Tu as déjà lancé "
-                               f"{len(deja_cherche)} recherches. N'en lance plus AUCUNE : "
-                               "réponds MAINTENANT avec FINAL: à partir de ces résultats.")
+            elif cle and not _peut_encore_chercher(deja_cherche, _plafond_recherches,
+                                                   _fin - _tm.monotonic()):
+                observation = _plafond_atteint(deja_cherche)
                 logger.info("[core] plafond de recherches atteint → conclusion forcée")
             else:
                 observation = await _off(safe_tool_call, loader, action,
@@ -1508,7 +1577,7 @@ async def run_agent_stream(
             # ⚠️ Le filet de secours manquait ICI. Les outils avaient rapporté de VRAIES
             # données (articles, sources, liens) et Nova affichait quand même une erreur
             # brute. Aucun modèle ne répond ? On rend au moins ce qu'on a trouvé.
-            secours = _repli_observations(observations, task, "sans_modele")
+            secours = _repli_observations(observations, task, _cause_lisible(e))
             if secours:
                 logger.warning(f"[core] aucun modèle → on rend les trouvailles ({str(e)[:90]})")
                 await _remember_safe(mem, agent_id, secours[:350])
@@ -1550,13 +1619,9 @@ async def run_agent_stream(
             if cle and cle in deja_cherche:
                 observation = deja_cherche[cle]
                 logger.info("[core] recherche identique déjà faite → résultat réutilisé")
-            elif cle and len(deja_cherche) >= _plafond_recherches:
-                # Le modèle relançait des recherches jusqu'à épuiser le temps imparti sans
-                # jamais rédiger. On lui rend ce qu'il a déjà et on lui coupe l'échappatoire.
-                observation = ("\n\n".join(deja_cherche.values())[:1200] +
-                               "\n\n[SYSTÈME] Tu as déjà lancé "
-                               f"{len(deja_cherche)} recherches. N'en lance plus AUCUNE : "
-                               "réponds MAINTENANT avec FINAL: à partir de ces résultats.")
+            elif cle and not _peut_encore_chercher(deja_cherche, _plafond_recherches,
+                                                   _fin - _tm.monotonic()):
+                observation = _plafond_atteint(deja_cherche)
                 logger.info("[core] plafond de recherches atteint → conclusion forcée")
             else:
                 observation = await _off(safe_tool_call, loader, action,

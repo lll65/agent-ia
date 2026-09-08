@@ -2191,6 +2191,77 @@ def _traite_attente(message: str, canal: str = "web"):
     return None
 
 
+def _pseudo_action(action: str, args: dict):
+    """Les actions qui ne sont PAS des appels Composio : trajet, météo, diagnostic…
+
+    Renvoie {'steps', 'texte'} — une réponse déjà rédigée, terminale — ou None si
+    `action` est un vrai appel d'app.
+
+    ⚠️ POURQUOI UNE SEULE FONCTION POUR LES DEUX CHEMINS. Elles étaient écrites deux
+    fois : dans le chemin du chat (streaming) et dans celui de Siri / des
+    automatisations. Résultat, « quel est mon dernier mail » rendait
+    {steps, answer, ok} là où le chat attend {steps, done_answer} — et Nova répondait
+    « ❌ Erreur : KeyError: 'action' » en pleine figure. Côté Siri, c'était pire :
+    aucune de ces six actions n'y était traitée, donc `__METEO__` partait vers Composio
+    comme si c'était une app. Une seule table, appelée des deux côtés : une action
+    ajoutée demain ne peut plus manquer d'un seul des deux chemins.
+    """
+    if not str(action or "").startswith("__"):
+        return None
+
+    def _et(tool, label, texte):
+        return {"steps": [{"kind": "action", "tool": tool, "label": label}], "texte": texte}
+
+    a = args or {}
+    if action == "__TRAJET__":
+        from agent.trajet import itineraire
+        d, arr = a.get("depart", ""), a.get("arrivee", "")
+        return _et("googlemaps", f"Trajet {d} → {arr}", itineraire(d, arr))
+    if action == "__SENTINELLE__":
+        # ⚠️ Cette fonction tourne dans un THREAD de travail (voir _off) : il n'y a donc
+        # aucune boucle asyncio en cours ici, et il faut la sienne. `asyncio.run` la
+        # créerait aussi, mais il lève si jamais une boucle existe — ce serait une panne
+        # de diagnostic pendant un diagnostic.
+        import asyncio as _a
+        from agent.sentinelle import inspecte, rapport
+        boucle = _a.new_event_loop()
+        try:
+            res = boucle.run_until_complete(inspecte())
+        finally:
+            boucle.close()
+        return _et("diagnostic", "Contrôle de tes apps et de tes clés", rapport(res))
+    if action == "__CHERCHE_COURS__":
+        from agent.recherche_cours import repond
+        return _et("cours", "Recherche dans tes cours", repond(a.get("question", "")))
+    if action == "__COURS_NOTION__":
+        from agent.cours_vers import execute
+        return _et("notion", "Envoi du cours dans Notion",
+                   execute(a, _composio_list_actions, _tool))
+    if action == "__METEO__":
+        from agent.meteo import repond, ville_demandee
+        from agent.briefing import ville_de_lohan
+        msg = a.get("message", "")
+        # ⚠️ « à chaque fois tu me donnes la météo de Paris » : la ville écrite dans SA
+        # phrase l'emporte sur le profil, et le profil sur le réglage. « Paris » n'est
+        # qu'un tout dernier recours.
+        ville = ville_demandee(msg) or ville_de_lohan()
+        return _et("meteo", f"Météo de {ville}", repond(msg, ville))
+    if action == "__DERNIER_MAIL__":
+        from agent.rapport_mail import dernier_mail
+        from plugins.builtin.mails_tool import _extraire
+        brut = _tool("GMAIL_FETCH_EMAILS", {"maxResults": 5, "query": "in:inbox"}, "gmail")
+        return _et("gmail", "Ton dernier mail",
+                   dernier_mail(_extraire(str(brut or "")), str(brut or "")))
+    if action == "__RAPPORT_MAILS__":
+        return _et("gmail", "Tri de tes mails", _rapport_mails(a))
+    # ⚠️ Une pseudo-action inconnue ne doit PAS filer vers Composio : le slug déduit
+    # serait vide et l'appel partirait dans le vide. On le dit franchement.
+    logger.warning(f"[pseudo-action] {action} n'est traitée nulle part")
+    return _et("nova", action,
+               f"❌ Je reconnais la demande ({action}) mais je n'ai pas de quoi la "
+               "traiter — c'est un défaut chez moi, pas chez toi. Dis-le-moi et je le corrige.")
+
+
 def _direct_app_prepare_brut(message: str, canal: str = "web"):
     """Comme _direct_app_run mais SANS formater (pour le streaming). Renvoie un dict :
     {steps, done_answer} si terminé (échec → message honnête), ou {steps, action, obs, is_write}."""
@@ -2211,58 +2282,9 @@ def _direct_app_prepare_brut(message: str, canal: str = "web"):
             return {"steps": g["steps"], "done_answer": g["done_answer"],
                     "echec_app": g.get("echec_app", False)}
         return None
-    if action == "__TRAJET__":
-        from agent.trajet import itineraire
-        a, b = (args or {}).get("depart", ""), (args or {}).get("arrivee", "")
-        return {"steps": [{"kind": "action", "tool": "googlemaps",
-                           "label": f"Trajet {a} → {b}"}],
-                "answer": itineraire(a, b), "ok": True}
-    if action == "__SENTINELLE__":
-        # ⚠️ Cette fonction tourne dans un THREAD de travail (voir _off) : il n'y a donc
-        # aucune boucle asyncio en cours ici, et il faut la sienne. `asyncio.run` la
-        # créerait aussi, mais il lève si jamais une boucle existe — ce serait une panne
-        # de diagnostic pendant un diagnostic.
-        import asyncio as _a
-        from agent.sentinelle import inspecte, rapport
-        boucle = _a.new_event_loop()
-        try:
-            res = boucle.run_until_complete(inspecte())
-        finally:
-            boucle.close()
-        return {"steps": [{"kind": "action", "tool": "diagnostic",
-                           "label": "Contrôle de tes apps et de tes clés"}],
-                "answer": rapport(res), "ok": True}
-    if action == "__CHERCHE_COURS__":
-        from agent.recherche_cours import repond
-        return {"steps": [{"kind": "action", "tool": "cours",
-                           "label": "Recherche dans tes cours"}],
-                "answer": repond((args or {}).get("question", "")), "ok": True}
-    if action == "__COURS_NOTION__":
-        from agent.cours_vers import execute
-        return {"steps": [{"kind": "action", "tool": "notion",
-                           "label": "Envoi du cours dans Notion"}],
-                "answer": execute(args or {}, _composio_list_actions, _tool), "ok": True}
-    if action == "__METEO__":
-        from agent.meteo import repond, ville_demandee
-        from agent.briefing import ville_de_lohan
-        msg = (args or {}).get("message", "")
-        # ⚠️ « à chaque fois tu me donnes la météo de Paris » : la ville écrite dans SA
-        # phrase l'emporte sur le profil, et le profil sur le réglage. « Paris » n'est
-        # qu'un tout dernier recours.
-        ville = ville_demandee(msg) or ville_de_lohan()
-        return {"steps": [{"kind": "action", "tool": "meteo",
-                           "label": f"Météo de {ville}"}],
-                "answer": repond(msg, ville), "ok": True}
-    if action == "__DERNIER_MAIL__":
-        from agent.rapport_mail import dernier_mail
-        from plugins.builtin.mails_tool import _extraire
-        brut = _tool("GMAIL_FETCH_EMAILS", {"maxResults": 5, "query": "in:inbox"}, "gmail")
-        return {"steps": [{"kind": "action", "tool": "gmail", "label": "Ton dernier mail"}],
-                "answer": dernier_mail(_extraire(str(brut or "")), str(brut or "")),
-                "ok": True}
-    if action == "__RAPPORT_MAILS__":
-        return {"steps": [{"kind": "action", "tool": "gmail", "label": "Tri de tes mails"}],
-                "done_answer": _rapport_mails(args)}
+    pseudo = _pseudo_action(action, args)
+    if pseudo is not None:
+        return {"steps": pseudo["steps"], "done_answer": pseudo["texte"]}
     slug = (action or "").split("_", 1)[0].lower()
     # ⚠️ Rien d'irréversible sans ton accord explicite.
     if _est_irreversible(action):
@@ -2345,11 +2367,11 @@ def _direct_app_run_brut(message: str, canal: str = "passerelle"):
             return {"steps": g["steps"], "answer": g["done_answer"], "ok": True,
                     "echec_app": g.get("echec_app", False)}
         return None
-    if action == "__RAPPORT_MAILS__":
-        # Même tri que dans le chat : Siri et les automatisations n'ont pas droit à
-        # une version dégradée.
-        return {"steps": [{"kind": "action", "tool": "gmail", "label": "Tri de tes mails"}],
-                "answer": _rapport_mails(args), "ok": True}
+    # Même traitement que dans le chat : Siri et les automatisations n'ont pas droit à
+    # une version dégradée — ni à un appel Composio sur une action qui n'en est pas une.
+    pseudo = _pseudo_action(action, args)
+    if pseudo is not None:
+        return {"steps": pseudo["steps"], "answer": pseudo["texte"], "ok": True}
     # Le slug est déduit AVANT l'appel : sinon _tool doit le redeviner, et l'identité
     # Composio se perd dès que le préfixe ne correspond pas à un slug connu.
     slug = (action or "").split("_", 1)[0].lower()
@@ -3722,10 +3744,23 @@ _LEGER = ("salut", "bonjour", "merci", "ok", "oui", "non", "ça va", "ca va", "q
 
 
 def _modele_utilise() -> str:
-    """Quel fournisseur/modèle vient de répondre (affiché discrètement sous la réponse)."""
+    """Quel fournisseur/modèle vient de répondre (affiché discrètement sous la réponse).
+
+    ⚠️ ET IL DIT QUAND CE N'EST PAS CELUI QU'IL A CHOISI. « quand je règle une réponse
+    sur un modèle précis, un autre modèle me répond ! » — c'est la chaîne de secours, et
+    c'est voulu : mieux vaut la réponse d'un autre que pas de réponse. Mais le badge se
+    contentait de nommer celui qui avait répondu, à charge pour lui de se rappeler ce
+    qu'il avait réglé. Il ne se souvenait pas, et il a conclu que le réglage ne servait
+    à rien. Un basculement se dit — sinon c'est un réglage qu'on croit ignoré.
+    """
     try:
-        from llm.client import DERNIER
-        return DERNIER.get("") or ""
+        from llm.client import DERNIER, fournisseur_choisi
+        vu = DERNIER.get("") or ""
+        choisi = fournisseur_choisi()
+        # « groq (2e clé) · llama-… » → la 2e clé du fournisseur choisi reste SON choix.
+        if choisi and vu and not vu.split(" (")[0].split(" · ")[0].strip().lower().startswith(choisi):
+            return f"{vu} — ⚠️ {choisi} n'a pas répondu, j'ai basculé"
+        return vu
     except Exception:
         return ""
 
@@ -5575,15 +5610,30 @@ async def usage(key: str = ""):
     """Consommation de tokens du jour (Cerebras + Groq) — pour la barre sur /nova.
     Lecture durable (Supabase si configuré), donc fiable après redéploiement."""
     from llm import usage as U
+    from llm.client import cles_presentes, cles_secondaires
+    # ⚠️ On ne compte QUE les fournisseurs dont la clé existe vraiment. Avant, les quatre
+    # étaient additionnés en dur : retirer une clé laissait son quota dans le total, donc
+    # la jauge affichait une énergie qu'il n'avait plus. Il l'a vu, et il avait raison.
+    presentes = cles_presentes()
+    secondes = cles_secondaires()
     out, tu, tl = {}, 0, 0
     for p in ("nvidia", "cerebras", "groq", "gemini"):
+        if p not in presentes:
+            continue
         try:
             used, limit = U.get_usage(p)
         except Exception:
             used, limit = 0, U.LIMITS.get(p, 0)
+        # Une 2e clé, c'est un 2e compte : le quota gratuit est bien doublé.
+        if p in secondes:
+            limit *= 2
         out[p] = {"used": int(used), "limit": int(limit)}
         tu += int(used); tl += int(limit)
     out["total"] = {"used": tu, "limit": tl}
+    out["comptes"] = sorted(out.keys() - {"total"})
+    # Aucune clé mesurable : on le DIT plutôt que d'afficher 100 % d'une énergie qui
+    # n'existe pas. L'interface montrera « — ».
+    out["mesurable"] = tl > 0
     return out
 
 
