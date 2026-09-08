@@ -5054,12 +5054,31 @@ def _diag_un_llm(nom: str) -> dict:
     # la panne la plus fréquente, et la plus invisible.
     prefixes = {"nvidia": "nvapi-", "groq": "gsk_", "openrouter": "sk-or-",
                 "gemini": ("AIza", "AQ."), "cerebras": "csk-", "xai": "xai-"}
-    cle = (getattr(config, f"{nom.upper()}_API_KEY", "") or "").strip()
+    # ⚠️ « la deuxième clé Groq est bien configurée pourtant » — et il avait raison.
+    # Le diagnostic construisait le nom de la variable à partir du LIBELLÉ affiché :
+    # « groq (2e clé) » donnait « GROQ (2E CLÉ)_API_KEY », qui ne peut pas exister. Il
+    # répondait donc « aucune clé configurée sur Render » quoi qu'il ait mis, et
+    # l'envoyait vérifier un réglage déjà bon. Un diagnostic faux coûte plus cher
+    # qu'une erreur franche : c'est la troisième fois cette semaine.
+    base = nom.split(" (")[0]
+    seconde = "2e clé" in nom
+    cle = (getattr(config, f"{base.upper()}_API_KEY_2" if seconde
+                   else f"{base.upper()}_API_KEY", "") or "").strip()
     d = {"fournisseur": nom, "cle_presente": bool(cle), "ok": False,
          "modele": "", "latence_s": None, "erreur": "", "conseil": ""}
     if not cle:
-        d["conseil"] = "aucune clé configurée sur Render"
+        d["conseil"] = (f"aucune clé configurée sur Render (variable {base.upper()}_API_KEY_2)"
+                        if seconde else "aucune clé configurée sur Render")
         return d
+    if seconde:
+        # ⚠️ Une 2e clé IDENTIQUE à la 1re est ignorée par la chaîne — même compte, même
+        # limite. Sans cette ligne, elle apparaîtrait « configurée » et il ne
+        # comprendrait pas pourquoi rien ne change.
+        premiere = (getattr(config, f"{base.upper()}_API_KEY", "") or "").strip()
+        if cle == premiere:
+            d["conseil"] = ("c'est la MÊME clé que la première : même compte, donc même "
+                            "limite. Crée un second compte pour doubler le quota.")
+            return d
     d["cle_apercu"] = cle[:6] + "…" + cle[-4:] if len(cle) > 12 else "trop courte"
     att = prefixes.get(nom)
     if att and not cle.startswith(att):
@@ -5073,7 +5092,10 @@ def _diag_un_llm(nom: str) -> dict:
     if fn is None:
         d["erreur"] = "fournisseur non pris en charge"
         return d
-    modele = MODELES.get(nom, {}).get("equilibre") or config.LLM_MODEL
+    # ⚠️ Le modèle se cherche sous le nom du FOURNISSEUR, pas sous le libellé affiché :
+    # « groq (2e clé) » n'existe pas dans MODELES, on serait retombé sur le modèle par
+    # défaut et le test aurait échoué pour une raison qui n'a rien à voir avec la clé.
+    modele = MODELES.get(base, {}).get("equilibre") or config.LLM_MODEL
     t0 = _t.monotonic()
     # On veut MESURER, pas juger vite : le fournisseur a droit à un délai généreux, sinon
     # « n'a pas répondu en 22,4 s » ne dit rien — c'est juste notre propre limite.
