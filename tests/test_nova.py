@@ -10723,6 +10723,102 @@ console.log(JSON.stringify({
     check_true("avec le détail de l'outil", "20 messages" in mails["s"])
 
 
+def test_chercher_dans_ses_cours_et_la_sentinelle_qui_essaie():
+    """« ajoute le truc sur les cours que tu proposes » + « tu vas créer un agent IA pour
+    détecter les bugs gênants de Nova, comme des problèmes entre Nova et Composio ».
+
+    ⚠️ LA SENTINELLE N'EST PAS UN AGENT QUI RÉFLÉCHIT. La tentation serait de demander
+    à un modèle « trouve les bugs » : il rendrait une liste plausible, invérifiable, et
+    souvent fausse — exactement le défaut qu'on retire depuis une semaine. Elle ESSAIE :
+    elle appelle vraiment Gmail, vraiment l'agenda, vraiment la météo, et rapporte ce
+    qui s'est passé.
+    """
+    import asyncio
+    import importlib
+    from unittest.mock import patch as _pa
+    R = importlib.import_module("agent.recherche_cours")
+    S = importlib.import_module("agent.sentinelle")
+    A_ = importlib.import_module("api.agent")
+
+    # --- 1. Chercher dans ses cours --------------------------------------------------
+    check_true("la demande est reconnue",
+               R.veut_chercher("qu'est-ce que le prof a dit sur la dignité humaine ?"))
+    check_true("« dans mes cours » aussi", R.veut_chercher("cherche dans mes cours la laïcité"))
+    check("une demande de mails n'est pas une recherche de cours",
+          R.veut_chercher("résume mes mails"), False)
+    # ⚠️ « qu'est-ce » passait pour un mot-clé de six lettres et faisait remonter
+    # n'importe quelle phrase interrogative du cours.
+    check("les mots creux sont écartés",
+          "est-ce" in R.mots_utiles("qu'est-ce que le prof a dit sur la dignité ?"), False)
+    check_true("les mots utiles restent",
+               set(["dignite"]) <= set(R.mots_utiles("qu'est-ce que le prof a dit sur la dignité ?")))
+
+    SES = [{"id": "a", "titre": "Introduction au droit", "debut": 2.0},
+           {"id": "b", "titre": "Droit et religion", "debut": 1.0}]
+    PLEIN = {"a": {"synthese": "Le juge invoque le principe de la dignité humaine. "
+                               "La dignité humaine, c'est traiter l'être humain comme un "
+                               "être humain, pas comme un objet."},
+             "b": {"synthese": "La Révolution de 1789 instaure la laïcité."}}
+    with _pa("agent.cours.lister", return_value=SES), \
+         _pa("agent.cours._lire", side_effect=lambda i: PLEIN[i]):
+        r = R.cherche("qu'est-ce que le prof a dit sur la dignité humaine ?")
+        rep = R.repond("qu'est-ce que le prof a dit sur la dignité humaine ?")
+        vide = R.repond("dans mes cours, l'astrophysique quantique")
+    check_true("le bon cours est trouvé", r["resultats"][0]["cours"] == "Introduction au droit")
+    check_true("avec le passage", "dignité humaine" in rep)
+    check_true("et la source citée", "synthèse" in rep)
+    # ⚠️ On dit COMBIEN de cours ont été lus : « rien trouvé » sur zéro cours et sur
+    # trente cours n'ont pas la même valeur. Il en tirerait une conclusion pour son
+    # partiel.
+    check_true("rien trouvé dit sur combien", "2 cours" in vide)
+    check_true("et n'affirme pas que le sujet n'existe pas", "d'autres mots" in vide)
+    # ⚠️ « Je n'ai pas pu lire tes cours » n'est PAS « le prof ne l'a pas dit ».
+    with _pa("agent.cours.lister", side_effect=RuntimeError("base HS")):
+        ko = R.repond("dans mes cours la dignité")
+    check_true("une panne se distingue d'une absence", "je ne te dis donc PAS" in ko)
+    check("la route existe", A_._resolve_app_action("cherche dans mes cours la laïcité")[0],
+          "__CHERCHE_COURS__")
+
+    # --- 2. La sentinelle ------------------------------------------------------------
+    check("est-ce que tout marche → sentinelle",
+          A_._resolve_app_action("est-ce que tout marche ?")[0], "__SENTINELLE__")
+
+    # Tout va bien : elle le dit sans dramatiser.
+    with _pa.object(S, "_CONTROLES", (("rien", lambda: []),)):
+        res = asyncio.new_event_loop().run_until_complete(S.inspecte())
+    check("aucun souci", len(res["soucis"]), 0)
+    check_true("et elle le dit", "Tout répond" in S.rapport(res))
+
+    # Une app qui répond 404 est BLOQUANTE et nommée.
+    def _ko():
+        return [S._souci(S.BLOQUANT, "gmail : compte introuvable sous cette identité",
+                         "404 No connected account", "reconnecte-la")]
+    with _pa.object(S, "_CONTROLES", (("apps", _ko),)):
+        res = asyncio.new_event_loop().run_until_complete(S.inspecte())
+    txt = S.rapport(res)
+    check("le bloquant est compté", res["bloquants"], 1)
+    check_true("il est nommé", "gmail" in txt)
+    check_true("avec quoi faire", "reconnecte-la" in txt)
+    # ⚠️ Elle ne répare rien : un programme qui corrige sans qu'on le voie finit par
+    # corriger de travers, un jour où personne ne regarde.
+    check_true("et elle dit qu'elle n'a rien réparé", "rien réparé toute seule" in txt)
+
+    # ⚠️ UN CONTRÔLE QUI PLANTE N'EST PAS UN « RIEN À SIGNALER » : ce serait le pire
+    # des silences, celui qui rassure.
+    def _boum():
+        raise RuntimeError("le contrôle lui-même a cassé")
+    with _pa.object(S, "_CONTROLES", (("apps", _boum),)):
+        res = asyncio.new_event_loop().run_until_complete(S.inspecte())
+    check("un contrôle cassé est signalé", len(res["soucis"]), 1)
+    check_true("et nommé comme tel", "contrôle impossible" in res["soucis"][0]["quoi"])
+
+    src = (Path(__file__).resolve().parents[1] / "agent" / "sentinelle.py").read_text(encoding="utf-8")
+    # ⚠️ Elle ESSAIE, elle ne demande pas à un modèle de deviner.
+    check_true("elle appelle vraiment les outils", "_tool(action, args, slug)" in src)
+    check("aucun appel de modèle pour deviner les bugs",
+          "from llm.client import chat" in src, False)
+
+
 def test_le_briefing_appelait_gmail_par_l_autre_porte():
     """« Erreur de récupération des mails : 404 – vérifie les autorisations et
     l'activation de l'API sur composio.dev » — alors que ses mails marchaient dans le
@@ -11184,7 +11280,8 @@ if __name__ == "__main__":
                test_deux_cours_pour_la_meme_action_et_la_section_qui_n_apprend_rien,
                test_le_diagnostic_cherchait_une_variable_impossible,
                test_notion_sans_parent_les_boutons_partout_et_la_memoire_qui_se_salit,
-               test_la_constellation_de_cartes_meritees):
+               test_la_constellation_de_cartes_meritees,
+               test_chercher_dans_ses_cours_et_la_sentinelle_qui_essaie):
         try:
             fn()
         except Exception as e:
