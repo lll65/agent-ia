@@ -9705,7 +9705,10 @@ def test_son_cours_s_ouvre_dans_libreoffice():
     pages = re.findall(r'draw:name="([^"]+)"', z.read("content.xml").decode())
     # ⚠️ Une diapo par SECTION : découper tous les N mots donnerait des diapos qui
     # commencent au milieu d'une phrase.
-    check("une diapo par section", len(pages), 3)
+    # ⚠️ Attente corrigée : on découpe désormais jusqu'au niveau 4, parce que ses
+    # cours sont structurés en « ### ». Avec ce markdown-là, ça fait quatre diapos —
+    # « ### Définition d'une organisation » en ouvre une, et c'est le but.
+    check("une diapo par section, tous niveaux compris", len(pages), 4)
     check_true("nommées d'après les titres du cours", "1. Environnement" in pages)
     # ⚠️ Une section trop longue est RECOUPÉE, pas tronquée : rien ne se perd.
     longue = O.sections("## Grande section\n" + "\n".join(f"ligne {i}" for i in range(30)))
@@ -10004,9 +10007,11 @@ def test_la_mise_en_page_des_maquettes_sans_les_phrases_qui_rassurent():
     for menteuse in ("sources fiables", "la meilleure réponse", "Je croise plusieurs",
                      "je peux déjà regarder tes mails", "Je te prépare un résumé"):
         check(f"« {menteuse} » n'est pas affiché", menteuse in panneau, False)
-    # Ce qui EST annoncé est vrai : le bouton ⏹ existe, Échap aussi, et le partiel reste.
-    check_true("on n'annonce que ce qui marche", "je m'arrête entre deux étapes" in panneau)
-    check_true("Échap est bien réel", "<kbd>Échap</kbd>" in panneau)
+    # ⚠️ « vire la case pendant que je réfléchis avec Échap et tout » — retirée. Elle
+    # n'apportait rien qu'il ne sache déjà : le bouton ⏹ est sous ses yeux. La timeline,
+    # elle, reste : c'est elle qui porte l'information.
+    check("la case des suggestions est retirée", "Pendant que je réfléchis" in ui, False)
+    check("et son style aussi", ".pAct{" in ui, False)
 
     # --- La timeline est alimentée par les VRAIS événements --------------------------
     check_true("chaque étape du flux y entre", "penseAjoute(stepLabel(d), det," in ui)
@@ -10124,6 +10129,194 @@ def test_le_kine_qui_n_existait_pas_et_la_meteo_cherchee_sur_le_web():
     check_true("une panne se dit", "je n'ai pas pu" in msg.lower() or "pas trouvé" in msg.lower())
     check("et aucune prévision n'est inventée",
           any(w in msg.lower() for w in ("doux", "nuageux", "ensoleillé", "°c")), False)
+
+
+def test_les_diapos_en_markdown_brut_et_les_cours_qu_on_range():
+    """« regarde ce que ça donne quand j'importe » — capture d'Impress :
+
+        Le cours
+        ### Euthanasie et séparation de l'État et de la religion
+        - La loi sur l'euthanasie… est une **important** mise à jour.
+
+    ⚠️ Une diapo unique, remplie de dièses et de tirets. Je ne coupais qu'aux titres de
+    niveau 1 et 2 ; son cours est structuré en « ### » et « #### ». Tous ces titres
+    restaient DANS le corps, avec leurs balises, et les puces gardaient leur tiret. Un
+    export censé lui épargner du travail lui en donnait.
+
+    Et : « j'aimerais pouvoir créer des dossiers, modifier les titres ou supprimer des
+    cours. Et je ne veux AUCUN cours qui se supprime automatiquement. »
+    """
+    import importlib
+    import io
+    import zipfile
+    O = importlib.import_module("agent.odf")
+    C = importlib.import_module("agent.cours")
+
+    # --- 1. Les diapos : plus une seule balise à l'écran ----------------------------
+    md = ("## Le cours\n\n"
+          "### Euthanasie et séparation de l'État\n"
+          "- La loi sur l'euthanasie est une **important** mise à jour.\n"
+          "- Loi du **18 août** (adoptée).\n\n"
+          "#### Morale individuelle\n"
+          "- Exemple : « moi dans ma vie je serai ».\n"
+          "> *[passage peu clair]*\n"
+          "| Période | Situation |\n| :--- | :--- |\n| 1804 | Divorce autorisé. |\n")
+    sec = O.sections(md)
+    titres = [t for t, _l in sec]
+    check_true("les titres de niveau 3 ouvrent une diapo",
+               "Euthanasie et séparation de l'État" in titres)
+    check_true("ceux de niveau 4 aussi", "Morale individuelle" in titres)
+    corps = [l for _t, lignes in sec for l in lignes]
+    for balise in ("###", "####", "**", "> "):
+        check(f"plus de {balise!r} sur la diapo", any(balise in l for l in corps), False)
+    check_true("les puces deviennent de vraies puces",
+               any(l.startswith("• ") for l in corps))
+    check_true("le tableau devient une ligne lisible",
+               any("1804 · Divorce autorisé." in l for l in corps))
+    check("la ligne de tirets du tableau disparaît",
+          any(set(l) <= set(" :-·") for l in corps if l), False)
+    # Le fichier reste un ODF valide.
+    z = zipfile.ZipFile(io.BytesIO(O.odp(md)))
+    check("odp toujours sain", z.testzip(), None)
+    contenu = z.read("content.xml").decode()
+    check("aucune balise markdown dans le fichier", "###" in contenu, False)
+
+    # --- 2. Ranger, renommer — et surtout : rien ne s'efface tout seul ---------------
+    src = (Path(__file__).resolve().parents[1] / "agent" / "cours.py").read_text(encoding="utf-8")
+    # ⚠️ « je ne veux aucun cours qui se supprime automatiquement ». Vérifié dans le
+    # code : le seul effacement est supprimer(), appelé uniquement sur une demande.
+    check("un seul endroit efface un cours", src.count("p.unlink()"), 1)
+    check("et aucun nettoyage automatique",
+          any(k in src for k in ("purge", "trop vieux", "> 30 jours", "auto_delete")), False)
+    check_true("le fait est écrit dans le code", "se supprime automatiquement" in src)
+
+    class FauxDepot:
+        def __init__(self):
+            self.data = {}
+
+    depot = FauxDepot()
+    vrai_lire, vrai_ecrire = C._lire, C._ecrire
+    try:
+        C._lire = lambda sid: dict(depot.data[sid])
+        C._ecrire = lambda s: depot.data.__setitem__(s["id"], dict(s))
+        depot.data["x1"] = {"id": "x1", "titre": "Cours du 07/09", "matiere": "",
+                            "debut": 1.0, "transcript": "beaucoup de texte", "rev": 3}
+        r = C.renomme("x1", titre="Droit et religion", dossier="Droit L1")
+        check("le titre change", r["titre"], "Droit et religion")
+        check("le dossier est posé", r["dossier"], "Droit L1")
+        # ⚠️ LE point : une écriture partielle ne doit pas emporter la transcription.
+        check("la transcription est intacte", depot.data["x1"]["transcript"], "beaucoup de texte")
+        # Un champ non fourni n'est pas écrasé.
+        C.renomme("x1", matiere="Droit")
+        check("le titre survit à un second renommage",
+              depot.data["x1"]["titre"], "Droit et religion")
+        check("et le dossier aussi", depot.data["x1"]["dossier"], "Droit L1")
+        # Un titre vide ne doit pas effacer le titre existant.
+        C.renomme("x1", titre="   ")
+        check("un titre vide est ignoré", depot.data["x1"]["titre"], "Droit et religion")
+    finally:
+        C._lire, C._ecrire = vrai_lire, vrai_ecrire
+
+    api = (Path(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
+    for route in ('@router.post("/cours/renommer")', '@router.get("/cours/dossiers")',
+                  '@router.post("/cours/notion")'):
+        check_true(f"route {route[-22:]}", route in api)
+
+    # --- 3. L'interface : dossiers, renommer, supprimer, Notion ----------------------
+    ui = (Path(__file__).resolve().parents[1] / "ui" / "cours.html").read_text(encoding="utf-8")
+    check_true("les cours sont groupés par dossier", "const parDossier = {}" in ui)
+    # ⚠️ Un cours non rangé doit RESTER VISIBLE : disparaître faute de dossier serait
+    # exactement la perte silencieuse qu'il redoute.
+    check_true("les non classés restent visibles", '"Non classés"' in ui)
+    check_true("on peut renommer et ranger", 'data-act="ren"' in ui)
+    check_true("envoyer dans Notion", 'data-act="notion"' in ui)
+    check_true("et supprimer", 'data-act="del"' in ui)
+    # ⚠️ La suppression NOMME le cours : « supprimer ce cours ? » sans son titre, on
+    # clique sans lire. Et elle dit ce qui est perdu.
+    check_true("la suppression nomme le cours", "Supprimer définitivement « ${titre} »" in ui)
+    check_true("et dit ce qui est perdu", "ne s'annule pas" in ui)
+    # ⚠️ Le message de Notion est affiché TEL QUEL : un « envoyé ! » systématique
+    # serait un mensonge de plus.
+    check_true("le retour de Notion n'est pas maquillé", "(r && r.message)" in ui)
+
+
+def test_deplacer_un_cours_dans_notion_sans_se_tromper_de_cours():
+    """« j'aimerais que dans la conv avec Nova je puisse lui dire "déplace tel cours
+    dans Notion", et aussi dans le mode cours il faut un import Notion. »
+
+    ⚠️ CE RISQUE EST D'UNE AUTRE NATURE. Toutes les autres corrections portent sur des
+    réponses fausses ; ici une erreur ENVOIE quelque chose quelque part. Se tromper de
+    cours, c'est publier le mauvais document — et il ne le verrait qu'après.
+
+    ⚠️ ET LE NOM DE L'ACTION NE S'ÉCRIT PAS EN DUR. Ce projet a déjà payé ça trois fois :
+    « NOTION_CREATE_COMMENT » choisi pour « crée un nouveau projet » (un commentaire
+    n'est pas un projet), les quatre modèles de vision Groq devenus 404 en bloc, le
+    modèle NVIDIA retiré avec un 410. On demande à Composio ce que le compte sait faire.
+    """
+    import importlib
+    N = importlib.import_module("agent.vers_notion")
+    V = importlib.import_module("agent.cours_vers")
+
+    # --- 1. Choisir l'action : jamais « la première venue » -------------------------
+    check("la vraie action de création de page est choisie",
+          N.choisit_action([{"name": "NOTION_CREATE_COMMENT"},
+                            {"name": "NOTION_CREATE_NOTION_PAGE"},
+                            {"name": "NOTION_SEARCH"}]), "NOTION_CREATE_NOTION_PAGE")
+    # ⚠️ LE piège historique : un commentaire n'est pas une page.
+    check("aucune action de repli au hasard",
+          N.choisit_action([{"name": "NOTION_CREATE_COMMENT"},
+                            {"name": "NOTION_FETCH_DATA"}]), "")
+    check("une liste vide ne donne rien", N.choisit_action([]), "")
+
+    # --- 2. Le contenu envoyé --------------------------------------------------------
+    b, reste = N.blocs("# Titre\n## Section\n- puce\nTexte.\n")
+    check("les titres deviennent des titres Notion", b[0]["type"], "heading_1")
+    check("et les puces des puces", b[2]["type"], "bulleted_list_item")
+    check("rien n'est laissé de côté ici", reste, 0)
+    # ⚠️ Notion refuse au-delà de ~100 blocs : un cours de 2 h dépasse. On borne, et on
+    # DIT ce qui n'est pas passé — une page tronquée qui a l'air complète, c'est le
+    # défaut qu'on corrige depuis le début.
+    b2, reste2 = N.blocs("\n".join(f"ligne {i}" for i in range(200)))
+    check("le nombre de blocs est borné", len(b2), N.MAX_BLOCS)
+    check("et le reste est compté", reste2, 200 - N.MAX_BLOCS)
+    long_msg = N.envoie("Cours", "\n".join(f"l{i}" for i in range(200)),
+                        lambda s: [{"name": "NOTION_CREATE_NOTION_PAGE"}],
+                        lambda a, ar, s: "✅ ok https://www.notion.so/abc")
+    check_true("la troncature est annoncée", "n'ont pas été envoyées" in long_msg)
+    check_true("et il sait où trouver le cours entier", "téléchargement" in long_msg)
+
+    # --- 3. Jamais un succès supposé -------------------------------------------------
+    ok = N.envoie("Cours de droit", "# T\ntexte",
+                  lambda s: [{"name": "NOTION_CREATE_NOTION_PAGE"}],
+                  lambda a, ar, s: "✅ [NOTION_CREATE_NOTION_PAGE] https://www.notion.so/abc123")
+    check_true("un vrai succès est annoncé", "est dans Notion" in ok)
+    check_true("avec le lien", "https://www.notion.so/abc123" in ok)
+    rate = N.envoie("Cours", "# T\ntexte",
+                    lambda s: [{"name": "NOTION_CREATE_NOTION_PAGE"}],
+                    lambda a, ar, s: '{"successful": false, "error": "unauthorized"}')
+    check("un échec n'est pas maquillé en succès", "est dans Notion" in rate, False)
+    check_true("et l'erreur est rendue telle quelle", "unauthorized" in rate)
+
+    # --- 4. Reconnaître QUEL cours ---------------------------------------------------
+    for m in ("déplace mon cours de droit dans Notion", "envoie ce cours sur Notion",
+              "dans Notion, mets mon cours de maths"):
+        check_true(f"demande reconnue : {m[:30]!r}", V.veut_exporter(m))
+    for m in ("résume mes mails", "crée une page Notion", "montre-moi mes cours"):
+        check(f"pas une demande d'export : {m!r}", V.veut_exporter(m), False)
+
+    S = [{"id": "a", "titre": "Droit et religion", "matiere": "Droit", "dossier": ""},
+         {"id": "b", "titre": "Cours du 07/09", "matiere": "Droit", "dossier": ""},
+         {"id": "c", "titre": "Maths — dérivées", "matiere": "Maths", "dossier": ""}]
+    check("un seul candidat → on agit",
+          V.choisit("déplace mon cours de maths dans Notion", S).get("id"), "c")
+    # ⚠️ Deux cours de droit : on DEMANDE. Prendre « le plus récent » serait un pari
+    # silencieux, et il ne verrait l'erreur qu'une fois la page publiée.
+    amb = V.choisit("déplace mon cours de droit dans Notion", S)
+    check("deux candidats → on demande", "id" in amb, False)
+    check("et on propose les deux", len(amb.get("ambigu") or []), 2)
+    check("« ce cours » désigne le dernier",
+          V.choisit("envoie ce cours dans Notion", S).get("id"), "a")
+    check("aucun cours → rien à envoyer", V.choisit("envoie ce cours dans Notion", []), {})
 
 
 def test_le_briefing_appelait_gmail_par_l_autre_porte():
@@ -10581,7 +10774,9 @@ if __name__ == "__main__":
                test_410_gone_le_seul_code_que_l_auto_guerison_ignorait,
                test_l_accueil_ne_montre_que_ce_qui_est_mesure,
                test_la_mise_en_page_des_maquettes_sans_les_phrases_qui_rassurent,
-               test_le_kine_qui_n_existait_pas_et_la_meteo_cherchee_sur_le_web):
+               test_le_kine_qui_n_existait_pas_et_la_meteo_cherchee_sur_le_web,
+               test_les_diapos_en_markdown_brut_et_les_cours_qu_on_range,
+               test_deplacer_un_cours_dans_notion_sans_se_tromper_de_cours):
         try:
             fn()
         except Exception as e:

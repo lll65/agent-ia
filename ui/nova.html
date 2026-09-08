@@ -221,13 +221,6 @@
            word-break:break-word; }
   .pE.ko .tt{ color:#fde68a; }
   .pFin{ font-size:11px; color:var(--dim); text-align:center; padding-top:4px; }
-  .pAct{ display:flex; align-items:center; gap:9px; padding:9px 11px; border-radius:11px;
-         border:1px solid var(--stroke); background:rgba(255,255,255,.035);
-         font-size:11.5px; color:var(--dim); margin-bottom:7px; }
-  .pAct:last-of-type{ margin-bottom:0; }
-  .pAct kbd{ font-family:inherit; font-size:10px; font-weight:700; color:var(--txt);
-             background:rgba(255,255,255,.09); border:1px solid var(--stroke);
-             border-radius:6px; padding:2px 6px; }
   .chips{ display:flex; gap:8px; flex-wrap:wrap; padding:2px 0 6px; }
   .chip{ font-size:12.5px; color:var(--dim); background:var(--glass); border:1px solid var(--stroke); border-radius:999px; padding:7px 13px; cursor:pointer; transition:.2s; }
   /* ═══ ACCUEIL ═══ Tout ce qui s'affiche ici vient d'un appel réel.
@@ -799,15 +792,6 @@
       <h4>Ma réflexion en direct <span class="pLive">LIVE</span></h4>
       <div class="pFil" id="penseFil"></div>
       <div class="pFin" id="penseFin">Toujours en cours…</div>
-    </div>
-    <div class="pCard">
-      <h4>Pendant que je réfléchis…</h4>
-      <!-- ⚠️ La maquette proposait « je peux déjà regarder tes mails » et « je te prépare
-           un résumé dès que j'ai fini » : Nova ne sait faire ni l'un ni l'autre pendant
-           qu'elle travaille. On n'annonce que ce qui marche vraiment. -->
-      <div class="pAct">⏹ <span>Tu peux m'arrêter — je m'arrête entre deux étapes</span></div>
-      <div class="pAct"><kbd>Échap</kbd> <span>fait la même chose</span></div>
-      <div class="pAct">💾 <span>Ce que j'ai déjà trouvé reste affiché si tu m'arrêtes</span></div>
     </div>
   </aside>
 

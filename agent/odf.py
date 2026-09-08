@@ -223,20 +223,58 @@ _NS_DIAPO = (_NS + ' xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1
 _LIGNES_MAX = 12
 
 
+def _ligne_de_diapo(ligne: str) -> str:
+    """Une ligne de markdown, telle qu'elle doit apparaître sur une diapo.
+
+    ⚠️ Ce qui se voyait en brut sur sa diapo : les dièses d'un titre non découpé, le
+    tiret des puces, le « > » des citations, et les barres des tableaux. Aucun de ces
+    signes ne veut dire quoi que ce soit hors d'un éditeur markdown.
+    """
+    if _SEPARATEUR.match(ligne):
+        return ""                        # la ligne de tirets d'un tableau ne dit rien
+    t = ligne.rstrip()
+    if _LIGNE_TABLEAU.match(t):
+        return " · ".join(c for c in (_sans_markdown(x) for x in _cellules(t)) if c)
+    # Un titre plus profond que le découpage garde son texte, pas ses dièses.
+    m = _TITRE.match(t)
+    if m:
+        return _sans_markdown(m.group(2))
+    t = re.sub(r"^\s*>\s?", "", t)                       # citation
+    # Les puces deviennent de vraies puces, avec leur retrait conservé.
+    m = re.match(r"^(\s*)[-*+]\s+(.*)$", t)
+    if m:
+        creux = "    " * (len(m.group(1)) // 2)
+        return (creux + "• " + _sans_markdown(m.group(2))).rstrip()
+    m = re.match(r"^(\s*)(\d+[.)])\s+(.*)$", t)
+    if m:
+        creux = "    " * (len(m.group(1)) // 2)
+        return (creux + m.group(2) + " " + _sans_markdown(m.group(3))).rstrip()
+    return _sans_markdown(t)
+
+
 def sections(md: str) -> list:
-    """[(titre, [lignes])] — le cours découpé aux titres, dans l'ordre."""
+    """[(titre, [lignes])] — le cours découpé aux titres, dans l'ordre.
+
+    ⚠️ VU SUR SON ÉCRAN. La diapo affichait, en texte brut :
+        « ### Euthanasie et séparation de l'État et de la religion
+          - La loi sur l'euthanasie… »
+    Je ne coupais qu'aux titres de niveau 1 et 2. Son cours est structuré en « ### » et
+    « #### » : tous ces titres restaient DANS le corps, avec leurs dièses, et les puces
+    gardaient leur tiret de markdown. Résultat : une diapo unique, illisible, remplie de
+    balises — exactement ce qu'un export est censé éviter.
+    On coupe donc à TOUS les niveaux jusqu'à 4, et ce qui reste est nettoyé.
+    """
     titre, corps, out = "", [], []
     for ligne in (md or "").splitlines():
         m = _TITRE.match(ligne)
-        if m and len(m.group(1)) <= 2:
+        if m and len(m.group(1)) <= 4:
             if titre or corps:
                 out.append((titre, corps))
             titre, corps = _sans_markdown(m.group(2)), []
             continue
-        t = _sans_markdown(ligne)
-        # Les lignes de séparation d'un tableau n'ont rien à dire sur une diapo.
-        if t and not _SEPARATEUR.match(ligne):
-            corps.append(t.replace("|", " · ") if _LIGNE_TABLEAU.match(ligne) else t)
+        t = _ligne_de_diapo(ligne)
+        if t:
+            corps.append(t)
     if titre or corps:
         out.append((titre, corps))
     # Une diapo trop longue est recoupée plutôt que tronquée : rien ne se perd.

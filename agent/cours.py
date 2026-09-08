@@ -186,9 +186,46 @@ def demarrer(titre: str = "", matiere: str = "") -> dict:
 
 def _resume(s: dict) -> dict:
     return {"id": s["id"], "titre": s["titre"], "matiere": s.get("matiere", ""),
+            "dossier": s.get("dossier", ""),
             "debut": s["debut"], "fin": s.get("fin"), "etat": s.get("etat"),
             "secondes": s.get("secondes", 0), "mots": len(s.get("transcript", "").split()),
             "a_synthese": bool(s.get("synthese"))}
+
+
+# ── Ranger, renommer ─────────────────────────────────────────────────────────
+# ⚠️ « j'aimerais pouvoir créer des dossiers de mes cours dans Nova, modifier les titres
+# ou supprimer des cours. Et je ne veux aucun cours qui se supprime automatiquement. »
+# Rien ne s'efface tout seul : `supprimer()` n'est appelé que sur une action explicite,
+# et c'est écrit ici pour que ça le reste. Un nettoyage automatique de « vieux » cours
+# serait une perte de données décidée à sa place.
+def renomme(sid: str, titre: str = None, matiere: str = None, dossier: str = None) -> dict:
+    """Change le titre, la matière ou le dossier d'un cours. Ne touche jamais au contenu.
+
+    ⚠️ On relit la session AVANT d'écrire, et on n'écrit que les champs demandés : une
+    écriture complète à partir d'un objet partiel effacerait la transcription.
+    """
+    s = _lire(sid)
+    if titre is not None:
+        t = " ".join(str(titre).split())[:120]
+        if t:
+            s["titre"] = t
+    if matiere is not None:
+        s["matiere"] = " ".join(str(matiere).split())[:60]
+    if dossier is not None:
+        # Un dossier est un simple libellé : pas d'arborescence, pas de chemin, donc
+        # rien à casser si un nom change. « Droit », « Maths »… C'est lui qui décide.
+        s["dossier"] = " ".join(str(dossier).split())[:60]
+    _ecrire(s)
+    return _resume(s)
+
+
+def dossiers() -> list:
+    """Les dossiers existants, avec le nombre de cours dans chacun."""
+    compte = {}
+    for s in lister():
+        compte[s.get("dossier") or ""] = compte.get(s.get("dossier") or "", 0) + 1
+    return sorted(({"nom": n, "cours": c} for n, c in compte.items()),
+                  key=lambda d: (d["nom"] == "", d["nom"].lower()))
 
 
 def lister() -> list:

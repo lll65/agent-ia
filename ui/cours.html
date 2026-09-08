@@ -116,6 +116,15 @@
   .hist a{ display:flex; justify-content:space-between; gap:10px; align-items:center; color:var(--txt);
            text-decoration:none; padding:11px 13px; border-radius:11px; border:1px solid transparent; transition:.2s; }
   .hist a:hover{ background:rgba(255,255,255,.05); border-color:var(--stroke); }
+  .hist .dossier{ margin-bottom:14px; }
+  .hist .dossier h5{ font-size:11px; letter-spacing:.09em; text-transform:uppercase;
+                     color:var(--dim); padding:2px 4px 6px; display:flex; gap:8px; }
+  .hist .dossier h5 span{ background:var(--glass); border:1px solid var(--stroke);
+                          border-radius:999px; padding:0 7px; font-size:10px; }
+  .cAct{ display:flex; align-items:center; gap:6px; }
+  .mini{ padding:3px 8px; font-size:12px; border-radius:8px; line-height:1.4;
+         background:var(--glass); border:1px solid var(--stroke); color:var(--dim); }
+  .mini:hover{ color:#fff; border-color:var(--neon); }
   .hist small{ color:var(--dim); font-size:11.5px; white-space:nowrap; }
   .muted{ color:var(--dim); font-size:13px; line-height:1.6; }
   .hide{ display:none !important; }
@@ -627,6 +636,41 @@ function telecharger(sid, format){
 $("again").onclick = () => { SID = null; show("setup"); $("go").disabled = false;
   $("titre").value = ""; $("matiere").value = ""; window.scrollTo(0,0); };
 
+/* Renommer, ranger, envoyer dans Notion, supprimer.
+   ⚠️ La suppression demande confirmation ET nomme le cours : « supprimer ce cours ? »
+   sans son titre, on clique sans lire. Rien ne s'efface jamais tout seul — c'est le
+   seul endroit du programme qui efface un cours. */
+async function actionCours(act, id){
+  const carte = document.querySelector(`a[data-id="${id}"] span`);
+  const titre = carte ? carte.textContent.replace(/^[^\w]+/, "").trim() : "ce cours";
+  try{
+    if(act === "del"){
+      if(!confirm(`Supprimer définitivement « ${titre} » ?\n\nLa transcription et la `
+                 + `synthèse seront perdues. Cette action ne s'annule pas.`)) return;
+      await fetch(ORIGIN + "/agent/cours?id=" + encodeURIComponent(id)
+                  + "&key=" + encodeURIComponent(KEY), {method:"DELETE"});
+      await charger(); return;
+    }
+    if(act === "ren"){
+      const t = prompt("Titre du cours :", titre);
+      if(t === null) return;
+      const d = prompt("Dossier (laisse vide pour ne pas classer) :", "");
+      if(d === null) return;
+      await fetch(ORIGIN + "/agent/cours/renommer?key=" + encodeURIComponent(KEY),
+        {method:"POST", headers:{"Content-Type":"application/json"},
+         body: JSON.stringify({id:id, titre:t, dossier:d})});
+      await charger(); return;
+    }
+    if(act === "notion"){
+      const r = await (await fetch(ORIGIN + "/agent/cours/notion?id=" + encodeURIComponent(id)
+                  + "&key=" + encodeURIComponent(KEY), {method:"POST"})).json();
+      // ⚠️ On affiche le message TEL QUEL : il dit « c'est fait » ou il dit pourquoi
+      // ça ne l'est pas. Un « envoyé ! » systématique serait un mensonge de plus.
+      alert((r && r.message) || "Notion n'a rien répondu.");
+    }
+  }catch(e){ alert("Action impossible : " + String(e).slice(0,120)); }
+}
+
 function avertitPersistance(ok){
   let z = document.getElementById("persoWarn");
   if(ok){ if(z) z.remove(); return; }
@@ -653,15 +697,34 @@ async function charger(){
     avertitPersistance(d.persistant !== false);
     const S = d.sessions || [];
     if(!S.length){ $("hist").innerHTML = "<p class='muted'>Aucun cours enregistré pour l'instant.</p>"; return; }
-    $("hist").innerHTML = S.map(s => {
-      const dt = new Date(s.debut * 1000);
-      const etat = s.a_synthese ? "✅" : (s.etat === "en_cours" ? "🎙️" : "⚠️");
-      return `<a href="#" data-id="${s.id}"><span>${etat} ${esc(s.titre)}` +
-             `${s.matiere ? ` <small>· ${esc(s.matiere)}</small>` : ""}</span>` +
-             `<small>${dt.toLocaleDateString("fr-FR")} · ${Math.round(s.secondes/60)} min</small></a>`;
+    /* ⚠️ « j'aimerais pouvoir créer des dossiers de mes cours, modifier les titres ou
+       supprimer des cours ». Les cours sont regroupés par dossier ; un cours sans
+       dossier reste visible, dans « Non classés » — un cours qui disparaît parce qu'on
+       ne l'a pas rangé serait exactement ce qu'il craint. */
+    const parDossier = {};
+    S.forEach(s => { const d = s.dossier || ""; (parDossier[d] = parDossier[d] || []).push(s); });
+    const noms = Object.keys(parDossier).sort((a,b)=> (a===""?1:b===""?-1:a.localeCompare(b)));
+    $("hist").innerHTML = noms.map(nom => {
+      const lignes = parDossier[nom].map(s => {
+        const dt = new Date(s.debut * 1000);
+        const etat = s.a_synthese ? "✅" : (s.etat === "en_cours" ? "🎙️" : "⚠️");
+        return `<a href="#" data-id="${s.id}"><span>${etat} ${esc(s.titre)}` +
+               `${s.matiere ? ` <small>· ${esc(s.matiere)}</small>` : ""}</span>` +
+               `<span class="cAct"><small>${dt.toLocaleDateString("fr-FR")} · ` +
+               `${Math.round(s.secondes/60)} min</small>` +
+               `<button class="mini" data-act="ren" data-id="${s.id}" title="Renommer / ranger">✎</button>` +
+               `<button class="mini" data-act="notion" data-id="${s.id}" title="Envoyer dans Notion">N</button>` +
+               `<button class="mini" data-act="del" data-id="${s.id}" title="Supprimer">🗑</button>` +
+               `</span></a>`;
+      }).join("");
+      return `<div class="dossier"><h5>${nom ? esc(nom) : "Non classés"} ` +
+             `<span>${parDossier[nom].length}</span></h5>${lignes}</div>`;
     }).join("");
     [...$("hist").querySelectorAll("a")].forEach(a => a.onclick = async ev => {
-      ev.preventDefault(); await ouvrir(a.dataset.id); });
+      const b = ev.target.closest("button[data-act]");
+      ev.preventDefault();
+      if(b){ ev.stopPropagation(); await actionCours(b.dataset.act, b.dataset.id); return; }
+      await ouvrir(a.dataset.id); });
   }catch(e){}
 }
 async function ouvrir(id){

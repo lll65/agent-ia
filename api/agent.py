@@ -1202,6 +1202,15 @@ def _resolve_app_action(message: str):
     if veut_la_meteo(message):
         return "__METEO__", {"message": message}
 
+    # ⚠️ « j'aimerais que dans la conv avec Nova je puisse lui dire "déplace tel cours
+    # dans Notion" ». On reconnaît la demande ICI, en dur, plutôt que de la confier au
+    # modèle : envoyer un cours ailleurs est une action qui SORT de Nova, et une action
+    # qui sort ne doit pas dépendre de l'humeur d'un modèle saturé.
+    from agent.cours_vers import cours_a_exporter
+    _exp = cours_a_exporter(message)
+    if _exp:
+        return "__COURS_NOTION__", _exp
+
     if cal_ctx:
         tmin, tmax, _ = _time_bounds(message)
         return "GOOGLECALENDAR_EVENTS_LIST", {
@@ -2139,6 +2148,11 @@ def _direct_app_prepare_brut(message: str, canal: str = "web"):
         return {"steps": [{"kind": "action", "tool": "googlemaps",
                            "label": f"Trajet {a} → {b}"}],
                 "answer": itineraire(a, b), "ok": True}
+    if action == "__COURS_NOTION__":
+        from agent.cours_vers import execute
+        return {"steps": [{"kind": "action", "tool": "notion",
+                           "label": "Envoi du cours dans Notion"}],
+                "answer": execute(args or {}, _composio_list_actions, _tool), "ok": True}
     if action == "__METEO__":
         from agent.meteo import repond, ville_demandee
         from agent.briefing import ville_de_lohan
@@ -5688,6 +5702,57 @@ async def cours_export(id: str = "", key: str = "", format: str = "md"):
                         headers={"Content-Disposition": f'attachment; filename="{nom}.{f}"'})
     return Response(content=md, media_type="text/markdown; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{nom}.md"'})
+
+
+class CoursRenomme(BaseModel):
+    id: str
+    titre: str | None = None
+    matiere: str | None = None
+    dossier: str | None = None
+
+
+@router.post("/cours/renommer")
+async def cours_renommer(r: CoursRenomme, key: str = ""):
+    """Renommer un cours, changer sa matière, ou le ranger dans un dossier.
+
+    ⚠️ « je ne veux aucun cours qui se supprime automatiquement » : ranger n'efface
+    rien. On relit la session avant d'écrire et on ne touche qu'aux champs demandés —
+    une écriture complète à partir d'un objet partiel effacerait la transcription.
+    """
+    _check_key(key)
+    from agent import cours
+    from agent.core import _off
+    try:
+        return {"ok": True, "cours": await _off(cours.renomme, r.id, r.titre,
+                                                r.matiere, r.dossier)}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session inconnue.")
+
+
+@router.post("/cours/notion")
+async def cours_vers_notion(id: str = "", key: str = ""):
+    """Envoie un cours dans Notion. Ne dit jamais « c'est fait » sans preuve."""
+    _check_key(key)
+    from agent import cours
+    from agent.vers_notion import envoie
+    from agent.core import _off
+    try:
+        md = await _off(cours.markdown, id)
+        s = await _off(cours._lire, id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Session inconnue.")
+    msg = await _off(envoie, s.get("titre", "Cours"), md,
+                     _composio_list_actions, _tool)
+    return {"message": msg, "ok": "est dans Notion" in msg}
+
+
+@router.get("/cours/dossiers")
+async def cours_dossiers(key: str = ""):
+    """Les dossiers existants et le nombre de cours dans chacun."""
+    _check_key(key)
+    from agent import cours
+    from agent.core import _off
+    return {"dossiers": await _off(cours.dossiers)}
 
 
 @router.delete("/cours")
