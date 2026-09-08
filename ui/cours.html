@@ -125,6 +125,15 @@
   .mini{ padding:3px 8px; font-size:12px; border-radius:8px; line-height:1.4;
          background:var(--glass); border:1px solid var(--stroke); color:var(--dim); }
   .mini:hover{ color:#fff; border-color:var(--neon); }
+  /* Un seul point d'entrée par ligne : le menu ne se voit que quand on le demande. */
+  .mini.pts{ font-size:15px; letter-spacing:.06em; padding:1px 9px 5px; }
+  .cAct{ position:relative; }
+  .cmenu{ right:0; left:auto; bottom:auto; top:calc(100% + 6px); min-width:210px; }
+  .cmenu button span{ display:block; font-size:10.5px; color:#fca5a5; }
+  .hist a[draggable]{ cursor:grab; }
+  .hist a.drag{ opacity:.4; }
+  .hist .dossier.cible{ outline:2px dashed var(--neon2); outline-offset:4px; border-radius:12px; }
+  .hist .dossier.cible h5{ color:var(--neon2); }
   .hist small{ color:var(--dim); font-size:11.5px; white-space:nowrap; }
   .muted{ color:var(--dim); font-size:13px; line-height:1.6; }
   .hide{ display:none !important; }
@@ -627,6 +636,7 @@ function brancheTelechargement(sid){
 document.addEventListener("click", ()=>{
   const m = document.getElementById("dlMenu");
   if(m) m.classList.remove("show");
+  document.querySelectorAll(".cmenu.show").forEach(x=>x.classList.remove("show"));
 });
 function telecharger(sid, format){
   window.location = ORIGIN + "/agent/cours/export?id=" + encodeURIComponent(sid) +
@@ -671,6 +681,41 @@ async function actionCours(act, id){
   }catch(e){ alert("Action impossible : " + String(e).slice(0,120)); }
 }
 
+/* ═══ GLISSER-DÉPOSER ═══
+   « je voudrais faire glisser mes cours dans des dossiers. »
+   ⚠️ Le glisser-déposer ne marche PAS au doigt sur téléphone : c'est un geste de
+   souris. Le menu « … » → « Renommer / ranger » reste donc le chemin principal, et
+   celui-ci vient en plus — sinon la fonction n'existerait que sur son PC. */
+let _glisse = null;
+function brancheGlisser(){
+  document.querySelectorAll('.hist a[draggable]').forEach(a=>{
+    a.addEventListener("dragstart", e=>{ _glisse = a.dataset.id;
+      a.classList.add("drag"); try{ e.dataTransfer.effectAllowed = "move"; }catch(_){} });
+    a.addEventListener("dragend", ()=>{ a.classList.remove("drag"); _glisse = null;
+      document.querySelectorAll(".dossier.cible").forEach(d=>d.classList.remove("cible")); });
+  });
+  document.querySelectorAll(".hist .dossier").forEach(d=>{
+    d.addEventListener("dragover", e=>{ if(!_glisse) return;
+      e.preventDefault(); d.classList.add("cible"); });
+    d.addEventListener("dragleave", ()=> d.classList.remove("cible"));
+    d.addEventListener("drop", async e=>{
+      e.preventDefault(); d.classList.remove("cible");
+      if(!_glisse) return;
+      const vers = d.dataset.dossier || "";
+      await rangeCours(_glisse, vers);
+      _glisse = null;
+    });
+  });
+}
+async function rangeCours(id, dossier){
+  try{
+    await fetch(ORIGIN + "/agent/cours/renommer?key=" + encodeURIComponent(KEY),
+      {method:"POST", headers:{"Content-Type":"application/json"},
+       body: JSON.stringify({id:id, dossier:dossier})});
+    await charger();
+  }catch(e){ alert("Déplacement impossible : " + String(e).slice(0,120)); }
+}
+
 function avertitPersistance(ok){
   let z = document.getElementById("persoWarn");
   if(ok){ if(z) z.remove(); return; }
@@ -708,22 +753,37 @@ async function charger(){
       const lignes = parDossier[nom].map(s => {
         const dt = new Date(s.debut * 1000);
         const etat = s.a_synthese ? "✅" : (s.etat === "en_cours" ? "🎙️" : "⚠️");
-        return `<a href="#" data-id="${s.id}"><span>${etat} ${esc(s.titre)}` +
+        return `<a href="#" draggable="true" data-id="${s.id}"><span>${etat} ${esc(s.titre)}` +
                `${s.matiere ? ` <small>· ${esc(s.matiere)}</small>` : ""}</span>` +
                `<span class="cAct"><small>${dt.toLocaleDateString("fr-FR")} · ` +
                `${Math.round(s.secondes/60)} min</small>` +
-               `<button class="mini" data-act="ren" data-id="${s.id}" title="Renommer / ranger">✎</button>` +
-               `<button class="mini" data-act="notion" data-id="${s.id}" title="Envoyer dans Notion">N</button>` +
-               `<button class="mini" data-act="del" data-id="${s.id}" title="Supprimer">🗑</button>` +
-               `</span></a>`;
+               `<button class="mini pts" data-menu="${s.id}" title="Actions">…</button>` +
+               `<div class="ddmenu cmenu" data-for="${s.id}">` +
+               `<button data-act="ren" data-id="${s.id}">Renommer / ranger</button>` +
+               `<button data-act="notion" data-id="${s.id}">Envoyer dans Notion</button>` +
+               `<button data-act="del" data-id="${s.id}">Supprimer<span>définitif</span></button>` +
+               `</div></span></a>`;
       }).join("");
-      return `<div class="dossier"><h5>${nom ? esc(nom) : "Non classés"} ` +
+      return `<div class="dossier" data-dossier="${esc(nom)}"><h5>${nom ? esc(nom) : "Non classés"} ` +
              `<span>${parDossier[nom].length}</span></h5>${lignes}</div>`;
     }).join("");
+    brancheGlisser();
     [...$("hist").querySelectorAll("a")].forEach(a => a.onclick = async ev => {
-      const b = ev.target.closest("button[data-act]");
       ev.preventDefault();
-      if(b){ ev.stopPropagation(); await actionCours(b.dataset.act, b.dataset.id); return; }
+      /* ⚠️ « tu mets des nouveaux boutons à l'écran au lieu de mettre "…" avec un truc
+         qui apparaît quand on clique dessus ». Trois icônes par ligne sur six cours,
+         ça fait dix-huit boutons pour trois actions rares. Un seul « … » par ligne. */
+      const pt = ev.target.closest("button[data-menu]");
+      if(pt){ ev.stopPropagation();
+        const m = a.querySelector(`.cmenu[data-for="${pt.dataset.menu}"]`);
+        const ouvert = m && m.classList.contains("show");
+        document.querySelectorAll(".cmenu.show").forEach(x=>x.classList.remove("show"));
+        if(m && !ouvert) m.classList.add("show");
+        return; }
+      const b = ev.target.closest("button[data-act]");
+      if(b){ ev.stopPropagation();
+        document.querySelectorAll(".cmenu.show").forEach(x=>x.classList.remove("show"));
+        await actionCours(b.dataset.act, b.dataset.id); return; }
       await ouvrir(a.dataset.id); });
   }catch(e){}
 }

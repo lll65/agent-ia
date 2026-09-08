@@ -177,9 +177,19 @@
   @media (min-width:1080px){
     body .sidebar{ transform:none; width:258px; box-shadow:none; }
     body .app{ max-width:1240px; padding-left:280px; }
-    /* Le ☰ et le ✕ n'ont plus d'objet quand la colonne ne se ferme plus. */
-    #burger, .sbhead .ic{ display:none; }
+    /* ⚠️ « le menu côté gauche il faut pouvoir le dérouler et inversement ». Sur grand
+       écran la colonne était FIXE, sans moyen de la replier : 258 px pris en permanence,
+       y compris quand il veut lire un cours en grand. Le ☰ la replie et la rouvre.
+       Repliée, il reste une bande d'icônes : on ne perd pas la navigation. */
+    .sbhead .ic{ display:none; }
     #scrim{ display:none !important; }
+    body.sbmini .sidebar{ width:62px; }
+    body.sbmini .app{ padding-left:84px; }
+    body.sbmini .sbn span, body.sbmini .sbn b, body.sbmini .newchat span:last-child,
+    body.sbmini .sbsearch, body.sbmini .sblist, body.sbmini .sbfoot,
+    body.sbmini .sbhead .b, body.sbmini .sbUser div{ display:none; }
+    body.sbmini .sbn, body.sbmini .newchat{ justify-content:center; padding:9px 0; }
+    body.sbmini .sbUser{ justify-content:center; padding:9px 0; }
   }
   /* ═══ « MA RÉFLEXION EN DIRECT » ═══ (colonne droite de la maquette A)
      ⚠️ La maquette montrait des phrases pré-écrites : « Je croise plusieurs sources
@@ -824,14 +834,14 @@
          qui sépare « application » de « jouet ».
          Les emoji restent dans les RÉPONSES — là ils portent du sens et il les lit. -->
     <nav class="sbnav">
-      <button class="sbn" onclick="allerAccueil()">{{i:home}} Accueil</button>
-      <button class="sbn" data-q="Résume mes mails">{{i:mail}} Messagerie<b id="navMails" hidden></b></button>
-      <button class="sbn" data-q="Qu'est-ce que j'ai de prévu aujourd'hui ?">{{i:cal}} Calendrier<b id="navAgenda" hidden></b></button>
-      <button class="sbn" onclick="openAuto()">{{i:bolt}} Automatisations</button>
-      <button class="sbn" onclick="location.href='/nova/cours'">{{i:cap}} Mode Cours</button>
-      <button class="sbn" onclick="location.href='/nova/brain'">{{i:net}} Escouade</button>
-      <button class="sbn" onclick="openMemory()">{{i:brain}} Mémoire</button>
-      <button class="sbn" onclick="openCfg()">{{i:cog}} Paramètres</button>
+      <button class="sbn" onclick="allerAccueil()" title="Accueil">{{i:home}} <span>Accueil</span></button>
+      <button class="sbn" data-q="Résume mes mails" title="Messagerie">{{i:mail}} <span>Messagerie</span><b id="navMails" hidden></b></button>
+      <button class="sbn" data-q="Qu'est-ce que j'ai de prévu aujourd'hui ?" title="Calendrier">{{i:cal}} <span>Calendrier</span><b id="navAgenda" hidden></b></button>
+      <button class="sbn" onclick="openAuto()" title="Automatisations">{{i:bolt}} <span>Automatisations</span></button>
+      <button class="sbn" onclick="location.href='/nova/cours'" title="Mode Cours">{{i:cap}} <span>Mode Cours</span></button>
+      <button class="sbn" onclick="location.href='/nova/brain'" title="Escouade">{{i:net}} <span>Escouade</span></button>
+      <button class="sbn" onclick="openMemory()" title="Mémoire">{{i:brain}} <span>Mémoire</span></button>
+      <button class="sbn" onclick="openCfg()" title="Paramètres">{{i:cog}} <span>Paramètres</span></button>
     </nav>
     <input class="sbsearch" id="sbsearch" placeholder="🔎 Rechercher une conversation…"
            oninput="filterSessions(this.value)">
@@ -1215,7 +1225,14 @@ function deleteSession(id,ev){ if(ev)ev.stopPropagation(); SESSIONS=SESSIONS.fil
                 +"&id="+encodeURIComponent(id),{method:"DELETE"}).catch(()=>{});
   _aEnvoyer.delete(id);
   saveSessions(); renderChat(); renderSessions(); }
-function toggleSidebar(){ const sb=document.getElementById("sidebar"), sc=document.getElementById("scrim");
+function toggleSidebar(){
+  // Sur grand écran la colonne ne se ferme pas : elle se REPLIE en bande d'icônes.
+  if(window.innerWidth >= 1080){
+    const mini = document.body.classList.toggle("sbmini");
+    try{ localStorage.setItem("nova_sbmini", mini ? "1" : "0"); }catch(e){}
+    return;
+  }
+  const sb=document.getElementById("sidebar"), sc=document.getElementById("scrim");
   const on=!sb.classList.contains("show"); sb.classList.toggle("show",on); sc.classList.toggle("show",on); if(on){ renderSessions(); sndOpen(); } }
 function closeSidebar(){ document.getElementById("sidebar").classList.remove("show"); document.getElementById("scrim").classList.remove("show"); }
 
@@ -1342,6 +1359,8 @@ ticTac(); setInterval(ticTac, 20000);
 /* Sur grand écran la colonne est toujours là : la liste des conversations doit être
    remplie au chargement, pas seulement quand on ouvre le panneau. */
 if(window.innerWidth >= 1080) setTimeout(()=>{ try{ renderSessions(); }catch(e){} }, 200);
+// L'état replié est retenu : le rouvrir à chaque visite serait ignorer son choix.
+try{ if(localStorage.getItem("nova_sbmini") === "1") document.body.classList.add("sbmini"); }catch(e){}
 
 /* « Accueil » : on revient à l'écran de départ sans effacer la conversation en cours.
    ⚠️ Ce n'est PAS « nouvelle conversation » — perdre son fil parce qu'il a cliqué sur
@@ -1408,8 +1427,12 @@ function chargeAccueil(){
       // La météo n'apparaît QUE si elle a été mesurée. Pas de pastille vide décorative.
       if(w.ok && w.ligne) h += '<div class="accMeteo">' + esc(_cut(w.ligne,74)) + '</div>';
       h += '</div><div class="accGrille">';
-      h += m.ok ? accTuile("","Mails non lus","✉️", String(m.total||0),
-                    (m.important||0) + " important" + ((m.important||0)>1?"s":""),
+      // ⚠️ Un plafond atteint s'écrit « 50+ » : un chiffre rond qui ne peut pas être
+      // vrai vaut mieux qu'un chiffre précis qui est faux.
+      h += m.ok ? accTuile("","Mails non lus","✉️",
+                    String(m.total||0) + (m.plafond ? "+" : ""),
+                    (m.important||0) + " important" + ((m.important||0)>1?"s":"")
+                    + (m.plafond ? " · au moins" : ""),
                     "Résume mes mails")
                 : accPanne("Mails","✉️", m.erreur);
       h += a.ok ? accTuile("c2","Aujourd'hui","📅", (a.total||0) + " événement" + ((a.total||0)>1?"s":""),

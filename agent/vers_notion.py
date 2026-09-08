@@ -77,6 +77,42 @@ def blocs(md: str):
     return [_bloc_texte(l) for l in gardees], max(0, len(lignes) - len(gardees))
 
 
+# Une action qui sait CHERCHER une page existante : c'est elle qui nous donne un parent.
+_CHERCHE = (r"^NOTION_SEARCH", r"^NOTION_.*SEARCH", r"^NOTION_LIST.*PAGE",
+            r"^NOTION_FETCH.*PAGE", r"^NOTION_GET.*PAGE")
+# Un identifiant Notion : 32 hexadécimaux, avec ou sans tirets.
+_ID = re.compile(r"\b[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}\b", re.I)
+
+
+def _parent(actions, appeler) -> str:
+    """L'identifiant d'une page où créer. "" si aucune n'est accessible.
+
+    ⚠️ D'abord son réglage s'il en a un : il sait mieux que moi où ranger ses cours.
+    Sinon on DEMANDE à Notion quelles pages l'intégration voit — plutôt que d'inventer
+    un identifiant, ce qui produirait une erreur incompréhensible.
+    """
+    try:
+        from config import config
+        fixe = (getattr(config, "NOTION_PARENT_ID", "") or "").strip()
+        if fixe:
+            return fixe
+    except Exception:
+        pass
+    noms = [str((a or {}).get("name") or "") for a in (actions or [])]
+    for motif in _CHERCHE:
+        for n in noms:
+            if not re.search(motif, n, re.I):
+                continue
+            try:
+                obs = str(appeler(n, {"query": "", "page_size": 5}, "notion") or "")
+            except Exception:
+                continue
+            m = _ID.search(obs)
+            if m:
+                return m.group(0)
+    return ""
+
+
 def envoie(titre: str, md: str, lister_actions, appeler) -> str:
     """Crée la page et rend un message en français. Jamais un succès supposé.
 
@@ -97,8 +133,31 @@ def envoie(titre: str, md: str, lister_actions, appeler) -> str:
                 f"d'utiliser une action au hasard.\n\n_Actions vues : {dispo}_")
 
     corps, laissees = blocs(md)
-    obs = appeler(nom, {"title": titre[:100], "children": corps}, "notion")
+    # ⚠️ VU EN VRAI : « Invalid request data provided — Following fields are missing:
+    # {'parent_id'} ». Notion ne sait pas créer une page « quelque part » : il lui faut
+    # une page ou une base PARENTE. Et une intégration Notion ne voit que ce qu'on lui a
+    # explicitement partagé — d'où l'échec, alors que tout est « connecté » côté Composio.
+    # Ce n'était donc ni lui, ni Composio : il manquait un paramètre.
+    parent = _parent(actions, appeler)
+    args = {"title": titre[:100], "children": corps}
+    if parent:
+        # On envoie les DEUX orthographes : Composio a changé de nom de champ selon les
+        # versions, et une clé en trop est ignorée alors qu'une clé manquante bloque.
+        args["parent_id"] = parent
+        args["parent"] = {"page_id": parent}
+    obs = appeler(nom, args, "notion")
     txt = str(obs or "")
+    if not parent and "parent_id" in txt:
+        return (
+            "📝 Notion refuse de créer la page : il lui faut une **page parente**, et je "
+            "n'en ai trouvé aucune que ton intégration puisse voir.\n\n"
+            "C'est une particularité de Notion, pas une panne : une intégration ne voit "
+            "que les pages qu'on lui a **explicitement partagées**.\n\n"
+            "**Ce qu'il faut faire, une fois pour toutes :** dans Notion, ouvre la page "
+            "où tu veux ranger tes cours → menu « … » en haut à droite → "
+            "**Connexions / Ajouter des connexions** → choisis Composio. Ensuite je "
+            "saurai créer dedans."
+            + (f"\n\n_Réponse de {nom} : {' '.join(txt.split())[:200]}_" if txt else ""))
     if "✅" not in txt and '"successful": true' not in txt.lower():
         return ("📝 Notion a refusé la création de la page. Je ne te dis pas que c'est "
                 f"fait.\n\n_Réponse de {nom} : {' '.join(txt.split())[:300]}_")

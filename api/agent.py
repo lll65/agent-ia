@@ -216,6 +216,39 @@ def _has_invented_market_data(text: str) -> bool:
     return hit and bool(re.search(r"\d[\d\s.,]{2,}", t))
 
 
+# ⚠️ CE QUI POLLUAIT SA MÉMOIRE. Vu dans son panneau 🧠 :
+#   « c'est faux ce que tu dis je suis à 700 m de l'université et c'est pas normal
+#     que tu trouves pas la météo de demain de Pau »
+#   « c'est un bon coiffeur ou pas ils disent quoi les avis tu me lis les avis et
+#     ensuite à combien c'est à pied de mo »
+# Ce ne sont ni des faits ni des préférences : c'est une QUESTION et un REPROCHE,
+# stockés bruts par le repli « aucun modèle pour reformuler, on garde la phrase telle
+# quelle ». Ce repli existe pour ne pas perdre une confidence quand tout est saturé —
+# mais recopier trente mots de reproche dans son profil, ce n'est pas la sauver, c'est
+# la salir. Et ces phrases repartent ensuite dans CHAQUE prompt système.
+_QUESTION = re.compile(
+    r"\?|^\s*(est-ce|qu'?est|quoi|quel|quelle|quels|quelles|combien|pourquoi|comment|"
+    r"quand|o[ùu]|qui)\b|\b(dis-moi|donne-moi|montre-moi|tu peux|peux-tu|c'est quoi|"
+    r"ils disent quoi|tu me lis)\b", re.I)
+_REPROCHE = re.compile(
+    r"\b(c'?est faux|tu te trompes|[çc]a marche pas|ne marche pas|c'?est nul|"
+    r"j'?en ai marre|c'?est pas normal|tu m'?[ée]nerves|arr[êe]te de|"
+    r"je t'?ai (?:d[ée]j[àa] )?dit|encore une fois|bon sang)\b", re.I)
+
+
+def _phrase_gardable(message: str) -> bool:
+    """Cette phrase BRUTE peut-elle être rangée telle quelle dans le profil ?
+
+    Le repli sans modèle ne doit garder qu'une déclaration COURTE et affirmative. Une
+    question, un reproche ou un paragraphe entier n'ont rien à faire dans une mémoire
+    qu'on relit dans chaque prompt — et qu'il voit à l'écran.
+    """
+    m = " ".join(str(message or "").split())
+    if not m or len(m.split()) > 14:
+        return False
+    return not (_QUESTION.search(m) or _REPROCHE.search(m))
+
+
 def _remember_fact(message: str) -> list:
     """Mémorise une info personnelle : fait structuré dans le profil + trace dans l'historique.
 
@@ -242,7 +275,7 @@ def _remember_fact(message: str) -> list:
     # gratuites sont saturées — ce qui arrive souvent — il ne rend rien, et la confidence
     # était perdue alors que l'utilisateur venait de la donner. On garde alors sa phrase
     # telle quelle : mal rangée vaut infiniment mieux qu'oubliée.
-    if not faits:
+    if not faits and _phrase_gardable(message):
         try:
             from agent.profile import add_fact
             f = add_fact("autre", message.strip()[:160])
@@ -776,7 +809,12 @@ def _time_bounds(message: str):
     if "demain" in m:
         d0 = today + timedelta(days=1)
         return z(d0), z(d0 + timedelta(days=1)), "demain"
-    if "aujourd" in m or "ma journée" in m or "ma journee" in m or "ce soir" in m:
+    # ⚠️ « mon agenda DU JOUR » rendait la SEMAINE : « du jour » n'était pas dans cette
+    # liste, donc on tombait dans le repli hebdomadaire. Il a demandé aujourd'hui et
+    # reçu lundi ET mardi — une réponse juste à une question qu'il n'a pas posée.
+    if ("aujourd" in m or "ma journée" in m or "ma journee" in m or "ce soir" in m
+            or "du jour" in m or "de la journée" in m or "de la journee" in m
+            or "ce matin" in m or "cet après-midi" in m or "cet apres-midi" in m):
         return z(today), z(today + timedelta(days=1)), "aujourd'hui"
 
     # Mois
@@ -1148,7 +1186,14 @@ def _resolve_app_action(message: str):
                   "créneau", "creneau", "suis-je libre", "je suis libre",
                   "suis je libre", "es-tu libre", "quand je suis libre",
                   "temps libre", "je fais quoi", "j'ai quoi de prévu",
-                  "quoi de prévu", "quoi de prevu")
+                  "quoi de prévu", "quoi de prevu",
+                  # ⚠️ « Qu'est-ce que j'ai de prévu aujourd'hui ? » n'était reconnu par
+                  # AUCUN de ces mots : Nova répondait « je n'ai pas accès à ton agenda »
+                  # alors qu'elle y accède très bien. Pire, c'est le libellé exact du
+                  # bouton « Calendrier » que j'ai posé dans la barre latérale : mon
+                  # propre raccourci menait à un refus.
+                  "de prévu", "de prevu", "ai-je de prévu", "prévu aujourd",
+                  "mes rendez", "mon planning", "planning du jour", "programme du jour")
     plan = ("planifie ma", "planifie mon", "organise ma", "organise mon", "prépare ma", "prepare ma")
     day_word = any(w in m for w in ("journée", "journee", "semaine", "jour", "mois"))
     mail = ("mail", "mails", "email", "e-mail", "gmail", "boîte mail", "boite mail",
