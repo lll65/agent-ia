@@ -1251,6 +1251,22 @@ def _resolve_app_action(message: str):
     # dans Notion" ». On reconnaît la demande ICI, en dur, plutôt que de la confier au
     # modèle : envoyer un cours ailleurs est une action qui SORT de Nova, et une action
     # qui sort ne doit pas dépendre de l'humeur d'un modèle saturé.
+    # ⚠️ « qu'est-ce que le prof a dit sur X » → on cherche dans SES cours, pas sur le
+    # web. Le web ne sait pas ce que son professeur a dit ; ses cours, si. Router ça
+    # vers une recherche web rendrait une définition générale de Wikipédia à la place de
+    # ce qu'il doit réviser.
+    # ⚠️ « est-ce que tout marche ? » ne doit pas partir sur le web : la réponse est
+    # dans SES apps, ses clés et sa base, et elle s'obtient en essayant.
+    if re.search(r"\b(est-ce que tout (?:marche|fonctionne)|tout va bien|"
+                 r"y a-t-il (?:un|des) (?:bug|probl[èe]me)|v[ée]rifie que tout|"
+                 r"contr[oô]le (?:tout|nova)|qu'?est-ce qui (?:cloche|ne marche pas)|"
+                 r"sentinelle)\b", m):
+        return "__SENTINELLE__", {}
+
+    from agent.recherche_cours import veut_chercher
+    if veut_chercher(message):
+        return "__CHERCHE_COURS__", {"question": message}
+
     from agent.cours_vers import cours_a_exporter
     _exp = cours_a_exporter(message)
     if _exp:
@@ -2201,6 +2217,26 @@ def _direct_app_prepare_brut(message: str, canal: str = "web"):
         return {"steps": [{"kind": "action", "tool": "googlemaps",
                            "label": f"Trajet {a} → {b}"}],
                 "answer": itineraire(a, b), "ok": True}
+    if action == "__SENTINELLE__":
+        # ⚠️ Cette fonction tourne dans un THREAD de travail (voir _off) : il n'y a donc
+        # aucune boucle asyncio en cours ici, et il faut la sienne. `asyncio.run` la
+        # créerait aussi, mais il lève si jamais une boucle existe — ce serait une panne
+        # de diagnostic pendant un diagnostic.
+        import asyncio as _a
+        from agent.sentinelle import inspecte, rapport
+        boucle = _a.new_event_loop()
+        try:
+            res = boucle.run_until_complete(inspecte())
+        finally:
+            boucle.close()
+        return {"steps": [{"kind": "action", "tool": "diagnostic",
+                           "label": "Contrôle de tes apps et de tes clés"}],
+                "answer": rapport(res), "ok": True}
+    if action == "__CHERCHE_COURS__":
+        from agent.recherche_cours import repond
+        return {"steps": [{"kind": "action", "tool": "cours",
+                           "label": "Recherche dans tes cours"}],
+                "answer": repond((args or {}).get("question", "")), "ok": True}
     if action == "__COURS_NOTION__":
         from agent.cours_vers import execute
         return {"steps": [{"kind": "action", "tool": "notion",
@@ -5742,6 +5778,19 @@ async def cours_detail(id: str = "", key: str = ""):
     except Exception:
         raise HTTPException(status_code=404, detail="Session inconnue.")
     return {k: v for k, v in s.items() if k not in ("en_attente", "condenses")}
+
+
+@router.get("/sentinelle")
+async def sentinelle_ep(key: str = ""):
+    """Les pannes qui le gêneraient — constatées en ESSAYANT, jamais supposées.
+
+    ⚠️ Elle ne répare rien toute seule. Un programme qui corrige sans qu'on le voie
+    finit par corriger de travers, un jour où personne ne regarde.
+    """
+    _check_key(key)
+    from agent.sentinelle import inspecte, rapport
+    res = await inspecte()
+    return {**res, "message": rapport(res)}
 
 
 @router.get("/accueil")
