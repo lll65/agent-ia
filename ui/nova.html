@@ -2580,7 +2580,19 @@ function sendAttachment(question){
   const file=ATTACH, name=file.name, isImg=/^image\//.test(file.type);
   clearAttach();
   document.body.classList.add("chatting");
-  addRow("me", (question?fmt(question)+"<br>":"")+'<span style="opacity:.85">📎 '+esc(name)+'</span>');
+  /* ⚠️ « pourquoi l'image apparaît en écriture et pas en visuel ? » — parce qu'on
+     n'affichait que son NOM. Il vient de joindre une capture pour dire « code une
+     application comme sur l'image » : ne pas la voir dans la conversation, c'est ne pas
+     savoir laquelle il a envoyée, ni si c'est la bonne. L'URL objet ne vit que le temps
+     de l'onglet — l'historique, lui, garde la trace écrite. */
+  let apercuImg = "";
+  if(isImg){
+    try{ apercuImg = '<span class="imgw"><img src="' + URL.createObjectURL(file)
+                   + '" alt="' + esc(name) + '" loading="lazy"></span>'; }
+    catch(e){ apercuImg = ""; }
+  }
+  addRow("me", (question?fmt(question)+"<br>":"") + apercuImg
+             + '<span style="opacity:.85">📎 '+esc(name)+'</span>');
   histPush("me",(question||"")+" [fichier: "+name+"]"); sndSend();
   const bubble=addRow("ai", thinkHTML(isImg?"J'analyse ton image…":"Je lis ton document…","📎"));
   BULLE=bubble; RECU=false;
@@ -2594,9 +2606,22 @@ function sendAttachment(question){
     if(!thinking) return;                 // ⏹ pressé pendant l'analyse
     RECU=true; reveleBulle();
     const ans=(d&&d.answer)||"❌ Analyse impossible.";
-    typewrite(bubble,ans); histPush("ai",ans,trace);
+    // ⚠️ C'ÉTAIT « histPush("ai", ans, trace) » — et `trace` n'existe pas dans cette
+    // fonction. Elle n'est définie que dans le flux SSE. Le ReferenceError partait donc
+    // dans le .catch() ci-dessous, qui remplaçait la réponse DÉJÀ AFFICHÉE par
+    // « ⚠️ Envoi impossible : ReferenceError: trace is not defined ».
+    // L'analyse avait réussi, le serveur avait répondu, et c'est la ligne chargée de
+    // l'ENREGISTRER qui la faisait disparaître. Le pire endroit possible pour un bug.
+    typewrite(bubble,ans); histPush("ai",ans);
     if(TTS&&!voiceMode) speak(ans);
   }).catch(e=>{ if(e && e.name==="AbortError") return;   // ⏹ : déjà dit à l'écran
+    /* ⚠️ NE JAMAIS ÉCRASER UNE RÉPONSE DÉJÀ REÇUE. Ce catch attrape aussi les erreurs
+       survenues APRÈS l'arrivée de la réponse — c'est ainsi qu'un bug d'enregistrement a
+       effacé une analyse d'image réussie. Si le texte est là, il reste : on ajoute
+       l'incident en dessous. */
+    if(RECU){ bubble.innerHTML += '<div class="mdl">⚠️ Réponse reçue, mais son '
+        + 'enregistrement a échoué : ' + esc(String(e).slice(0,90))
+        + ' — elle ne sera pas dans ton historique.</div>'; return; }
     bubble.innerHTML="⚠️ Envoi impossible : "+esc(String(e).slice(0,120)); })
    .finally(()=>{ ABORT=null; if(!thinking) return;
      thinking=false; document.body.classList.remove("thinking");

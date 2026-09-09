@@ -6198,7 +6198,13 @@ def test_raisonnement_suit_et_nova_n_invente_pas_de_cause():
           "function histPush(role,text,trace)" in ui, True)
     check("…et le rejoue en rouvrant la conversation",
           "attachReason(b, m.trace)" in ui, True)
-    check("…y compris pour l'agent complet", 'histPush("ai",ans,trace)' in ui, True)
+    # ⚠️ CE TEST VISAIT LA MAUVAISE LIGNE, ET IL FIGEAIT UN BUG. Il exigeait
+    # `histPush("ai", ans, trace)` — c'est-à-dire l'appel de sendAttachment, où `trace`
+    # N'EXISTE PAS. Le ReferenceError qui en résultait effaçait l'analyse d'image déjà
+    # affichée. « L'agent complet », c'est le flux SSE, où la trace est bien construite.
+    check("…y compris pour l'agent complet", 'histPush("ai",answer,trace)' in ui, True)
+    check("…et surtout pas depuis la pièce jointe, où trace n'existe pas",
+          'histPush("ai",ans,trace)' in ui, False)
 
     # --- 2. Nova ne peut plus accuser une app qui vient de marcher ----------
     A._APP_OK.clear()
@@ -12376,6 +12382,133 @@ def test_un_morceau_ne_perd_jamais_son_sujet():
     check_true("la bonne clé est écrite", 'cfg_e["system_prompt"]' in src)
 
 
+def test_deux_societes_ne_se_contredisent_pas():
+    """Son suivi d'actions du 9 septembre, en tête de rapport :
+
+        ⚠️ Deux valeurs qui ne peuvent pas être vraies ensemble.
+          cours : « Cours : 2,38 € » / « Cours : 28,64 € »
+          variation : « +0,25 % » / « -0,42 % »
+        Ne décide rien là-dessus.
+
+    Sauf que 2,38 € est le cours de DBV et 28,64 € celui de 2CRSi. Les DEUX sont justes.
+    Les sections par société étaient bien reconnues — mais le paragraphe « Actualités
+    récentes » cite les deux sociétés, une par puce, et le module comparait leurs cours.
+
+    ⚠️ UN GARDE-FOU QUI CRIE AU LOUP EST PIRE QU'UN GARDE-FOU ABSENT. Il apprend à
+    ignorer le bandeau ; et le jour où la contradiction est vraie — deux cours différents
+    pour la MÊME société, ce qui est arrivé — il ne sera pas lu.
+
+    ⚠️ ET « la dernière info de 2crsi ne date pas de juillet ». Il avait raison, et le
+    bandeau de fraîcheur était trompeur sans être faux : le bloc DBV portait une date (24
+    juillet), le bloc 2CRSi n'en portait AUCUNE. La date de DBV est donc devenue « la
+    nouvelle la plus fraîche », et il a lu que 2CRSi n'avait rien depuis juillet. Une
+    seule phrase pour deux sujets ne peut pas être juste.
+    """
+    import agent.contradiction as K
+    import agent.dates as D
+
+    SON_TEXTE = """DBV Technologies (DBV)
+
+* Cours : 2,38 €
+* Variation du jour : +0,25 % (cotation du 24 juillet 2026 à 17 h 55) (boursier.com)
+
+2CRSI (AL2SI)
+
+* Cours : 28,64 €
+* Variation du jour : -0,42 % (source : investir.lesechos.fr)
+
+Actualités récentes
+
+* DBV Technologies : article (24 juillet 2026) mentionne le cours à 2,38 € (boursier.com).
+* 2CRSI : le tableau d'Investir indique le cours à 28,64 € et la baisse de 0,42 %.
+"""
+    # 1. Plus de fausse contradiction entre deux sociétés.
+    check("aucun désaccord sur son texte réel", K.desaccords(SON_TEXTE), [])
+    check("…et donc aucun bandeau", "ne peuvent pas être vraies" in K.relis(SON_TEXTE), False)
+
+    # 2. ⚠️ MAIS UNE VRAIE CONTRADICTION RESTE ATTRAPÉE. C'est tout l'enjeu : desserrer
+    # un garde-fou sans le désarmer. Deux cours pour la MÊME société, c'est le cas réel
+    # qui a motivé ce module.
+    vrai = """2CRSI (AL2SI)
+
+* Le cours de 2CRSi est de 28,64 € selon Investir.
+* Boursier indique un cours de 26,74 € pour 2CRSi.
+"""
+    check_true("deux cours pour la même société : signalé", K.desaccords(vrai))
+    check_true("…avec son bandeau", "ne peuvent pas être vraies" in K.relis(vrai))
+
+    # 3. Le repérage du sujet d'une ligne.
+    check_true("un sigle est un sujet", "dbv" in K.sujet_de_ligne("DBV Technologies : 2,38 €"))
+    check_true("un code boursier aussi", "2crsi" in K.sujet_de_ligne("2CRSI : 28,64 €"))
+    check("« Cours » n'est pas une société", "cours" in K.sujet_de_ligne("Cours : 28,64 €"), False)
+    # Sans sujet identifiable des deux côtés, on signale : manquer une vraie
+    # contradiction sur un cours coûte plus cher qu'un bandeau de trop.
+    check_true("dans le doute, on signale encore", K._memes_sujets(set(), {"dbv"}))
+    check("deux sujets connus et différents : non", K._memes_sujets({"dbv"}, {"2crsi"}), False)
+
+    # 4. La fraîcheur se dit SUJET PAR SUJET, et « pas daté » ≠ « vieux ».
+    parts = dict((t, d) for t, d, _e in D.fraicheur_par_sujet(SON_TEXTE, aujourdhui=(9, 9, 2026)))
+    check_true("DBV est daté", parts.get("DBV Technologies (DBV)") is not None)
+    check("2CRSi n'a AUCUNE date", parts.get("2CRSI (AL2SI)"), None)
+    bandeau = D.relis(SON_TEXTE, observations=[], aujourdhui=(9, 9, 2026),
+                      demande="actualité du jour de 2crsi et dbv")
+    check_true("le bandeau distingue les deux sujets", "**2CRSI (AL2SI)** : aucune date" in bandeau)
+    check_true("…et dit qu'il ne PEUT pas conclure", "je ne peux donc PAS dire" in bandeau)
+    check_true("…en parlant de ce qu'il a DATÉ, pas de ce qui existe",
+               "la plus fraîche que j'aie DATÉE" in bandeau)
+
+
+def test_l_analyse_d_image_s_effacait_elle_meme():
+    """« ⚠️ Envoi impossible : ReferenceError: trace is not defined »
+
+    Il joint une capture et écrit « code une application comme sur l'image ». Le serveur
+    analyse, répond, la réponse s'affiche… puis disparaît, remplacée par cette erreur.
+
+    ⚠️ LE PIRE ENDROIT POSSIBLE POUR UN BUG. `histPush("ai", ans, trace)` — mais `trace`
+    n'existe pas dans sendAttachment : elle n'est définie que dans le flux SSE. Le
+    ReferenceError partait donc dans le .catch(), qui écrasait la réponse DÉJÀ AFFICHÉE.
+    L'analyse avait réussi ; c'est la ligne chargée de l'ENREGISTRER qui la faisait
+    disparaître.
+
+    Deux corrections, parce qu'il y a deux fautes : la variable inexistante, et un catch
+    qui se croit autorisé à effacer un travail abouti. La seconde est la plus grave — elle
+    aurait effacé n'importe quelle autre erreur tardive de la même façon.
+
+    ⚠️ ET « pourquoi l'image apparaît en écriture et pas en visuel ? » — parce qu'on
+    n'affichait que son NOM de fichier. Sur une demande qui dit « comme sur l'image », ne
+    pas la voir, c'est ne pas savoir laquelle il a envoyée.
+    """
+    ui = open("ui/nova.html", encoding="utf-8").read()
+    js = re.findall(r"<script[^>]*>(.*?)</script>", ui, flags=re.S)[0]
+    bloc = js.split("function sendAttachment")[1].split("\n/* Glisser")[0]
+
+    # 1. Plus de variable inexistante.
+    check("« trace » n'est plus utilisée là où elle n'existe pas",
+          "histPush(\"ai\",ans,trace)" in bloc, False)
+    check_true("l'enregistrement se fait sans elle", 'histPush("ai",ans);' in bloc)
+    # ⚠️ On lit le CODE, pas la prose : le commentaire qui explique le bug cite
+    # forcément « trace ». Un test qui interroge sa propre documentation ne vérifie rien
+    # — cinquième fois que je m'y reprends, d'où la fonction partagée.
+    code = _code_js_seul(bloc)
+    check("« trace » n'est plus lue nulle part dans ce bloc",
+          re.search(r"(?<![\w.$])trace(?![\w$])", code) is not None, False)
+
+    # 2. ⚠️ UN CATCH N'EFFACE PLUS UN TRAVAIL ABOUTI. C'est la faute la plus grave des
+    # deux : elle vaudrait pour n'importe quelle erreur survenant APRÈS la réponse.
+    check_true("une réponse déjà reçue est préservée", "if(RECU){" in bloc)
+    check_true("…et l'incident est dit en dessous, pas à la place",
+               "Réponse reçue, mais son" in bloc)
+
+    # 3. L'image se VOIT.
+    check_true("un aperçu est construit pour une image", "URL.createObjectURL(file)" in bloc)
+    check_true("…dans le cadre prévu pour ça", 'class="imgw"' in bloc)
+    check_true("…et seulement pour une image", "if(isImg){" in bloc)
+    # Le nom du fichier reste : l'aperçu s'ajoute, il ne remplace pas.
+    check_true("le nom du fichier est conservé", "📎 '+esc(name)" in bloc)
+    # Un navigateur qui refuse l'URL objet ne doit pas casser l'envoi.
+    check_true("un échec d'aperçu n'empêche pas l'envoi", "catch(e){ apercuImg" in bloc)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -12426,6 +12559,8 @@ if __name__ == "__main__":
                test_aucune_fonction_appelee_dans_le_vide,
                test_six_consignes_ecrites_dans_le_vide,
                test_un_morceau_ne_perd_jamais_son_sujet,
+               test_deux_societes_ne_se_contredisent_pas,
+               test_l_analyse_d_image_s_effacait_elle_meme,
                test_conversations_partagees_entre_appareils,
                test_une_tache_de_fond_ne_meurt_plus_en_silence,
                test_un_accord_ne_declenche_que_ce_qu_il_confirme,
