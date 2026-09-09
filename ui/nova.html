@@ -2640,9 +2640,10 @@ function majBoutonEtapes(){
     : "Une seule passe, comme d'habitude. Clique pour découper les questions à plusieurs sujets.";
 }
 function basculeEtapes(){
-  /* 1 → 2 → 3 → 5 → 1. Quatre crans : assez pour choisir, assez peu pour se régler d'un
-     coup d'œil. Un réglage à dix positions ne se règle jamais. */
-  ETAPES = ETAPES <= 1 ? 2 : (ETAPES < 3 ? 3 : (ETAPES < MAX_ETAPES ? MAX_ETAPES : 1));
+  /* 1 → 2 → 3 → 4 → 5 → 1. « il manque l'étape 4, je peux pas la mettre, ça passe de 3
+     à 5 » : je sautais le 4 pour « garder peu de crans », mais un trou dans une suite de
+     nombres ne se lit pas comme une simplification — ça se lit comme un bug. */
+  ETAPES = ETAPES >= MAX_ETAPES ? 1 : ETAPES + 1;
   try{ localStorage.setItem("nova_etapes", String(ETAPES)); }catch(e){}
   majBoutonEtapes();
   /* ⚠️ On ne dit PAS « ça va marcher » : on rappelle la seule chose qui décide vraiment,

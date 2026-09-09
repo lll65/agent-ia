@@ -11842,7 +11842,18 @@ def test_les_etapes_et_la_fiole_qui_decide():
     check_true("le bouton affiche toujours un chiffre", "b.textContent = String(ETAPES)" in maj)
     check("plus d'icône à la place du nombre", '"🧩"' in maj, False)
     bascule = rendu.split("function basculeEtapes")[1].split("\nfunction ")[0]
-    check_true("quatre crans : 1, 2, 3, 5", "ETAPES <= 1 ? 2 : (ETAPES < 3 ? 3 :" in bascule)
+    # ⚠️ « il manque l'étape 4, je peux pas la mettre, ça passe de 3 à 5 ». Un trou dans
+    # une suite de nombres ne se lit pas comme une simplification — ça se lit comme un bug.
+    check_true("les crans se suivent sans trou", "ETAPES >= MAX_ETAPES ? 1 : ETAPES + 1" in bascule)
+    _e, _suite = 1, []
+    for _ in range(5):
+        _e = 1 if _e >= 5 else _e + 1
+        _suite.append(_e)
+    check("1 → 2 → 3 → 4 → 5 puis retour", _suite, [2, 3, 4, 5, 1])
+    # L'issue du découpage doit être VISIBLE : les messages « route » sont recollés dans
+    # une seule ligne puis tronqués à 130 signes — elle y disparaissait derrière les « … ».
+    _src = inspect.getsource(A._reflexion_par_etapes)
+    check_true("le découpage a sa propre ligne", '"kind": "thought"' in _src)
 
 
 def test_la_fiole_disait_100_pour_cent_parce_qu_elle_oubliait():
@@ -12039,9 +12050,15 @@ def test_le_refus_du_modele_pris_pour_un_sujet():
                E._nettoie_sujets("A quel prix revendre l'action 2crsi", 5, Q))
 
     # 3. Le refus fait retomber sur le repli, pas sur une étape bidon.
+    # ⚠️ Le repli NE REND PLUS la question en bloc : il sait maintenant couper là où une
+    # nouvelle demande s'ouvre (« et quand », « à quel prix », « dans combien de temps »).
+    # Sa question en contient quatre — les rendre en un seul morceau était précisément ce
+    # qui réduisait ses cinq étapes à une passe.
     sujets = E.decoupe(Q, 5, lambda sy, u: "I'm sorry, but I can't help with that.")
-    check("le repli rend la question elle-même", sujets, [Q])
+    check_true("le repli découpe vraiment sa question", len(sujets) >= 2)
     check("…et surtout pas le refus", "sorry" in " ".join(sujets).lower(), False)
+    check_true("…en ne gardant que ses mots à lui",
+               all(m in Q for s2 in sujets for m in s2.split()[:3]))
 
     # 4. Le refus ne part pas non plus comme REQUÊTE WEB — c'est ce qui a produit « safe ».
     check("un refus n'est pas une requête",
@@ -12070,7 +12087,8 @@ def test_le_refus_du_modele_pris_pour_un_sujet():
 
     # 6. On ne met plus en scène des étapes qui n'existent pas.
     src = inspect.getsource(A._reflexion_par_etapes)
-    check_true("un découpage raté est annoncé", "je n'ai pas réussi à découper" in src)
+    check_true("un découpage raté est annoncé",
+               "n'ai pas réussi à découper" in src)
     check_true("…et la question est traitée d'un bloc", "if len(sujets) <= 1:" in src)
 
 
