@@ -142,6 +142,43 @@ def trop_vieux(texte: str, demande: str, aujourdhui=None, jours: int = _JOURS_FR
     return (plus_recente, ecart) if ecart > jours else None
 
 
+def fraicheur_par_sujet(texte: str, aujourdhui=None) -> list:
+    """[(sujet, date la plus fraîche ou None, écart en jours)] — sujet par sujet.
+
+    ⚠️ « la dernière info de 2crsi ne date pas de juillet ». Il avait raison, et le
+    bandeau était trompeur sans être faux. Son suivi couvrait DEUX sociétés : le bloc DBV
+    portait une date (24 juillet), le bloc 2CRSi n'en portait AUCUNE — sa source
+    l'affichait comme courant. La date de DBV est donc devenue « la nouvelle la plus
+    fraîche que j'aie trouvée », et il a lu que 2CRSi n'avait rien depuis juillet.
+
+    Une seule phrase pour deux sujets ne peut pas être juste. On date donc chaque bloc
+    séparément, et surtout on distingue « ce bloc est vieux » de « je n'ai pas pu dater ce
+    bloc » — ce ne sont pas les mêmes informations, et la seconde ne dit RIEN sur la
+    fraîcheur réelle.
+    """
+    from datetime import date
+    from agent.contradiction import _sections
+    auj = date(*reversed(aujourdhui)) if aujourdhui else date.today()
+    out = []
+    for titre, corps in _sections(texte or ""):
+        if not titre or not (corps or "").strip():
+            continue
+        passees = []
+        for j, mo, a in dates_citees(corps):
+            try:
+                d = date(a, mo, j)
+            except ValueError:
+                continue
+            if d <= auj:
+                passees.append(d)
+        if passees:
+            recente = max(passees)
+            out.append((titre, recente, (auj - recente).days))
+        else:
+            out.append((titre, None, None))
+    return out
+
+
 def relis(texte: str, observations=None, aujourdhui=None, demande: str = "") -> str:
     """Signale les dates que rien n'appuie. N'efface rien : il doit pouvoir juger."""
     if not texte:
@@ -152,8 +189,27 @@ def relis(texte: str, observations=None, aujourdhui=None, demande: str = "") -> 
     vieux = trop_vieux(texte, demande, aujourdhui)
     if vieux:
         d, ecart = vieux
-        texte = (f"> ⚠️ **Rien de récent : la nouvelle la plus fraîche que j'aie trouvée "
-                 f"date du {_lisible((d.day, d.month, d.year))}, il y a {ecart} jours.**\n>\n"
+        # ⚠️ UNE SEULE PHRASE POUR PLUSIEURS SUJETS NE PEUT PAS ÊTRE JUSTE. Quand le
+        # texte couvre plusieurs sociétés, on dit ce qu'on a pu dater POUR CHACUNE — et
+        # on distingue « ce bloc est vieux » de « je n'ai pas pu dater ce bloc ».
+        parts = [p for p in fraicheur_par_sujet(texte, aujourdhui)
+                 if p[0] and not p[0].lower().startswith(("actualité", "en clair",
+                                                          "à vérifier", "sources"))]
+        detail = ""
+        if len(parts) >= 2:
+            lignes = []
+            for titre, recente, ec in parts:
+                if recente is None:
+                    lignes.append(f"> - **{titre}** : aucune date affichée — je ne peux "
+                                  "donc PAS dire si c'est récent ou non.")
+                else:
+                    lignes.append(f"> - **{titre}** : le plus frais que j'aie daté remonte "
+                                  f"au {_lisible((recente.day, recente.month, recente.year))} "
+                                  f"({ec} jours).")
+            detail = "\n>\n" + "\n".join(lignes)
+        texte = (f"> ⚠️ **Rien de récent : la nouvelle la plus fraîche que j'aie DATÉE "
+                 f"remonte au {_lisible((d.day, d.month, d.year))}, il y a {ecart} jours.**"
+                 + detail + "\n>\n"
                  "> Tu m'as demandé aujourd'hui ; je n'ai rien trouvé d'aujourd'hui. Ce "
                  "qui suit est exact, mais ce n'est pas l'actualité du jour — et « je "
                  "n'ai rien trouvé de récent » n'est pas la même chose que « il ne s'est "

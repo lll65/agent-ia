@@ -62,6 +62,50 @@ def _sections(texte: str):
     return out
 
 
+# ⚠️ DE QUELLE SOCIÉTÉ PARLE CETTE LIGNE ? C'est la question qui manquait, et son écran
+# l'a montré crûment. Son suivi d'actions affichait :
+#
+#     ⚠️ Deux valeurs qui ne peuvent pas être vraies ensemble.
+#       cours : « Cours : 2,38 € » / « Cours : 28,64 € »
+#     Ne décide rien là-dessus.
+#
+# Sauf que 2,38 € est le cours de DBV et 28,64 € celui de 2CRSi. Les deux sont JUSTES.
+# Les sections par société étaient bien reconnues — mais le paragraphe « Actualités
+# récentes » cite les deux sociétés, une par puce, et le module comparait leurs cours.
+#
+# Un garde-fou qui crie au loup est pire qu'un garde-fou absent : il apprend à ignorer
+# le bandeau, et le jour où la contradiction est vraie, elle ne sera pas lue.
+_SIGLE = re.compile(r"\b[A-Z]{2,6}\d*\b")
+_TICKER = re.compile(r"\b(?:\d{1,2}[A-Za-z]{2,6}|[A-Za-z]{2,6}\d{1,3}[A-Za-z]*)\b")
+_PROPRE = re.compile(r"\b[A-ZÀ-Ý][\wÀ-ÿ'’-]{2,}\b")
+# Les majuscules qui ne désignent aucune société : début de puce, mots de liaison.
+_PAS_UN_NOM = {"Cours", "Variation", "Actualité", "Actualités", "Le", "La", "Les", "Un",
+               "Une", "Des", "Selon", "Source", "Sources", "Prix", "Objectif", "Titre",
+               "En", "Au", "Aux", "Ce", "Cette", "Il", "Elle", "Je", "Tu", "Nous", "Vous",
+               "Article", "Analyse", "Avis", "Perspectives", "Volatilité", "Résultats"}
+
+
+def sujet_de_ligne(ligne: str) -> set:
+    """Les noms de sociétés cités dans cette ligne — sigles, codes, noms propres."""
+    t = str(ligne or "")
+    noms = set(_SIGLE.findall(t)) | set(_TICKER.findall(t))
+    noms |= {m for m in _PROPRE.findall(t) if m not in _PAS_UN_NOM}
+    return {n.lower().strip(".,;:()") for n in noms if len(n) >= 2}
+
+
+def _memes_sujets(a: set, b: set) -> bool:
+    """Ces deux valeurs peuvent-elles porter sur la MÊME chose ?
+
+    Si les deux lignes nomment des sociétés et qu'elles n'ont aucune en commun, elles
+    parlent d'autre chose : il n'y a pas de contradiction à signaler. Si l'une au moins
+    ne nomme personne, on ne peut pas trancher — et dans le doute on signale, parce que
+    manquer une vraie contradiction sur un cours coûte plus cher qu'un bandeau de trop.
+    """
+    if not a or not b:
+        return True
+    return bool(a & b)
+
+
 def desaccords(texte: str) -> list:
     """[(section, grandeur, [valeurs])] — les grandeurs annoncées deux fois, autrement."""
     out = []
@@ -72,15 +116,27 @@ def desaccords(texte: str) -> list:
                 v, unite = _valeur(m.group(1)), m.group(2)
                 if v is None:
                     continue
-                vus.append((v, unite, m.group(0).strip()))
+                # La LIGNE entière, pas seulement l'extrait : c'est elle qui dit de
+                # quelle société il s'agit.
+                debut = corps.rfind("\n", 0, m.start()) + 1
+                fin = corps.find("\n", m.end())
+                ligne = corps[debut:fin if fin > 0 else len(corps)]
+                vus.append((v, unite, m.group(0).strip(), sujet_de_ligne(ligne)))
             # ⚠️ On compare des valeurs, pas des écritures : « 28,60 € » et « 28.6 EUR »
             # sont la même chose, et une différence d'arrondi n'est pas un désaccord.
             distinctes = []
-            for v, u, brut in vus:
-                if not any(abs(v - w) <= max(abs(v) * 0.005, 0.01) for w, _u, _b in distinctes):
-                    distinctes.append((v, u, brut))
-            if len(distinctes) > 1:
-                out.append((titre, nom, [b for _v, _u, b in distinctes]))
+            for v, u, brut, suj in vus:
+                proche = any(abs(v - w) <= max(abs(v) * 0.005, 0.01)
+                             and _memes_sujets(suj, s2) for w, _u, _b, s2 in distinctes)
+                if not proche:
+                    distinctes.append((v, u, brut, suj))
+            # Et on ne retient que les valeurs qui portent VRAIMENT sur la même chose.
+            for i, (v, u, brut, suj) in enumerate(distinctes):
+                concurrentes = [b2 for w, _u2, b2, s2 in distinctes[i + 1:]
+                                if _memes_sujets(suj, s2)]
+                if concurrentes:
+                    out.append((titre, nom, [brut] + concurrentes))
+                    break
     return out
 
 
