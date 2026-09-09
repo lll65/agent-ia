@@ -265,6 +265,70 @@ def _decoupe_sans_modele(question: str, n: int) -> list:
     return fusionnes[:n] if len(fusionnes) > 1 else [q]
 
 
+# ── Un sujet ne doit jamais perdre DE QUOI on parle ──────────────────────────
+# ⚠️ VU EN VRAI, ET C'EST LE MÊME DÉFAUT QUE LES COFFRES-FORTS, SOUS UNE AUTRE FORME.
+# Sa question « dis moi si il faut acheter 2crsi et quand et revendre à quel prix dans
+# combien de temps » a été correctement coupée en deux. Mais le second morceau — « quand
+# et revendre à quel prix dans combien de temps » — ne contenait plus « 2crsi ». La
+# recherche est donc partie sur « revendre prix optimal délai », et Nova lui a répondu,
+# très sérieusement, qu'on revend une MAISON au bout de cinq ans et une VOITURE au bout
+# de trois. En réponse à une question sur une action.
+#
+# Découper une phrase, c'est facile ; ne pas perdre son sujet en la découpant, c'est tout
+# le travail. Chaque morceau doit pouvoir être lu SEUL — c'est d'ailleurs ce qu'on demande
+# au modèle, et ce que le repli doit garantir lui aussi.
+
+# Les mots trop courants pour identifier un sujet. On ne cherche pas l'exhaustivité :
+# juste à ne pas prendre « acheter » ou « combien » pour le nom d'une entreprise.
+_BANAL = set("""
+acheter achete achat vendre revendre vends vente prix temps combien quand comment
+pourquoi faut faire dire dis moi mon ma mes ton ta tes son sa ses leur nos vos
+quel quelle quels quelles lequel laquelle dans pour avec sans sous entre vers chez
+que qui quoi dont est sont etre ete avoir avait cette cet ces plus moins tres bien
+tout tous toute toutes meme aussi donc mais car alors ainsi cela ceci celui celle
+maintenant aujourd hui demain hier bientot encore deja jamais toujours peut peux
+penses pense avis bonne bonnes bon idee sais savoir voudrais aimerais veux
+""".split())
+
+
+def entites(question: str) -> list:
+    """Les mots qui disent DE QUOI on parle — ceux qu'un morceau ne doit pas perdre.
+
+    On ne fait pas d'analyse grammaticale : on repère ce qui ne peut pas être un mot
+    courant — un code boursier (2crsi, AL2SI), un sigle en majuscules (DBV, UPPA), un nom
+    propre, ou simplement un mot assez rare pour identifier quelque chose.
+    """
+    out = []
+    for mot in re.findall(r"[\wÀ-ÿ0-9]{3,}", str(question or "")):
+        plat = _sansaccent(mot)
+        if plat in _BANAL or plat in _VIDES:
+            continue
+        distinctif = (any(c.isdigit() for c in mot)            # 2crsi, AL2SI, CAC40
+                      or (mot.isupper() and len(mot) <= 6)     # DBV, UPPA, LVMH
+                      or mot[:1].isupper()                     # Valneva, Pau, Toulouse
+                      or len(plat) >= 6)                       # un mot assez rare
+        if distinctif and plat not in [_sansaccent(x) for x in out]:
+            out.append(mot)
+    return out
+
+
+def rattache_le_sujet(sujets: list, question: str) -> list:
+    """Rend chaque morceau lisible SEUL, en lui remettant le sujet s'il l'a perdu."""
+    ents = entites(question)
+    if not ents:
+        return sujets
+    out = []
+    for s in sujets:
+        plat = _sansaccent(s)
+        if any(_sansaccent(e) in plat for e in ents):
+            out.append(s)                       # le sujet y est déjà : on n'alourdit pas
+        else:
+            # On remet les deux mots les plus identifiants, pas toute la question :
+            # une étape doit rester une question, pas un paragraphe.
+            out.append(f"{s.rstrip(' ?.')} — {' '.join(ents[:2])}")
+    return out
+
+
 def decoupe(question: str, n: int, appel_modele) -> list:
     """Les sujets de la question, au plus `n`. `appel_modele(system, user) -> str`."""
     if n <= 1:
@@ -289,8 +353,13 @@ def decoupe(question: str, n: int, appel_modele) -> list:
     if len(sujets) <= 1 and len(sans_modele) > 1:
         logger.info(f"[étapes] le modèle n'a vu qu'un sujet, sa phrase en contient "
                     f"{len(sans_modele)} → on suit la phrase")
-        return sans_modele
-    return sujets or sans_modele or [str(question or "").strip()]
+        sujets = sans_modele
+    else:
+        sujets = sujets or sans_modele or [str(question or "").strip()]
+    # ⚠️ DERNIER PASSAGE, ET IL S'APPLIQUE AUX DEUX CHEMINS. Le modèle aussi rend parfois
+    # un morceau qui a perdu son sujet — le garde-fou ne peut pas ne couvrir que le repli,
+    # sinon c'est la correction asymétrique habituelle.
+    return rattache_le_sujet(sujets, question)
 
 
 # ── Rassembler ───────────────────────────────────────────────────────────────
