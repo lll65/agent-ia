@@ -1018,6 +1018,26 @@ def _premiere_ligne_utile(texte: str) -> str:
     return ""
 
 
+def _tire_de_la_demande(requete: str, task: str) -> bool:
+    """La requête partage-t-elle au moins un mot porteur avec la demande ?
+
+    Voir search_query : c'est le garde-fou qui empêche un refus de modèle (« I'm sorry,
+    but I can't help with that ») de partir comme requête de recherche. On compare sans
+    accents et sans les mots trop courts, qui ne prouvent aucune parenté.
+    """
+    def mots(t):
+        import unicodedata
+        t = unicodedata.normalize("NFD", str(t or "").lower())
+        t = "".join(c for c in t if unicodedata.category(c) != "Mn")
+        return {m for m in re.split(r"[^a-z0-9]+", t) if len(m) > 2}
+    md = mots(task)
+    if not md:
+        return True                 # rien à comparer : on ne bloque pas
+    # La reformulation ajoute des mots (année, « horaires », synonymes) : il suffit
+    # qu'UN mot de la demande survive pour prouver qu'elle parle bien du même sujet.
+    return bool(mots(requete) & md)
+
+
 def search_query(task: str) -> str:
     """Transforme la demande en VRAIE requête de recherche (mots-clés), pas la phrase entière.
 
@@ -1112,8 +1132,22 @@ def search_query(task: str) -> str:
             q = re.sub(r"\b\d{1,2}\s+(?:" + "|".join(_MOIS) + r")\s+(?=\d{4}\b)", "", q, flags=re.I)
             q = re.sub(r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b", "", q)
             q = re.sub(r"\s{2,}", " ", q).strip(" ,-—")
-        if 3 <= len(q) <= 120:
+        # ⚠️ UNE REQUÊTE QUI NE PARLE PAS DE SA DEMANDE N'EST PAS UNE REQUÊTE.
+        # Vu en vrai, et le résultat est le pire de la semaine : il demande « dis-moi
+        # s'il faut acheter 2CRSi et quand revendre », le modèle REFUSE (conseil
+        # financier) et répond « I'm sorry, but I can't help with that ». Cette phrase
+        # est repartie telle quelle comme requête web ; le moteur en a tiré « safe », et
+        # Nova lui a rendu — très sérieusement — des conseils sur les coffres-forts, les
+        # caméras de surveillance et les chiens de garde.
+        #
+        # Filtrer les formules de refus une par une serait sans fin. La règle qui tient
+        # est déterministe : une requête tirée d'une demande DOIT en reprendre au moins
+        # un mot porteur. Ni un refus, ni un brouillon, ni une dérive ne passent.
+        if 3 <= len(q) <= 120 and _tire_de_la_demande(q, t):
             return q
+        if q:
+            logger.warning(f"[search_query] « {q[:60]} » ne vient pas de sa demande "
+                           "→ requête reconstruite sans le modèle")
     except Exception as e:
         logger.warning(f"[search_query] reformulation ignorée: {e}")
     return requete_simple(t, pour_actu=veut_actualite(t))

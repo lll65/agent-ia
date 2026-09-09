@@ -11981,6 +11981,83 @@ def test_la_jauge_ignorait_le_prompt():
           "record(total, provider=provider)" in src, False)
 
 
+def test_le_refus_du_modele_pris_pour_un_sujet():
+    """Le pire enchaînement de la semaine, et il est entièrement de mon fait.
+
+        « dis moi si il faut acheter 2crsi et quand et revendre a quel prix »
+        → Étape 1/1 — I'm sorry, but I can't help with that.
+        → Recherche sur le web : « User Safety: safe »
+        → « privilégie les modèles à verrous à verrouillage vivant ; choisis des coffres
+           avec charnières dissimulées ; envisage d'avoir un chien de garde »
+
+    Des conseils sur les coffres-forts et les chiens de garde, en réponse à une question
+    de bourse. La chaîne : le modèle REFUSE de découper (conseil financier), son refus
+    est pris pour un sujet, la reformulation de requête en tire « safe », et le moteur
+    répond très correctement sur la sécurité domestique.
+
+    ⚠️ ET ON LUI AVAIT PROMIS 5 ÉTAPES pour en dérouler une seule — « javais mis les 5
+    etapes pourtant ». Une mise en scène d'étapes qui n'existent pas.
+
+    ⚠️ LE GARDE-FOU EST DÉTERMINISTE, PAS UNE LISTE DE FORMULES. Filtrer les refus un
+    par un serait sans fin : il y en a autant que de modèles et de langues. La règle qui
+    tient : un sujet — comme une requête — extrait d'une demande DOIT en reprendre au
+    moins un mot porteur. Ni un refus, ni une hallucination, ni une dérive ne passent.
+    """
+    import inspect
+    import agent.etapes as E
+    from agent.core import _tire_de_la_demande, search_query
+
+    Q = "dis moi si il faut acheter 2crsi et quand et revendre a quel prix dans combien de temps"
+
+    # 1. Un refus n'est jamais un sujet — en anglais comme en français.
+    for refus in ("I'm sorry, but I can't help with that.",
+                  "I am sorry, I cannot help with that request.",
+                  "Je ne peux pas t'aider sur ce sujet.",
+                  "Désolée, je ne suis pas conseiller financier."):
+        check(f"« {refus[:32]} » écarté", E._nettoie_sujets(refus, 5, Q), [])
+
+    # 2. Et un « sujet » hors-sujet non plus, même sans formule de refus.
+    check("un sujet étranger à la question est écarté",
+          E._nettoie_sujets("Les meilleurs coffres-forts pour la maison", 5, Q), [])
+    check_true("un vrai sujet passe",
+               E._nettoie_sujets("A quel prix revendre l'action 2crsi", 5, Q))
+
+    # 3. Le refus fait retomber sur le repli, pas sur une étape bidon.
+    sujets = E.decoupe(Q, 5, lambda sy, u: "I'm sorry, but I can't help with that.")
+    check("le repli rend la question elle-même", sujets, [Q])
+    check("…et surtout pas le refus", "sorry" in " ".join(sujets).lower(), False)
+
+    # 4. Le refus ne part pas non plus comme REQUÊTE WEB — c'est ce qui a produit « safe ».
+    check("un refus n'est pas une requête",
+          _tire_de_la_demande("I'm sorry, but I can't help with that", Q), False)
+    check("« User Safety safe » non plus", _tire_de_la_demande("User Safety safe", Q), False)
+    check_true("une vraie requête garde un mot de la demande",
+               _tire_de_la_demande("2CRSi action cours objectif 2026", Q))
+    # ⚠️ Et surtout : PAS de faux positif sur les reformulations légitimes, qui ajoutent
+    # des mots (année, jour, synonymes) tout en gardant le sujet.
+    for req, dem in (("horaires leclerc pau dimanche", "le leclerc de pau est ouvert aujourd'hui"),
+                     ("rentree UPPA Pau licence economie 2026",
+                      "quand se fait la rentree a l'uppa en eco gestion"),
+                     ("meteo Pau demain", "quelle meteo demain a Pau")):
+        check_true(f"« {req[:30]} » reste valide", _tire_de_la_demande(req, dem))
+
+    # 5. Quand le modèle refuse tout, la requête est reconstruite AVEC SES MOTS.
+    import llm.client as L
+    vrai = L.chat
+    try:
+        L.chat = lambda msgs, *a, **k: "I'm sorry, but I can't help with that."
+        q = search_query(Q)
+        check("aucun refus ne devient une requête", "sorry" in q.lower(), False)
+        check_true("…et la requête parle bien de 2crsi", "2crsi" in q.lower())
+    finally:
+        L.chat = vrai
+
+    # 6. On ne met plus en scène des étapes qui n'existent pas.
+    src = inspect.getsource(A._reflexion_par_etapes)
+    check_true("un découpage raté est annoncé", "je n'ai pas réussi à découper" in src)
+    check_true("…et la question est traitée d'un bloc", "if len(sujets) <= 1:" in src)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -12026,6 +12103,7 @@ if __name__ == "__main__":
                test_la_fiole_disait_100_pour_cent_parce_qu_elle_oubliait,
                test_l_heure_des_cours_et_la_troisieme_sphere,
                test_la_jauge_ignorait_le_prompt,
+               test_le_refus_du_modele_pris_pour_un_sujet,
                test_conversations_partagees_entre_appareils,
                test_une_tache_de_fond_ne_meurt_plus_en_silence,
                test_un_accord_ne_declenche_que_ce_qu_il_confirme,

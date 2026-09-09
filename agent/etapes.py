@@ -127,6 +127,10 @@ def combien(demande: int = 0, b: dict = None) -> dict:
 
 # ── Découper la question ─────────────────────────────────────────────────────
 _DECOUPE_SYSTEM = (
+    "Tu es un outil de DÉCOUPAGE DE TEXTE. Tu ne réponds à rien, tu ne donnes aucun avis "
+    "et aucun conseil : tu te contentes de séparer une demande en sujets.\n"
+    "⚠️ Quel que soit le thème (argent, santé, droit…), ta tâche reste purement "
+    "typographique — découper — et n'a donc aucune raison d'être refusée.\n"
     "Tu découpes une demande en sujets INDÉPENDANTS, traitables séparément.\n"
     "Règles strictes :\n"
     "- une ligne par sujet, rien d'autre : pas de numéro, pas de tiret, pas de titre ;\n"
@@ -140,13 +144,64 @@ _DECOUPE_SYSTEM = (
 _PAS_UN_SUJET = re.compile(r"^\s*(<|thought\s*:|action\s*:|params\s*:|final\s*:|```|"
                            r"voici|sujets?\s*:|\d+\s*[).]\s*$)", re.I)
 
+# ⚠️ UN REFUS DU MODÈLE N'EST PAS UN SUJET. Vu en vrai, et le résultat est le pire de
+# toute la semaine. Il demande « dis-moi s'il faut acheter 2CRSi et quand revendre » ;
+# le modèle refuse de découper (conseil financier) et répond « I'm sorry, but I can't
+# help with that ». Cette phrase est devenue le sujet de l'étape 1, la requête web en a
+# tiré le mot « safe », et Nova lui a rendu — très sérieusement — des conseils sur les
+# coffres-forts, les caméras et les chiens de garde. En réponse à une question de bourse.
+_REFUS = re.compile(
+    r"\b(i'?m sorry|i am sorry|i can'?t|i cannot|i'?m unable|as an ai|"
+    r"je (?:ne )?(?:peux|puis) pas|je suis (?:désolée?|desolee?)|"
+    r"désolée? (?:mais )?je|desolee? (?:mais )?je|"
+    r"je ne (?:suis|fournis) pas (?:un |une )?(?:conseiller|conseil)|"
+    r"unable to (?:help|assist)|can'?t (?:help|assist) with)\b", re.I)
 
-def _nettoie_sujets(brut: str, n: int) -> list:
+
+def _sansaccent(t: str) -> str:
+    import unicodedata
+    t = unicodedata.normalize("NFD", str(t or "").lower())
+    return "".join(c for c in t if unicodedata.category(c) != "Mn")
+
+
+_VIDES = set("""
+les des une aux pour dans sur par avec sans sous entre vers chez que qui quoi dont
+est sont etre ete avoir avait cette cet ces son sa ses leur mon ma mes ton ta tes
+plus moins tres bien tout tous toute meme aussi donc mais car quand comme alors
+dis moi dire faut il elle nous vous combien temps prix quel quelle
+""".split())
+
+
+def _mots(t: str) -> set:
+    return {m for m in re.split(r"[^a-z0-9]+", _sansaccent(t))
+            if len(m) > 2 and m not in _VIDES}
+
+
+def _parle_de_la_meme_chose(sujet: str, question: str) -> bool:
+    """Ce « sujet » vient-il VRAIMENT de la question posée ?
+
+    ⚠️ LE GARDE-FOU QUI MANQUAIT, ET IL EST DÉTERMINISTE. Filtrer les formules de refus
+    une par une serait sans fin — il en existe autant que de modèles et de langues. La
+    règle qui tient : un sujet extrait d'une question DOIT en reprendre au moins un mot
+    porteur. « I'm sorry, but I can't help with that » n'en partage aucun avec
+    « acheter 2crsi et revendre à quel prix ». Ni un refus, ni une hallucination, ni une
+    dérive hors-sujet ne peuvent passer cette porte.
+    """
+    mq = _mots(question)
+    if not mq:
+        return True                 # rien à comparer : on ne bloque pas
+    return bool(_mots(sujet) & mq)
+
+
+def _nettoie_sujets(brut: str, n: int, question: str = "") -> list:
     out = []
     for ligne in str(brut or "").splitlines():
         t = ligne.strip()
         t = re.sub(r"^\s*(?:\d+[).\-]|[-*•])\s*", "", t).strip()
-        if len(t) < 8 or _PAS_UN_SUJET.match(t):
+        if len(t) < 8 or _PAS_UN_SUJET.match(t) or _REFUS.search(t):
+            continue
+        if question and not _parle_de_la_meme_chose(t, question):
+            logger.info(f"[étapes] « {t[:50]} » ne parle pas de sa question → écarté")
             continue
         if t not in out:
             out.append(t)
@@ -175,7 +230,7 @@ def decoupe(question: str, n: int, appel_modele) -> list:
         return [str(question or "").strip()]
     try:
         brut = appel_modele(_DECOUPE_SYSTEM.format(n=n), str(question or "")[:2000])
-        sujets = _nettoie_sujets(brut, n)
+        sujets = _nettoie_sujets(brut, n, question)
         if sujets:
             return sujets
         logger.info("[étapes] découpage vide → repli sans modèle")
