@@ -4780,10 +4780,20 @@ async def _reflexion_par_etapes(message: str, cfg: dict, demande: int, vocal: bo
         yield sse({"type": "step", "kind": "action", "tool": "etape",
                    "agent": "veille", "q": f"Étape {i}/{len(sujets)} — {sujet[:70]}"})
         cfg_e = dict(cfg)
+        # ⚠️ LA DEMANDE D'ORIGINE PART AVEC CHAQUE ÉTAPE. Un morceau lu seul perd son
+        # contexte : « quand et revendre à quel prix » a fait chercher la revente d'une
+        # MAISON et d'une VOITURE. Le sujet est désormais rattaché au texte de l'étape
+        # (agent/etapes.rattache_le_sujet), et la question entière est rappelée ici —
+        # deux garde-fous, parce que celui du texte guide la RECHERCHE et celui-ci guide
+        # la RÉDACTION.
         cfg_e["system_prompt"] = (cfg.get("system_prompt", "") +
-                           f"\n\nTu traites UN SEUL sujet, extrait d'une demande plus "
-                           f"large : « {sujet} ». Réponds à CE sujet uniquement, avec des "
-                           "faits vérifiés et leurs sources. Ne réponds pas aux autres.")
+                           f"\n\nTu traites UN SEUL aspect d'une demande plus large.\n"
+                           f"Demande entière de l'utilisateur : « {message} »\n"
+                           f"L'aspect dont TU t'occupes : « {sujet} »\n"
+                           "Réponds à CET aspect uniquement, avec des faits vérifiés et "
+                           "leurs sources — mais sans jamais perdre de vue de QUOI parle "
+                           "la demande entière. Si tu ne trouves rien sur ce sujet précis, "
+                           "dis-le : ne réponds SURTOUT pas sur un sujet voisin.")
         texte = ""
         try:
             # ⚠️ CHAQUE SOUS-AGENT ÉCRIT DANS SON PROPRE BROUILLON, PAS DANS SA

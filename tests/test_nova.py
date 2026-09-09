@@ -12318,6 +12318,64 @@ def test_six_consignes_ecrites_dans_le_vide():
                'agent_config.get("system_prompt"' in inspect.getsource(C))
 
 
+def test_un_morceau_ne_perd_jamais_son_sujet():
+    """Les étapes tournaient enfin — et la deuxième a répondu à côté.
+
+        Étape 2/2 — quand et revendre a quel prix dans combien de temps
+        🔍 Recherche : « revendre prix optimal délai »
+        → « les experts conseillent d'attendre environ cinq ans avant de revendre sa
+           MAISON », « la décote d'une VOITURE est la plus forte les 3-4 premières années »
+
+    En réponse à une question sur une ACTION. C'est le défaut des coffres-forts sous une
+    autre forme : sa question a été correctement coupée en deux, mais le second morceau
+    ne contenait plus « 2crsi ». Un fragment décontextualisé produit une recherche
+    hors-sujet, et la synthèse l'habille en repère pertinent.
+
+    ⚠️ Découper une phrase est facile ; ne pas perdre son sujet en la découpant est tout
+    le travail. Chaque morceau doit pouvoir se lire SEUL — c'est ce qu'on demande au
+    modèle, et ce que le repli doit garantir aussi.
+    """
+    import inspect
+    import agent.etapes as E
+
+    Q = ("dis moi si il faut acheter 2crsi et quand et revendre a quel prix "
+         "dans combien de temps")
+    check("« 2crsi » est reconnu comme le sujet", E.entites(Q), ["2crsi"])
+    # Et les mots courants n'en sont PAS : sinon on rattacherait « acheter » à tout.
+    for banal in ("acheter", "revendre", "prix", "temps", "combien", "quand"):
+        check(f"« {banal} » n'est pas un sujet", banal in E.entites(Q), False)
+
+    # 1. Le morceau qui a perdu le sujet le récupère.
+    sujets = E.decoupe(Q, 5, lambda sy, u: "Faut-il acheter 2CRSi ?")
+    check_true("deux étapes au moins", len(sujets) >= 2)
+    for s2 in sujets:
+        check_true(f"« {s2[:40]} » sait de quoi il parle", "2crsi" in s2.lower())
+
+    # 2. ⚠️ ET ÇA VAUT AUSSI POUR LE DÉCOUPAGE DU MODÈLE. Ne couvrir que le repli serait
+    # la correction asymétrique habituelle — le défaut récurrent de ce projet.
+    duM = E.decoupe(Q, 5, lambda sy, u: "Faut-il acheter 2CRSi maintenant\n"
+                                        "A quel prix revendre\nDans combien de temps")
+    for s2 in duM:
+        check_true(f"(modèle) « {s2[:36]} » garde le sujet", "2crsi" in s2.lower())
+
+    # 3. On n'alourdit PAS un morceau qui contient déjà le sujet.
+    deja = E.rattache_le_sujet(["Faut-il acheter 2CRSi maintenant ?"], Q)
+    check("un morceau complet reste intact", deja, ["Faut-il acheter 2CRSi maintenant ?"])
+
+    # 4. Et la demande entière accompagne chaque sous-agent : le texte de l'étape guide
+    #    la RECHERCHE, la question d'origine guide la RÉDACTION.
+    src = inspect.getsource(A._reflexion_par_etapes)
+    check_true("la demande entière part avec l'étape",
+               "Demande entière de l'utilisateur" in src)
+    check_true("…et l'aspect traité est nommé", "L'aspect dont TU t'occupes" in src)
+    check_true("…avec interdiction de répondre à côté",
+               "ne réponds SURTOUT pas sur un sujet voisin" in src)
+    # ⚠️ Cette consigne doit atteindre le modèle : elle passait par cfg["system"], une
+    # clé que personne ne lit.
+    check("plus de cfg_e['system'] mort", 'cfg_e["system"]' in src, False)
+    check_true("la bonne clé est écrite", 'cfg_e["system_prompt"]' in src)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -12367,6 +12425,7 @@ if __name__ == "__main__":
                test_le_css_reste_entier_et_l_accueil_avoue_ses_pannes,
                test_aucune_fonction_appelee_dans_le_vide,
                test_six_consignes_ecrites_dans_le_vide,
+               test_un_morceau_ne_perd_jamais_son_sujet,
                test_conversations_partagees_entre_appareils,
                test_une_tache_de_fond_ne_meurt_plus_en_silence,
                test_un_accord_ne_declenche_que_ce_qu_il_confirme,
