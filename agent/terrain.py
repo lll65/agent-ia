@@ -53,8 +53,40 @@ _DUREE = re.compile(
 # … et la forme inversée : « à deux minutes à pied » est déjà prise ; « à pied, 8 min ».
 _DUREE_INV = re.compile(_MOTS_TRAJET + r"[^.\n]{0,12}?\b\d{1,3}\s*(?:min\b|minutes?|h\b|heures?)", re.I)
 
+# ⚠️ CE QUI MANQUAIT, ET QU'IL A VU LE 8 SEPTEMBRE AU SOIR. Il demande quoi faire à Pau
+# pour sa rentrée. Nova répond, SANS lancer une seule recherche :
+#
+#     « tu peux t'inscrire au club de boxe anglaise du Centre Sportif de Pau »
+#     « Le Service des Sports de l'Université propose des séances de fitness et de yoga »
+#
+# Les deux sont inventés. Le relecteur du terrain n'a rien dit : il ne surveillait que
+# les adresses, les distances et les durées. Or un ÉTABLISSEMENT nommé est exactement le
+# même risque — il s'y déplace, il cherche une inscription qui n'existe pas, et il perd
+# son samedi. Un lieu qu'on nomme est une affirmation de terrain, au même titre qu'une
+# rue. (Le vrai service s'appelle le SUAPS, et il n'y a pas de boxe sur le campus de Pau.)
+_ETABLISSEMENTS = (r"(?i:club|salle|gymnase|piscine|stade|centre|complexe|cabinet|clinique|"
+                   r"h[ôo]pital|pharmacie|biblioth[èe]que|m[ée]diath[èe]que|association|"
+                   r"asso|service des sports|suaps|crous|restaurant|resto\s?u|caf[ée]|"
+                   r"magasin|boutique|agence|bureau|maison)")
+# ⚠️ SURTOUT PAS re.I ICI. La MAJUSCULE est tout le critère : « une salle de sport »
+# n'affirme rien, « le Centre Sportif de Pau » si. Avec IGNORECASE, [A-ZÀ-Ý] accepte les
+# minuscules — le motif s'arrêtait alors sur le « b » de « boxe » et ne repérait plus
+# rien. L'article, lui, peut commencer une phrase : on écrit ses deux casses à la main.
+_ART = r"(?:[LlDdAa]es|[Ll]e|[Ll]a|[Aa]u|[Aa]ux|[Dd]u|[Dd]')"
+# « au club de boxe anglaise du Centre Sportif de Pau » : le nom propre est plus loin.
+_LIEU_NOMME = re.compile(
+    _ART + r"\s+(?:" + _ETABLISSEMENTS + r")\b"
+    r"(?:[\s'’-][\wÀ-ÿ'’-]+){0,4}?\s+(?:de|du|d'|des|[àa])\s+(?:l'|la\s+|le\s+|les\s+)?"
+    r"[A-ZÀ-Ý][\wÀ-ÿ'’-]+(?:[- ][A-ZÀ-Ý][\wÀ-ÿ'’-]+){0,2}")
+# … et la forme directe : « le Centre Sportif », « le Stade Nautique », « le Service des
+# Sports de l'Université ».
+_LIEU_PROPRE = re.compile(
+    _ART + r"\s+(?:" + _ETABLISSEMENTS + r")\s+"
+    r"[A-ZÀ-Ý][\wÀ-ÿ'’-]+(?:[- ][A-ZÀ-Ý][\wÀ-ÿ'’-]+){0,3}")
+
 _GENRES = (("adresse", _ADRESSE), ("adresse", _CODE_POSTAL),
-           ("distance", _DISTANCE), ("durée de trajet", _DUREE), ("durée de trajet", _DUREE_INV))
+           ("distance", _DISTANCE), ("durée de trajet", _DUREE), ("durée de trajet", _DUREE_INV),
+           ("établissement", _LIEU_NOMME), ("établissement", _LIEU_PROPRE))
 
 
 def _cle(t: str) -> str:
@@ -73,6 +105,11 @@ def affirmations(texte: str) -> list:
             brut = " ".join(m.group(0).split()).strip(" ,;:.")
             c = _cle(brut)
             if len(c) < 3 or c in vus:
+                continue
+            # ⚠️ Deux motifs attrapent souvent le MÊME lieu, l'un inclus dans l'autre
+            # (« au club de boxe du Centre Sportif » et « du Centre Sportif »). Les
+            # lister deux fois donne un bandeau qui a l'air plus alarmant qu'il ne l'est.
+            if any(c in d or d in c for d in vus):
                 continue
             vus.add(c)
             out.append((brut, genre))

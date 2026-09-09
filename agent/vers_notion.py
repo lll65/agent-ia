@@ -68,6 +68,8 @@ def _bloc_texte(ligne: str) -> dict:
 # caractères. Un cours de deux heures dépasse les deux : on borne, et on DIT ce qui n'a
 # pas été envoyé plutôt que de laisser croire que tout est passé.
 MAX_BLOCS = 95
+# Notion refuse aussi un contenu démesuré d'un seul tenant : on borne le markdown.
+_MAX_MD = 40000
 
 
 def blocs(md: str):
@@ -152,6 +154,15 @@ def pages_candidates(obs: str) -> list:
         v = m.group(0)
         if v not in interdits and v not in trouves:
             trouves.append(v)
+    if trouves:
+        return trouves
+    # ⚠️ Dernier endroit où un identifiant se cache : l'URL de la page. Notion écrit
+    # « https://www.notion.so/Mon-titre-<32 hexa> ». Une création qui ne rend que son
+    # lien nous laissait sans page où écrire la suite — donc sans contenu.
+    for m in re.finditer(r"notion\.so/[^\s)\"']*?([0-9a-f]{32})", txt, re.I):
+        v = m.group(1)
+        if v not in trouves:
+            trouves.append(v)
     return trouves
 
 
@@ -205,6 +216,56 @@ def _parent_refuse(txt: str) -> bool:
     return bool(_REFUS_PARENT.search(str(txt or "")))
 
 
+# ── Où mettre le CONTENU, selon ce que l'action accepte vraiment ──────────────
+# ⚠️ « Nova n'importe que le titre du cours dans Notion. » Exact, et la cause est la
+# même que pour le nom de l'action : on écrivait `children` en dur, avec des blocs
+# Notion bruts. Composio n'expose PAS l'API Notion telle quelle — selon les versions et
+# les actions, le contenu s'appelle `content` (du markdown), `child_blocks`, `blocks` ou
+# `children`. Un champ que l'action ne connaît pas est IGNORÉ EN SILENCE : la page était
+# donc créée, l'appel réussissait, et il ne restait que le titre.
+#
+# On ne devine plus : la liste d'actions porte déjà le schéma d'entrée (`props`). On y
+# lit le champ du contenu et sa FORME, et on s'y conforme.
+_CHAMPS_MD = ("content", "markdown", "markdown_content", "page_content", "text", "body")
+_CHAMPS_BLOCS = ("children", "child_blocks", "blocks", "content_blocks", "children_blocks")
+
+
+def champ_contenu(props) -> tuple:
+    """(nom du champ, "md" ou "blocs") — où placer le cours. ("", "") si nulle part."""
+    noms = [str(p) for p in (props or [])]
+    bas = {n.lower(): n for n in noms}
+    for c in _CHAMPS_MD:
+        if c in bas:
+            return bas[c], "md"
+    for c in _CHAMPS_BLOCS:
+        if c in bas:
+            return bas[c], "blocs"
+    return "", ""
+
+
+def _action_par_nom(actions, nom):
+    for a in (actions or []):
+        if str((a or {}).get("name") or "").upper() == str(nom).upper():
+            return a or {}
+    return {}
+
+
+# Une action qui AJOUTE du contenu à une page existante. Repli quand la création ne sait
+# poser qu'un titre : mieux vaut deux appels qu'une page vide.
+_AJOUTE = (r"^NOTION_ADD_.*CONTENT", r"^NOTION_APPEND", r"^NOTION_ADD_.*BLOCK",
+           r"^NOTION_.*ADD.*CHILD", r"^NOTION_UPDATE_.*BLOCK")
+
+
+def choisit_ajout(actions) -> str:
+    """Le nom de l'action « ajouter du contenu à une page », ou ""."""
+    noms = [str((a or {}).get("name") or "") for a in (actions or [])]
+    for motif in _AJOUTE:
+        for n in noms:
+            if re.search(motif, n, re.I):
+                return n
+    return ""
+
+
 def envoie(titre: str, md: str, lister_actions, appeler) -> str:
     """Crée la page et rend un message en français. Jamais un succès supposé.
 
@@ -234,10 +295,24 @@ def envoie(titre: str, md: str, lister_actions, appeler) -> str:
     # ⚠️ On ESSAIE plusieurs pages plutôt qu'une seule. La recherche Notion rend d'abord
     # ce qu'elle veut, et une page à laquelle l'intégration n'a qu'un accès en lecture
     # refuse la création. Deux essais coûtent une seconde ; un échec lui coûte sa séance.
+    # Où va le CONTENU, d'après le schéma que Composio publie pour CETTE action.
+    creation = _action_par_nom(actions, nom)
+    props = creation.get("props") or []
+    champ, forme = champ_contenu(props)
+    # ⚠️ SCHÉMA INCONNU ≠ PAS DE CONTENU. Si Composio n'a pas publié la liste des champs
+    # (cache d'une ancienne version, réponse incomplète), n'envoyer aucun contenu serait
+    # pire que l'ancien comportement. On envoie alors TOUTES les orthographes connues :
+    # une clé que l'action ignore ne coûte rien, une clé manquante coûte le cours.
+    a_l_aveugle = not props
     essais = candidats[:3] or [""]
     txt, parent = "", ""
     for parent in essais:
-        args = {"title": titre[:100], "children": corps}
+        args = {"title": titre[:100]}
+        if champ:
+            args[champ] = (md[:_MAX_MD] if forme == "md" else corps)
+        elif a_l_aveugle:
+            args["content"] = md[:_MAX_MD]
+            args["children"] = corps
         if parent:
             # On envoie les DEUX orthographes : Composio a changé de nom de champ selon
             # les versions, et une clé en trop est ignorée alors qu'une clé manquante
@@ -273,9 +348,45 @@ def envoie(titre: str, md: str, lister_actions, appeler) -> str:
     if m:
         url = m.group(0)
     fin = f"\n\n[Ouvrir dans Notion]({url})" if url else ""
+
+    # ── Le contenu est-il VRAIMENT parti ? ───────────────────────────────────
+    # ⚠️ « Nova n'importe que le titre du cours dans Notion. » L'appel réussissait, la
+    # page se créait, et le cours n'y était pas : un champ que l'action ne connaît pas
+    # est ignoré sans un mot. Si la création ne sait pas porter de contenu, on l'AJOUTE
+    # en second appel — et si on n'y arrive pas non plus, on le DIT au lieu d'annoncer
+    # un import complet.
+    contenu_ok, note = bool(champ) or a_l_aveugle, ""
+    if not champ and not a_l_aveugle:
+        ajout = choisit_ajout(actions)
+        page = ""
+        for ident in pages_candidates(txt):
+            page = ident
+            break
+        cible = _action_par_nom(actions, ajout)
+        champ2, forme2 = champ_contenu(cible.get("props") or [])
+        if ajout and page and champ2:
+            a2 = {champ2: (md[:_MAX_MD] if forme2 == "md" else corps)}
+            # L'identifiant de la page se nomme différemment selon l'action : on renseigne
+            # les orthographes connues, les clés en trop étant ignorées.
+            for k in ("page_id", "block_id", "parent_id", "parent_block_id", "id"):
+                a2[k] = page
+            t2 = str(appeler(ajout, a2, "notion") or "")
+            contenu_ok = "✅" in t2 or '"successful": true' in t2.lower()
+            if not contenu_ok:
+                note = ("\n\n⚠️ **La page est créée mais elle est VIDE** : je n'ai pas "
+                        "réussi à y écrire le cours.\n\n_Réponse de "
+                        f"{ajout} : {' '.join(t2.split())[:200]}_")
+        else:
+            note = ("\n\n⚠️ **La page est créée mais elle ne contient que le titre.** "
+                    f"L'action **{nom}** de ton compte Composio n'accepte aucun champ de "
+                    "contenu, et aucune action « ajouter du contenu » ne m'est proposée. "
+                    "Le cours complet reste dans Nova — utilise le téléchargement en "
+                    "attendant.")
     # Ce qui n'a pas été envoyé se DIT : une page tronquée qui a l'air complète, c'est
     # le défaut qu'on corrige depuis le début.
     reste = (f"\n\n⚠️ Notion n'accepte que {MAX_BLOCS} blocs par page : "
              f"**{laissees} ligne(s) n'ont pas été envoyées**. Le cours complet reste "
-             "dans Nova, et le téléchargement, lui, est entier.") if laissees else ""
-    return f"📝 **« {titre} »** est dans Notion." + fin + reste
+             "dans Nova, et le téléchargement, lui, est entier.") if laissees and contenu_ok else ""
+    tete = (f"📝 **« {titre} »** est dans Notion." if contenu_ok
+            else f"📝 J'ai créé **« {titre} »** dans Notion.")
+    return tete + fin + note + reste

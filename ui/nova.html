@@ -114,6 +114,11 @@
   .send,.micbtn{ width:54px; border:none; border-radius:16px; cursor:pointer; font-size:19px; color:#fff; transition:.15s; }
   .send{ background:linear-gradient(135deg,var(--neon),var(--neon2)); box-shadow:0 6px 22px rgba(139,109,255,.45); }
   .micbtn{ background:var(--glass); border:1px solid var(--stroke); } .micbtn.rec{ background:var(--pink); animation:pulse .8s infinite; }
+  /* Le cran de réflexion en étapes doit SE VOIR : un réglage invisible est un réglage
+     qu'on croit inactif, et il repose la question en se demandant pourquoi c'est pareil. */
+  .micbtn#etapes.on{ background:linear-gradient(180deg,var(--neon),var(--neon2));
+                     border-color:transparent; font-weight:800; font-size:17px;
+                     box-shadow:0 0 18px rgba(139,109,255,.55); }
   @keyframes pulse{ 50%{ box-shadow:0 0 0 8px rgba(236,72,153,.25) } }
   .send:active{ transform:scale(.92); } .send:disabled{ opacity:.5; }
   /* ═══ BARRE LATÉRALE PERMANENTE (grand écran) ═══
@@ -894,6 +899,15 @@
     <div class="composer">
       <button class="micbtn" id="clip" onclick="pickFile()" title="Joindre une photo ou un document">📎</button>
       <button class="micbtn" id="mic" onclick="toggleMic()" title="Parler">🎤</button>
+      <!-- ⚠️ « on peut mettre dans les paramètres une option sous-agent et dès que je
+           clique sur un bouton elle peut en créer 5 max sur un raisonnement — mais pour
+           ça faut vraiment que la limite dans la fiole soit fiable ». C'est exactement
+           la bonne condition, et elle est appliquée : le bouton demande N étapes, le
+           SERVEUR décide combien il peut réellement en faire d'après l'énergie mesurée,
+           et il le DIT avant de commencer. Un bouton qui promettrait 5 étapes pour en
+           faire 1 en silence serait pire que pas de bouton. -->
+      <button class="micbtn" id="etapes" onclick="basculeEtapes()"
+              title="Réfléchir en plusieurs étapes (jusqu'à 5)">🧩</button>
       <textarea id="in" rows="1" placeholder="Parle à Nova…" onkeydown="keydown(event)" oninput="grow(this)"></textarea>
       <!-- ⚠️ UN SEUL bouton, qui change de rôle. Pendant qu'elle réfléchit, « envoyer »
            était grisé : un bouton mort exactement là où on veut appuyer. Il devient ⏹. -->
@@ -2664,6 +2678,7 @@ function ask(){
   const url=ORIGIN+"/agent/ask/stream?key="+encodeURIComponent(KEY)+"&q="+encodeURIComponent(msg)
     + (MODELE ? "&modele="+encodeURIComponent(MODELE) : "")
     + (voiceMode ? "&vocal=1" : "")
+    + (ETAPES > 1 ? "&etapes=" + ETAPES : "")
     + "&sid=" + encodeURIComponent(SID);
   const es=new EventSource(url); FLUX=es;
   es.onmessage=(e)=>{ let d; try{ d=JSON.parse(e.data);}catch{ return; }
@@ -2808,6 +2823,35 @@ function fmtK(n){ n=+n||0; if(n>=1e6) return (n/1e6).toFixed(1).replace(/\.0$/,'
   if(n>=1000) return (n/1000).toFixed(n>=1e5?0:1).replace(/\.0$/,'')+"k"; return ""+n; }
 /* Jauge d'énergie : 10 cellules qui s'éteignent au fil de la consommation du jour */
 const CELLS=10;
+/* ═══ RÉFLEXION EN ÉTAPES ═══
+   Le bouton 🧩 demande jusqu'à 5 étapes. Il ne PROMET rien : c'est le serveur qui
+   décide combien il peut réellement en faire, d'après l'énergie mesurée, et qui
+   l'annonce en première ligne du raisonnement. */
+const MAX_ETAPES = 5;
+let ETAPES = 1;
+try{ ETAPES = Math.max(1, Math.min(MAX_ETAPES, parseInt(localStorage.getItem("nova_etapes")||"1",10)||1)); }catch(e){}
+function majBoutonEtapes(){
+  const b=document.getElementById("etapes"); if(!b) return;
+  b.classList.toggle("on", ETAPES>1);
+  b.textContent = ETAPES>1 ? String(ETAPES) : "🧩";
+  b.title = ETAPES>1
+    ? "Je découpe ta question en "+ETAPES+" étapes (si mon énergie le permet). Clique pour changer."
+    : "Réfléchir en plusieurs étapes — utile pour une question à plusieurs sujets";
+}
+function basculeEtapes(){
+  /* 1 → 3 → 5 → 1. Trois crans suffisent : un réglage à dix positions ne se règle jamais. */
+  ETAPES = ETAPES <= 1 ? 3 : (ETAPES < MAX_ETAPES ? MAX_ETAPES : 1);
+  try{ localStorage.setItem("nova_etapes", String(ETAPES)); }catch(e){}
+  majBoutonEtapes();
+  /* ⚠️ On ne dit PAS « ça va marcher » : on rappelle la seule chose qui décide vraiment,
+     l'énergie restante, avec le chiffre qu'affiche la fiole au même instant. */
+  if(ETAPES>1){
+    const j=(document.getElementById("utext")||{}).textContent||"—";
+    toast(ETAPES+" étapes demandées — j'en ferai autant que mon énergie le permet ("+j+" restants)");
+  } else toast("Réflexion normale, en une passe");
+}
+majBoutonEtapes();
+
 async function refreshUsage(){ try{ const r=await fetch(ORIGIN+"/agent/usage?key="+encodeURIComponent(KEY),{cache:"no-store"}); const d=await r.json();
   const el=document.getElementById("usage"), box=document.getElementById("ucells");
   /* ⚠️ « la fiole d'énergie est fausse, elle laisse encore afficher des clés API que

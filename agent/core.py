@@ -265,7 +265,7 @@ def apercu(texte: str, n: int = 140) -> str:
     return coupe.rstrip() + "…"
 
 
-def _params_outil(action: str, params: dict) -> dict:
+def _params_outil(action: str, params: dict, task: str = "") -> dict:
     """Complète les paramètres d'un outil que le modèle n'a pas su renseigner.
 
     ⚠️ Le modèle ne connaît QUE la description des plugins, jamais leurs paramètres :
@@ -278,6 +278,12 @@ def _params_outil(action: str, params: dict) -> dict:
     p = dict(params or {})
     if action == "search_web" and "mode" not in p and veut_actualite(str(p.get("query", ""))):
         p["mode"] = "news"
+    # ⚠️ On NE COMPTE PAS sur le modèle pour dire de quelle société il parle. Il a proposé
+    # « HAFN » pour « hafner énergie » — c'est Hafnia, un armateur coté à New York — et
+    # Nova a rendu 8,96 USD sans broncher. La question de départ part donc avec l'appel :
+    # la fiche vérifie elle-même que le code désigne bien l'entreprise nommée.
+    if action == "fiche_valeur" and not str(p.get("societe") or "").strip() and task:
+        p["societe"] = str(task)[:200]
     return p
 
 
@@ -457,6 +463,33 @@ def _texte_lisible(sortie: str) -> str:
         return ""                                   # le modèle boucle encore : inutilisable
     t = re.sub(r"^\s*(THOUGHT|FINAL)\s*:\s*", "", t, flags=re.M | re.I).strip()
     return t
+
+
+def _brouillon_seulement(llm_out: str) -> str:
+    """Ce qu'on affiche quand il ne reste RIEN de présentable.
+
+    ⚠️ CE QU'IL A VU SUR SON ÉCRAN. Une question toute simple — « fais une recherche
+    approfondie s'il te plaît » — et Nova lui a affiché deux pages du monologue interne
+    du modèle : « Je vais envoyer. » vingt fois, ses propres règles récitées, et la
+    réponse coupée au milieu d'un mot. Le brouillon d'un modèle raisonneur, en entier,
+    en guise de réponse.
+
+    La cause tenait en trois mots : `... or llm_out`. Le nettoyage renvoyait une chaîne
+    vide (le bloc <think> n'ayant jamais été refermé, faute de jetons, tout partait au
+    filtre), il n'y avait aucune observation à rendre — et le dernier repli affichait la
+    SORTIE BRUTE. Un repli conçu pour « montrer quelque chose plutôt que rien » finissait
+    par montrer la pire chose possible.
+
+    Rien de présentable, ça se dit. Ça ne se remplace pas par la cuisine interne.
+    """
+    brut = str(llm_out or "")
+    coupe = "<think" in brut.lower() and not re.search(r"</\s*think", brut, re.I)
+    if coupe:
+        return ("✂️ Ma réponse a été coupée en plein raisonnement — il ne reste que mon "
+                "brouillon interne, et il n'a rien à faire à l'écran. Repose-moi la "
+                "question, ou demande-la plus courte : là je la rédigerai en entier.")
+    return ("🤔 Je n'ai rien produit de présentable sur ce coup — que du protocole "
+            "interne, pas une réponse. Reformule-moi ta demande et je repars dessus.")
 
 
 def _par_fournisseur(texte: str) -> str:
@@ -922,7 +955,7 @@ async def _run_agent_brut(
                 logger.info("[core] plafond de recherches atteint → conclusion forcée")
             else:
                 observation = await _off(safe_tool_call, loader, action,
-                                         _params_outil(action, params), "", _fin)
+                                         _params_outil(action, params, task), "", _fin)
                 if cle:
                     deja_cherche[cle] = observation
             observations.append(observation)
@@ -941,7 +974,8 @@ async def _run_agent_brut(
             )})
         else:
             steps.append(step)
-            propre = _texte_lisible(llm_out) or _repli_observations(observations, task) or llm_out
+            propre = (_texte_lisible(llm_out) or _repli_observations(observations, task)
+                      or _brouillon_seulement(llm_out))
             await _remember_safe(mem, agent_id, propre)
             return {"answer": propre, "steps": steps, "iterations": iteration + 1}
 
@@ -1625,7 +1659,7 @@ async def run_agent_stream(
                 logger.info("[core] plafond de recherches atteint → conclusion forcée")
             else:
                 observation = await _off(safe_tool_call, loader, action,
-                                         _params_outil(action, params), "", _fin)
+                                         _params_outil(action, params, task), "", _fin)
                 if cle:
                     deja_cherche[cle] = observation
             observations.append(observation)
@@ -1638,7 +1672,8 @@ async def run_agent_stream(
                 "Continue. Si tu as toutes les données, donne ta réponse FINAL:"
             )})
         else:
-            propre = _texte_lisible(llm_out) or _repli_observations(observations, task) or llm_out
+            propre = (_texte_lisible(llm_out) or _repli_observations(observations, task)
+                      or _brouillon_seulement(llm_out))
             await _remember_safe(mem, agent_id, propre)
             yield {"type": "final", "answer": propre, "iterations": iteration + 1}
             return
