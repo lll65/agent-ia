@@ -4644,8 +4644,15 @@ async def _reflexion_par_etapes(message: str, cfg: dict, demande: int, vocal: bo
 
     def _decoupeur(sysmsg, user):
         from llm.client import chat
+        # ⚠️ PAS le niveau « rapide ». C'était mon réglage, et c'est la moitié de la
+        # raison pour laquelle ses 5 étapes n'en faisaient qu'une : découper une demande
+        # en sujets est un travail de RAISONNEMENT, pas une reformulation mécanique. Le
+        # petit modèle rendait une seule ligne — « la demande ne porte que sur un sujet »
+        # — sur une question qui en contient quatre (faut-il acheter / quand / à quel
+        # prix revendre / dans combien de temps). Un découpage raté coûte les quatre
+        # étapes suivantes : il mérite le modèle courant.
         return chat([{"role": "system", "content": sysmsg},
-                     {"role": "user", "content": user}], temperature=0.1, niveau="rapide")
+                     {"role": "user", "content": user}], temperature=0.1)
 
     sujets = await _off(decoupe, message, plan["n"], _decoupeur)
     # ⚠️ PROMETTRE 5 ÉTAPES ET EN FAIRE UNE, C'EST MENTIR. Vu en vrai : le modèle a
@@ -4655,16 +4662,21 @@ async def _reflexion_par_etapes(message: str, cfg: dict, demande: int, vocal: bo
     # n'aboutit pas, on le dit et on traite la question normalement — au lieu de
     # dérouler une mise en scène d'étapes qui n'existent pas.
     if len(sujets) <= 1:
-        yield sse({"type": "step", "kind": "route", "tool": "analyse",
-                   "text": "je n'ai pas réussi à découper ta question en sujets "
-                           "séparés — je la traite d'un bloc"})
+        # ⚠️ « kind: thought » et pas « route ». Les messages « route » sont tous recollés
+        # bout à bout dans la ligne « Analyse de ta demande », puis tronqués à 130 signes :
+        # l'explication du découpage disparaissait derrière les « … ». Il a donc vu
+        # « je réfléchis en 5 étapes » suivi d'une seule passe, sans jamais lire pourquoi.
+        yield sse({"type": "step", "kind": "thought",
+                   "text": "Je n'ai pas réussi à découper ta question en sujets séparés "
+                           "— je la traite d'un bloc, en une passe."})
         async for step in run_agent_stream(message, cfg, _PROFILE_ID):
             async for ev in _relaie_etape(step, sse):
                 yield ev
         yield sse({"type": "done"})
         return
-    yield sse({"type": "step", "kind": "route", "tool": "analyse",
-               "text": f"{len(sujets)} sujets : " + " · ".join(s[:40] for s in sujets)})
+    yield sse({"type": "step", "kind": "thought",
+               "text": f"J'ai découpé ta question en {len(sujets)} sujets : "
+                       + " · ".join(s[:40] for s in sujets)})
 
     resultats = []
     for i, sujet in enumerate(sujets, 1):

@@ -218,35 +218,79 @@ def _nettoie_sujets(brut: str, n: int, question: str = "") -> list:
     return out[:n]
 
 
-def _decoupe_sans_modele(question: str, n: int) -> list:
-    """Repli SANS appel de modèle : on coupe sur la ponctuation forte et les « et ».
+# Les mots qui ouvrent une DEMANDE distincte dans une phrase française. « et quand »,
+# « et à quel prix », « dans combien de temps » : chacun ajoute une question à la
+# précédente, sans ponctuation ni majuscule pour le signaler.
+_INTERROGATIFS = (r"quand|combien|comment|pourquoi|o[ùu]\b|"
+                  r"[àa] quel(?:le)?s?\b|de quel(?:le)?s?\b|quel(?:le)?s?\b|"
+                  r"lequel|laquelle|lesquel(?:le)?s|jusqu'?[àa]")
+# Une coupure : « et » / « puis » / une virgule, SUIVI d'un interrogatif.
+_COUPURE = re.compile(r"\s*(?:,|\bet\b|\bpuis\b|\bensuite\b|\baussi\b|\bsinon\b)\s+"
+                      r"(?=(?:" + _INTERROGATIFS + r"))", re.I)
+# … et les coupures franches, qui restent valables.
+_COUPURE_FRANCHE = re.compile(r"[.?!\n]+|\bet (?:apr[èe]s|aussi|ensuite|sinon)\b", re.I)
 
-    ⚠️ Volontairement modeste. Le but n'est pas de bien découper — c'est de ne pas
-    RENDRE LA MAIN VIDE quand aucun modèle ne répond. Une étape unique vaut mieux qu'une
-    erreur, et un découpage grossier vaut mieux qu'un survol.
+
+def _decoupe_sans_modele(question: str, n: int) -> list:
+    """Repli SANS appel de modèle : on coupe là où une NOUVELLE demande commence.
+
+    ⚠️ PREMIÈRE VERSION TROP MODESTE, ET ÇA S'EST VU. Elle ne coupait que sur « . ? ! »
+    et sur « et après / et aussi / et ensuite ». Or sa question — « dis moi si il faut
+    acheter 2crsi ET QUAND ET revendre À QUEL PRIX DANS COMBIEN DE TEMPS » — n'en contient
+    aucun : le repli rendait donc la question entière en un seul morceau, et ses cinq
+    étapes se réduisaient à une passe. Quatre demandes, aucune ponctuation.
+
+    En français, une demande de plus s'ouvre par un mot interrogatif accroché à « et »,
+    « puis » ou une virgule. C'est cela qu'on coupe — sans modèle, donc sans refus
+    possible et sans coût.
     """
     q = str(question or "").strip()
     if not q:
         return []
-    bouts = re.split(r"[.?!\n]+|\bet (?:apr[èe]s|aussi|ensuite|sinon)\b", q)
-    bouts = [b.strip(" ,;:") for b in bouts]
-    bouts = [b for b in bouts if len(b) >= 20]
-    return bouts[:n] if len(bouts) > 1 else [q]
+    bouts = []
+    for gros in _COUPURE_FRANCHE.split(q):
+        for bout in _COUPURE.split(gros or ""):
+            b = (bout or "").strip(" ,;:—-")
+            if b:
+                bouts.append(b)
+    # ⚠️ Un morceau de deux mots (« quand ») ne veut rien dire tout seul : on le recolle
+    # au SUIVANT plutôt que de lancer une étape sur un fragment vide de sens.
+    fusionnes = []
+    for b in bouts:
+        if fusionnes and len(fusionnes[-1].split()) < 4:
+            fusionnes[-1] = fusionnes[-1] + " " + b
+        else:
+            fusionnes.append(b)
+    fusionnes = [b for b in fusionnes if len(b.split()) >= 3]
+    return fusionnes[:n] if len(fusionnes) > 1 else [q]
 
 
 def decoupe(question: str, n: int, appel_modele) -> list:
     """Les sujets de la question, au plus `n`. `appel_modele(system, user) -> str`."""
     if n <= 1:
         return [str(question or "").strip()]
+    # Le découpage SANS modèle est calculé d'abord : il ne coûte rien, il ne peut pas
+    # être refusé, et il sert d'arbitre si le modèle rend une seule ligne.
+    sans_modele = _decoupe_sans_modele(question, n)
+    sujets = []
     try:
         brut = appel_modele(_DECOUPE_SYSTEM.format(n=n), str(question or "")[:2000])
         sujets = _nettoie_sujets(brut, n, question)
-        if sujets:
-            return sujets
-        logger.info("[étapes] découpage vide → repli sans modèle")
+        if not sujets:
+            logger.info("[étapes] découpage vide → repli sans modèle")
     except Exception as e:
         logger.info(f"[étapes] découpage impossible ({type(e).__name__}) → repli sans modèle")
-    return _decoupe_sans_modele(question, n) or [str(question or "").strip()]
+    # ⚠️ UNE SEULE LIGNE RENDUE N'EST PAS UNE PREUVE QU'IL N'Y A QU'UN SUJET.
+    # « dis moi si il faut acheter 2crsi et quand et revendre à quel prix dans combien de
+    # temps » : quatre demandes, et le modèle a répondu une ligne — donc une passe, alors
+    # qu'il avait explicitement demandé cinq étapes. Quand la simple lecture de sa phrase
+    # y trouve plusieurs demandes et que le modèle n'en voit qu'une, on croit la phrase :
+    # elle, au moins, ne peut ni se tromper de tâche ni refuser.
+    if len(sujets) <= 1 and len(sans_modele) > 1:
+        logger.info(f"[étapes] le modèle n'a vu qu'un sujet, sa phrase en contient "
+                    f"{len(sans_modele)} → on suit la phrase")
+        return sans_modele
+    return sujets or sans_modele or [str(question or "").strip()]
 
 
 # ── Rassembler ───────────────────────────────────────────────────────────────
