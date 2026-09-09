@@ -14,6 +14,9 @@ from pathlib import Path
 from config import config
 
 _FILE = Path("data/groq_usage.json")
+# Depuis quand ce compteur compte. Sur Render sans Supabase, c'est le démarrage du
+# conteneur — pas le début de la journée. Voir durable() : la nuance change tout.
+_DEPART = __import__("time").time()
 LIMITS = {"groq": 100_000, "cerebras": 1_000_000, "gemini": 1_000_000, "nvidia": 1_000_000}  # tokens/jour indicatifs (palier gratuit)
 _lock = threading.Lock()
 _conn = None
@@ -21,6 +24,35 @@ _conn = None
 
 def _today() -> str:
     return date.today().isoformat()
+
+
+def durable() -> bool:
+    """Ce compteur survit-il à un redémarrage ?
+
+    ⚠️ « c'est faux ce qui y a écrit non ? » — il regardait « Groq 241/200k » après une
+    journée entière d'utilisation. Il avait raison, et la cause est écrite en tête de ce
+    module : sans SUPABASE_DB_URL, la consommation vit dans data/groq_usage.json, sur un
+    disque que Render EFFACE. L'offre gratuite endort l'instance au bout de ~15 min sans
+    requête ; au réveil, le conteneur est neuf et le compteur repart à zéro.
+
+    La jauge affichait donc « 100 % » en permanence — non pas parce qu'il n'avait rien
+    consommé, mais parce qu'elle avait oublié. C'est exactement ce qu'il redoutait quand
+    il a posé sa condition : « pour ça faut vraiment que la limite dans la fiole soit
+    fiable ». Elle ne l'est pas encore, et il faut le DIRE plutôt que d'afficher un
+    chiffre rassurant.
+    """
+    return _sb() is not None
+
+
+def compte_depuis() -> float:
+    """Heures écoulées depuis le début REEL de la mesure."""
+    import time as _t
+    if durable():
+        # Supabase garde la journée entière : la mesure commence à minuit.
+        from datetime import datetime
+        n = datetime.now()
+        return n.hour + n.minute / 60.0
+    return max(0.0, (_t.time() - _DEPART) / 3600.0)
 
 
 def _sb():

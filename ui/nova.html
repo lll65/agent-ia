@@ -116,6 +116,9 @@
   .micbtn{ background:var(--glass); border:1px solid var(--stroke); } .micbtn.rec{ background:var(--pink); animation:pulse .8s infinite; }
   /* Le cran de réflexion en étapes doit SE VOIR : un réglage invisible est un réglage
      qu'on croit inactif, et il repose la question en se demandant pourquoi c'est pareil. */
+  /* Une jauge qu'on sait incomplète ne doit pas s'afficher avec l'aplomb d'une mesure. */
+  .usage.flou{ opacity:.62; }
+  .usage.flou .pct::after{ content:"~"; margin-left:1px; opacity:.8; }
   .micbtn#etapes.on{ background:linear-gradient(180deg,var(--neon),var(--neon2));
                      border-color:transparent; font-weight:800; font-size:17px;
                      box-shadow:0 0 18px rgba(139,109,255,.55); }
@@ -2876,7 +2879,20 @@ async function refreshUsage(){ try{ const r=await fetch(ORIGIN+"/agent/usage?key
   /* Le détail suit la liste que le SERVEUR a réellement comptée : plus de nom écrit en
      dur ici, sinon un fournisseur retiré continuerait de s'afficher. */
   const detail=(d.comptes||[]).map(k=>k.charAt(0).toUpperCase()+k.slice(1)+" "+fmtK(d[k].used)+"/"+fmtK(d[k].limit)).join(" · ");
-  el.title="Énergie restante aujourd'hui : "+Math.round(left)+"%\n"+detail+"\n(se recharge chaque jour)";
+  /* ⚠️ « c'est faux ce qu'il y a écrit non ? » — devant « Groq 241/200k » après une
+     journée entière. Il avait raison : sans base durable, le compteur vit sur le disque
+     éphémère de Render et repart à ZÉRO à chaque réveil de l'instance (~15 min sans
+     requête). La jauge disait « aujourd'hui » alors qu'elle mesurait depuis le dernier
+     réveil. On date donc la mesure, et on dit quand elle n'est pas fiable. */
+  const dur = d.durable !== false;
+  const depuis = dur ? "aujourd'hui"
+    : "depuis le dernier réveil de Render (" + (d.depuis_h||0) + " h)";
+  el.classList.toggle("flou", !dur);
+  el.title = "Énergie restante " + depuis + " : " + Math.round(left) + "%\n" + detail
+    + (dur ? "\n(se recharge chaque jour)"
+           : "\n⚠️ Ce compte n'est PAS fiable : Render efface le compteur à chaque"
+             + "\nréveil, donc j'oublie ce que j'ai consommé avant. Le vrai chiffre est"
+             + "\nplus élevé. Pour le rendre fiable : SUPABASE_DB_URL sur Render.");
 }catch(e){ document.getElementById("utext").textContent="—"; } }
 refreshUsage(); setInterval(refreshUsage, 20000);
 

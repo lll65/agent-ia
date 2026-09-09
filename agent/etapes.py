@@ -64,7 +64,7 @@ def budget() -> dict:
     """
     try:
         from llm import usage as U
-        from llm.client import cles_presentes, cles_secondaires
+        from llm.client import cles_presentes, cles_secondaires  # noqa: F401
         presentes, secondes = cles_presentes(), cles_secondaires()
         tu = tl = 0
         for p in ("nvidia", "cerebras", "groq", "gemini"):
@@ -79,8 +79,18 @@ def budget() -> dict:
             return {"reste": 0.0, "mesurable": False,
                     "detail": "aucune clé dont je sache compter les jetons"}
         reste = max(0.0, min(1.0, 1 - tu / tl))
-        return {"reste": reste, "mesurable": True,
-                "detail": f"{int(reste * 100)} % sur {tl:,} jetons".replace(",", " ")}
+        # ⚠️ LE COMPTEUR EST-IL DURABLE ? Sans SUPABASE_DB_URL, il vit sur le disque
+        # éphémère de Render et repart à zéro à chaque réveil. Il SOUS-ESTIME donc
+        # toujours la consommation — c'est-à-dire qu'il dit « tu as de la marge » au
+        # moment précis où c'est le plus faux. C'est le sens exact de sa condition :
+        # « pour ça faut vraiment que la limite dans la fiole soit fiable ». Tant qu'elle
+        # ne l'est pas, on ne s'autorise pas cinq appels sur sa foi.
+        fiable = U.durable()
+        return {"reste": reste, "mesurable": True, "fiable": fiable,
+                "detail": (f"{int(reste * 100)} % sur {tl:,} jetons".replace(",", " ")
+                           if fiable else
+                           f"~{int(reste * 100)} % — mais je ne compte que depuis "
+                           f"{U.compte_depuis():.0f} h (Render efface mon compteur)")}
     except Exception as e:
         logger.info(f"[étapes] budget illisible ({type(e).__name__})")
         return {"reste": 0.0, "mesurable": False, "detail": f"illisible ({type(e).__name__})"}
@@ -105,6 +115,13 @@ def combien(demande: int = 0, b: dict = None) -> dict:
         n = min(voulu, 2)
         return {"n": n, "raison": f"il me reste {int(b['reste'] * 100)} % d'énergie, "
                                   f"je me limite à {n} étapes"}
+    if not b.get("fiable", True):
+        # ⚠️ Un compteur qui oublie sous-estime TOUJOURS ce qui a été consommé : il
+        # annonce de la marge là où il n'y en a peut-être plus. On plafonne à 3 au lieu
+        # de 5, et on dit pourquoi — plutôt que de dépenser sur la foi d'un chiffre
+        # dont on sait qu'il est optimiste.
+        n = min(voulu, 3)
+        return {"n": n, "raison": f"{b['detail']} — je me limite donc à {n} étapes"}
     return {"n": voulu, "raison": f"j'ai de quoi ({b['detail']})"}
 
 
