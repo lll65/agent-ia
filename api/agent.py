@@ -4648,8 +4648,23 @@ async def _reflexion_par_etapes(message: str, cfg: dict, demande: int, vocal: bo
                      {"role": "user", "content": user}], temperature=0.1, niveau="rapide")
 
     sujets = await _off(decoupe, message, plan["n"], _decoupeur)
+    # ⚠️ PROMETTRE 5 ÉTAPES ET EN FAIRE UNE, C'EST MENTIR. Vu en vrai : le modèle a
+    # REFUSÉ de découper une question de bourse (« I'm sorry, but I can't help with
+    # that »), le repli a rendu la question entière en un seul morceau, et l'écran
+    # affichait « je réfléchis en 5 étapes » puis « Étape 1/1 ». Quand le découpage
+    # n'aboutit pas, on le dit et on traite la question normalement — au lieu de
+    # dérouler une mise en scène d'étapes qui n'existent pas.
+    if len(sujets) <= 1:
+        yield sse({"type": "step", "kind": "route", "tool": "analyse",
+                   "text": "je n'ai pas réussi à découper ta question en sujets "
+                           "séparés — je la traite d'un bloc"})
+        async for step in run_agent_stream(message, cfg, _PROFILE_ID):
+            async for ev in _relaie_etape(step, sse):
+                yield ev
+        yield sse({"type": "done"})
+        return
     yield sse({"type": "step", "kind": "route", "tool": "analyse",
-               "text": f"{len(sujets)} sujet(s) : " + " · ".join(s[:40] for s in sujets)})
+               "text": f"{len(sujets)} sujets : " + " · ".join(s[:40] for s in sujets)})
 
     resultats = []
     for i, sujet in enumerate(sujets, 1):

@@ -26,6 +26,24 @@ def _today() -> str:
     return date.today().isoformat()
 
 
+def jetons_estimes(messages) -> int:
+    """Estimation du coût d'un prompt, en jetons.
+
+    ⚠️ C'est une ESTIMATION, et elle est annoncée comme telle partout où le chiffre
+    s'affiche. Mais une estimation à ±30 % vaut infiniment mieux que l'ancien compte,
+    qui ignorait purement et simplement le prompt : la jauge affichait alors le dixième
+    de la consommation réelle, et toujours dans le sens rassurant.
+
+    La règle usuelle est ~4 caractères par jeton en anglais, un peu moins en français
+    (accents, mots plus longs) : on prend 3,6 pour ne pas sous-estimer.
+    """
+    try:
+        n = sum(len(str((m or {}).get("content") or "")) for m in (messages or []))
+        return int(n / 3.6)
+    except Exception:
+        return 0
+
+
 def durable() -> bool:
     """Ce compteur survit-il à un redémarrage ?
 
