@@ -12058,6 +12058,73 @@ def test_le_refus_du_modele_pris_pour_un_sujet():
     check_true("…et la question est traitée d'un bloc", "if len(sujets) <= 1:" in src)
 
 
+def test_le_css_reste_entier_et_l_accueil_avoue_ses_pannes():
+    """« et ça a fait bugger l'interface regarde » — et ce n'était pas Notion, c'était moi.
+
+    ⚠️ EN SUPPRIMANT LE CANVAS, J'AI CASSÉ LA FEUILLE DE STYLE. J'ai retiré toutes les
+    LIGNES contenant « #graphMini »… mais cette règle-là s'étalait sur CINQ lignes. La
+    première est partie avec le sélecteur et l'accolade ouvrante ; les quatre autres sont
+    restées, déclarations orphelines suivies d'une accolade fermante en trop. Le
+    navigateur, en récupérant l'erreur, avale la règle suivante — ici « .composer » —
+    d'où la barre de saisie étroite et décalée sur sa capture.
+
+    Aucun test ne regardait la STRUCTURE de la feuille de style : on vérifiait la
+    présence de règles, jamais que le fichier tenait debout. Un compte d'accolades coûte
+    trois lignes et attrape toute cette famille de bêtises — celle-ci comme les
+    prochaines.
+
+    ⚠️ ET LES QUATRE TUILES DISAIENT « je regarde… » POUR TOUJOURS. Second défaut,
+    indépendant : le squelette s'affichait, l'appel échouait, et le .catch() était VIDE.
+    L'écran annonçait donc un travail en cours qui n'aurait jamais lieu. Le commentaire
+    assumait : « l'accueil est un bonus, son échec ne casse pas le chat ». Vrai pour le
+    chat ; faux pour lui, qui regardait un écran prétendant chercher.
+    """
+    ui = open("ui/nova.html", encoding="utf-8").read()
+
+    # 1. La feuille de style tient debout — accolades équilibrées, à tout moment.
+    css = ui.split("<style>")[1].split("</style>")[0]
+    check("autant d'accolades ouvrantes que de fermantes",
+          css.count("{"), css.count("}"))
+    profondeur, negatif = 0, 0
+    for ligne in css.split("\n"):
+        profondeur += ligne.count("{") - ligne.count("}")
+        if profondeur < 0:
+            negatif += 1
+    check("jamais une fermante de trop en cours de route", negatif, 0)
+    check("et on retombe bien à zéro à la fin", profondeur, 0)
+
+    # 2. Aucune déclaration orpheline : « display:none; » hors de tout bloc, c'est le
+    #    symptôme exact de ce que j'ai produit.
+    prof, orphelines = 0, []
+    for i, ligne in enumerate(css.split("\n"), 1):
+        nu = ligne.strip()
+        if prof == 0 and nu and re.match(r"^[a-z-]{3,}\s*:\s*[^;]*;", nu) and "{" not in nu:
+            orphelines.append((i, nu[:60]))
+        prof += ligne.count("{") - ligne.count("}")
+    check(f"aucune déclaration hors bloc (vues : {orphelines[:2]})", len(orphelines), 0)
+
+    # 3. Le HTML ne référence plus d'élément supprimé.
+    corps = ui.split("</style>")[1]
+    for mort in ('id="graph"', 'id="graphWrap"', 'id="graphMini"'):
+        check(f"« {mort} » n'est plus dans le HTML", mort in corps, False)
+
+    # 4. L'accueil AVOUE quand il n'a pas pu regarder.
+    rendu = re.sub(r"(?m)^[ \t]*/\*.*?\*/", "", ui, flags=re.S)
+    rendu = re.sub(r"<!--.*?-->", "", rendu, flags=re.S)
+    check_true("un échec d'accueil est affiché", "function accEchec(" in rendu)
+    # ⚠️ On vise le catch DE L'ACCUEIL. Les autres (supprimer une session, enregistrer le
+    # service worker) ont le droit d'avaler leur erreur : rien à l'écran ne prétend
+    # travailler pendant ce temps. Un test trop large aurait interdit un usage légitime.
+    corps_acc = rendu.split("function chargeAccueil()")[1].split("\nfunction ")[0]
+    check("le catch de l'accueil n'est plus vide", ".catch(()=>{})" in corps_acc, False)
+    check_true("…il appelle bien l'aveu", "accEchec(" in corps_acc)
+    # L'apostrophe est échappée dans le source JS : on cherche le morceau sans elle.
+    check_true("…et il dit qu'il n'a PAS pu regarder", "ai pas pu regarder" in rendu)
+    check_true("…sans conclure qu'il n'y a rien", "ne veut pas dire qu" in rendu)
+    check_true("et on peut réessayer", 'onclick="chargeAccueil()"' in rendu)
+    check_true("un réessai repart de zéro", 'z.dataset.rempli = "";' in rendu)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -12104,6 +12171,7 @@ if __name__ == "__main__":
                test_l_heure_des_cours_et_la_troisieme_sphere,
                test_la_jauge_ignorait_le_prompt,
                test_le_refus_du_modele_pris_pour_un_sujet,
+               test_le_css_reste_entier_et_l_accueil_avoue_ses_pannes,
                test_conversations_partagees_entre_appareils,
                test_une_tache_de_fond_ne_meurt_plus_en_silence,
                test_un_accord_ne_declenche_que_ce_qu_il_confirme,
