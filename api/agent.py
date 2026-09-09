@@ -2458,6 +2458,74 @@ def _direct_app_prepare_brut(message: str, canal: str = "web"):
     return {"steps": steps, "action": action, "obs": obs, "is_write": is_write}
 
 
+# ── Un contrôle d'app doit ESSAYER, pas compter ──────────────────────────────
+# ⚠️ « nova me dit que tout est beau et que toutes les apps sont bien reliées alors
+# qu'elle n'y accède même pas — regarde la preuve, elle peut même pas accéder à GitHub. »
+#
+# Il a raison, et le diagnostic était faux par construction. Il affichait :
+#     ✅ App · github — 100 action(s) disponibles
+# Or ce chiffre vient de _composio_list_actions(), qui rend le CATALOGUE de ce que
+# Composio propose pour GitHub. Il vaut 100 que le jeton marche ou non. Pendant ce
+# temps GITHUB_CREATE_A_COMMIT répondait « Not Found ».
+#
+# Un compte d'actions n'est pas un contrôle de santé. Une app « connectée » n'est pas une
+# app qui répond — c'est écrit dans agent/sentinelle.py depuis le début, et ce
+# diagnostic-ci ne l'appliquait pas. On ESSAIE donc, pour de vrai.
+
+# Ce qui est sûrement une lecture SANS effet de bord. On choisit dans le catalogue réel
+# plutôt que d'écrire des noms en dur : Composio les renomme, et ce projet en a déjà payé
+# le prix (NOTION_CREATE_COMMENT, les modèles de vision Groq, les « :free » d'OpenRouter).
+_LECTURE_SURE = re.compile(r"^[A-Z]+_(?:GET|LIST|FETCH|SEARCH|RETRIEVE|FIND)_", re.I)
+_JAMAIS_SONDER = re.compile(r"CREATE|UPDATE|DELETE|SEND|REMOVE|ARCHIVE|TRASH|PATCH|"
+                            r"ADD|MOVE|UPLOAD|IMPORT|MERGE|CLOSE|INVITE", re.I)
+# À armes égales, on préfère la sonde la moins coûteuse : « qui suis-je », puis une liste.
+_SONDES_PREFEREES = (r"AUTHENTICATED_USER", r"_GET_ME", r"CURRENT_USER", r"_USER_INFO",
+                     r"LIST_REPOSITOR", r"FETCH_EMAILS", r"EVENTS_LIST", r"_SEARCH")
+
+
+def _sonde_pour(slug: str, actions) -> tuple:
+    """(nom d'action, arguments) — une lecture inoffensive pour tester CETTE app."""
+    noms = [str((a or {}).get("name") or "") for a in (actions or [])]
+    lisibles = [n for n in noms if _LECTURE_SURE.match(n) and not _JAMAIS_SONDER.search(n)]
+    if not lisibles:
+        return "", {}
+    for motif in _SONDES_PREFEREES:
+        for n in lisibles:
+            if re.search(motif, n, re.I):
+                return n, _ARGS_SONDE.get(slug, {})
+    return lisibles[0], _ARGS_SONDE.get(slug, {})
+
+
+# Les rares arguments obligatoires, quand une lecture en demande.
+_ARGS_SONDE = {"gmail": {"maxResults": 1}, "googlecalendar": {"calendarId": "primary",
+                                                              "maxResults": 1}}
+
+
+def _essaie_une_app(slug: str) -> dict:
+    """Appelle VRAIMENT l'app et rapporte ce qui s'est passé."""
+    actions = _composio_list_actions(slug) or []
+    if not actions:
+        return {"ok": False, "detail": "aucune action proposée — connecteur absent ou clé Composio refusée"}
+    nom, args = _sonde_pour(slug, actions)
+    if not nom:
+        # ⚠️ On ne met PAS de ✅ sur ce qu'on n'a pas pu essayer. « Je n'ai pas pu
+        # vérifier » et « ça marche » ne se disent pas pareil.
+        return {"ok": False, "detail": f"{len(actions)} actions au catalogue, mais aucune "
+                                       "lecture inoffensive à essayer — NON VÉRIFIÉ"}
+    try:
+        brut = str(_tool(nom, args, slug) or "")
+    except Exception as e:
+        return {"ok": False, "detail": f"{nom} : {type(e).__name__}: {str(e)[:120]}"}
+    bas = brut.lower()
+    if "✅" in brut or '"successful": true' in bas:
+        return {"ok": True, "detail": f"{nom} répond"}
+    if "no connected account" in bas or "404" in bas or "not found" in bas:
+        return {"ok": False, "detail": f"{nom} → introuvable sous cette identité Composio "
+                                       "(l'app est connectée, mais pas pour ce compte)"}
+    if "401" in bas or "403" in bas or "unauthorized" in bas or "bad credentials" in bas:
+        return {"ok": False, "detail": f"{nom} → autorisation refusée : reconnecte l'app"}
+    return {"ok": False, "detail": f"{nom} → {' '.join(brut.split())[:160]}"}
+
 def _composio_connect_link(app_slug: str):
     """Crée un lien OAuth Composio pour connecter une app sous l'entity COMPOSIO_USER_ID.
     Renvoie (redirect_url|None, debug_str)."""
@@ -4289,6 +4357,64 @@ def _refus_app_non_connectee(slug: str) -> str:
     return msg
 
 
+# ⚠️ IL NE VOYAIT QUE LES 70 PREMIÈRES ACTIONS. GitHub en propose une centaine. « crée un
+# nouveau dépôt » a donc reçu GITHUB_CREATE_A_COMMIT — puis, quand il a insisté, « je n'ai
+# pas d'action GitHub permettant de créer directement un nouveau dépôt ». C'était vrai de
+# ce qu'elle VOYAIT, et faux de ce qui existe : l'action de création de dépôt était au-delà
+# de la troncature. Une liste coupée au hasard produit exactement la même erreur qu'un nom
+# écrit en dur — celle que ce projet paie depuis le début.
+#
+# On classe donc le catalogue par PROXIMITÉ avec sa demande avant de le tronquer : ce qui
+# ressemble à ce qu'il veut est toujours dans la fenêtre.
+_MOTS_INTENTION = {
+    "cree": "CREATE", "créer": "CREATE", "creer": "CREATE", "nouveau": "CREATE",
+    "nouvelle": "CREATE", "ajoute": "CREATE", "ajouter": "CREATE", "code": "CREATE",
+    "supprime": "DELETE", "efface": "DELETE", "retire": "DELETE",
+    "liste": "LIST", "montre": "LIST", "affiche": "LIST", "voir": "LIST",
+    "cherche": "SEARCH", "trouve": "SEARCH", "recherche": "SEARCH",
+    "modifie": "UPDATE", "change": "UPDATE", "renomme": "UPDATE",
+    "envoie": "SEND", "envoyer": "SEND",
+}
+# Ce dont il parle → ce que ça vaut dans un nom d'action Composio.
+_MOTS_OBJET = {
+    "depot": "REPOSITOR", "dépôt": "REPOSITOR", "repo": "REPOSITOR", "repos": "REPOSITOR",
+    "projet": "REPOSITOR", "dossier": "REPOSITOR",
+    "fichier": "FILE", "commit": "COMMIT", "branche": "BRANCH", "issue": "ISSUE",
+    "page": "PAGE", "mail": "EMAIL", "message": "MESSAGE", "evenement": "EVENT",
+    "événement": "EVENT", "tache": "TASK", "tâche": "TASK", "ticket": "ISSUE",
+}
+
+
+def _actions_pertinentes(actions, message: str, combien: int = 70) -> list:
+    """Le catalogue trié par proximité avec sa demande, puis borné.
+
+    Sans classement, la troncature décide au hasard de ce que le modèle a le droit de
+    choisir — et lui fait dire « cette action n'existe pas » alors qu'elle existe.
+    """
+    import unicodedata as _u
+    m = _u.normalize("NFD", str(message or "").lower())
+    m = "".join(c for c in m if _u.category(c) != "Mn")
+    mots = set(re.split(r"[^a-z0-9]+", m)) - {""}
+    vises = {v for k, v in _MOTS_INTENTION.items() if k in m}
+    vises |= {v for k, v in _MOTS_OBJET.items()
+              if _u.normalize("NFD", k).encode("ascii", "ignore").decode() in m or k in m}
+
+    def score(a):
+        nom = str((a or {}).get("name") or "").upper()
+        desc = str((a or {}).get("desc") or "").lower()
+        s = 0
+        for v in vises:
+            if v in nom:
+                s += 10                      # le verbe ou l'objet visé est dans le NOM
+        for mot in mots:
+            if len(mot) > 3 and (mot in nom.lower() or mot in desc):
+                s += 2
+        return s
+
+    classees = sorted(actions or [], key=score, reverse=True)
+    return classees[:combien]
+
+
 def _generic_app_flow(message: str, slug: str, canal: str = "web"):
     """Exécute une action sur N'IMPORTE QUELLE app connectée :
     1) découvre les actions réelles de l'app, 2) le LLM choisit l'action + arguments,
@@ -4308,7 +4434,8 @@ def _generic_app_flow(message: str, slug: str, canal: str = "web"):
             f"🔌 Je n'ai pas pu lister les actions disponibles pour **{slug}**. "
             "Vérifie que l'app est bien connectée sur Composio (et que ta clé `ak_` a la permission "
             "`tool_execution`), puis redemande-moi.")}
-    catalog = "\n".join(f"- {a['name']}: {a['desc']}" for a in actions[:70])
+    catalog = "\n".join(f"- {a['name']}: {a['desc']}"
+                        for a in _actions_pertinentes(actions, message, 70))
     ctx = _recent_user_context()
     pick = _llm_json(
         "Tu choisis l'action d'API à exécuter pour l'utilisateur. Réponds en JSON STRICT : "
@@ -5525,16 +5652,25 @@ async def selftest(key: str = ""):
 
         # 9) Compteur d'énergie
         def _usage():
+            # ⚠️ Il rendait TOUJOURS True, et sur « cerebras » — un fournisseur dont il
+            # n'a même pas la clé. « ✅ Compteur d'énergie — cerebras 0/1000000 » ne
+            # prouvait donc rien du tout.
             from llm import usage as U
-            u, l = U.get_usage("cerebras")
-            return True, f"cerebras {u}/{l}"
+            from llm.client import cles_presentes
+            presentes = cles_presentes()
+            comptables = [p for p in ("nvidia", "cerebras", "groq", "gemini") if p in presentes]
+            if not comptables:
+                return False, "aucune clé dont je sache compter les jetons"
+            detail = " · ".join(f"{p} {U.get_usage(p)[0]}/{U.get_usage(p)[1]}" for p in comptables)
+            return True, (detail + ("" if U.durable() else
+                                    "  ⚠️ compteur NON durable (remis à zéro à chaque "
+                                    "réveil de Render)"))
         check("energie", _usage)
 
-        # 10) Actions par app connectée (détecte un connecteur cassé)
+        # 10) Chaque app connectée est ESSAYÉE pour de vrai — voir _essaie_une_app.
         try:
             for slug in sorted({s for s, _u, _st in _connected_accounts() if s})[:6]:
-                acts = _composio_list_actions(slug)
-                res[f"app_{slug}"] = {"ok": bool(acts), "detail": f"{len(acts)} action(s) disponibles"}
+                res[f"app_{slug}"] = _essaie_une_app(slug)
         except Exception as e:
             res["apps_detail"] = {"ok": False, "detail": str(e)[:150]}
 
