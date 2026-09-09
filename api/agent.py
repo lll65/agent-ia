@@ -574,9 +574,76 @@ _FINANCE_WORDS = ("bourse", "action ", "actions", "titre", "etf", "crypto", "bit
                   "cours de", "valneva", "ticker", "capitalisation", "boursier")
 
 
+# ⚠️ « dis moi si il faut acheter 2crsi et quand et revendre à quel prix » n'était PAS
+# reconnu comme une question de bourse. Nova recevait donc, mot pour mot, la consigne
+# « INTERDIT : ne parle pas de bourse, actions, investissement » — sur une question qui
+# ne parle que de ça. D'où « je ne peux pas te donner de recommandation » : ce n'était
+# pas une politique de modèle, c'était MA consigne, appliquée à l'envers.
+#
+# La cause : _FINANCE_WORDS est une liste de NOMS écrits en dur. « valneva » y figurait
+# (ajouté un jour où il en avait parlé), « 2crsi » et « dbv » non. C'est exactement le
+# défaut que ce projet paie depuis le début — un nom dans le code, qui ne couvre jamais
+# le suivant. On reconnaît donc la FORME de la demande, pas le nom de la société.
+_VERBES_ARGENT = (r"achet|revend|vendre|vends|investi|plac(?:er|ement)|mise[rz]?|"
+                  r"rachet|c[ée]der|liquider|arbitrer|renforcer|all[ée]ger")
+# Ce qui ressemble à un code boursier ou à un nom de société cotée : un mot compact qui
+# mêle chiffres et lettres (2CRSi, AL2SI, VLA.PA), ou un sigle en majuscules (DBV, LVMH).
+_FORME_TITRE = re.compile(r"(?<![\w.])(?:[0-9]{1,2}[a-zA-Z]{2,6}|[a-zA-Z]{2,6}[0-9]{1,3}[a-zA-Z]*"
+                          r"|[A-Z]{2,5}(?:\.[A-Z]{2})?)(?![\w])")
+# Le vocabulaire du marché, quel que soit le titre dont on parle.
+_MOTS_MARCHE = re.compile(r"(?<![\wÀ-ÿ])(cours|cot[ée]e?s?|cotation|plus-value|moins-value|"
+                          r"actionnaire|s[ée]ance|euronext|cac ?40|dividende|volatilit[ée]|"
+                          r"r[ée]sultats annuels|capitalisation|analyste)(?![\wÀ-ÿ])", re.I)
+
+
 def _finance_intent(message: str) -> bool:
-    m = message.lower()
-    return any(w in m for w in _FINANCE_WORDS)
+    """Est-ce une question d'argent placé ? On reconnaît la forme, pas les noms."""
+    m = (message or "").lower()
+    if any(w in m for w in _FINANCE_WORDS):
+        return True
+    if _MOTS_MARCHE.search(message or ""):
+        return True
+    # Un verbe d'achat/vente SEUL ne suffit pas — « acheter du pain » n'est pas de la
+    # bourse. Il faut qu'il porte sur quelque chose qui ressemble à un titre…
+    a_un_verbe = bool(re.search(_VERBES_ARGENT, m))
+    if a_un_verbe and _FORME_TITRE.search(message or ""):
+        return True
+    # … ou sur ce qu'on achète et revend en bourse, et pas ailleurs.
+    if a_un_verbe and re.search(r"(?<![\wÀ-ÿ])(parts?|titres?|lignes?|positions?|"
+                                r"participations?|actifs?)(?![\wÀ-ÿ])", m):
+        return True
+    # ⚠️ ET QUAND IL DEMANDE UN AVIS SUR UN ACHAT. « hafner énergie t'en pense quoi,
+    # faut acheter maintenant ? » ne contient ni code boursier ni mot de marché : le nom
+    # de la société est en minuscules et m'est inconnu. Un faux positif ici ne coûte
+    # rien — la consigne finance n'OBLIGE pas à parler bourse, elle lève une interdiction
+    # et dit comment répondre si c'est le sujet. Un faux négatif, lui, lui a valu
+    # « je ne peux pas te donner de recommandation ». L'asymétrie tranche.
+    if a_un_verbe and re.search(r"(faut-il|faut-t-il|dois-je|je dois|t'?en pense|"
+                                r"qu'?en pense|ton avis|tu conseille|tu recommande|"
+                                r"c'?est le moment|bonne id[ée]e)", m):
+        return True
+    # Et ce qu'il a lui-même dit posséder : sa mémoire sait qu'il détient 2CRSi et DBV.
+    # C'est plus fiable qu'une liste que je devrais compléter à chaque nouvelle ligne.
+    try:
+        from agent.profile import list_facts
+        for f in (list_facts() or []):
+            t = str(f.get("texte") or "").lower()
+            if not any(k in t for k in ("investi", "action", "titre", "pea", "bourse")):
+                continue
+            for mot in re.findall(r"[\wÀ-ÿ0-9]{3,}", t):
+                if mot in m and mot not in _MOTS_COURANTS:
+                    return True
+    except Exception as e:
+        logger.info(f"[finance] profil illisible ({type(e).__name__})")
+    return False
+
+
+# Les mots trop communs pour prouver qu'on parle d'un titre qu'il détient.
+_MOTS_COURANTS = {
+    "investi", "investit", "action", "actions", "titre", "titres", "bourse", "pea",
+    "dans", "les", "des", "une", "est", "sur", "pour", "avec", "qui", "que", "son",
+    "sa", "ses", "lohan", "euronext", "technologies", "cote", "coté", "cotee", "cotée",
+}
 
 
 _JOURS_SEMAINE = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
@@ -676,13 +743,43 @@ def _build_agent_cfg(message: str, name: str = "Nova") -> dict:
         # PEA : Nova répondait « je ne suis pas conseiller financier » et proposait de
         # trier des documents. Esquiver une question portant sur SES PROPRES chiffres,
         # qu'on vient de lui afficher, n'est pas de la prudence — c'est inutile.
-        system += (" Si l'HISTORIQUE RÉCENT contient ses chiffres (positions, montants, "
+        # ⚠️ « je veux pas qu'elle me dise que c'est pas à elle, bon sang : je pose une
+        # question, elle répond, même si c'est la bourse. »
+        #
+        # Il a raison, et j'avais tort. La consigne précédente disait « ne réponds jamais
+        # uniquement consulte un conseiller » — puis, deux lignes plus haut, « tu ne lui
+        # dis pas quoi acheter ou vendre ». C'est-à-dire : ne l'esquive pas, mais esquive
+        # quand même. D'où « Je ne peux pas te donner de recommandation d'achat ou de
+        # vente personnalisée », qui n'est ni un service ni une protection : c'est une
+        # formule. Il a 17 ans, il a déjà engagé son argent sur 2CRSi et DBV, et il pose
+        # la question à SON assistante.
+        #
+        # Ce qui le protège vraiment n'a jamais été le refus — c'est l'interdiction
+        # d'inventer un chiffre, qui reste entière. On sépare donc les deux :
+        #   • ce qui se sait (les faits, les dates, les risques, le raisonnement) → elle
+        #     répond, franchement, en prenant position ;
+        #   • ce que PERSONNE ne sait (un cours futur, une date de revente) → elle le dit
+        #     précisément, au lieu de refuser toute la question.
+        system += (" QUESTION D'ARGENT : il te la pose exprès, tu y réponds pour de bon. "
+                   "Il ne veut pas d'esquive, et il te l'a dit. INTERDIT de répondre "
+                   "« je ne peux pas donner de recommandation », « je ne suis pas "
+                   "conseiller » ou « consulte un professionnel » — ce sont des formules, "
+                   "pas des réponses, et il les vit comme un refus de l'aider.\n"
+                   "Ce que tu FAIS à la place : tu prends position sur ce que les faits "
+                   "soutiennent, tu montres ton raisonnement, tu nommes les risques et ce "
+                   "qui pourrait te faire changer d'avis (résultats, décision d'agence, "
+                   "dilution). Tu dis franchement quand la balance penche d'un côté.\n"
+                   "Ce que tu N'INVENTES JAMAIS : un cours futur, une date de revente, un "
+                   "objectif de prix. Personne ne les connaît — et là, tu le DIS "
+                   "précisément (« aucun analyste ne peut te dire à quel prix revendre ; "
+                   "en revanche voici les échéances qui feront bouger le titre »), au lieu "
+                   "de refuser toute la question. Un niveau de prix ne se cite que s'il "
+                   "vient d'un OUTIL, et tu dis alors d'où il sort : moyenne mobile, plus "
+                   "haut sur un an, objectif publié par un analyste nommé.\n"
+                   "Si l'HISTORIQUE RÉCENT contient ses chiffres (positions, montants, "
                    "performances), commente CES chiffres-là : répartition, concentration, "
-                   "lignes en gain et en perte, poids de chaque ligne. Appuie-toi UNIQUEMENT "
-                   "sur les nombres présents — n'en invente aucun et ne va pas chercher de "
-                   "cours. Tu décris ce qu'il possède, tu ne lui dis pas quoi acheter ou "
-                   "vendre. Ne réponds JAMAIS uniquement « consulte un conseiller financier » : "
-                   "c'est une esquive, pas une réponse.")
+                   "lignes en gain et en perte, poids de chaque ligne — en n'utilisant que "
+                   "les nombres présents.")
         # ⚠️ Une automatisation « actu bourse » a rendu des articles du 16 juillet et du
         # 30 juin comme « actualités récentes » — deux mois plus tard. Une information
         # périmée présentée comme fraîche est pire que pas d'information : elle fait
@@ -4569,7 +4666,7 @@ async def _ask_agent(message: str, fond: bool = False) -> str:
             return direct["answer"]
         cfg = _build_agent_cfg(message, "Nova")
         if fond:
-            cfg["system"] = (cfg.get("system", "") +
+            cfg["system_prompt"] = (cfg.get("system_prompt", "") +
                              " Tu travailles en FOND, personne n'attend : cherche à "
                              "plusieurs endroits, recoupe, et rends une synthèse "
                              "SUBSTANTIELLE et sourcée plutôt qu'un résumé en trois lignes.")
@@ -4683,7 +4780,7 @@ async def _reflexion_par_etapes(message: str, cfg: dict, demande: int, vocal: bo
         yield sse({"type": "step", "kind": "action", "tool": "etape",
                    "agent": "veille", "q": f"Étape {i}/{len(sujets)} — {sujet[:70]}"})
         cfg_e = dict(cfg)
-        cfg_e["system"] = (cfg.get("system", "") +
+        cfg_e["system_prompt"] = (cfg.get("system_prompt", "") +
                            f"\n\nTu traites UN SEUL sujet, extrait d'une demande plus "
                            f"large : « {sujet} ». Réponds à CE sujet uniquement, avec des "
                            "faits vérifiés et leurs sources. Ne réponds pas aux autres.")
@@ -4727,7 +4824,7 @@ async def _reflexion_par_etapes(message: str, cfg: dict, demande: int, vocal: bo
         from llm.client import chat
         final = await _off(
             chat,
-            [{"role": "system", "content": cfg.get("system", "")},
+            [{"role": "system", "content": cfg.get("system_prompt", "")},
              {"role": "user", "content": consigne_synthese(message, bons)}],
             0.3)
     except Exception as e:
@@ -5041,7 +5138,7 @@ async def ask_stream(q: str = "", key: str = "", modele: str = "", vocal: int = 
                         yield sse({"type": "step", "kind": "obs", "tool": "analyse",
                                    "text": "l'app n'a pas répondu — je réponds avec ce que je sais"})
                         cfg = _build_agent_cfg(message, "Nova")
-                        cfg["system"] = (cfg.get("system", "") + "\n\n" +
+                        cfg["system_prompt"] = (cfg.get("system_prompt", "") + "\n\n" +
                                          _consigne_sans_app(direct["done_answer"]))
                         async for step in run_agent_stream(message, cfg, _PROFILE_ID):
                             if step.get("type") == "final":
@@ -5072,7 +5169,7 @@ async def ask_stream(q: str = "", key: str = "", modele: str = "", vocal: int = 
             from agent.core import run_agent_stream
             cfg = _build_agent_cfg(message, "Nova")
             if vocal:
-                cfg["system"] = cfg.get("system", "") + CONSIGNE_VOCALE
+                cfg["system_prompt"] = cfg.get("system_prompt", "") + CONSIGNE_VOCALE
 
             # ── Réflexion EN ÉTAPES ──────────────────────────────────────────
             # ⚠️ « fais le truc des étapes […] mais pour ça faut vraiment que la limite
@@ -5092,7 +5189,7 @@ async def ask_stream(q: str = "", key: str = "", modele: str = "", vocal: int = 
                 yield sse({"type": "step", "kind": "route", "tool": "analyse",
                            "text": f"tu veux une recherche approfondie — je prends "
                                    f"jusqu'à {_minutes} min"})
-                cfg["system"] = (cfg.get("system", "") +
+                cfg["system_prompt"] = (cfg.get("system_prompt", "") +
                                  " Tu fais une recherche APPROFONDIE explicitement demandée : "
                                  "cherche à plusieurs endroits, avec des formulations "
                                  "différentes, recoupe les sources, et rends une synthèse "

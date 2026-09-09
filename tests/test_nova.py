@@ -12246,6 +12246,78 @@ def test_aucune_fonction_appelee_dans_le_vide():
     check_true("« _PICTOS » aussi", re.search(r"const\s+_PICTOS\b", js) is not None)
 
 
+def test_six_consignes_ecrites_dans_le_vide():
+    """« je veux pas qu'elle me dise que c'est pas à elle, bon sang : je pose une
+    question, elle répond, même si c'est la bourse. »
+
+    Sa question — « dis moi si il faut acheter 2crsi et quand et revendre à quel prix » —
+    n'était PAS reconnue comme une question de bourse. Nova recevait donc, mot pour mot,
+    la consigne « INTERDIT : ne parle pas de bourse, actions, investissement ». D'où
+    « je ne peux pas te donner de recommandation » : ce n'était pas une politique de
+    modèle, c'était MA consigne, appliquée à l'envers.
+
+    La cause : _FINANCE_WORDS est une liste de NOMS écrits en dur. « valneva » y figurait,
+    « 2crsi » et « dbv » non — le défaut de nom figé que ce projet paie depuis le début.
+    On reconnaît désormais la FORME de la demande.
+
+    ⚠️ ET EN VÉRIFIANT, J'AI TROUVÉ PIRE, QUE J'AI HEURTÉ MOI-MÊME. _build_agent_cfg rend
+    la clé « system_prompt » (c'est celle que agent/core.py lit, l. 104). Or SIX endroits
+    d'api/agent.py écrivaient et lisaient cfg["system"] — une clé qui n'existe pas. Toutes
+    ces consignes partaient donc dans le vide, depuis toujours :
+      • la consigne VOCALE (d'où les rapports écrits récités à voix haute) ;
+      • la consigne « recherche approfondie » ;
+      • la consigne « l'app est en panne, réponds avec ce que tu sais » ;
+      • les DEUX consignes du mode étapes, que je venais d'écrire — chaque sous-agent
+        travaillait donc sans savoir qu'il ne traitait qu'un sujet ;
+      • la synthèse finale, qui recevait un prompt système VIDE.
+    """
+    import inspect
+    from config import config as cfg_g
+
+    # 1. Sa question est enfin reconnue — par sa forme, pas par une liste de noms.
+    for q in ("dis moi si il faut acheter 2crsi et quand et revendre a quel prix",
+              "faut il acheter des actions DBV maintenant",
+              "hafner energie t'en pense quoi faut acheter maintenant ?",
+              "je dois revendre mes parts ?",
+              "le cours de AL2SI aujourd'hui"):
+        check_true(f"« {q[:34]} » est une question de bourse", A._finance_intent(q))
+    # …sans confondre avec la vie courante : c'est ce qui rendait la liste de noms
+    # nécessaire, et c'est ce qu'il ne faut pas casser en l'enlevant.
+    for q in ("acheter du pain en rentrant", "il faut que j'achete un cadeau pour ma copine",
+              "achete moi des fleurs", "je vais vendre mon velo",
+              "rappelle moi d'acheter des courses", "quelle heure il est",
+              "resume mes mails"):
+        check(f"« {q[:34]} » n'est PAS de la bourse", A._finance_intent(q), False)
+
+    # 2. Et elle RÉPOND, au lieu de renvoyer vers un conseiller.
+    fin = A._build_agent_cfg("faut il acheter 2crsi maintenant", "Nova")["system_prompt"]
+    check_true("la consigne « tu réponds pour de bon » est là", "tu y réponds pour de bon" in fin)
+    check_true("l'esquive est explicitement interdite",
+               "je ne peux pas donner de recommandation" in fin)
+    check("…et l'interdiction de parler bourse a disparu", "ne parle pas de bourse" in fin, False)
+    # Ce qui la protège vraiment reste entier : aucun chiffre inventé.
+    check_true("un cours futur reste interdit", "tu N'INVENTES JAMAIS" in fin)
+    check_true("…et un niveau de prix doit venir d'un outil", "vient d'un OUTIL" in fin)
+    # Une question ordinaire ne reçoit toujours PAS de consigne financière.
+    ord_ = A._build_agent_cfg("quelle heure il est", "Nova")["system_prompt"]
+    check("pas de finance sur une question anodine", "tu y réponds pour de bon" in ord_, False)
+
+    # 3. ⚠️ LA CLÉ. Une consigne ajoutée doit RÉELLEMENT atteindre le modèle.
+    src = inspect.getsource(A)
+    check("plus aucune écriture dans cfg['system']", 'cfg["system"] =' in src, False)
+    check("plus aucune lecture de cfg['system']", 'cfg.get("system", "")' in src, False)
+    # La preuve par l'usage : on ajoute une consigne, elle doit se retrouver dans la clé
+    # que agent/core.py lit vraiment.
+    c = A._build_agent_cfg("quelle heure il est", "Nova")
+    c["system_prompt"] = c.get("system_prompt", "") + " MARQUEUR_DE_TEST"
+    check_true("une consigne ajoutée arrive bien au modèle",
+               "MARQUEUR_DE_TEST" in c["system_prompt"])
+    # Et c'est bien cette clé-là que la boucle lit.
+    import agent.core as C
+    check_true("agent/core lit system_prompt",
+               'agent_config.get("system_prompt"' in inspect.getsource(C))
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -12294,6 +12366,7 @@ if __name__ == "__main__":
                test_le_refus_du_modele_pris_pour_un_sujet,
                test_le_css_reste_entier_et_l_accueil_avoue_ses_pannes,
                test_aucune_fonction_appelee_dans_le_vide,
+               test_six_consignes_ecrites_dans_le_vide,
                test_conversations_partagees_entre_appareils,
                test_une_tache_de_fond_ne_meurt_plus_en_silence,
                test_un_accord_ne_declenche_que_ce_qu_il_confirme,
