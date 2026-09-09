@@ -11832,6 +11832,66 @@ def test_les_etapes_et_la_fiole_qui_decide():
     check_true("le nombre part au serveur", 'ETAPES > 1 ? "&etapes=" + ETAPES' in rendu)
 
 
+def test_la_fiole_disait_100_pour_cent_parce_qu_elle_oubliait():
+    """« c'est faux ce qui y a écrit non ? » — devant :
+
+        Énergie restante aujourd'hui : 100 %
+        Gemini 75/1M · Groq 241/200k
+
+    Après une JOURNÉE entière d'utilisation. Il avait raison, et la cause était écrite
+    en tête de llm/usage.py depuis le début : sans SUPABASE_DB_URL, la consommation vit
+    dans data/groq_usage.json, sur un disque que Render EFFACE. L'offre gratuite endort
+    l'instance au bout de ~15 min sans requête ; au réveil, le conteneur est neuf et le
+    compteur repart à zéro.
+
+    La jauge n'affichait donc pas « 100 % » parce qu'il n'avait rien consommé, mais
+    parce qu'elle avait OUBLIÉ. Et elle écrivait « aujourd'hui » à côté.
+
+    ⚠️ CE N'EST PAS QU'UN DÉFAUT D'AFFICHAGE. Il avait posé sa condition lui-même :
+    « pour ça faut vraiment que la limite dans la fiole soit fiable ». Le garde-fou des
+    étapes s'appuyait dessus — et un compteur qui oublie SOUS-ESTIME toujours ce qui a
+    été consommé : il annonce de la marge au moment précis où c'est le plus faux.
+    """
+    import inspect
+    from llm import usage as U
+    import agent.etapes as E
+
+    check_true("le module sait s'il est durable", callable(getattr(U, "durable", None)))
+    check_true("…et depuis quand il compte", callable(getattr(U, "compte_depuis", None)))
+    # Sans Supabase, ce compteur ne survit pas — c'est SA situation aujourd'hui.
+    from config import config as cfg
+    avant = getattr(cfg, "SUPABASE_DB_URL", "")
+    try:
+        cfg.SUPABASE_DB_URL = ""
+        check("sans base durable, le compteur ne l'est pas", U.durable(), False)
+    finally:
+        cfg.SUPABASE_DB_URL = avant
+
+    # L'endpoint le DIT, au lieu d'afficher un pourcentage indatable.
+    src = inspect.getsource(A.usage)
+    check_true("l'endpoint publie la durabilité", '"durable"' in src)
+    check_true("…et depuis combien de temps il compte", '"depuis_h"' in src)
+
+    # L'interface ne dit plus « aujourd'hui » quand elle mesure depuis le dernier réveil.
+    ui = open("ui/nova.html", encoding="utf-8").read()
+    rendu = re.sub(r"(?m)^[ \t]*/\*.*?\*/", "", ui, flags=re.S)
+    rendu = re.sub(r"<!--.*?-->", "", rendu, flags=re.S)
+    jauge = rendu.split("async function refreshUsage")[1].split("refreshUsage();")[0]
+    check_true("la mesure est datée", "dernier réveil de Render" in jauge)
+    check("plus de « aujourd'hui » affirmé sans condition",
+          'Énergie restante aujourd\'hui : "' in jauge, False)
+    check_true("une jauge peu fiable se voit", ".usage.flou{" in rendu)
+    check_true("…et le pourcentage porte un ~", '.usage.flou .pct::after{ content:"~"' in rendu)
+
+    # Et le garde-fou des étapes en tient compte : on ne dépense pas sur un chiffre
+    # dont on SAIT qu'il est optimiste.
+    fiable = {"reste": 0.9, "mesurable": True, "fiable": True, "detail": "90 %"}
+    flou = {"reste": 0.9, "mesurable": True, "fiable": False, "detail": "~90 % (oublié)"}
+    check("compteur fiable : les 5 étapes demandées", E.combien(5, fiable)["n"], 5)
+    check("compteur qui oublie : on plafonne à 3", E.combien(5, flou)["n"], 3)
+    check_true("…et on dit pourquoi", "je me limite donc" in E.combien(5, flou)["raison"])
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -11874,6 +11934,7 @@ if __name__ == "__main__":
                test_notion_n_importait_que_le_titre,
                test_openrouter_et_la_limite_mistral_qui_dure,
                test_les_etapes_et_la_fiole_qui_decide,
+               test_la_fiole_disait_100_pour_cent_parce_qu_elle_oubliait,
                test_conversations_partagees_entre_appareils,
                test_une_tache_de_fond_ne_meurt_plus_en_silence,
                test_un_accord_ne_declenche_que_ce_qu_il_confirme,

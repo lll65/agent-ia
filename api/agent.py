@@ -263,6 +263,7 @@ def _remember_fact(message: str) -> list:
         return []
     try:
         get_memory().remember(_PROFILE_ID, "user", message.strip()[:200])
+        _DERNIER_USER[0] = message.strip()[:300]   # évite la réécriture plus bas
     except Exception:
         pass
     faits = []
@@ -3927,10 +3928,25 @@ def _log_activity(message: str) -> None:
         pass
 
 
+# Le dernier message déjà écrit — pour ne pas l'inscrire deux fois dans le même tour.
+_DERNIER_USER = [""]
+
+
 def _remember_user(message: str) -> None:
-    """Trace le message dans la mémoire (le chemin direct ne passe pas par run_agent)."""
+    """Trace le message dans la mémoire (le chemin direct ne passe pas par run_agent).
+
+    ⚠️ Sans garde, une question PERSONNELLE était mémorisée DEUX FOIS par tour :
+    _remember_fact l'écrit déjà quand elle parle de lui, puis ce chemin la réécrit.
+    Le doublon ne casse rien mais il occupe deux places dans le contexte du tour
+    suivant — et Nova a d'autant moins de place pour ce qui compte que sa mémoire
+    récente est courte.
+    """
+    t = str(message or "").strip()[:300]
+    if not t or t == _DERNIER_USER[0]:
+        return
     try:
-        get_memory().remember(_PROFILE_ID, "user", message.strip()[:300])
+        get_memory().remember(_PROFILE_ID, "user", t)
+        _DERNIER_USER[0] = t
     except Exception:
         pass
 
@@ -4646,7 +4662,14 @@ async def _reflexion_par_etapes(message: str, cfg: dict, demande: int, vocal: bo
                            "faits vérifiés et leurs sources. Ne réponds pas aux autres.")
         texte = ""
         try:
-            async for step in run_agent_stream(sujet, cfg_e, _PROFILE_ID):
+            # ⚠️ CHAQUE SOUS-AGENT ÉCRIT DANS SON PROPRE BROUILLON, PAS DANS SA
+            # CONVERSATION. `run_agent_stream` mémorise sa réponse finale sous
+            # l'identifiant qu'on lui passe : avec _PROFILE_ID, les cinq réponses
+            # PARTIELLES seraient tombées dans l'historique de Lohan — cinq fragments
+            # qu'il n'a jamais vus, présentés au tour suivant comme des choses que Nova
+            # lui aurait dites. Seule la synthèse finale a le droit d'être retenue, et
+            # elle l'est plus bas, explicitement.
+            async for step in run_agent_stream(sujet, cfg_e, f"{_PROFILE_ID}:etape{i}"):
                 if step.get("type") == "final":
                     texte = str(step.get("answer", ""))
                 elif step.get("type") == "observation":
@@ -5872,6 +5895,13 @@ async def usage(key: str = ""):
     # Aucune clé mesurable : on le DIT plutôt que d'afficher 100 % d'une énergie qui
     # n'existe pas. L'interface montrera « — ».
     out["mesurable"] = tl > 0
+    # ⚠️ ET ON DIT DEPUIS QUAND ON COMPTE. « Groq 241/200k » après une journée entière :
+    # il a eu raison de trouver ça faux. Sans SUPABASE_DB_URL, la consommation vit sur le
+    # disque éphémère de Render, effacé à chaque réveil de l'instance — la jauge affichait
+    # donc « 100 % » en permanence, non parce qu'il n'avait rien consommé, mais parce
+    # qu'elle avait oublié. Un pourcentage qu'on ne peut pas dater n'est pas une mesure.
+    out["durable"] = U.durable()
+    out["depuis_h"] = round(U.compte_depuis(), 1)
     return out
 
 
