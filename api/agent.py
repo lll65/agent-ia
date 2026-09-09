@@ -4581,9 +4581,145 @@ async def ask_post(req: AskRequest, request: Request):
     return {"answer": answer}
 
 
+# ── Réflexion en étapes : décider, puis exécuter ─────────────────────────────
+def _veut_des_etapes(message: str, demande: int) -> bool:
+    """Faut-il découper cette demande ?
+
+    `demande` vient du bouton de l'interface (« réfléchis en N étapes »). Un clic est
+    une intention explicite : on l'honore, sous réserve de l'énergie. Sans clic, on ne
+    découpe que les demandes qui portent VRAIMENT plusieurs sujets — découper « quelle
+    heure il est » brûlerait son quota pour rien.
+    """
+    from agent.etapes import merite_des_etapes
+    if int(demande or 0) > 1:
+        return True
+    return merite_des_etapes(message)
+
+
+async def _reflexion_par_etapes(message: str, cfg: dict, demande: int, vocal: bool):
+    """Découpe, traite chaque sujet, rassemble. Émet les événements SSE au fil de l'eau.
+
+    ⚠️ CHAQUE ÉTAPE EST UN VRAI APPEL, avec ses vrais outils. Ce n'est pas une mise en
+    scène : la constellation affiche des étapes qui ont réellement eu lieu, et une étape
+    qui échoue est comptée comme un échec, pas effacée.
+    """
+    import json as _json
+    from agent.core import run_agent_stream
+    from agent.etapes import (budget, combien, decoupe, consigne_synthese,
+                              resultats_utiles, rapport)
+
+    def sse(d):
+        return f"data: {_json.dumps(d, ensure_ascii=False)}\n\n"
+
+    b = await _off(budget)
+    plan = combien(demande, b)
+    _n = plan["n"]
+    yield sse({"type": "step", "kind": "route", "tool": "analyse",
+               "text": (f"je réfléchis en {_n} étapes — {plan['raison']}" if _n > 1
+                        else f"une seule passe — {plan['raison']}")})
+
+    if plan["n"] <= 1:
+        # Pas de quoi découper : on fait le tour normal, sans prétendre le contraire.
+        async for step in run_agent_stream(message, cfg, _PROFILE_ID):
+            async for ev in _relaie_etape(step, sse):
+                yield ev
+        yield sse({"type": "done"})
+        return
+
+    def _decoupeur(sysmsg, user):
+        from llm.client import chat
+        return chat([{"role": "system", "content": sysmsg},
+                     {"role": "user", "content": user}], temperature=0.1, niveau="rapide")
+
+    sujets = await _off(decoupe, message, plan["n"], _decoupeur)
+    yield sse({"type": "step", "kind": "route", "tool": "analyse",
+               "text": f"{len(sujets)} sujet(s) : " + " · ".join(s[:40] for s in sujets)})
+
+    resultats = []
+    for i, sujet in enumerate(sujets, 1):
+        yield sse({"type": "step", "kind": "action", "tool": "etape",
+                   "agent": "veille", "q": f"Étape {i}/{len(sujets)} — {sujet[:70]}"})
+        cfg_e = dict(cfg)
+        cfg_e["system"] = (cfg.get("system", "") +
+                           f"\n\nTu traites UN SEUL sujet, extrait d'une demande plus "
+                           f"large : « {sujet} ». Réponds à CE sujet uniquement, avec des "
+                           "faits vérifiés et leurs sources. Ne réponds pas aux autres.")
+        texte = ""
+        try:
+            async for step in run_agent_stream(sujet, cfg_e, _PROFILE_ID):
+                if step.get("type") == "final":
+                    texte = str(step.get("answer", ""))
+                elif step.get("type") == "observation":
+                    yield sse({"type": "step", "kind": "obs", "tool": step.get("tool", ""),
+                               "agent": _agent_pour_outil(step.get("tool", "")),
+                               "text": apercu(str(step.get("result", "")), 120)})
+        except Exception as e:
+            # ⚠️ Une étape qui plante n'arrête PAS les autres : c'est tout l'intérêt de
+            # les faire l'une après l'autre plutôt que d'un bloc.
+            logger.warning(f"[étapes] « {sujet[:40]} » a échoué : {type(e).__name__}")
+            texte = f"❌ {type(e).__name__}"
+        resultats.append({"sujet": sujet, "texte": texte})
+        yield sse({"type": "step", "kind": "obs", "tool": "etape", "agent": "veille",
+                   "text": apercu(texte or "(rien)", 120)})
+
+    bons = resultats_utiles(resultats)
+    if not bons:
+        yield sse({"type": "answer", "text": rapport(message, resultats)})
+        yield sse({"type": "model", "name": _modele_utilise()})
+        yield sse({"type": "done"}); return
+
+    # Dernière passe : rassembler. Si elle échoue, on rend le travail réel plutôt qu'une
+    # excuse — chaque étape a coûté un appel.
+    yield sse({"type": "step", "kind": "action", "tool": "synthese",
+               "agent": "veille", "q": f"Je rassemble {len(bons)} étape(s)"})
+    final = ""
+    try:
+        from llm.client import chat
+        final = await _off(
+            chat,
+            [{"role": "system", "content": cfg.get("system", "")},
+             {"role": "user", "content": consigne_synthese(message, bons)}],
+            0.3)
+    except Exception as e:
+        logger.warning(f"[étapes] synthèse impossible : {type(e).__name__}")
+    from agent.core import _texte_lisible
+    final = _texte_lisible(final or "")
+    if not final.strip():
+        final = rapport(message, resultats, "aucun modèle n'a pu rassembler")
+    elif len(bons) < len(resultats):
+        rates = [r["sujet"] for r in resultats if r not in bons]
+        final += ("\n\n⚠️ **Sans réponse :** " + ", ".join(f"« {x} »" for x in rates)
+                  + " — je ne te dis donc pas qu'il n'y a rien à en dire.")
+    await _off(_remember_user, message)
+    await _off(_remember_answer, final)
+    yield sse({"type": "answer", "text": final})
+    yield sse({"type": "model", "name": _modele_utilise()})
+    yield sse({"type": "done"})
+
+
+async def _relaie_etape(step: dict, sse):
+    """Traduit un événement de run_agent_stream en événement SSE."""
+    t = step.get("type")
+    if t == "final":
+        yield sse({"type": "answer", "text": step.get("answer", "")})
+        yield sse({"type": "model", "name": _modele_utilise()})
+    elif t == "action":
+        p = step.get("params", {}) or {}
+        yield sse({"type": "step", "kind": "action", "tool": step.get("tool", ""),
+                   "agent": _agent_pour_outil(step.get("tool", "")),
+                   "q": str(p.get("query") or p.get("command") or "")[:80]})
+    elif t == "observation":
+        yield sse({"type": "step", "kind": "obs", "tool": step.get("tool", ""),
+                   "agent": _agent_pour_outil(step.get("tool", "")),
+                   "text": apercu(str(step.get("result", "")), 140)})
+    elif t == "thought":
+        yield sse({"type": "step", "kind": "thought",
+                   "text": apercu(str(step.get("text", "")), 140)})
+
+
 @router.get("/ask/stream")
 async def ask_stream(q: str = "", key: str = "", modele: str = "", vocal: int = 0,
-                     sid: str = ""):
+                     sid: str = "", etapes: int = 0):
     """Streaming SSE : émet en direct les étapes du raisonnement + la réponse (pour /nova)."""
     import json as _json
     from fastapi.responses import StreamingResponse
@@ -4808,6 +4944,16 @@ async def ask_stream(q: str = "", key: str = "", modele: str = "", vocal: int = 
             # PAS exécutée (tu croyais ton mail parti), et elle restait armée cinq
             # minutes — pour se déclencher plus tard, silencieusement, sur une phrase
             # sans rapport. Deux fautes symétriques, et la seconde est la pire.
+            # ⚠️ UN CLIC PRIME SUR UNE DEVINETTE. Sa question de rentrée à Pau — sept
+            # sujets, dix lignes — a été classée « tu me parles simplement, je note ça
+            # sur toi » : le routage s'est trompé, et elle a répondu de mémoire sans
+            # lancer une seule recherche. Quand il APPUIE sur 🧩, il dit explicitement
+            # ce qu'il veut ; aucune heuristique n'a à passer devant.
+            if int(etapes or 0) > 1:
+                async for ev in _reflexion_par_etapes(message, _build_agent_cfg(message, "Nova"),
+                                                      etapes, bool(vocal)):
+                    yield ev
+                return
             if _action_en_attente(_PROFILE_ID, "web") and _is_smalltalk(message):
                 pass                      # on laisse le chemin direct trancher
             elif _is_smalltalk(message):
@@ -4877,6 +5023,18 @@ async def ask_stream(q: str = "", key: str = "", modele: str = "", vocal: int = 
             cfg = _build_agent_cfg(message, "Nova")
             if vocal:
                 cfg["system"] = cfg.get("system", "") + CONSIGNE_VOCALE
+
+            # ── Réflexion EN ÉTAPES ──────────────────────────────────────────
+            # ⚠️ « fais le truc des étapes […] mais pour ça faut vraiment que la limite
+            # dans la fiole soit fiable ». C'est exactement la bonne condition : chaque
+            # étape est un appel de plus, et ses quotas gratuits saturent déjà. Le
+            # nombre d'étapes est donc décidé par l'ÉNERGIE MESURÉE, jamais par l'envie —
+            # et quand elle n'est pas mesurable, on n'en fait qu'une.
+            if _veut_des_etapes(message, etapes):
+                async for ev in _reflexion_par_etapes(message, cfg, etapes, vocal):
+                    yield ev
+                return
+
             _minutes = recherche_approfondie(message)
             if _minutes:
                 # On le DIT avant de commencer : sinon il regarde un écran tourner sans
@@ -5310,7 +5468,13 @@ def _diag_un_llm(nom: str) -> dict:
     d["latence_s"] = round(_t.monotonic() - t0, 1)
     # Le seuil qui compte n'est pas un chiffre arbitraire : c'est le délai réellement
     # appliqué en usage normal. Au-delà, ce fournisseur sera abandonné même s'il marche.
-    from llm.client import TIMEOUT_LLM as _TL
+    from llm.client import TIMEOUT_LLM as _TL, note_panne, en_panne_depuis as _en_panne_depuis
+    # On enregistre AVANT de conseiller : c'est la durée de la panne qui décide si
+    # « ça se débloque tout seul » est vrai ou non.
+    try:
+        note_panne(nom, not d["ok"])
+    except Exception as ex:
+        logger.info(f"[diag] durée de panne non suivie ({type(ex).__name__})")
     if d["ok"] and d["latence_s"] > _TL:
         # ⚠️ Conseil COMPLET : LLM_TIMEOUT seul ne suffit pas. Le budget de la chaîne est
         # partagé entre MIN_ESSAIS fournisseurs, donc le 1er n'obtient jamais plus que
@@ -5323,12 +5487,28 @@ def _diag_un_llm(nom: str) -> dict:
                         f"fournisseurs) et AGENT_TIMEOUT={vise * 3 + 10}.")
     elif not d["ok"] and not d["conseil"]:
         e = d["erreur"].lower()
+        heures = _en_panne_depuis(nom)
+        d["en_panne_depuis_h"] = round(heures, 1)
         if "401" in e or "unauthorized" in e or "invalid" in e:
             d["conseil"] = "clé refusée — régénère-la"
         elif "403" in e:
             d["conseil"] = "accès refusé — l'API n'est peut-être pas activée pour ce compte"
         elif "429" in e or "rate" in e:
-            d["conseil"] = "limite atteinte pour le moment — ça se débloque tout seul"
+            # ⚠️ « mistral ça fait 2 jours que la limite est pleine » — et on lui
+            # répondait « ça se débloque tout seul ». Au bout de deux jours c'est FAUX,
+            # et c'est la quatrième fois qu'une phrase rassurante l'envoie attendre au
+            # lieu d'agir. Une limite qui dure n'est pas une limite : c'est un compte à
+            # activer.
+            if heures >= 6:
+                d["conseil"] = (
+                    f"429 sans interruption depuis **{int(heures)} h** — ce n'est donc PAS "
+                    "une limite passagère, et ça ne se débloquera pas tout seul. Chez "
+                    "Mistral, un 429 permanent veut presque toujours dire que le compte "
+                    "n'est pas ACTIVÉ : va sur console.mistral.ai → Workspace → Billing "
+                    "et termine la vérification (gratuite, par téléphone). Sinon, "
+                    "régénère la clé.")
+            else:
+                d["conseil"] = "limite atteinte pour le moment — ça se débloque tout seul"
         elif "timed out" in e or "timeout" in e:
             # ⚠️ On a été PATIENT (bien au-delà de l'usage normal) : si ça n'a pas suffi,
             # le problème n'est pas un réglage de délai, et il ne sert à rien d'augmenter

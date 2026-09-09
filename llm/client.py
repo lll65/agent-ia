@@ -458,6 +458,66 @@ def cles_secondaires() -> dict:
     return out
 
 
+# ── Depuis QUAND un fournisseur est-il en panne ? ─────────────────────────────
+# ⚠️ « mistral ça fait 2 jours que la limite est pleine ». Et le diagnostic répondait,
+# imperturbable : « limite atteinte pour le moment — ça se débloque tout seul ». Au bout
+# de deux jours, c'est faux, et c'est la quatrième fois qu'un message rassurant l'envoie
+# attendre au lieu d'agir. Un 429 qui dure n'est pas une limite passagère : chez Mistral,
+# c'est le compte qui n'est pas activé (vérification par téléphone) — ça ne se débloquera
+# jamais tout seul.
+#
+# On note donc la PREMIÈRE panne consécutive de chaque fournisseur, et on la garde sur
+# disque : Render redémarre, et un compteur qui repart de zéro à chaque réveil ne peut
+# rien mesurer qui dure.
+_PANNES = {}
+_PANNES_LU = [False]
+
+
+def _boutique_pannes():
+    from agent.entrepot import Entrepot
+    return Entrepot("nova_pannes", "data/pannes.json", cle="id")
+
+
+def _charge_pannes() -> dict:
+    if not _PANNES_LU[0]:
+        _PANNES_LU[0] = True
+        try:
+            items, _ = _boutique_pannes().charge()
+            for it in items or []:
+                if it.get("id") and it.get("depuis"):
+                    _PANNES[str(it["id"])] = float(it["depuis"])
+        except Exception as e:
+            logger.info(f"[pannes] relecture impossible ({type(e).__name__})")
+    return _PANNES
+
+
+def note_panne(nom: str, en_panne: bool) -> None:
+    """Enregistre qu'un fournisseur répond, ou qu'il est en panne depuis un moment."""
+    import time as _t
+    p = _charge_pannes()
+    if not en_panne:
+        if p.pop(nom, None) is not None:
+            try:
+                _boutique_pannes().ecrit_un({"id": nom, "depuis": 0})
+            except Exception:
+                pass
+        return
+    if nom in p:
+        return                       # déjà noté : on garde la PREMIÈRE date, pas la dernière
+    p[nom] = _t.time()
+    try:
+        _boutique_pannes().ecrit_un({"id": nom, "depuis": p[nom]})
+    except Exception as e:
+        logger.info(f"[pannes] {nom} non enregistré ({type(e).__name__})")
+
+
+def en_panne_depuis(nom: str) -> float:
+    """Heures écoulées depuis la première panne consécutive. 0 si tout va bien."""
+    import time as _t
+    d = _charge_pannes().get(nom)
+    return 0.0 if not d else max(0.0, (_t.time() - float(d)) / 3600.0)
+
+
 def cles_presentes() -> dict:
     """{fournisseur: clé} — uniquement ceux dont la clé est RÉELLEMENT renseignée.
 
@@ -995,6 +1055,68 @@ def _nvidia_chat(messages: list, model: str, temperature: float, niveau: str = "
     raise RuntimeError(f"NVIDIA : aucun modèle accessible ({derniere})")
 
 
+# ── OpenRouter : quels modèles sont RÉELLEMENT gratuits, aujourd'hui ──────────
+# ⚠️ « pourquoi OpenRouter ça marche pas ? » Parce que la liste des modèles gratuits
+# était ÉCRITE EN DUR :
+#     meta-llama/llama-3.3-70b-instruct:free, deepseek/deepseek-chat:free,
+#     qwen/qwen-2.5-72b-instruct:free, google/gemma-2-9b-it:free, …
+# Cinq noms de 2025. OpenRouter fait payer les uns, a retiré les autres, et le message
+# reçu le dit mot pour mot : « This model is unavailable for free. The paid version is
+# available ». Il vient d'ajouter sa clé, elle est bonne, et rien ne répondait.
+#
+# C'est le MÊME défaut que les quatre modèles de vision Groq devenus 404 en bloc, et que
+# le modèle NVIDIA retiré avec un 410 : un nom figé dans le code, qui a cessé d'exister
+# ailleurs. On DEMANDE donc le catalogue, et on garde ce dont OpenRouter dit lui-même
+# que le prix est zéro.
+_OR_GRATUITS = {"liste": [], "vu": 0.0}
+_OR_TTL = 3600.0            # une heure : le catalogue bouge, mais pas à la minute
+
+
+def _or_est_gratuit(m: dict) -> bool:
+    """Le prix annoncé est-il nul ? On lit le tarif, on ne se fie pas au suffixe.
+
+    Un « :free » dans le nom est une convention, pas une garantie — c'est précisément
+    ce qui a menti pendant des semaines. Le champ `pricing` fait foi.
+    """
+    p = (m or {}).get("pricing")
+    # Pas de tarif annoncé = on ne SAIT pas. On ne suppose pas que c'est offert : le
+    # supposer, c'est reproduire exactement l'erreur des « :free » écrits en dur.
+    if not isinstance(p, dict) or "prompt" not in p:
+        return False
+    try:
+        return all(float(p.get(k, 0) or 0) == 0.0 for k in ("prompt", "completion"))
+    except (TypeError, ValueError):
+        return False
+
+
+def modeles_openrouter_gratuits(niveau: str = "equilibre") -> list:
+    """Les identifiants gratuits du catalogue OpenRouter, les plus adaptés d'abord."""
+    import time as _t
+    if _OR_GRATUITS["liste"] and (_t.time() - _OR_GRATUITS["vu"]) < _OR_TTL:
+        return _OR_GRATUITS["liste"]
+    try:
+        import requests
+        r = requests.get("https://openrouter.ai/api/v1/models", timeout=15,
+                         headers={"Authorization": f"Bearer {config.OPENROUTER_API_KEY}"})
+        if r.status_code != 200:
+            logger.info(f"[LLM] catalogue OpenRouter : HTTP {r.status_code}")
+            return _OR_GRATUITS["liste"]
+        items = (r.json() or {}).get("data") or []
+        # Un modèle sans contexte utilisable ne sert à rien pour un agent : la boucle
+        # ReAct envoie facilement 4 000 jetons de consignes et d'observations.
+        libres = [m for m in items if _or_est_gratuit(m)
+                  and int((m.get("context_length") or 0)) >= 8000]
+        ids = sorted((str(m.get("id")) for m in libres if m.get("id")),
+                     key=lambda x: -_score_niveau(x, niveau))
+        if ids:
+            _OR_GRATUITS["liste"], _OR_GRATUITS["vu"] = ids, _t.time()
+            logger.info(f"[LLM] OpenRouter : {len(ids)} modèle(s) gratuit(s) trouvé(s).")
+        return ids or _OR_GRATUITS["liste"]
+    except Exception as e:
+        logger.info(f"[LLM] catalogue OpenRouter illisible ({type(e).__name__})")
+        return _OR_GRATUITS["liste"]
+
+
 def _openrouter_chat(messages: list, model: str, temperature: float) -> str:
     """OpenRouter — une clé, des dizaines de modèles (dont beaucoup de gratuits, suffixe « :free »).
     API compatible OpenAI. Sert de filet universel quand les autres fournisseurs tombent."""
@@ -1005,14 +1127,20 @@ def _openrouter_chat(messages: list, model: str, temperature: float) -> str:
                     base_url="https://openrouter.ai/api/v1",
                     timeout=_timeout(TIMEOUT_LLM), max_retries=0)
 
+    # Le catalogue RÉEL d'abord ; les noms écrits en dur ne servent plus que d'ultime
+    # secours, si OpenRouter ne répond pas sur /models.
     candidats = []
-    for m in (_MODELES_OK.get("openrouter"), model, config.OPENROUTER_MODEL,
-              "meta-llama/llama-3.3-70b-instruct:free",
-              "deepseek/deepseek-chat:free",
-              "qwen/qwen-2.5-72b-instruct:free",
-              "google/gemma-2-9b-it:free",
-              "meta-llama/llama-3.2-3b-instruct:free"):
+    for m in [_MODELES_OK.get("openrouter"), model, config.OPENROUTER_MODEL]:
         if m and m not in candidats:
+            candidats.append(m)
+    for m in modeles_openrouter_gratuits()[:8]:
+        if m not in candidats:
+            candidats.append(m)
+    for m in ("meta-llama/llama-3.3-70b-instruct:free",
+              "deepseek/deepseek-chat-v3.1:free",
+              "qwen/qwen3-235b-a22b:free",
+              "google/gemma-3-27b-it:free"):
+        if m not in candidats:
             candidats.append(m)
 
     derniere = None
@@ -1031,8 +1159,14 @@ def _openrouter_chat(messages: list, model: str, temperature: float) -> str:
         except Exception as e:
             derniere = e
             t = str(e).lower()
+            # ⚠️ « This model is unavailable for free. The paid version is available » :
+            # « unavailable » ne contient pas « not available ». Le motif ne l'attrapait
+            # donc pas, et on abandonnait au premier modèle payant au lieu d'essayer le
+            # suivant. Un mot pour un autre, et tout OpenRouter tombait.
             if modele_mort(t) or any(k in t for k in (
-                                    "unsupported", "invalid_request", "not available")):
+                                    "unsupported", "invalid_request", "not available",
+                                    "unavailable", "requires more credits",
+                                    "paid version", "no endpoints found")):
                 _marque_hs("openrouter", m)
                 logger.warning(f"[LLM] OpenRouter : modèle '{m}' inutilisable, essai suivant…")
                 continue
