@@ -93,20 +93,12 @@
   .avatar{ width:30px; height:30px; border-radius:9px; margin:2px 9px 0 0; flex:0 0 auto; background:linear-gradient(135deg,var(--neon),var(--neon2)); display:grid; place-items:center; font-size:15px; box-shadow:0 0 16px rgba(47,224,245,.4); }
 
   /* Graphe de raisonnement — plein écran, en arrière-plan */
-  #graphWrap{ display:none; position:fixed; inset:0; z-index:1; pointer-events:none; opacity:0; transition:opacity .7s ease; }
-  #graphWrap.show{ display:block; opacity:1; }
   #graph{ width:100%; height:100%; }
   /* Icône de repli : le schéma reste accessible d'un clic après la réponse */
-  #graphMini{ position:fixed; right:16px; bottom:88px; z-index:5; width:46px; height:46px; border-radius:15px;
     display:none; place-items:center; font-size:20px; cursor:pointer; color:#fff;
     background:linear-gradient(135deg, rgba(139,109,255,.9), rgba(47,224,245,.75));
     border:1px solid rgba(255,255,255,.18); box-shadow:0 6px 24px rgba(139,109,255,.5);
     backdrop-filter:blur(10px); animation:pop .35s cubic-bezier(.2,.9,.3,1.2); transition:.2s; }
-  #graphMini.show{ display:grid; }
-  #graphMini:hover{ transform:translateY(-2px) scale(1.06); box-shadow:0 8px 30px rgba(47,224,245,.6); }
-  body.voice #graphMini{ display:none!important; }
-  @media (max-width:620px){ #graphMini{ right:12px; bottom:84px; width:42px; height:42px; font-size:18px } }
-  #graphWrap .cap{ position:fixed; top:64px; left:50%; transform:translateX(-50%); font-size:11px; letter-spacing:.34em; color:var(--dim); opacity:.55; white-space:nowrap; }
 
   .composer{ display:flex; gap:10px; padding-top:8px; }
   .composer textarea{ flex:1; resize:none; background:var(--glass); border:1px solid var(--stroke); color:var(--txt); border-radius:16px; padding:14px 16px; font-size:15px; font-family:inherit; max-height:120px; outline:none; transition:.2s; }
@@ -267,6 +259,24 @@
          padding:6px 2px 2px; }
   body.thinking #cons{ display:block; animation:pop .45s cubic-bezier(.2,.9,.3,1.2); }
   body.voice #cons, body.chatting.thinking #cons{ display:block; }
+  /* ⚠️ EN VOCAL, L'ORBE DE LA CONSTELLATION EST DE TROP. Il y avait TROIS sphères à
+     l'écran : celle du mode vocal, celle-ci, et le noyau que dessinait l'ancien canvas
+     (supprimé). En vocal, la grosse orbe du bas EST le centre — la constellation ne
+     garde donc que ses cartes, en deux colonnes, dans le haut de l'écran. */
+  body.voice .consOrbe{ display:none; }
+  body.voice .consGrille{ grid-template-columns:1fr 1fr; }
+  body.voice .consCol.g{ grid-column:1; }
+  body.voice .consCol.d{ grid-column:2; }
+  body.voice #cons{ position:fixed; z-index:5; left:50%; transform:translateX(-50%);
+                    top:max(20px,env(safe-area-inset-top)); width:min(760px,92vw);
+                    max-height:46vh; overflow:hidden; pointer-events:none; }
+  body.voice #cons .consTitre{ justify-content:center; }
+  body.voice #cons .consSous{ text-align:center; }
+  @media (max-width:760px){
+    body.voice #cons{ max-height:38vh; }
+    body.voice .consGrille{ grid-template-columns:1fr; }
+    body.voice .consCol.d{ grid-column:1; }
+  }
   #cons .consTitre{ display:flex; align-items:center; gap:9px; font-size:13.5px;
                     font-weight:650; margin-bottom:3px; }
   #cons .consTitre i{ width:15px; height:15px; border-radius:50%; border:2px solid var(--neon2);
@@ -602,7 +612,6 @@
   body.voice .chat, body.voice .chips, body.voice .composer, body.voice header{ display:none; }
   body.voice #attachBar{ display:none!important; }
   body.voice .app::before{ display:none; }
-  body.voice #graphWrap{ display:block!important; opacity:1!important; }
   /* Sur grand écran, l'ensemble descend un peu pour occuper le centre optique de la page */
   /* L'orbe descend nettement : le schéma occupe le haut, l'orbe le bas de l'écran */
   #voiceUI .orb{ width:132px; height:132px; border-radius:50%; margin:0 0 18px; background:radial-gradient(circle at 35% 30%,#a78bfa,#8b6dff 60%,#4c1d95); box-shadow:0 0 60px rgba(139,109,255,.7); animation:orbPulse 2.4s ease-in-out infinite; }
@@ -798,7 +807,6 @@
     .chip{ scroll-snap-align:start }
     /* Le libellé du schéma tenait sur deux lignes et retombait sur les suggestions :
        moins d'interlettrage, et posé sous la rangée de suggestions plutôt qu'en travers. */
-    #graphWrap .cap{ top:calc(env(safe-area-inset-top) + 96px); font-size:9.5px; letter-spacing:.22em }
     .chip{ flex:0 0 auto; font-size:12px; padding:6px 11px }
     .bubble{ font-size:14.5px; padding:11px 13px } .col,.me .bubble{ max-width:88% }
     .composer{ gap:6px; padding-top:6px }
@@ -813,8 +821,6 @@
   }
   /* Mode vocal sur mobile : le schéma passe en fond discret, rien ne se superpose */
   @media (max-width:620px){
-    body.voice #graphWrap{ opacity:.32 }
-    body.voice #graphWrap .cap{ display:none }
     #voiceUI .orb{ width:96px; height:96px; margin-bottom:14px }
     #voiceUI .vstatus{ font-size:17px }
     #voiceUI .vsub{ font-size:14px; max-width:92vw }
@@ -829,8 +835,6 @@
 <body>
   <div id="aurora"><span class="blob b1"></span><span class="blob b2"></span><span class="blob b3"></span></div>
   <canvas id="particles"></canvas>
-  <div id="graphWrap"><span class="cap">RAISONNEMENT EN DIRECT</span><canvas id="graph"></canvas></div>
-  <button id="graphMini" onclick="graphReopen()" title="Revoir le raisonnement">🧠</button>
   <div class="app">
     <header>
       <button class="ic" id="burger" onclick="toggleSidebar()" title="Conversations">☰</button>
@@ -2227,269 +2231,18 @@ function loopP(){ px.clearRect(0,0,PW,PH); const sp=thinking?2.6:1, gl=thinking?
     px.beginPath(); px.arc(p.x,p.y,p.r*(thinking?1.6:1),0,7); px.fillStyle=`rgba(139,109,255,${gl})`; px.shadowBlur=thinking?14:6; px.shadowColor="#8b6dff"; px.fill(); }
   px.shadowBlur=0; requestAnimationFrame(loopP); } loopP();
 
-/* ═══ GRAPHE de raisonnement — HUD 3D façon "automation" ═══ */
-const gw=document.getElementById("graphWrap"), gc=document.getElementById("graph"), gx=gc.getContext("2d");
-let nodes=[], gAnim=null, GW=innerWidth, GH=innerHeight, GCX=GW/2, GCY=GH*.42, GT=0, RAD=220;
-function gResize(){ const dpr=Math.min(devicePixelRatio||1,2);
-  // ⚠️ Sur iPhone, innerHeight ne décrit PAS ce qu'on voit : Safari y compte la zone
-  // masquée par ses propres barres. Le schéma était donc centré sur une hauteur
-  // imaginaire et se retrouvait décalé vers le haut de l'écran. visualViewport, lui,
-  // donne la surface réellement visible.
-  const vv = window.visualViewport;
-  GW = Math.round(vv ? vv.width : innerWidth);
-  GH = Math.round(vv ? vv.height : innerHeight);
-  gc.width=GW*dpr; gc.height=GH*dpr; gc.style.width=GW+"px"; gc.style.height=GH+"px";
-  gx.setTransform(dpr,0,0,dpr,0,0); GCX=GW/2;
-  const voice=document.body.classList.contains("voice");
-  // En vocal le schéma remonte pour ne pas passer derrière l'orbe — mais seulement sur mobile,
-  // où la place manque. Sur grand écran il garde une position centrale et ample.
-  const petit = GW < 620;
-  if (voice) {
-    // Pas de texte à lire : le schéma prend toute la place, centre plus haut, rayon large.
-    GCY = GH * (petit ? .30 : .34);
-    RAD = Math.min(GW * (petit ? .42 : .34), GH * (petit ? .26 : .34));
-    return;
-  }
-  // Hors vocal, « au centre » ne veut pas dire « au milieu de la fenêtre » : l'en-tête et
-  // la barre de saisie occupent le haut et le bas. On centre le schéma dans l'espace qui
-  // reste réellement libre entre les deux — c'est ce que l'œil appelle le centre.
-  const bas = e => { const n=document.querySelector(e); return n ? n.getBoundingClientRect().bottom : 0; };
-  const haut = e => { const n=document.querySelector(e); return n ? n.getBoundingClientRect().top : GH; };
-  const y1 = Math.max(0, Math.max(bas("header"), bas(".chips")));
-  const y2 = Math.min(GH, haut(".composer") || GH);
-  const libre = (y2 - y1);
-  GCY = (libre > 160) ? (y1 + libre / 2) : GH * .50;
-  RAD = Math.min(GW, Math.max(libre, 200)) * .30; }
-addEventListener("resize",()=>{ if(gAnim) gResize(); });
-// Sur iPhone, la fenêtre visible change SANS événement « resize » : barres de Safari qui
-// se replient, clavier qui s'ouvre. Sans ça, le schéma restait calé sur l'ancienne taille.
-if (window.visualViewport){
-  visualViewport.addEventListener("resize", ()=>{ if(gAnim) gResize(); });
-  visualViewport.addEventListener("scroll", ()=>{ if(gAnim) gResize(); });
-}
-function graphStart(){ if(!voiceMode) return;   // ⚠️ remplacé par la constellation
-  gw.classList.remove("mini"); gw.classList.add("show");
-  const mb=document.getElementById("graphMini"); if(mb) mb.classList.remove("show");
-  clearTimeout(window._gTimer);
-  gResize(); GT=0; phaseCount=0;
-  nodes=[{core:1,a:0,r:1,tr:1,label:"NOVA",icon:"🧠",t:0}]; if(!gAnim) drawGraph(); }
-const MAX_NODES=6;                       // au-delà, le schéma devient illisible
-function hexA2(a){ return "rgba(47,224,245,"+a+")"; }   // cyan des sous-bulles
-function graphAdd(icon,label,detail,agent){
-  // Une observation ENRICHIT l'étape précédente au lieu de créer un doublon
-  // (sinon chaque outil apparaissait deux fois : action + résultat).
-  const last=nodes[nodes.length-1];
-  if(last && !last.core && last.label===label && !last.done){
-    // On CONSERVE la requête et on AJOUTE le résultat en dessous : on doit voir
-    // ce que Nova a cherché ET ce qu'elle a trouvé, pas seulement le second.
-    last.done=true; const s=_subs(detail);
-    if(s.length) last.sub=[...(last.sub||[]), ...s].slice(0,3);
-    return; }
-  if(nodes.length-1>=MAX_NODES){        // on recycle le plus ancien
-    nodes.splice(1,1); nodes.forEach((n,i)=>{ if(i){ n.a=(i-1)*2.399; n.ring=(i-1)%3;
-      if(n.from>0) n.from--; } }); }
-  const n=nodes.length-1;
-  // Chaînage : chaque étape part de la PRÉCÉDENTE (et non du cœur) → on suit le flux
-  // du raisonnement. lineT anime le trait qui se dessine progressivement.
-  nodes.push({a:n*2.399, ring:n%3, r:0, tr:1, label, icon, t:0, sub:_subs(detail),
-              from:Math.max(0, nodes.length-1), lineT:0, agent:agent||""}); }
-/* Découpe le détail d'une étape en 1-3 sous-bulles courtes (mots-clés lisibles) */
-/* Mots-clés de ta demande → sous-bulles de l'étape « Analyse » */
-function _keywords(msg){ const stop=new Set(["le","la","les","un","une","des","de","du","et","ou","à","a",
-  "au","aux","je","tu","il","on","me","moi","mon","ma","mes","ton","ta","tes","est","sur","dans","pour",
-  "que","qui","quoi","avec","fait","fais","peux","veux","stp","the"]);
-  return (msg||"").toLowerCase().replace(/[^\wàâçéèêëîïôûùüÿœ\s-]/g," ").split(/\s+/)
-    .filter(w=>w.length>2 && !stop.has(w)).slice(0,3).join(" · "); }
-/* Pictogrammes de tête à retirer.
-   ⚠️ PIÈGE : sans le drapeau « u », une classe [🔎🔍📧📅…] est une liste d'unités UTF-16,
-   pas de caractères. 📰 partage sa première moitié avec 🔎/📧/📅 : le regex arrachait
-   cette moitié et laissait l'autre orpheline, affichée « � ». Vu en production sur
-   « 📰 Actualité tech ». On cible donc TOUT pictogramme, par propriété Unicode. */
-const _PICTOS = (() => {
-  try { return new RegExp("^[\\p{Extended_Pictographic}\\uFE0F\\s]*", "u"); }
-  catch(e) { return /^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\uFE0F\s]*/u; }
-})();
-/* Détail d'étape lisible : sans pictogrammes ni Markdown, coupé sur un mot entier */
-function _clean(d){ if(!d) return "";
-  return _cut(String(d).replace(_PICTOS,"").replace(/\*\*(.+?)\*\*/g,"$1")
-    .replace(/^R[ée]sultats? web\s*:?\s*/i,"").replace(/\s+/g," ").trim(), 130); }
-/* Découpe SÛRE : jamais au milieu d'un emoji.
-   ⚠️ En JavaScript, "abc📰".slice(0,4) rend "abc\uD83D" — une demi-paire de substitution.
-   Affichée elle donne « � » ; passée à encodeURIComponent elle lève une URIError, ce qui
-   FAISAIT PLANTER le mode vocal quand un emoji tombait pile sur la limite des 900 car. */
-function coupeSure(s, n){ const t=[...String(s==null?"":s)];
-  return t.length<=n ? String(s==null?"":s) : t.slice(0,n).join(""); }
-function finSure(s, n){ const t=[...String(s==null?"":s)];
-  return t.length<=n ? String(s==null?"":s) : t.slice(-n).join(""); }
+/* ═══ LE SCHÉMA DESSINÉ A ÉTÉ RETIRÉ ═══
+   « ya toujours les 3 sphères et l'ancien raisonnement schéma. »
 
-/* Coupe proprement, à la fin d'un mot */
-function _cut(s,n){ s=String(s||"").trim();
-  // [...s] découpe par POINTS DE CODE : s.slice() pouvait couper un emoji en deux
-  // et produire un « � » en fin de texte.
-  const t=[...s]; if(t.length<=n) return s;
-  const c=t.slice(0,n).join(""), i=c.lastIndexOf(" ");
-  return (i>n*0.5? c.slice(0,i) : c).trim()+"…"; }
-function _subs(detail){ if(!detail) return [];
-  let d=String(detail)
-    .replace(_PICTOS,"")                                  // pictogrammes de tête
-    .replace(/\*\*(.+?)\*\*/g,"$1")                        // gras Markdown
-    // « Résultats web : <requête déjà affichée> (6) 1. Vrai titre » → on garde le vrai titre
-    .replace(/^R[ée]sultats? web\s*:?[^(]*\(\d+\)\s*\d*\.?\s*/i,"")
-    .replace(/^R[ée]sultats? web\s*:?\s*/i,"")
-    .replace(/\(\d+\)\s*/g,"").replace(/\s+/g," ").trim();
-  return d.split(/[·,;•\n]|(?:\s-\s)/).map(s=>s.trim())
-    .filter(s=>s.length>2).slice(0,3).map(s=>_cut(s,24)); }
-/* Nœuds "de phase" : apparaissent DÈS le début (analyse, réflexion, rédaction) pour que le schéma
-   soit vivant immédiatement — y compris en simple discussion, où aucun outil n'est appelé. */
-let phaseCount=0;
-function graphPhase(icon,label,detail,agent){ if(phaseCount>=3) return; phaseCount++; graphAdd(icon,label,detail,agent); }
-/* Renseigne après coup les sous-bulles d'un nœud déjà affiché (ex. « Analyse ») */
-function graphSetSub(label,detail){ const n=nodes.find(x=>x.label===label);
-  if(n){ const s=_subs(detail); if(s.length) n.sub=s; } }
-/* AJOUTE une sous-bulle (les décisions arrivent une par une, pas d'un bloc) */
-function graphAddSub(label,detail){ const n=nodes.find(x=>x.label===label);
-  if(!n||!detail) return;
-  // 30 caractères coupaient « je réfléchis avec ce que je… » en plein milieu : les
-  // phrases de raisonnement doivent être lisibles en entier.
-  const t=_cut(String(detail).replace(/\s+/g," ").trim(), 44);
-  if(!t || (n.sub||[]).includes(t)) return;
-  n.sub=[...(n.sub||[]), t].slice(-4); }
-/* arcs de cercle segmentés (look HUD/tech) */
-function ring(cx,cy,rad,seg,off,col,w){ gx.strokeStyle=col; gx.lineWidth=w;
-  for(let k=0;k<seg;k++){ const a0=off+k*(6.283/seg), a1=a0+(6.283/seg)*.6;
-    gx.beginPath(); gx.arc(cx,cy,rad,a0,a1); gx.stroke(); } }
-/* position orbitale (ellipse = fausse 3D) + profondeur pour le rendu */
-/* Trois orbites de rayons différents, tournant en SENS ALTERNÉS :
-   les bulles ne se superposent plus et l'ensemble respire. */
-const ORBITS=[{r:0.78, v: 0.13}, {r:1.16, v:-0.09}, {r:1.54, v: 0.06}];
-function nodePos(nd){
-  const o=ORBITS[(nd.ring||0)%ORBITS.length];
-  const ang=nd.a + GT*o.v;
-  const R=RAD*o.r*nd.r;
-  // Écran étroit et haut (mobile) → on étale davantage en vertical, là où il reste de la place
-  const squash = GW < 620 ? 0.95 : 0.62;
-  return {x:GCX+Math.cos(ang)*R, y:GCY+Math.sin(ang)*R*squash, depth:(Math.sin(ang)+1)/2, ring:nd.ring||0}; }
-/* La sphère de Nova, dessinée sur canvas — MÊME matière que celle de l'accueil
-   (ui/nova.html, .sleeper .core) : reflet décalé, ombre en bas, pas d'emoji.
-   Une seule définition, utilisée par le schéma de raisonnement ET la constellation. */
-function dessineNoyau(c, x, y, r){
-  // Corps : du clair en haut-gauche vers un violet très sombre en bas-droite.
-  const g = c.createRadialGradient(x - r*0.24, y - r*0.30, r*0.08, x, y, r);
-  g.addColorStop(0,   "#b9a6ff");
-  g.addColorStop(0.30, "#8f74f5");
-  g.addColorStop(0.62, "#5b3fd0");
-  g.addColorStop(0.86, "#241a55");
-  g.addColorStop(1,    "#100b28");
-  c.beginPath(); c.arc(x, y, r, 0, 7);
-  c.fillStyle = g; c.shadowBlur = 40; c.shadowColor = "rgba(139,109,255,.75)";
-  c.fill(); c.shadowBlur = 0;
-  // Le terminateur : l'ombre du bas, c'est elle qui fait « sphère » et pas « rond ».
-  const t = c.createRadialGradient(x + r*0.22, y + r*0.34, r*0.1, x, y, r);
-  t.addColorStop(0, "rgba(0,0,0,.42)"); t.addColorStop(1, "rgba(0,0,0,0)");
-  c.beginPath(); c.arc(x, y, r, 0, 7); c.fillStyle = t; c.fill();
-  // Reflet spéculaire, petit et décalé — pas une ampoule.
-  const s2 = c.createRadialGradient(x - r*0.30, y - r*0.34, 0, x - r*0.30, y - r*0.34, r*0.42);
-  s2.addColorStop(0, "rgba(255,255,255,.55)"); s2.addColorStop(1, "rgba(255,255,255,0)");
-  c.beginPath(); c.arc(x, y, r, 0, 7); c.fillStyle = s2; c.fill();
-  // Liseré froid en bas : la lumière de l'écran qui remonte.
-  c.beginPath(); c.arc(x, y, r - 0.6, 2.1, 4.1);
-  c.strokeStyle = "rgba(47,224,245,.20)"; c.lineWidth = 1.4; c.stroke();
-}
+   Il en comptait trois, et il comptait juste : l'orbe du mode vocal, l'orbe de la
+   constellation, et le noyau « NOVA » que ce canvas dessinait par-dessus. Trois centres
+   pour une seule Nova, plus deux représentations concurrentes du même raisonnement.
 
-function drawGraph(){ gx.clearRect(0,0,GW,GH); const core=nodes[0]; if(!core){gAnim=null;return;}
-  GT+=0.02; core.t++;
-  // Anneaux concentriques (contra-rotatifs) → ambiance cockpit/automation
-  for(let i=0;i<4;i++){ const rr=RAD*(0.5+i*0.42), dir=i%2?-1:1;
-    ring(GCX,GCY,rr, 3+i, GT*.2*dir, "rgba(139,109,255,"+(0.13-i*0.02)+")", 1.3);
-    ring(GCX,GCY,rr*0.9, 6+i*2, -GT*.16*dir, "rgba(47,224,245,"+(0.10-i*0.015)+")", 1); }
-  // Noeuds triés par profondeur (les plus proches devant = 3D)
-  const drawn=[];
-  for(let i=1;i<nodes.length;i++){ const nd=nodes[i];
-    // Le nœud grossit seulement quand le trait l'a atteint
-    if((nd.lineT||0)>0.5) nd.r=Math.min(1, nd.r+0.06); nd.t++;
-    const p=nodePos(nd); p.nd=nd; p.idx=i; drawn.push(p); }
-  drawn.sort((a,b)=>a.depth-b.depth);
-  // Liens CHAÎNÉS (étape → étape suivante) qui se DESSINENT progressivement :
-  // on suit le flux du raisonnement au lieu d'une simple étoile autour du cœur.
-  const pos = i => (i<=0 ? {x:GCX,y:GCY} : (drawn.find(d=>d.idx===i) || {x:GCX,y:GCY}));
-  for(const p of drawn){
-    const nd=p.nd;
-    // Progression fondée sur le TEMPS écoulé : identique quel que soit le nombre
-    // d'images par seconde (un écran lent ne fige plus le tracé).
-    if(!nd.t0) nd.t0 = performance.now();
-    nd.lineT = Math.min(1, (performance.now() - nd.t0) / 900);   // 0,9 s de tracé
-    const src = pos(nd.from||0);
-    const ex = src.x + (p.x-src.x)*nd.lineT, ey = src.y + (p.y-src.y)*nd.lineT;
-    const g=gx.createLinearGradient(src.x,src.y,p.x,p.y);
-    g.addColorStop(0,"rgba(139,109,255,.60)"); g.addColorStop(1,"rgba(47,224,245,.35)");
-    gx.beginPath(); gx.moveTo(src.x,src.y); gx.lineTo(ex,ey);
-    gx.strokeStyle=g; gx.lineWidth=1.8; gx.lineCap="round"; gx.stroke();
-    // Point lumineux en tête du trait tant qu'il se dessine → on voit l'information circuler
-    if(nd.lineT<1){ gx.beginPath(); gx.arc(ex,ey,3.4,0,7);
-      gx.fillStyle="rgba(47,224,245,.95)"; gx.shadowBlur=14; gx.shadowColor="#2fe0f5";
-      gx.fill(); gx.shadowBlur=0; } }
-  for(const p of drawn){ const nd=p.nd, sc=(0.6+p.depth*0.7), R=22*sc*nd.r, al=(0.35+p.depth*0.65);
-    ring(p.x,p.y,R+6,4,GT*.6,"rgba(47,224,245,"+(0.3*al)+")",1);
-    gx.beginPath(); gx.arc(p.x,p.y,R,0,7); gx.fillStyle="rgba(10,14,30,"+(0.55*al)+")"; gx.strokeStyle="rgba(47,224,245,"+(0.9*al)+")";
-    gx.lineWidth=1.7; gx.shadowBlur=18*al; gx.shadowColor="#2fe0f5"; gx.fill(); gx.stroke(); gx.shadowBlur=0;
-    gx.globalAlpha=al; gx.textAlign="center"; gx.textBaseline="middle"; gx.fillStyle="#fff";
-    gx.font=Math.round(17*sc)+"px sans-serif"; gx.fillText(nd.icon,p.x,p.y);
-    gx.textBaseline="alphabetic"; gx.fillStyle="rgba(215,220,240,"+al+")"; gx.font=Math.round(10.5*sc)+"px sans-serif";
-    gx.fillText(nd.label.slice(0,16),p.x,p.y+R+13);
-    // Sous-bulles : le détail de l'étape, en petits satellites reliés au nœud
-    // Sous-bulles : vraies pastilles lisibles (fond, contour, halo) et non plus du texte fin.
-    // Sur petit écran on n'en montre que quelques-unes, et seulement pour les étapes récentes,
-    // sinon elles se chevauchent et deviennent illisibles.
-    const petitEcran = GW < 620;
-    const recent = p.idx >= nodes.length - (petitEcran ? 2 : 3);
-    const subs = (nd.sub || []).slice(0, petitEcran ? 1 : 3)
-                   .map(s => petitEcran ? _cut(s, 14) : s);
-    if(subs.length && recent){ const dir=(p.x<GCX?-1:1);
-      const fs=Math.max(10, Math.round(11*sc));
-      gx.font="600 "+fs+"px sans-serif"; gx.textAlign="left"; gx.textBaseline="middle";
-      subs.forEach((s,k)=>{
-        const w=gx.measureText(s).width+16, h=fs+11;
-        // La pastille reste TOUJOURS du côté extérieur (jamais rabattue sur le cœur),
-        // et on la maintient simplement dans le cadre de l'écran.
-        const d2=dir, sx=p.x+d2*(R+22);
-        const sy=p.y+(k-(subs.length-1)/2)*(h+7);
-        let bx=d2<0? sx-w : sx;
-        bx=Math.max(6, Math.min(bx, GW-w-6));
-        gx.beginPath(); gx.moveTo(p.x+d2*R*0.9,p.y); gx.lineTo(d2<0? bx+w : bx, sy);
-        gx.strokeStyle=hexA2(0.45*al); gx.lineWidth=1.4; gx.stroke();
-        if(gx.roundRect){ gx.beginPath(); gx.roundRect(bx,sy-h/2,w,h,h/2); }
-        else { gx.beginPath(); gx.rect(bx,sy-h/2,w,h); }
-        gx.fillStyle="rgba(8,12,26,"+(0.88*al)+")"; gx.strokeStyle=hexA2(0.75*al); gx.lineWidth=1.4;
-        gx.shadowBlur=12*al; gx.shadowColor="#2fe0f5"; gx.fill(); gx.stroke(); gx.shadowBlur=0;
-        gx.fillStyle="rgba(232,240,255,"+Math.min(1,1.05*al)+")";
-        gx.fillText(s, bx+8, sy); });
-      gx.textAlign="center"; gx.textBaseline="alphabetic"; }
-    gx.globalAlpha=1; }
-  // ⚠️ Le cœur du schéma était un dégradé PLAT avec un 🧠 posé dessus : rien à voir
-  // avec la sphère de l'accueil. Un même objet doit se ressembler partout — sinon
-  // c'est deux applications dans une. dessineNoyau() est la seule définition.
-  const pulse=30+Math.sin(core.t*.07)*4;
-  ring(GCX,GCY,pulse+17,3,GT*.4,"rgba(139,109,255,.5)",1.6);
-  ring(GCX,GCY,pulse+9,6,-GT*.5,"rgba(47,224,245,.35)",1.2);
-  dessineNoyau(gx,GCX,GCY,pulse);
-  gx.textAlign="center"; gx.textBaseline="alphabetic";
-  gx.fillStyle="rgba(242,242,250,.92)"; gx.font="700 11px sans-serif";
-  gx.fillText("NOVA",GCX,GCY+pulse+18);
-  gAnim=requestAnimationFrame(drawGraph); }
-/* Après la réponse, le schéma ne disparaît plus : il se REPLIE en petite icône,
-   qu'un clic rouvre pour revoir le raisonnement de la dernière réponse. */
-function graphEnd(){ if(voiceMode) return;
-  setTimeout(()=>{ if(voiceMode || !gw.classList.contains("show")) return;
-    gw.classList.remove("show"); gw.classList.add("mini");
-    const b=document.getElementById("graphMini");
-    if(b && nodes.length>1){ b.classList.add("show"); b.title=(nodes.length-1)+" étapes de raisonnement"; }
-  },3200); }
-function graphReopen(){ const b=document.getElementById("graphMini");
-  if(b) b.classList.remove("show");
-  gw.classList.remove("mini"); gw.classList.add("show");
-  gResize(); if(!gAnim) drawGraph();
-  clearTimeout(window._gTimer);
-  window._gTimer=setTimeout(()=>{ if(!thinking) graphEnd(); }, 9000); }
+   Ce canvas ne servait plus QUE le mode vocal — sa fonction de démarrage sortait
+   immédiatement ailleurs. L'en retirer le rendait mort : ~260 lignes qui ne dessinaient
+   rien, sauf une troisième sphère. On l'enlève pour de bon, et la constellation —
+   celle de la maquette — devient l'affichage unique du raisonnement, en chat COMME en
+   vocal. Un seul objet, un seul endroit à corriger la prochaine fois. */
 const ICON={search:"🔍",web:"🔍",mail:"📧",gmail:"📧",calendar:"📅",agenda:"📅",connected_app:"🔌",thought:"💭",obs:"👁️",code:"💻"};
 function iconFor(kind,tool){ const k=(tool||"").toLowerCase(); for(const key in ICON) if(k.includes(key)) return ICON[key]; return ICON[kind]||"⚙️"; }
 
@@ -2621,7 +2374,7 @@ function arreteReflexion(){
   // Le serveur, lui, ne sait rien de la fermeture d'un EventSource : on le lui dit.
   if(SID && KEY){ try{ fetch(ORIGIN+"/agent/ask/stop?key="+encodeURIComponent(KEY)
       +"&sid="+encodeURIComponent(SID),{cache:"no-store"}).catch(()=>{}); }catch(e){} }
-  thinking=false; document.body.classList.remove("thinking"); graphEnd(); boutonEnvoi(false);
+  thinking=false; document.body.classList.remove("thinking"); boutonEnvoi(false);
   penseFini("⏹ Arrêté à ta demande."); consFini();
   stopSpeaking();
   // Ce qui etait deja arrive RESTE : on ajoute la mention d'arret, on ne l'efface pas.
@@ -2659,13 +2412,11 @@ function ask(){
   consVide(); consEtape("analyse", {ico:"💭", txt:"Analyse de ta demande"}, _cut(msg,60));
   penseVide(); penseAjoute("J'analyse ta demande", msg);
   SID = "s" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-  boutonEnvoi(true); thinking=true; document.body.classList.add("thinking"); graphStart();
+  boutonEnvoi(true); thinking=true; document.body.classList.add("thinking");
   // ⚠️ Ces nœuds ne portent AUCUN détail inventé : afficher des mots-clés extraits de la
   // question (« salut · nova · ans ») donnait l'illusion d'un raisonnement inexistant.
   // Seules les VRAIES pensées et actions renvoyées par l'agent portent des sous-bulles.
   let answer="", trace=[], pi=0, streamed=false;
-  graphPhase("💭","Analyse");
-  setTimeout(()=>{ if(thinking && !trace.length) graphPhase("⚙️","Réflexion"); }, 1100);
   // Rotation "comme Claude" : une phrase apparaît, s'efface, une autre la remplace.
   // Une fois les vraies étapes arrivées, on cycle dessus (recherche web, agenda…).
   const thinkTimer=setInterval(()=>{ if(answer) return;
@@ -2688,8 +2439,7 @@ function ask(){
     if(!thinking) return;                 // ⏹ vient d'être pressé : on n'écrit plus rien
     if(d.type==="token"||d.type==="answer"){ RECU=true; reveleBulle(); }
     // Décisions réelles du routeur → sous-bulles du nœud « Analyse »
-    if(d.type==="step" && d.kind==="route"){ graphAddSub("Analyse", d.text||"");
-      // Une seule ligne de trace « Analyse », qu'on complète à chaque décision reçue
+    if(d.type==="step" && d.kind==="route"){       // Une seule ligne de trace « Analyse », qu'on complète à chaque décision reçue
       const der=trace[trace.length-1];
       if(der && der.label==="Analyse de ta demande"){
         der.detail=(der.detail?der.detail+" · ":"")+(d.text||"");
@@ -2717,7 +2467,6 @@ function ask(){
       chat.scrollTop=chat.scrollHeight;
       return; }
     if(d.type==="step"){ const ai=agentInfo(d), ic=ai? ai.i : iconFor(d.kind,d.tool);
-      graphAdd(ic, nodeLabel(d), d.q||d.text||"", d.agent||"");
       // ⚠️ La timeline reçoit l'étape TELLE QU'ELLE EST, y compris quand elle rate :
       // une observation en erreur doit se voir, pas disparaître derrière un point violet.
       { const det = d.q || d.text || "";
@@ -2726,7 +2475,7 @@ function ask(){
       trace.push({icon:ic, label:stepLabel(d), detail:(d.q||d.text||"")});
       if(voiceMode) vSet(stepLabel(d),"");
       if(!answer&&!streamed){ bubble.innerHTML=thinkHTML(stepLabel(d), ic); pi=trace.length-1; chat.scrollTop=chat.scrollHeight; } }
-    else if(d.type==="token"){ if(!streamed){ streamed=true; stopThink(); bubble.innerHTML=""; graphAdd("✍️","Rédaction");
+    else if(d.type==="token"){ if(!streamed){ streamed=true; stopThink(); bubble.innerHTML="";
         penseAjoute("Je rédige ma réponse", "");
         consEtape("redac", {ico:"✍️", txt:"Préparation de réponse"}, "rédaction en cours"); }
       answer+=(d.t||""); bubble.innerHTML=fmt(answer)+'<span class="cur">▍</span>'; chat.scrollTop=chat.scrollHeight;
@@ -2737,7 +2486,7 @@ function ask(){
       if(voiceMode) vSet("Nova répond…", _cut(texteALire(answer),240)); }
     else if(d.type==="answer"){ const fin=d.text||"";
       if(streamed){ answer=fin||answer; bubble.innerHTML=fmt(answer); }
-      else { answer=fin; stopThink(); graphAdd("✍️","Rédaction"); typewrite(bubble,answer); }
+      else { answer=fin; stopThink(); typewrite(bubble,answer); }
       histPush("ai",answer,trace);
       // ⚠️ Un rapport de mails arrive avec SA VERSION À DIRE : deux phrases et une
       // question, au lieu du document. Sans elle, la lecture commençait par
@@ -2750,9 +2499,9 @@ function ask(){
     // ⚠️ Nova apprend maintenant toute seule. Retenir en douce serait le contraire de
     // ce qu'on veut : on affiche ce qu'elle garde, avec de quoi l'enlever d'un clic.
     else if(d.type==="appris" && (d.faits||[]).length){ APPRIS = APPRIS.concat(d.faits); }
-    else if(d.type==="done"){ penseFini("Terminé."); consFini(); es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); boutonEnvoi(false); attachReason(bubble,trace); attachModel(bubble); puceAppris(bubble.parentElement); sndReceive(); setTimeout(refreshUsage,900); }
+    else if(d.type==="done"){ penseFini("Terminé."); consFini(); es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); boutonEnvoi(false); attachReason(bubble,trace); attachModel(bubble); puceAppris(bubble.parentElement); sndReceive(); setTimeout(refreshUsage,900); }
   };
-  es.onerror=()=>{ penseFini("⚠️ Connexion interrompue."); consFini(); es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); graphEnd(); boutonEnvoi(false);
+  es.onerror=()=>{ penseFini("⚠️ Connexion interrompue."); consFini(); es.close(); stopThink(); thinking=false; document.body.classList.remove("thinking"); boutonEnvoi(false);
     if(!answer) bubble.innerHTML="⚠️ Connexion interrompue. Vérifie ta clé (⚙️) et réessaie."; else attachReason(bubble,trace);
     /* ⚠️ En mode vocal, ce message est INVISIBLE : body.voice masque .chat (voir la
        règle CSS plus haut). Et ce gestionnaire ne relançait jamais le micro. Résultat,
@@ -2791,7 +2540,6 @@ function sendAttachment(question){
   const bubble=addRow("ai", thinkHTML(isImg?"J'analyse ton image…":"Je lis ton document…","📎"));
   BULLE=bubble; RECU=false;
   boutonEnvoi(true); thinking=true; document.body.classList.add("thinking");
-  graphStart(); graphPhase("📎", isImg?"Image":"Document"); graphPhase("⚙️","Analyse");
   const fd=new FormData(); fd.append("file",file); fd.append("key",KEY); fd.append("question",question||"");
   // ⚠️ L'analyse d'un fichier est le chemin le PLUS long (vision, OCR) : c'est celui
   // où l'on a le plus envie d'appuyer sur ⏹. Sans ce contrôleur, ⏹ rendait la main à
@@ -2801,12 +2549,12 @@ function sendAttachment(question){
     if(!thinking) return;                 // ⏹ pressé pendant l'analyse
     RECU=true; reveleBulle();
     const ans=(d&&d.answer)||"❌ Analyse impossible.";
-    graphAdd("✍️","Rédaction"); typewrite(bubble,ans); histPush("ai",ans,trace);
+    typewrite(bubble,ans); histPush("ai",ans,trace);
     if(TTS&&!voiceMode) speak(ans);
   }).catch(e=>{ if(e && e.name==="AbortError") return;   // ⏹ : déjà dit à l'écran
     bubble.innerHTML="⚠️ Envoi impossible : "+esc(String(e).slice(0,120)); })
    .finally(()=>{ ABORT=null; if(!thinking) return;
-     thinking=false; document.body.classList.remove("thinking"); graphEnd();
+     thinking=false; document.body.classList.remove("thinking");
      boutonEnvoi(false); sndReceive(); setTimeout(refreshUsage,900); });
 }
 /* Glisser-déposer sur toute la page + coller une image */
@@ -3164,8 +2912,8 @@ function vSet(s,sub){ const a=document.getElementById("vstatus"), b=document.get
 function toggleVoiceMode(){ if(!KEY){ openCfg(); return; }
   voiceMode=!voiceMode; document.body.classList.toggle("voice",voiceMode);
   document.getElementById("voiceBtn").classList.toggle("on",voiceMode);
-  if(voiceMode){ primeTTS(); ac(); sndOpen(); graphStart(); gResize(); vSet("Je t'écoute…",""); startListen(); }
-  else { stopListen(); speechSynthesis.cancel(); document.body.classList.remove("thinking"); graphEnd(); if(wakeOn) setTimeout(startWake,700); }
+  if(voiceMode){ primeTTS(); ac(); sndOpen(); vSet("Je t'écoute…",""); startListen(); }
+  else { stopListen(); speechSynthesis.cancel(); document.body.classList.remove("thinking"); if(wakeOn) setTimeout(startWake,700); }
 }
 
 /* ═══ DIAGNOSTIC DES MODÈLES ═══

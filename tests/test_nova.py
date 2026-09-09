@@ -10651,9 +10651,14 @@ def test_la_constellation_de_cartes_meritees():
     check("aucun pourcentage affiché", "consPct" in ui or "%</" in bloc, False)
     check_true("elle se remplit à la fin", ".consC.fini .b i{ width:100%" in ui)
     check_true("et vire à l'ambre en cas d'échec", ".consC.ko .b i{" in ui)
-    # Le canvas ne double plus la constellation dans le chat.
-    check_true("le schéma dessiné ne sert plus qu'au mode vocal",
-               "function graphStart(){ if(!voiceMode) return;" in ui)
+    # ⚠️ Le canvas a été RETIRÉ. Il ne servait plus que le mode vocal, où il ajoutait une
+    # TROISIÈME sphère par-dessus l'orbe vocale et celle de la constellation — « ya
+    # toujours les 3 sphères et l'ancien raisonnement schéma ». La constellation est
+    # désormais l'affichage unique du raisonnement, en chat comme en vocal.
+    for mort in ("graphStart(", "graphAdd(", "graphEnd(", "graphPhase(", "drawGraph(",
+                 "#graphWrap", "#graphMini"):
+        check(f"« {mort} » a bien disparu", mort in ui, False)
+    check_true("la constellation sert aussi au vocal", "body.voice .consOrbe{ display:none; }" in ui)
     check_true("elle tient sur téléphone", "@media (max-width:760px){\n    .consGrille" in ui)
 
     if not shutil.which("node"):
@@ -11892,6 +11897,90 @@ def test_la_fiole_disait_100_pour_cent_parce_qu_elle_oubliait():
     check_true("…et on dit pourquoi", "je me limite donc" in E.combien(5, flou)["raison"])
 
 
+def test_l_heure_des_cours_et_la_troisieme_sphere():
+    """« l'heure à laquelle j'active les cours est fausse aussi. et ta pas changé
+    l'interface du mode vocal du coup ya toujours les 3 sphères et l'ancien raisonnement
+    schéma. »
+
+    ⚠️ 1. L'HEURE DES COURS. Le conteneur Render tourne en UTC et on écrivait
+    `datetime.now()` tout nu : un cours démarré à 14 h à l'UPPA s'intitulait « Cours du
+    09/09/2026 à 12h00 », et l'export markdown portait la même heure fausse. C'est
+    exactement le défaut déjà corrigé sur l'agenda — Nova connaît son fuseau depuis le
+    début, elle ne le DISAIT pas ici. (La liste à l'écran, elle, était juste : le
+    navigateur convertit l'horodatage tout seul. Seul le CÔTÉ SERVEUR était décalé.)
+
+    ⚠️ 2. TROIS SPHÈRES EN VOCAL. Je n'avais corrigé que le mode chat, et je le lui avais
+    annoncé comme réglé. En vocal il restait : l'orbe vocale, l'orbe de la constellation,
+    et le noyau « NOVA » du canvas par-dessus. Ce canvas ne servait plus QUE le mode
+    vocal — l'en retirer le rendait mort. Il est supprimé (~260 lignes), et la
+    constellation devient l'affichage unique du raisonnement, en chat comme en vocal.
+    """
+    import time
+    from datetime import datetime
+    from agent.cours import _ici
+
+    # 1. L'heure est celle de Pau, pas celle du serveur.
+    d = _ici()
+    check_true("l'heure des cours porte un fuseau", d.tzinfo is not None)
+    depuis_ts = _ici(time.time())
+    check_true("…y compris depuis un horodatage", depuis_ts.tzinfo is not None)
+    check("les deux donnent la même heure", d.hour, depuis_ts.hour)
+    # ⚠️ On lit le CODE, pas la prose : la docstring de _ici cite forcément le défaut
+    # qu'elle corrige (« on écrivait datetime.now() tout nu »), et un test qui interroge
+    # ses propres commentaires ne vérifie rien. Quatrième fois que je m'y reprends.
+    src = open("agent/cours.py", encoding="utf-8").read()
+    code = "\n".join(l for l in src.splitlines()
+                     if not l.lstrip().startswith("#")).split('"""')
+    code = "".join(code[::2])          # on retire les docstrings, un bloc sur deux
+    check("plus de datetime.now() nu", "datetime.now()" in code, False)
+    check("plus de fromtimestamp sans fuseau", "datetime.fromtimestamp(s[" in code, False)
+    check_true("le titre par défaut passe par l'heure locale", "Cours du {_ici()" in src)
+
+    # 2. Le canvas a disparu, et avec lui la troisième sphère.
+    ui = open("ui/nova.html", encoding="utf-8").read()
+    for mort in ("graphStart(", "graphAdd(", "graphEnd(", "graphPhase(", "graphReopen(",
+                 "drawGraph(", "gResize(", "#graphWrap", "#graphMini", 'id="graph"'):
+        check(f"« {mort} » a disparu", mort in ui, False)
+    css = ui.split("<style>")[1].split("</style>")[0]
+    check_true("en vocal, la constellation n'a plus SON orbe",
+               "body.voice .consOrbe{ display:none; }" in css)
+    check_true("…et ses cartes tiennent en deux colonnes",
+               "body.voice .consGrille{ grid-template-columns:1fr 1fr; }" in css)
+    # Il reste UNE seule sphère en vocal : celle du mode vocal.
+    check_true("l'orbe vocale, elle, reste", "#voiceUI .orb{" in css)
+
+
+def test_la_jauge_ignorait_le_prompt():
+    """« supabase db url est déjà ajouté sur render » — donc le compteur EST durable,
+    et pourtant il affichait « Groq 241/200k » après une journée entière.
+
+    L'autre moitié de la cause était ailleurs, et elle est plus grave : en streaming, le
+    fournisseur ne renvoie aucun décompte d'usage, alors on comptait les MORCEAUX REÇUS.
+    C'est-à-dire la sortie seule. Or le prompt — consignes système, mémoire, observations
+    des outils — pèse dix fois plus lourd que la réponse.
+
+    La jauge sous-estimait donc d'un ordre de grandeur, et toujours dans le sens
+    dangereux : « tu as de la marge ». Exactement ce sur quoi il avait mis le doigt en
+    posant sa condition pour les sous-agents.
+    """
+    import inspect
+    from llm.usage import jetons_estimes
+    import llm.client as L
+
+    sysmsg = "Tu es Nova, assistante personnelle de Lohan. " * 90
+    msgs = [{"role": "system", "content": sysmsg},
+            {"role": "user", "content": "quelle est l'actualité de 2CRSi ?"}]
+    n = jetons_estimes(msgs)
+    check_true("un vrai prompt pèse plus de 1000 jetons", n > 1000)
+    check("un prompt vide ne coûte rien", jetons_estimes([]), 0)
+    check("et une entrée cassée non plus", jetons_estimes(None), 0)
+
+    src = inspect.getsource(L.chat_stream)
+    check_true("le prompt est compté en streaming", "jetons_estimes(messages)" in src)
+    check("…et plus seulement les morceaux reçus",
+          "record(total, provider=provider)" in src, False)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -11935,6 +12024,8 @@ if __name__ == "__main__":
                test_openrouter_et_la_limite_mistral_qui_dure,
                test_les_etapes_et_la_fiole_qui_decide,
                test_la_fiole_disait_100_pour_cent_parce_qu_elle_oubliait,
+               test_l_heure_des_cours_et_la_troisieme_sphere,
+               test_la_jauge_ignorait_le_prompt,
                test_conversations_partagees_entre_appareils,
                test_une_tache_de_fond_ne_meurt_plus_en_silence,
                test_un_accord_ne_declenche_que_ce_qu_il_confirme,

@@ -22,6 +22,27 @@ import threading
 import time
 import uuid
 from datetime import datetime
+
+
+def _ici(quand=None) -> datetime:
+    """L'heure DE PAU, pas celle du serveur.
+
+    ⚠️ « l'heure à laquelle j'active les cours est fausse aussi ». Elle l'était : le
+    conteneur Render tourne en UTC, et on écrivait `datetime.now()` tout nu. Un cours
+    démarré à 14 h à l'UPPA s'intitulait donc « Cours du 09/09/2026 à 12h00 », et
+    l'export portait la même heure fausse. C'est exactement le défaut déjà corrigé sur
+    l'agenda — « quand je lui dis des événements à ajouter, elle me les met à la
+    MAUVAISE HEURE » : Nova connaît son fuseau depuis le début (agent/horloge), elle ne
+    le DISAIT simplement pas ici.
+
+    L'affichage de la liste des cours, lui, était juste : le navigateur convertit
+    l'horodatage tout seul. Seul ce qui est fabriqué CÔTÉ SERVEUR était décalé — le
+    titre par défaut et la date de l'export.
+    """
+    from agent.horloge import zone
+    if quand is None:
+        return datetime.now(zone())
+    return datetime.fromtimestamp(float(quand), zone())
 from pathlib import Path
 
 from config import config
@@ -163,7 +184,7 @@ def demarrer(titre: str = "", matiere: str = "") -> dict:
     """Ouvre une session d'écoute."""
     s = {
         "id": uuid.uuid4().hex,
-        "titre": (titre or "").strip()[:120] or f"Cours du {datetime.now():%d/%m/%Y à %Hh%M}",
+        "titre": (titre or "").strip()[:120] or f"Cours du {_ici():%d/%m/%Y à %Hh%M}",
         "matiere": (matiere or "").strip()[:60],
         "debut": time.time(),
         "fin": None,
@@ -767,7 +788,7 @@ def terminer(sid: str) -> dict:
 def markdown(sid: str) -> str:
     """Le cours complet en Markdown : à télécharger et garder hors de Render."""
     s = _lire(sid)
-    d = datetime.fromtimestamp(s["debut"])
+    d = _ici(s["debut"])
     mn = int(s.get("secondes", 0) // 60)
     L = [f"# {s['titre']}", ""]
     if s.get("matiere"):

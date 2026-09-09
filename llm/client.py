@@ -860,8 +860,16 @@ def chat_stream(messages: list, temperature: float = 0.6, niveau: str = "equilib
                 ecrits += len(delta.strip())
                 yield delta
         try:
-            from llm.usage import record
-            record(total, provider=provider)  # approx (tokens ≈ chunks)
+            from llm.usage import record, jetons_estimes
+            # ⚠️ ON NE COMPTAIT QUE LA RÉPONSE, ET SEULEMENT EN MORCEAUX. « c'est faux ce
+            # qui y a écrit non ? » devant « Groq 241/200k » après une journée entière :
+            # il avait raison, et voici l'autre moitié de la cause. En streaming, le
+            # fournisseur ne renvoie pas de décompte d'usage — on comptait donc les
+            # morceaux reçus, c'est-à-dire la SORTIE seule. Or le prompt (consignes
+            # système, mémoire, observations des outils) pèse dix fois plus lourd que la
+            # réponse. La jauge sous-estimait donc d'un ordre de grandeur, et elle
+            # sous-estimait dans le sens dangereux : « tu as de la marge ».
+            record(total + jetons_estimes(messages), provider=provider)
         except Exception:
             pass
         # ⚠️ Un flux qui se termine sans avoir rien écrit n'était pas une erreur : la
