@@ -11835,6 +11835,14 @@ def test_les_etapes_et_la_fiole_qui_decide():
     check_true("son état se voit", ".micbtn#etapes.on{" in rendu)
     check_true("il rappelle l'énergie restante au moment du clic", "utext" in rendu.split("function basculeEtapes")[1][:600])
     check_true("le nombre part au serveur", 'ETAPES > 1 ? "&etapes=" + ETAPES' in rendu)
+    # ⚠️ « quand je clique ça me met soit 0 étapes soit 3 ou 5 » : le cran « une passe »
+    # affichait 🧩, qu'il lisait comme un zéro — alors que Nova fait toujours au moins
+    # une passe. Le bouton montre désormais un CHIFFRE, quel que soit le cran.
+    maj = rendu.split("function majBoutonEtapes")[1].split("\nfunction ")[0]
+    check_true("le bouton affiche toujours un chiffre", "b.textContent = String(ETAPES)" in maj)
+    check("plus d'icône à la place du nombre", '"🧩"' in maj, False)
+    bascule = rendu.split("function basculeEtapes")[1].split("\nfunction ")[0]
+    check_true("quatre crans : 1, 2, 3, 5", "ETAPES <= 1 ? 2 : (ETAPES < 3 ? 3 :" in bascule)
 
 
 def test_la_fiole_disait_100_pour_cent_parce_qu_elle_oubliait():
@@ -12016,10 +12024,18 @@ def test_le_refus_du_modele_pris_pour_un_sujet():
                   "Désolée, je ne suis pas conseiller financier."):
         check(f"« {refus[:32]} » écarté", E._nettoie_sujets(refus, 5, Q), [])
 
-    # 2. Et un « sujet » hors-sujet non plus, même sans formule de refus.
-    check("un sujet étranger à la question est écarté",
-          E._nettoie_sujets("Les meilleurs coffres-forts pour la maison", 5, Q), [])
-    check_true("un vrai sujet passe",
+    # 2. ⚠️ MAIS UNE REFORMULATION LÉGITIME DOIT PASSER. Mon premier garde-fou écartait
+    # tout sujet ne reprenant aucun mot de la question — et il a cassé le jour même : sur
+    # « faut-il acheter 2crsi et quand revendre », le modèle a rendu « Analyse du cours
+    # actuel / Perspectives à court terme / Niveaux de vente envisageables », et j'ai jeté
+    # les trois. Il a eu une passe au lieu de cinq étapes. Un bon découpage REFORMULE,
+    # c'est même ce qu'on lui demande : le vocabulaire ne peut pas séparer une
+    # reformulation d'une invention, donc il ne décide plus.
+    check("une reformulation légitime passe",
+          len(E._nettoie_sujets("Analyse du cours actuel de l'action\n"
+                                "Perspectives à court terme\n"
+                                "Niveaux de vente envisageables", 5, Q)), 3)
+    check_true("un sujet qui reprend ses mots passe aussi",
                E._nettoie_sujets("A quel prix revendre l'action 2crsi", 5, Q))
 
     # 3. Le refus fait retomber sur le repli, pas sur une étape bidon.

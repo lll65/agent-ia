@@ -2629,22 +2629,29 @@ try{ ETAPES = Math.max(1, Math.min(MAX_ETAPES, parseInt(localStorage.getItem("no
 function majBoutonEtapes(){
   const b=document.getElementById("etapes"); if(!b) return;
   b.classList.toggle("on", ETAPES>1);
-  b.textContent = ETAPES>1 ? String(ETAPES) : "🧩";
+  /* ⚠️ TOUJOURS UN CHIFFRE, JAMAIS UNE ICÔNE. Le cran « une seule passe » affichait 🧩 :
+     « quand je clique sur le bouton ça me met soit 0 étapes soit 3 ou 5 ». Il lisait
+     l'icône comme un zéro — et il avait raison de trouver ça bizarre, puisque Nova fait
+     toujours au moins une passe. « 1 » dit exactement ce qui va se passer. */
+  b.textContent = String(ETAPES);
   b.title = ETAPES>1
-    ? "Je découpe ta question en "+ETAPES+" étapes (si mon énergie le permet). Clique pour changer."
-    : "Réfléchir en plusieurs étapes — utile pour une question à plusieurs sujets";
+    ? "Je découpe ta question en "+ETAPES+" sujets au maximum (si mon énergie le permet, "
+      +"et s'il y a vraiment autant de sujets). Clique pour changer."
+    : "Une seule passe, comme d'habitude. Clique pour découper les questions à plusieurs sujets.";
 }
 function basculeEtapes(){
-  /* 1 → 3 → 5 → 1. Trois crans suffisent : un réglage à dix positions ne se règle jamais. */
-  ETAPES = ETAPES <= 1 ? 3 : (ETAPES < MAX_ETAPES ? MAX_ETAPES : 1);
+  /* 1 → 2 → 3 → 5 → 1. Quatre crans : assez pour choisir, assez peu pour se régler d'un
+     coup d'œil. Un réglage à dix positions ne se règle jamais. */
+  ETAPES = ETAPES <= 1 ? 2 : (ETAPES < 3 ? 3 : (ETAPES < MAX_ETAPES ? MAX_ETAPES : 1));
   try{ localStorage.setItem("nova_etapes", String(ETAPES)); }catch(e){}
   majBoutonEtapes();
   /* ⚠️ On ne dit PAS « ça va marcher » : on rappelle la seule chose qui décide vraiment,
      l'énergie restante, avec le chiffre qu'affiche la fiole au même instant. */
   if(ETAPES>1){
     const j=(document.getElementById("utext")||{}).textContent||"—";
-    toast(ETAPES+" étapes demandées — j'en ferai autant que mon énergie le permet ("+j+" restants)");
-  } else toast("Réflexion normale, en une passe");
+    toast("Jusqu'à "+ETAPES+" étapes — j'en ferai autant qu'il y a de sujets dans ta "
+          +"question, et que mon énergie le permet ("+j+" restants)");
+  } else toast("Une seule passe, comme d'habitude");
 }
 majBoutonEtapes();
 
