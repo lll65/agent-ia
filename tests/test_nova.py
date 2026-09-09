@@ -12125,6 +12125,93 @@ def test_le_css_reste_entier_et_l_accueil_avoue_ses_pannes():
     check_true("un réessai repart de zéro", 'z.dataset.rempli = "";' in rendu)
 
 
+def _code_js_seul(src: str) -> str:
+    """Le JS sans commentaires, sans chaînes et sans littéraux regex.
+
+    ⚠️ Le piège qui rendait mes premières tentatives inutilisables : « /\\/\\// » et
+    « "https://…" » contiennent « // ». Traités comme des commentaires, ils effaçaient
+    la fin de la ligne — dont des définitions de fonctions — et le contrôle rendait
+    soixante fausses alertes. Un littéral regex se termine au « / » non échappé de la
+    MÊME ligne, et il ne commence qu'en position de VALEUR.
+    """
+    out, i, n, prec = [], 0, len(src), ""
+    while i < n:
+        c = src[i]
+        if c == "/" and i + 1 < n and src[i + 1] == "*":
+            j = src.find("*/", i + 2); i = (j + 2) if j > 0 else n; out.append(" "); continue
+        if c == "/" and i + 1 < n and src[i + 1] == "/":
+            j = src.find("\n", i); i = j if j > 0 else n; continue
+        if c == "/" and prec in "=(,:[!&|?{};+":
+            j = i + 1
+            while j < n and src[j] != "\n":
+                if src[j] == "\\":
+                    j += 2; continue
+                if src[j] == "/":
+                    break
+                j += 1
+            i = j + 1; out.append(" "); continue
+        if c in "\"'`":
+            j, q = i + 1, c
+            while j < n:
+                if src[j] == "\\":
+                    j += 2; continue
+                if src[j] == q:
+                    break
+                j += 1
+            i = j + 1; out.append(" "); continue
+        out.append(c)
+        if not c.isspace():
+            prec = c
+        i += 1
+    return "".join(out)
+
+
+def test_aucune_fonction_appelee_dans_le_vide():
+    """« _cut is not defined » — affiché en toutes lettres sur son accueil.
+
+    En supprimant le bloc du schéma, j'ai emporté QUATRE fonctions qui n'avaient rien à
+    voir avec un canvas : _cut (couper un texte sans casser un emoji), _clean, coupeSure
+    et la constante _PICTOS. Elles vivaient simplement au milieu du code de dessin. NEUF
+    appels dépendaient de _cut, dont l'accueil — qui est donc tombé en marche.
+
+    ⚠️ ET MES DEUX PREMIÈRES VÉRIFICATIONS SONT PASSÉES À CÔTÉ.
+      • J'avais listé À LA MAIN les noms à contrôler (nodes, gAnim, drawGraph…) : _cut
+        n'y était pas, puisque je ne savais pas qu'il était là. Une liste écrite à la
+        main ne peut pas contenir ce qu'on ignore.
+      • Puis j'ai chargé le script dans un faux navigateur : il n'a rien vu non plus.
+        _cut n'est appelé qu'À L'INTÉRIEUR de fonctions — l'erreur ne surgit donc qu'au
+        moment où l'écran s'affiche, c'est-à-dire chez lui.
+
+    La seule vérification qui tient est STATIQUE : tout ce qui est appelé doit être
+    défini. Elle ne dépend ni de ce que je pense à lister, ni de ce qui s'exécute.
+    """
+    ui = open("ui/nova.html", encoding="utf-8").read()
+    js = re.findall(r"<script[^>]*>(.*?)</script>", ui, flags=re.S)[0]
+    code = _code_js_seul(js)
+
+    appeles = set(re.findall(r"(?<![\w.$])([a-zA-Z_$][\w$]*)\s*\(", code))
+    definis = set(re.findall(r"(?:function|const|let|var|class)\s+([a-zA-Z_$][\w$]*)", code))
+    definis |= set(re.findall(r"([a-zA-Z_$][\w$]*)\s*=\s*(?:async\s+)?function", code))
+    definis |= set(re.findall(r"([a-zA-Z_$][\w$]*)\s*=\s*(?:async\s*)?\(?[\w\s,]*\)?\s*=>", code))
+    for m in re.finditer(r"\(([^()]*)\)\s*(?:=>|\{)", code):
+        definis |= {x.strip().split("=")[0].strip() for x in m.group(1).split(",")
+                    if re.fullmatch(r"[a-zA-Z_$][\w$]*(\s*=.*)?", x.strip() or "x")}
+    natif = set("""if for while switch catch return typeof new delete void await async
+    function class super this else do try finally throw yield of in instanceof fetch
+    setTimeout setInterval clearTimeout clearInterval alert confirm prompt parseInt
+    parseFloat isNaN isFinite eval encodeURIComponent decodeURIComponent addEventListener
+    removeEventListener requestAnimationFrame cancelAnimationFrame matchMedia
+    getComputedStyle scrollTo btoa atob structuredClone queueMicrotask""".split())
+    manquants = sorted(n for n in appeles - definis - natif if not n[0].isupper())
+    check(f"aucune fonction appelée dans le vide (vues : {manquants[:4]})", manquants, [])
+
+    # Et nommément celles que j'ai perdues, pour que le motif reste lisible dans dix ans.
+    for nom in ("_cut", "_clean", "coupeSure"):
+        check_true(f"« {nom} » est bien défini",
+                   re.search(r"function\s+" + nom + r"\b", js) is not None)
+    check_true("« _PICTOS » aussi", re.search(r"const\s+_PICTOS\b", js) is not None)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -12172,6 +12259,7 @@ if __name__ == "__main__":
                test_la_jauge_ignorait_le_prompt,
                test_le_refus_du_modele_pris_pour_un_sujet,
                test_le_css_reste_entier_et_l_accueil_avoue_ses_pannes,
+               test_aucune_fonction_appelee_dans_le_vide,
                test_conversations_partagees_entre_appareils,
                test_une_tache_de_fond_ne_meurt_plus_en_silence,
                test_un_accord_ne_declenche_que_ce_qu_il_confirme,

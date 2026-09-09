@@ -2252,6 +2252,30 @@ function loopP(){ px.clearRect(0,0,PW,PH); const sp=thinking?2.6:1, gl=thinking?
     px.beginPath(); px.arc(p.x,p.y,p.r*(thinking?1.6:1),0,7); px.fillStyle=`rgba(139,109,255,${gl})`; px.shadowBlur=thinking?14:6; px.shadowColor="#8b6dff"; px.fill(); }
   px.shadowBlur=0; requestAnimationFrame(loopP); } loopP();
 
+const _PICTOS = (() => {
+  try { return new RegExp("^[\\p{Extended_Pictographic}\\uFE0F\\s]*", "u"); }
+  catch(e) { return /^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\uFE0F\s]*/u; }
+})();
+
+/* ⚠️ CES QUATRE FONCTIONS ÉTAIENT PIÉGÉES DANS LE BLOC DU SCHÉMA SUPPRIMÉ.
+   Elles n'ont rien à voir avec un canvas — elles coupent proprement du texte et
+   nettoient un libellé — mais elles vivaient au milieu du code de dessin. En retirant
+   le schéma, je les ai emportées : l'accueil est alors tombé sur « _cut is not
+   defined » et n'affichait plus rien. Neuf appels dépendaient de _cut.
+   Elles sont ici, avec le reste des utilitaires d'affichage, et plus dans un bloc
+   qu'on peut supprimer d'un coup. */
+function _cut(s,n){ s=String(s||"").trim();
+  // [...s] découpe par POINTS DE CODE : s.slice() pouvait couper un emoji en deux
+  // et produire un « � » en fin de texte.
+  const t=[...s]; if(t.length<=n) return s;
+  const c=t.slice(0,n).join(""), i=c.lastIndexOf(" ");
+  return (i>n*0.5? c.slice(0,i) : c).trim()+"…"; }
+function _clean(d){ if(!d) return "";
+  return _cut(String(d).replace(_PICTOS,"").replace(/\*\*(.+?)\*\*/g,"$1")
+    .replace(/^R[ée]sultats? web\s*:?\s*/i,"").replace(/\s+/g," ").trim(), 130); }
+function coupeSure(s, n){ const t=[...String(s==null?"":s)];
+  return t.length<=n ? String(s==null?"":s) : t.slice(0,n).join(""); }
+
 /* ═══ LE SCHÉMA DESSINÉ A ÉTÉ RETIRÉ ═══
    « ya toujours les 3 sphères et l'ancien raisonnement schéma. »
 
