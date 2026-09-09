@@ -12509,6 +12509,77 @@ def test_l_analyse_d_image_s_effacait_elle_meme():
     check_true("un échec d'aperçu n'empêche pas l'envoi", "catch(e){ apercuImg" in bloc)
 
 
+def test_le_diagnostic_disait_tout_beau_sans_rien_essayer():
+    """« nova me dit que tout est beau et que toutes les apps sont bien reliées alors
+    qu'elle n'y accède même pas — regarde la preuve, elle peut même pas accéder à
+    GitHub ! »
+
+    Il a raison, et le diagnostic était faux par construction. Il affichait :
+
+        ✅ App · github — 100 action(s) disponibles
+        🎉 Tout fonctionne.
+
+    …pendant que GITHUB_CREATE_A_COMMIT répondait « Not Found ». Ce 100 vient de
+    _composio_list_actions(), qui rend le CATALOGUE de ce que Composio propose pour
+    GitHub. Il vaut 100 que le jeton marche ou non. Un compte d'actions n'est pas un
+    contrôle de santé — « une app connectée n'est pas une app qui répond » est écrit dans
+    agent/sentinelle.py depuis le début, et ce diagnostic-là ne l'appliquait pas.
+
+    ⚠️ ET IL NE VOYAIT QUE LES 70 PREMIÈRES ACTIONS. GitHub en propose une centaine.
+    « crée un nouveau dépôt » a donc reçu GITHUB_CREATE_A_COMMIT, puis « je n'ai pas
+    d'action GitHub permettant de créer un dépôt » — vrai de ce qu'elle voyait, faux de ce
+    qui existe. Une liste coupée au hasard produit la même erreur qu'un nom écrit en dur.
+    """
+    import inspect
+
+    # 1. Le diagnostic ESSAIE, il ne compte plus.
+    src = inspect.getsource(A)
+    check("plus de « action(s) disponibles » comme preuve de santé",
+          '"detail": f"{len(acts)} action(s) disponibles"' in src, False)
+    check_true("chaque app est réellement appelée", "_essaie_une_app(slug)" in src)
+    essai = inspect.getsource(A._essaie_une_app)
+    check_true("…par un vrai appel", "_tool(nom, args, slug)" in essai)
+    check_true("un 404 est nommé comme tel", "introuvable sous cette identité" in essai)
+    check_true("une autorisation refusée aussi", "autorisation refusée" in essai)
+    # ⚠️ Et ce qu'on n'a pas pu essayer n'obtient PAS de ✅.
+    check_true("« non vérifié » n'est pas « ça marche »", "NON VÉRIFIÉ" in essai)
+
+    # 2. La sonde se choisit dans le catalogue RÉEL — aucun nom écrit en dur.
+    gh = [{"name": "GITHUB_CREATE_A_COMMIT"}, {"name": "GITHUB_DELETE_A_REPOSITORY"},
+          {"name": "GITHUB_GET_THE_AUTHENTICATED_USER"}]
+    nom, _a = A._sonde_pour("github", gh)
+    check("la sonde GitHub est une lecture", nom, "GITHUB_GET_THE_AUTHENTICATED_USER")
+    check_true("…jamais une écriture", "CREATE" not in nom and "DELETE" not in nom)
+    nom2, args2 = A._sonde_pour("gmail", [{"name": "GMAIL_SEND_EMAIL"},
+                                          {"name": "GMAIL_FETCH_EMAILS"}])
+    check("la sonde Gmail lit, elle n'envoie pas", nom2, "GMAIL_FETCH_EMAILS")
+    check("…avec un maxResults minimal", args2, {"maxResults": 1})
+    # Aucune lecture inoffensive : on ne sonde PAS plutôt que d'écrire quelque part.
+    check("aucune sonde sûre → on n'invente rien",
+          A._sonde_pour("foo", [{"name": "FOO_CREATE_THING"}])[0], "")
+
+    # 3. Le catalogue montré au modèle est classé par proximité AVANT d'être tronqué.
+    acts = [{"name": f"GITHUB_FILLER_{i}", "desc": "remplissage"} for i in range(80)]
+    acts.append({"name": "GITHUB_CREATE_A_REPOSITORY_FOR_THE_AUTHENTICATED_USER",
+                 "desc": "créer un nouveau dépôt"})
+    vus = [a["name"] for a in A._actions_pertinentes(acts, "creer un nouveau depot github", 70)]
+    check_true("la création de dépôt est enfin visible",
+               "GITHUB_CREATE_A_REPOSITORY_FOR_THE_AUTHENTICATED_USER" in vus)
+    check("…et même en tête", vus[0], "GITHUB_CREATE_A_REPOSITORY_FOR_THE_AUTHENTICATED_USER")
+    # Une demande de lecture ne doit pas remonter les actions de création.
+    lus = [a["name"] for a in A._actions_pertinentes(
+        [{"name": "GMAIL_SEND_EMAIL", "desc": "envoyer"},
+         {"name": "GMAIL_FETCH_EMAILS", "desc": "lire les mails"}], "montre mes mails", 70)]
+    check("« montre mes mails » privilégie la lecture", lus[0], "GMAIL_FETCH_EMAILS")
+
+    # 4. Le compteur d'énergie ne rend plus ✅ sur un fournisseur sans clé.
+    diag = inspect.getsource(A)
+    check("plus de ✅ automatique sur cerebras",
+          'u, l = U.get_usage("cerebras")\n            return True' in diag, False)
+    check_true("il dit quand aucune clé n'est comptable",
+               "aucune clé dont je sache compter les jetons" in diag)
+
+
 if __name__ == "__main__":
     for fn in (test_routage, test_echecs, test_dates, test_titres, test_robustesse,
                test_visuels, test_profil, test_automatisations, test_escouade,
@@ -12561,6 +12632,7 @@ if __name__ == "__main__":
                test_un_morceau_ne_perd_jamais_son_sujet,
                test_deux_societes_ne_se_contredisent_pas,
                test_l_analyse_d_image_s_effacait_elle_meme,
+               test_le_diagnostic_disait_tout_beau_sans_rien_essayer,
                test_conversations_partagees_entre_appareils,
                test_une_tache_de_fond_ne_meurt_plus_en_silence,
                test_un_accord_ne_declenche_que_ce_qu_il_confirme,
