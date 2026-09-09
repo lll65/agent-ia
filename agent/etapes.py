@@ -178,14 +178,27 @@ def _mots(t: str) -> set:
 
 
 def _parle_de_la_meme_chose(sujet: str, question: str) -> bool:
-    """Ce « sujet » vient-il VRAIMENT de la question posée ?
+    """Ce texte partage-t-il un mot porteur avec la question ?
 
-    ⚠️ LE GARDE-FOU QUI MANQUAIT, ET IL EST DÉTERMINISTE. Filtrer les formules de refus
-    une par une serait sans fin — il en existe autant que de modèles et de langues. La
-    règle qui tient : un sujet extrait d'une question DOIT en reprendre au moins un mot
-    porteur. « I'm sorry, but I can't help with that » n'en partage aucun avec
-    « acheter 2crsi et revendre à quel prix ». Ni un refus, ni une hallucination, ni une
-    dérive hors-sujet ne peuvent passer cette porte.
+    ⚠️ CE TEST NE FILTRE PLUS LES SUJETS, ET C'EST DÉLIBÉRÉ. Je m'en servais pour écarter
+    tout sujet ne reprenant aucun mot de la question. Ça a cassé le jour même : il demande
+    5 étapes sur « faut-il acheter 2crsi et quand revendre », le modèle rend très
+    correctement « Analyse du cours actuel / Perspectives à court terme / Niveaux de vente
+    envisageables »… et je jette les trois, parce qu'aucune ne répète « 2crsi ». Il a eu
+    une seule passe au lieu de cinq étapes.
+
+    Le fond du problème : un bon découpage REFORMULE — c'est même ce qu'on lui demande.
+    Une reformulation légitime et une invention hors sujet se ressemblent donc exactement
+    du point de vue du vocabulaire. Aucun réglage de ce test ne peut les séparer, et un
+    test qui ne sait pas trancher doit être retiré de la décision plutôt que réglé au
+    jugé.
+
+    Ce qui protège vraiment est ailleurs, et ça suffit :
+      • _REFUS attrape les formules de refus, qui sont la panne réellement observée ;
+      • _tire_de_la_demande (agent/core.py) empêche un refus de partir comme REQUÊTE WEB
+        — c'est là qu'était le dégât, celui qui a rendu des conseils sur les
+        coffres-forts en réponse à une question de bourse.
+    Cette fonction reste utilisée par ce second garde-fou.
     """
     mq = _mots(question)
     if not mq:
@@ -199,9 +212,6 @@ def _nettoie_sujets(brut: str, n: int, question: str = "") -> list:
         t = ligne.strip()
         t = re.sub(r"^\s*(?:\d+[).\-]|[-*•])\s*", "", t).strip()
         if len(t) < 8 or _PAS_UN_SUJET.match(t) or _REFUS.search(t):
-            continue
-        if question and not _parle_de_la_meme_chose(t, question):
-            logger.info(f"[étapes] « {t[:50]} » ne parle pas de sa question → écarté")
             continue
         if t not in out:
             out.append(t)
