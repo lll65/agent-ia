@@ -92,13 +92,6 @@
   @keyframes blink{ 50%{ opacity:.2 } }
   .avatar{ width:30px; height:30px; border-radius:9px; margin:2px 9px 0 0; flex:0 0 auto; background:linear-gradient(135deg,var(--neon),var(--neon2)); display:grid; place-items:center; font-size:15px; box-shadow:0 0 16px rgba(47,224,245,.4); }
 
-  /* Graphe de raisonnement — plein écran, en arrière-plan */
-  #graph{ width:100%; height:100%; }
-  /* Icône de repli : le schéma reste accessible d'un clic après la réponse */
-    display:none; place-items:center; font-size:20px; cursor:pointer; color:#fff;
-    background:linear-gradient(135deg, rgba(139,109,255,.9), rgba(47,224,245,.75));
-    border:1px solid rgba(255,255,255,.18); box-shadow:0 6px 24px rgba(139,109,255,.5);
-    backdrop-filter:blur(10px); animation:pop .35s cubic-bezier(.2,.9,.3,1.2); transition:.2s; }
 
   .composer{ display:flex; gap:10px; padding-top:8px; }
   .composer textarea{ flex:1; resize:none; background:var(--glass); border:1px solid var(--stroke); color:var(--txt); border-radius:16px; padding:14px 16px; font-size:15px; font-family:inherit; max-height:120px; outline:none; transition:.2s; }
@@ -111,6 +104,13 @@
   /* Une jauge qu'on sait incomplète ne doit pas s'afficher avec l'aplomb d'une mesure. */
   .usage.flou{ opacity:.62; }
   .usage.flou .pct::after{ content:"~"; margin-left:1px; opacity:.8; }
+  .accKo{ grid-column:1/-1; padding:20px 22px; border-radius:18px; line-height:1.55;
+          border:1px solid rgba(251,191,36,.34); background:rgba(251,191,36,.07); }
+  .accKo small{ color:var(--dim); }
+  .accRetry{ margin-top:12px; padding:9px 18px; border-radius:999px; cursor:pointer;
+             border:1px solid var(--stroke); background:var(--glass); color:var(--txt);
+             font-size:13px; font-family:inherit; transition:.2s; }
+  .accRetry:hover{ border-color:var(--neon); }
   .micbtn#etapes.on{ background:linear-gradient(180deg,var(--neon),var(--neon2));
                      border-color:transparent; font-weight:800; font-size:17px;
                      box-shadow:0 0 18px rgba(139,109,255,.55); }
@@ -1627,10 +1627,11 @@ function accSquelette(){
 function chargeAccueil(){
   const z = document.getElementById("accueil");
   if(!z || !KEY) return;
+  z.dataset.rempli = "";           // un réessai a le droit de repartir de zéro
   accSquelette();
   fetch(ORIGIN+"/agent/accueil?key="+encodeURIComponent(KEY),{cache:"no-store"})
     .then(r=>r.json()).then(d=>{
-      if(!d || d.detail) return;
+      if(!d || d.detail){ accEchec(d && d.detail ? String(d.detail) : "réponse vide"); return; }
       const m=d.mails||{}, a=d.agenda||{}, w=d.meteo||{}, t=d.taches||{}, c=d.cours||{};
       // Le bandeau et les badges de nav : les MÊMES chiffres que les tuiles, pas une
       // seconde source qui pourrait diverger. Un badge n'apparaît que s'il a été mesuré.
@@ -1684,7 +1685,27 @@ function chargeAccueil(){
       // des chiffres déjà affichés.
       z.dataset.rempli = "1";
       document.body.classList.add("aAccueil");
-    }).catch(()=>{});   // l'accueil est un bonus : son échec ne casse pas le chat
+    }).catch(e=>accEchec(String(e && e.message || e).slice(0,90)));
+}
+
+/* ⚠️ « ET ÇA A FAIT BUGGER L'INTERFACE REGARDE » — quatre tuiles figées sur « je
+   regarde… », pour toujours. Le squelette s'affichait, l'appel échouait, et le
+   .catch() était VIDE : l'écran continuait donc d'annoncer un travail en cours qui
+   n'aurait jamais lieu. Le commentaire disait « l'accueil est un bonus, son échec ne
+   casse pas le chat » — c'était vrai pour le chat, et faux pour lui : il regardait un
+   écran qui prétendait chercher. « Je n'ai pas pu regarder » et « je regarde » ne se
+   disent pas pareil, et c'est le défaut qu'on retire depuis le début. */
+function accEchec(pourquoi){
+  const z = document.getElementById("accueil");
+  if(!z || z.dataset.rempli) return;      // des chiffres réels sont déjà affichés
+  const j = new Date().toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long"});
+  z.innerHTML = '<div class="accTop"><div><div class="accSalut">Bonjour Lohan</div>'
+    + '<div class="accJour">' + esc(j.charAt(0).toUpperCase()+j.slice(1)) + '</div></div></div>'
+    + '<div class="accKo">⚠️ <b>Je n\'ai pas pu regarder tes mails, ton agenda ni tes '
+    + 'cours.</b><br>Ça ne veut pas dire qu\'il n\'y a rien — je n\'ai pas réussi à '
+    + 'aller voir.<br><small>' + esc(pourquoi) + '</small><br>'
+    + '<button class="accRetry" onclick="chargeAccueil()">Réessayer</button></div>';
+  document.body.classList.add("aAccueil");
 }
 setTimeout(chargeAccueil, 400);
 
