@@ -62,6 +62,48 @@ BUDGET_RECHERCHE = float(os.getenv("SEARCH_BUDGET", "22"))
 TIMEOUT_HOTE = 8
 
 
+# ── Ancrage géographique ──────────────────────────────────────────────────────
+# « quelles sont les taxes ? » a rendu les tranches fiscales AMÉRICAINES : « 10 %
+# à 37 % », « 545 500 $ », « Net Investment Income Tax ». Une réponse impeccable —
+# pour quelqu'un qui vit aux États-Unis. Deux causes, toutes les deux réparées ici.
+#
+# 1. DuckDuckGo était réglé sur fr-fr ; Tavily, interrogé EN PREMIER, sur rien du
+#    tout. Encore une correction posée d'un côté et pas sur son miroir.
+# 2. Régler le moteur ne suffit pas : « taxes trading 2026 » remonte des pages
+#    américaines même en fr-fr, simplement parce que ce sont elles qui existent.
+#    Sur ces sujets-là, la réponse CHANGE avec le pays — impôts, droit, âge légal,
+#    aides, salaire. Il faut donc le dire dans la requête, pas seulement l'espérer.
+#
+# Une réponse juste pour un autre pays est plus dangereuse qu'une absence de
+# réponse : elle a l'air complète, elle est sourcée, et elle est fausse.
+PAYS = os.getenv("NOVA_PAYS", "France")
+PAYS_TAVILY = os.getenv("NOVA_PAYS_TAVILY", "france")     # Tavily attend un nom en minuscules
+
+_SUJETS_NATIONAUX = re.compile(
+    r"\b(imp[oô]ts?|imposition|fiscal\w*|taxes?|tax|tva|pr[ée]l[eè]vements?|flat\s*tax|"
+    r"plus-values?|cotisations?|urssaf|auto-?entrepreneur|micro-?entreprise|"
+    r"loi|l[ée]gal\w*|l[ée]gislation|r[ée]glementation|juridique|interdit\w*|autoris[ée]\w*|"
+    r"majorit[ée]|mineur\w*|[ée]mancip\w*|"
+    r"allocations?|aides?|caf|apl|rsa|crous|retraite|ch[oô]mage|"
+    r"salaires?|smic|remboursements?|s[ée]curit[ée]\s+sociale|mutuelle|"
+    r"permis|passeport|visa|amendes?)\b", re.I)
+
+# Si le pays est déjà nommé, on ne le contredit pas : « fiscalité en Belgique »
+# doit rester une question belge.
+_PAYS_DEJA = re.compile(
+    r"\b(france|fran[cç]ais\w*|belgi\w+|suisse|canada|qu[ée]b[eé]\w+|luxembourg|"
+    r"usa|u\.s\.|[ée]tats-unis|am[ée]ricain\w*|uk|royaume-uni|angleterre|"
+    r"allemagne|espagne|italie|portugal|maroc|europe|europ[ée]en\w*)\b", re.I)
+
+
+def _ancre_pays(query: str, pays: str = "") -> str:
+    """Ajoute le pays quand la réponse en dépend et qu'aucun pays n'est nommé."""
+    q = (query or "").strip()
+    if not q or not _SUJETS_NATIONAUX.search(q) or _PAYS_DEJA.search(q):
+        return q
+    return f"{q} {pays or PAYS}"
+
+
 def _ddg_html(query: str, max_results: int, region: str = "fr-fr",
               fin: float = 0.0) -> list[dict]:
     """Interroge l'endpoint HTML DuckDuckGo (pas d'API key, résultats fiables)."""
@@ -112,7 +154,17 @@ def _tavily(query: str, max_results: int, mode: str = "web") -> list[dict]:
                   "search_depth": "basic"}
         if mode == "news":                       # Tavily sait cibler l'actualité récente
             charge.update(topic="news", days=3)
+        else:
+            # ⚠️ C'est ICI que les tranches fiscales américaines entraient. DuckDuckGo
+            # était localisé, Tavily non — et Tavily passe en premier.
+            charge.update(topic="general", country=PAYS_TAVILY)
         r = requests.post("https://api.tavily.com/search", json=charge, timeout=12)
+        if r.status_code != 200 and "country" in charge:
+            # Un paramètre que l'API refuserait ne doit pas faire disparaître la
+            # recherche entière : on retente sans, plutôt que de rendre zéro résultat.
+            charge.pop("country", None)
+            charge.pop("topic", None)
+            r = requests.post("https://api.tavily.com/search", json=charge, timeout=12)
         if r.status_code != 200:
             return []
         data = r.json().get("results", [])
@@ -184,20 +236,27 @@ class WebSearchPlugin(Plugin):
             except Exception as e:
                 pass    # média injoignable : on retombe sur les moteurs, jamais d'échec
 
-        results = _tavily(query, max_results, mode)
+        # Le pays n'est ajouté que pour les MOTEURS : les flux RSS ci-dessus sont
+        # filtrés par entité citée, et un « France » ajouté deviendrait une entité
+        # à chercher dans les titres.
+        q = _ancre_pays(query)
+
+        results = _tavily(q, max_results, mode)
         if not results and time.monotonic() < fin:
             # Même en mode actualité : l'endpoint HTML reste le repli le plus fiable
             # depuis un serveur, et la requête est déjà datée.
-            results = _ddg_html(query, max_results, fin=fin)
+            results = _ddg_html(q, max_results, fin=fin)
         if not results and time.monotonic() < fin:
-            results = _ddg_lib(query, max_results, mode)
+            results = _ddg_lib(q, max_results, mode)
 
         if not results:
-            return (f"⚠️ Aucun résultat exploitable pour « {query} » "
+            return (f"⚠️ Aucun résultat exploitable pour « {q} » "
                     "(moteur de recherche momentanément indisponible). "
                     "Réponds honnêtement que la donnée n'a pas pu être vérifiée.")
 
-        head = f"🔎 **Résultats web : {query}** ({len(results)})\n"
+        # La requête affichée est celle qui a VRAIMENT été envoyée : s'il voit
+        # « … France » il sait pourquoi les sources sont françaises.
+        head = f"🔎 **Résultats web : {q}** ({len(results)})\n"
         lines = [head]
         for i, r in enumerate(results, 1):
             title = _strip(r.get("title", ""))

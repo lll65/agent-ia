@@ -10261,6 +10261,74 @@ def test_les_diapos_en_markdown_brut_et_les_cours_qu_on_range():
     check_true("le retour de Notion n'est pas maquillé", "(r && r.message)" in ui)
 
 
+def test_une_question_francaise_nappelle_pas_le_fisc_americain():
+    """« quelle sont les taxe ? » → Nova a répondu « 10 % à 37 % », « 545 500 $ »,
+    « Net Investment Income Tax ». Sourcé, structuré, impeccable — et américain.
+    Lohan vit à Pau.
+
+    ⚠️ Une réponse juste pour un AUTRE pays est pire qu'un « je ne sais pas » :
+    elle a l'air complète, donc on ne la vérifie pas. Ici elle l'aurait conduit à
+    déclarer en flat tax 30 % ce qui relève d'un revenu d'activité.
+
+    Deux causes, et la première est la signature du projet — la correction posée
+    d'un côté et pas sur son miroir : `_ddg_html` envoyait bien `kl=fr-fr`,
+    `_tavily` n'avait AUCUNE localisation. Et c'est Tavily qui passe en premier.
+    La seconde : même en fr-fr, « taxes trading 2026 » remonte des pages
+    américaines, simplement parce que ce sont elles qui existent. Sur ces
+    sujets-là il faut NOMMER le pays dans la requête.
+    """
+    import inspect as _i
+    from plugins.builtin import web_search as W
+
+    # 1. Le pays est ajouté quand la réponse en dépend…
+    check("les impôts sont une question de pays",
+          W._ancre_pays("taxes gains trading 2026"), "taxes gains trading 2026 France")
+    check_true("l'âge légal aussi", W._ancre_pays("quel age legal pour trader").endswith("France"))
+    check_true("les aides étudiantes aussi", W._ancre_pays("bourse crous conditions").endswith("France"))
+    # …et JAMAIS quand un pays est déjà nommé : « fiscalité en Belgique » doit
+    # rester une question belge.
+    check("un pays nommé n'est pas écrasé",
+          W._ancre_pays("fiscalite en Belgique"), "fiscalite en Belgique")
+    check("« impôts aux États-Unis » reste américain",
+          W._ancre_pays("impots plus-values aux Etats-Unis"), "impots plus-values aux Etats-Unis")
+    # …ni sur une question qui n'a pas de frontière : le cours d'une action est
+    # le même vu de Pau ou de Tokyo. Ajouter « France » là ne ferait que dégrader.
+    check("une question sans frontière est laissée telle quelle",
+          W._ancre_pays("cours action 2crsi"), "cours action 2crsi")
+    check("…et une recherche technique aussi",
+          W._ancre_pays("python asyncio timeout"), "python asyncio timeout")
+
+    # 2. Le miroir manquant : Tavily est localisé comme DuckDuckGo l'était déjà.
+    tav = _i.getsource(W._tavily)
+    check_true("Tavily reçoit enfin un pays", "country=PAYS_TAVILY" in tav)
+    # ⚠️ Mais un paramètre refusé par l'API ne doit pas faire disparaître la
+    # recherche entière : zéro résultat serait une régression, pas un correctif.
+    check_true("un refus de l'API ne supprime pas la recherche",
+               'charge.pop("country", None)' in tav)
+
+    run = _i.getsource(W.WebSearchPlugin.run)
+    check_true("les moteurs reçoivent la requête ancrée", "_ancre_pays(query)" in run)
+    check_true("Tavily la reçoit aussi", "_tavily(q," in run)
+    check_true("DuckDuckGo également", "_ddg_html(q," in run)
+    # La requête AFFICHÉE est celle qui est vraiment partie : s'il lit « … France »,
+    # il sait pourquoi les sources sont françaises. Afficher l'ancienne serait
+    # une petite fiction de plus.
+    check_true("la requête montrée est celle qui est partie",
+               'Résultats web : {q}' in run)
+
+    # 3. La consigne, elle, est écrite une seule fois et injectée partout — deux
+    # formulations séparées de la même règle finissent toujours par diverger.
+    import agent.system_prompt as S
+    import agent.core as C
+    check_true("la règle existe", "FRANCE" in S.JURIDICTION)
+    check_true("elle interdit de transposer une source étrangère",
+               "transpose" in S.JURIDICTION and "étrangère" in S.JURIDICTION)
+    for nom, texte in (("directive compacte", S.AGENT_COMPACT_DIRECTIVE),
+                       ("mode rapide", S.SHORT_SYSTEM_PROMPT),
+                       ("boucle ReAct", C.SYSTEM_TEMPLATE)):
+        check_true(f"le pays est dit — {nom}", "PAYS :" in texte)
+
+
 def test_ecran_eteint_le_cours_ne_sarrete_pas_en_silence():
     """« sur mon tel quand je met le mode cour et que l'écran se desactive
     l'enregistrement est aussi coupé. »
@@ -12752,6 +12820,7 @@ if __name__ == "__main__":
                test_la_mise_en_page_des_maquettes_sans_les_phrases_qui_rassurent,
                test_le_kine_qui_n_existait_pas_et_la_meteo_cherchee_sur_le_web,
                test_les_diapos_en_markdown_brut_et_les_cours_qu_on_range,
+               test_une_question_francaise_nappelle_pas_le_fisc_americain,
                test_ecran_eteint_le_cours_ne_sarrete_pas_en_silence,
                test_deplacer_un_cours_dans_notion_sans_se_tromper_de_cours,
                test_deux_cours_pour_la_meme_action_et_la_section_qui_n_apprend_rien,
