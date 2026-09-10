@@ -10261,6 +10261,62 @@ def test_les_diapos_en_markdown_brut_et_les_cours_qu_on_range():
     check_true("le retour de Notion n'est pas maquillé", "(r && r.message)" in ui)
 
 
+def test_ecran_eteint_le_cours_ne_sarrete_pas_en_silence():
+    """« sur mon tel quand je met le mode cour et que l'écran se desactive
+    l'enregistrement est aussi coupé. »
+
+    ⚠️ C'est la panne la plus grave possible ici, et pour une raison précise :
+    l'audio est effacé au fur et à mesure, la transcription est la SEULE copie.
+    Un cours coupé écran éteint ne se rejoue pas.
+
+    Aucun navigateur mobile ne garantit d'enregistrer écran éteint — donc le
+    code ne doit rien promettre de tel. Ce qu'il doit faire, lui :
+      1. demander à l'OS de garder l'écran allumé (wakeLock) ;
+      2. si l'OS refuse, LE DIRE — et le dire en permanence, pas une fois ;
+      3. si la capture a quand même été coupée, mesurer le trou, relancer,
+         et annoncer le trou jusque dans la synthèse finale.
+    Le défaut d'origine tient en deux caractères : `catch(e){}`. Le wakeLock
+    échouait et personne ne l'apprenait — un chrono qui tourne au-dessus d'un
+    micro mort, c'est exactement « tout va bien » pendant que rien ne va.
+    """
+    ui = (Path(__file__).resolve().parents[1] / "ui" / "cours.html").read_text(encoding="utf-8")
+
+    # 1. L'échec du wakeLock n'est plus avalé.
+    bloc = ui[ui.index("async function garderEveille"):]
+    bloc = bloc[:bloc.index("function surveillePiste")]
+    check_true("le refus du wakeLock est dit", 'warn("liveWarn"' in bloc)
+    check_true("et il est dit avec la consigne utile", "mise en veille sur" in bloc)
+    check_true("plus de catch muet sur la veille", "catch(e){}" not in bloc)
+    # L'OS peut REPRENDRE le verrou en cours de route (batterie faible) : sans
+    # écouter « release », l'écran affichait encore 🔒 alors qu'il allait s'éteindre.
+    check_true("la reprise du verrou par l'OS est suivie", 'addEventListener("release"' in bloc)
+    check_true("un témoin permanent d'état de veille", 'id="veille"' in ui)
+
+    # 2. La coupure est détectée, mesurée, relancée.
+    check_true("le temps passé écran éteint est mesuré", "cacheDepuis" in ui and "trouMs += absence" in ui)
+    check_true("l'enregistreur est relancé après coupure", "recA = nouvelEnregistreur();" in ui)
+    # ⚠️ Symétrie : relancer l'enregistreur SANS relancer le minuteur de tranches
+    # laissait une tranche unique grossir jusqu'à la fin du cours.
+    check_true("le minuteur de tranches repart aussi",
+               "timerRec = setInterval(relancer, TRANCHE_MS);" in
+               ui[ui.index("function reprendsSiCoupe"):ui.index("document.addEventListener(\"visibilitychange\"")])
+    check_true("le trou est annoncé sur le moment", "ce passage manque" in ui)
+    # 3. …et il survit jusqu'à la synthèse : le serveur, lui, n'a AUCUNE trace
+    # d'une coupure côté téléphone. Sans cette ligne le cours a l'air complet.
+    check_true("le trou est rappelé dans la synthèse", "coupé l'enregistrement pendant" in ui)
+
+    # 4. Le micro peut aussi mourir écran allumé (appel entrant, autre appli).
+    check_true("la piste micro est surveillée", "t.onended" in ui and "t.onmute" in ui)
+
+    # 5. L'alarme de silence ne doit pas crier au loup au retour : le VU-mètre
+    # tourne sur requestAnimationFrame, gelé page cachée. Sans remise à zéro,
+    # « aucun son depuis 2 minutes » s'affichait alors que le micro allait bien —
+    # et une alarme qu'on apprend à ignorer ne sert plus le jour où elle a raison.
+    retour = ui[ui.index('document.addEventListener("visibilitychange"'):]
+    check_true("pas de fausse alarme de silence au retour",
+               "dernierSon = Date.now(); silencePrevenu = false;" in retour[:1200])
+
+
 def test_deplacer_un_cours_dans_notion_sans_se_tromper_de_cours():
     """« j'aimerais que dans la conv avec Nova je puisse lui dire "déplace tel cours
     dans Notion", et aussi dans le mode cours il faut un import Notion. »
@@ -12696,6 +12752,7 @@ if __name__ == "__main__":
                test_la_mise_en_page_des_maquettes_sans_les_phrases_qui_rassurent,
                test_le_kine_qui_n_existait_pas_et_la_meteo_cherchee_sur_le_web,
                test_les_diapos_en_markdown_brut_et_les_cours_qu_on_range,
+               test_ecran_eteint_le_cours_ne_sarrete_pas_en_silence,
                test_deplacer_un_cours_dans_notion_sans_se_tromper_de_cours,
                test_deux_cours_pour_la_meme_action_et_la_section_qui_n_apprend_rien,
                test_le_diagnostic_cherchait_une_variable_impossible,
