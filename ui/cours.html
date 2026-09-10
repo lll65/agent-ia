@@ -176,6 +176,7 @@
     <div class="sub" id="etat">Nova écoute…</div>
     <div class="vu"><i id="vu"></i></div>
     <div class="sub" style="font-size:11px" id="vuTxt">niveau du micro</div>
+    <div class="sub" style="font-size:11px" id="veille"></div>
     <div class="stats">
       <div class="stat"><b id="sMots">0</b><span>MOTS</span></div>
       <div class="stat"><b id="sSeg">0</b><span>TRANCHES</span></div>
@@ -429,12 +430,105 @@ function demarrerVu(){
   }catch(e){}
 }
 
-/* ── Veille de l'écran ──────────────────────────────────────────────────── */
-async function garderEveille(){
-  try{ if("wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen"); }catch(e){}
+/* ── Veille de l'écran, et ce qui arrive quand elle lâche ───────────────────
+   Sur téléphone, quand l'écran s'éteint, le navigateur gèle la page : le
+   MediaRecorder est suspendu et le cours s'arrête SANS RIEN DIRE, chrono qui
+   continue de tourner par-dessus un micro mort. C'est exactement la panne
+   qu'on refuse ici, et elle est irrattrapable : l'audio est effacé au fur et à
+   mesure, la transcription est la seule copie.
+   Trois lignes de défense :
+     1. wakeLock — on demande à l'OS de ne pas éteindre l'écran ;
+     2. s'il refuse (Safari < 16.4, batterie faible, économiseur d'énergie),
+        on le DIT, en permanence, au lieu de laisser croire que c'est couvert ;
+     3. si la capture a quand même été coupée, on mesure le trou, on relance,
+        et on annonce le trou. Un trou annoncé se rattrape auprès d'un copain ;
+        un trou silencieux ne se rattrape jamais.
+   Ce fichier ne fait AUCUNE promesse qu'il ne peut pas tenir : aucun navigateur
+   mobile ne garantit l'enregistrement écran éteint. La seule parade réelle,
+   c'est que l'écran reste allumé — donc on le demande, et sinon on le réclame.
+   ────────────────────────────────────────────────────────────────────────── */
+let veilleOk = false, cacheDepuis = 0, trouMs = 0;
+
+function etatVeille(){
+  const e = $("veille"); if(!e) return;
+  if(fini){ e.textContent = ""; return; }
+  if(veilleOk){ e.textContent = "🔒 écran maintenu allumé"; e.style.color = ""; }
+  else{ e.textContent = "⚠️ écran non maintenu — s'il s'éteint, l'enregistrement s'arrête";
+        e.style.color = "#ffb4a2"; }
 }
-document.addEventListener("visibilitychange", () => {
-  if(document.visibilityState === "visible" && !fini && !enPause) garderEveille();
+
+async function garderEveille(){
+  if(fini || enPause) return;
+  try{
+    if(!("wakeLock" in navigator)) throw new Error("wakeLock absent");
+    wakeLock = await navigator.wakeLock.request("screen");
+    veilleOk = true;
+    // L'OS peut le reprendre à tout moment (batterie faible, appel entrant).
+    wakeLock.addEventListener("release", () => { veilleOk = false; wakeLock = null; etatVeille(); });
+  }catch(e){
+    veilleOk = false; wakeLock = null;
+    warn("liveWarn", "⚠️ Ce téléphone ne laisse pas Nova garder l'écran allumé. " +
+         "<b>Passe la mise en veille sur « Jamais »</b> dans les réglages, ou garde " +
+         "l'écran allumé : s'il s'éteint, le navigateur coupe le micro et le cours " +
+         "s'arrête là — sans prévenir.", true);
+  }
+  etatVeille();
+}
+
+/* Le micro peut aussi mourir écran allumé : appel entrant, autre appli qui le
+   prend, casque débranché. Même règle — on le dit tout de suite. */
+function surveillePiste(){
+  for(const t of (stream ? stream.getAudioTracks() : [])){
+    t.onended  = () => { if(!fini) reprendsSiCoupe(); };
+    t.onmute   = () => { if(!fini && !enPause) warn("liveWarn",
+      "🔇 Le téléphone a coupé le micro (appel entrant, autre application ?). " +
+      "<b>Nova n'entend plus rien</b> tant que ça dure.", true); };
+    t.onunmute = () => { if(!fini && !enPause){
+      warn("liveWarn", ""); dernierSon = Date.now(); silencePrevenu = false; } };
+  }
+}
+
+function reprendsSiCoupe(){
+  if(fini || enPause) return;
+  const absence = cacheDepuis ? Date.now() - cacheDepuis : 0;
+  cacheDepuis = 0;
+  const vivant = recA && recA.state === "recording" &&
+                 stream && stream.getAudioTracks().some(t => t.readyState === "live" && !t.muted);
+  if(vivant){
+    // Rien n'est perdu : les minuteries ont seulement été ralenties en fond.
+    // On recoupe tout de suite pour ne pas garder une tranche géante en mémoire.
+    if(absence > TRANCHE_MS) relancer();
+    return;
+  }
+  trouMs += absence;
+  try{ recA && recA.state !== "inactive" && recA.stop(); }catch(e){}
+  recA = null;
+  const micVivant = stream && stream.getAudioTracks().some(t => t.readyState === "live");
+  if(micVivant){
+    recA = nouvelEnregistreur();
+    clearInterval(timerRec); timerRec = setInterval(relancer, TRANCHE_MS);
+    warn("liveWarn", "⚠️ Le téléphone a coupé l'enregistrement" +
+         (absence > 3000 ? " pendant <b>" + hhmmss(absence / 1000) + "</b>" : "") +
+         " (écran éteint ?). Nova a repris, mais <b>ce passage manque</b> : " +
+         "il n'existe nulle part ailleurs.", true);
+  }else{
+    warn("liveWarn", "❌ Le micro a été fermé par le téléphone et Nova ne peut pas " +
+         "le rouvrir seule. <b>Appuie sur « Terminer »</b> : tout ce qui est déjà " +
+         "transcrit est gardé et sera synthétisé. Puis relance un cours.", true);
+  }
+}
+
+document.addEventListener("visibilitychange", async () => {
+  if(fini) return;
+  if(document.visibilityState !== "visible"){ if(!cacheDepuis) cacheDepuis = Date.now(); return; }
+  await garderEveille();
+  try{ if(ac && ac.state === "suspended") ac.resume(); }catch(e){}
+  // Le VU-mètre tourne sur requestAnimationFrame, gelé quand la page est cachée :
+  // sans cette remise à zéro, l'alarme « aucun son depuis 2 minutes » se
+  // déclenchait au retour alors que le micro allait très bien. Une alarme qui
+  // crie au loup, on finit par l'ignorer — y compris le jour où elle a raison.
+  dernierSon = Date.now(); silencePrevenu = false;
+  reprendsSiCoupe();
 });
 
 /* ── Démarrage ──────────────────────────────────────────────────────────── */
@@ -470,8 +564,9 @@ $("go").onclick = async () => {
   }
 
   fini = false; enPause = false; ecoule = 0; file = []; echecs = 0; dur = 0;
+  trouMs = 0; cacheDepuis = 0;
   t0 = Date.now(); document.body.classList.add("rec");
-  show("live"); demarrerVu(); garderEveille();
+  show("live"); demarrerVu(); surveillePiste(); garderEveille();
   recA = nouvelEnregistreur();
   timerRec = setInterval(relancer, TRANCHE_MS);
   tick = setInterval(() => {
@@ -514,6 +609,7 @@ $("stop").onclick = async () => {
   await new Promise(r => setTimeout(r, 500));          // laisse tomber la dernière tranche
   try{ stream.getTracks().forEach(t => t.stop()); }catch(e){}
   try{ if(wakeLock){ wakeLock.release(); wakeLock = null; } }catch(e){}
+  veilleOk = false; etatVeille();
   try{ if(ac) ac.close(); }catch(e){}
 
   show("work");
@@ -602,8 +698,15 @@ function afficher(d, perdues){
   $("outMeta").textContent = `${Math.round((d.secondes||0)/60)} min · ${d.mots||0} mots · ` +
                              `${(d.fiches||[]).length} fiches`;
   const manques = (d.trous||[]).length + (perdues||0);
-  warn("outWarn", manques ? `⚠️ ${manques} tranche(s) n'ont pas pu être transcrites : ` +
-       `il peut manquer quelques passages.` : "");
+  const bouts = [];
+  if(manques) bouts.push(`${manques} tranche(s) n'ont pas pu être transcrites`);
+  // Une coupure du téléphone (écran éteint, appel entrant) ne laisse AUCUNE trace
+  // côté serveur : sans cette ligne, le cours a l'air complet alors qu'il ne l'est
+  // pas — et c'est en révisant, trop tard, qu'on découvre le trou.
+  if(trouMs > 5000) bouts.push(`le téléphone a coupé l'enregistrement pendant ${hhmmss(trouMs/1000)}`);
+  warn("outWarn", bouts.length
+    ? `⚠️ ${bouts.join(" · ")} — <b>il manque des passages</b>, ce cours n'est pas complet.`
+    : "", true);
   $("synth").innerHTML = md(d.synthese || "");
   const F = d.fiches || [];
   $("fichesCard").classList.toggle("hide", !F.length);
