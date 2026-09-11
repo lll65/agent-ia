@@ -10261,6 +10261,77 @@ def test_les_diapos_en_markdown_brut_et_les_cours_qu_on_range():
     check_true("le retour de Notion n'est pas maquillé", "(r && r.message)" in ui)
 
 
+def test_un_micro_muet_ne_passe_pas_pour_un_cours():
+    """« Sous-titrage Société Radio-Canada ya toujours ecrit ca. ca enregistre
+    meme pas. » — 10 tranches, 9 mots, six minutes de silence.
+
+    Sur une tranche muette, Whisper ne rend pas « rien » : il rend la phrase la
+    plus fréquente de son corpus de sous-titres. Le cours avait donc l'air
+    transcrit. Trois défauts empilés, chacun réparé ici :
+
+      1. le navigateur prenait le micro « par défaut » du système — muet — et
+         rien ne permettait d'en choisir un autre ni de vérifier avant de partir ;
+      2. l'invention de Whisper entrait dans la transcription comme du cours ;
+      3. l'alarme « aucun son depuis 2 minutes », qui aurait dit exactement ça,
+         était neutralisée deux fois : remise à zéro à chaque retour sur l'onglet,
+         puis effacée par le « tranche transmise » de l'envoi suivant.
+    """
+    import inspect
+    import agent.cours as C
+    ui = (Path(__file__).resolve().parents[1] / "ui" / "cours.html").read_text(encoding="utf-8")
+
+    # --- 1. Choisir son micro, et prouver qu'il capte AVANT d'enregistrer ------
+    check_true("le micro se choisit", 'id="mic"' in ui and "listeMicros" in ui)
+    check_true("le choix est réellement appliqué", "contraintes.deviceId = { exact: MIC }" in ui)
+    check_true("le choix survit au rechargement", '"nova_micro"' in ui)
+    check_true("on peut le tester avant de commencer", "function testeMicro" in ui)
+    check_true("…et le test dit franchement qu'il ne capte rien",
+               "aucun son détecté sur ce micro" in ui)
+
+    # --- 2. Ce que Whisper invente n'entre pas dans le cours -------------------
+    check("une tranche muette ne rend rien",
+          C.sans_hallucination("Sous-titrage Société Radio-Canada"), ("", 1))
+    # Whisper répète l'invention SANS ponctuation : découper en phrases ne suffit pas.
+    check("…même répétée sans ponctuation",
+          C.sans_hallucination("Sous-titrage Société Radio-Canada Sous-titrage Société "
+                               "Radio-Canada Sous-titrage Société Radio-Canada"), ("", 3))
+    check("l'autre grand classique aussi",
+          C.sans_hallucination("Sous-titres réalisés par la communauté d Amara.org"), ("", 1))
+    # ⚠️ ET SURTOUT : jamais au prix d'une phrase de cours.
+    check("le cours autour est gardé",
+          C.sans_hallucination("Bonjour. Sous-titrage Société Radio-Canada. "
+                               "Les intégrales sont importantes."),
+          ("Bonjour. Les intégrales sont importantes.", 1))
+    check("« merci de votre attention » est une vraie phrase de prof",
+          C.sans_hallucination("Merci de votre attention, le contrôle est mardi."),
+          ("Merci de votre attention, le contrôle est mardi.", 0))
+    check("rien à faire sur un texte vide", C.sans_hallucination(""), ("", 0))
+
+    # --- 3. …mais on ne les efface pas en silence : on les COMPTE --------------
+    # Une tranche vidée deviendrait une tranche « sans rien à signaler », et le
+    # micro muet redeviendrait invisible. C'est le piège de la correction propre.
+    src = inspect.getsource(C.ajouter_tranche)
+    check_true("une tranche muette est comptée", 'muettes_suite' in src)
+    check_true("une minute muette isolée remet le compteur à zéro",
+               's["muettes_suite"] = 0' in src)
+    check_true("l'écran reçoit l'information", '"muette": muette' in src)
+
+    # --- 4. L'alarme qui aurait dû parler n'est plus étouffée ------------------
+    # (a) elle était remise à ZÉRO à chaque retour sur l'onglet : un aller-retour
+    #     suffisait à repousser indéfiniment les 2 minutes.
+    retour = ui[ui.index('document.addEventListener("visibilitychange"'):]
+    retour = _code_js_seul(retour[:1800])
+    check_true("le temps non mesuré est décalé, pas effacé",
+               "dernierSon += Date.now() - cacheDepuis" in retour)
+    check_true("…et plus remis à zéro", "dernierSon = Date.now()" not in retour)
+    # (b) puis effacée par le « tranche transmise » de l'envoi suivant.
+    env = ui[ui.index("async function _pousser"):]
+    env = env[:env.index("/* ── Enregistreur")]
+    check_true("une tranche transmise n'efface plus l'alerte", "!silencePrevenu" in env)
+    check_true("deux minutes muettes d'affilée sont dites", "suite >= 2" in env)
+    check_true("…avec la marche à suivre", "teste un autre" in env)
+
+
 def test_une_question_francaise_nappelle_pas_le_fisc_americain():
     """« quelle sont les taxe ? » → Nova a répondu « 10 % à 37 % », « 545 500 $ »,
     « Net Investment Income Tax ». Sourcé, structuré, impeccable — et américain.
@@ -10402,13 +10473,15 @@ def test_ecran_eteint_le_cours_ne_sarrete_pas_en_silence():
     # 4. Le micro peut aussi mourir écran allumé (appel entrant, autre appli).
     check_true("la piste micro est surveillée", "t.onended" in ui and "t.onmute" in ui)
 
-    # 5. L'alarme de silence ne doit pas crier au loup au retour : le VU-mètre
-    # tourne sur requestAnimationFrame, gelé page cachée. Sans remise à zéro,
-    # « aucun son depuis 2 minutes » s'affichait alors que le micro allait bien —
-    # et une alarme qu'on apprend à ignorer ne sert plus le jour où elle a raison.
+    # 5. L'alarme de silence ne doit ni crier au loup ni se taire. Le VU-mètre
+    # tourne sur requestAnimationFrame, gelé page cachée : ce temps-là n'est ni
+    # du son ni du silence. Le remettre à zéro (première version) faisait taire
+    # l'alarme à chaque aller-retour ; ne rien faire l'aurait déclenchée à tort.
+    # On décale du temps non mesuré — vérifié en détail dans
+    # test_un_micro_muet_ne_passe_pas_pour_un_cours.
     retour = ui[ui.index('document.addEventListener("visibilitychange"'):]
-    check_true("pas de fausse alarme de silence au retour",
-               "dernierSon = Date.now(); silencePrevenu = false;" in retour[:1200])
+    check_true("le compteur de silence est décalé du temps non mesuré",
+               "dernierSon += Date.now() - cacheDepuis" in retour[:2000])
 
 
 def test_deplacer_un_cours_dans_notion_sans_se_tromper_de_cours():
@@ -12846,6 +12919,7 @@ if __name__ == "__main__":
                test_la_mise_en_page_des_maquettes_sans_les_phrases_qui_rassurent,
                test_le_kine_qui_n_existait_pas_et_la_meteo_cherchee_sur_le_web,
                test_les_diapos_en_markdown_brut_et_les_cours_qu_on_range,
+               test_un_micro_muet_ne_passe_pas_pour_un_cours,
                test_une_question_francaise_nappelle_pas_le_fisc_americain,
                test_ecran_eteint_le_cours_ne_sarrete_pas_en_silence,
                test_deplacer_un_cours_dans_notion_sans_se_tromper_de_cours,
