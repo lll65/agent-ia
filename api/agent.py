@@ -6344,6 +6344,26 @@ async def cours_stop(req: CoursReq):
     return _vue_cours(s)
 
 
+@router.post("/cours/relire")
+async def cours_relire(req: CoursReq):
+    """Relecture à la demande d'un cours déjà synthétisé.
+
+    Elle SIGNALE, elle ne corrige pas : la synthèse et la transcription ne sont pas
+    touchées. Un échec (modèles saturés) laisse les doutes déjà trouvés en place —
+    remplacer un résultat par un silence serait pire que ne rien faire.
+    """
+    _check_key(req.key or "")
+    from agent import cours
+    from agent.core import _off
+    try:
+        s = await _off(cours.relire_cours, req.id or "")
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session inconnue.")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)[:250])
+    return _vue_cours(s)
+
+
 @router.get("/cours")
 async def cours_liste(key: str = ""):
     """La liste des cours — ET s'ils survivront à la nuit.

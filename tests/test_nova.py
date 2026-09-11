@@ -10436,7 +10436,38 @@ def test_le_cours_est_relu_par_un_second_passage_qui_ne_corrige_rien():
     check("jamais plus de 8 doutes",
           len(C.doutes_verifiables([{"passage": cours[:60], "type": "MOT",
                                      "souci": f"n{i}"} for i in range(20)], cours)), 1)
-    check("un texte trop court n'est pas relu", C.relire("deux mots"), [])
+    # ⚠️ « pas pu relire » LÈVE, ça ne rend pas []. Une liste vide veut dire
+    # « relu, rien trouvé » — confondre les deux présente un silence comme un
+    # feu vert, et c'est exactement la panne qu'on refuse ici.
+    try:
+        C.relire("deux mots")
+        check_true("un texte trop court n'est pas relu en silence", False)
+    except RuntimeError:
+        check_true("un texte trop court n'est pas relu en silence", True)
+    src_relire = inspect.getsource(C.relire)
+    check_true("un relecteur illisible lève aussi", "illisible" in src_relire
+               and "return []" not in src_relire)
+
+    # --- Le bouton « Relire », et ce qu'il propose ensuite ---------------------
+    api_txt = (Path(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
+    check_true("une route relit à la demande", '@router.post("/cours/relire")' in api_txt)
+    check_true("…avec moins de patience : quelqu'un attend devant l'écran",
+               "patience=1" in inspect.getsource(C.relire_cours))
+    # ⚠️ Un échec ne remplace PAS les doutes déjà trouvés par un silence.
+    check_true("relire sans synthèse est refusé franchement",
+               "pas encore de synthèse à relire" in inspect.getsource(C.relire_cours))
+    ui_r = (Path(__file__).resolve().parents[1] / "ui" / "cours.html").read_text(encoding="utf-8")
+    check_true("le bouton existe à côté de Regénérer", 'id="relire"' in ui_r)
+    check_true("il propose de regénérer quand il trouve", "point(s) douteux relevé(s)" in ui_r)
+    # ⚠️ Et la proposition dit la vérité sur ce qu'elle peut faire : regénérer
+    # repart de la transcription, donc un mot mal entendu reviendra à l'identique.
+    # Laisser croire le contraire, c'est le faire relancer trois fois pour rien.
+    check_true("…sans promettre ce qu'elle ne peut pas faire",
+               "ne corrigera PAS un mot mal entendu" in ui_r)
+    check_true("l'échec de relecture ne se lit pas comme « rien trouvé »",
+               "La relecture n'a pas abouti" in ui_r)
+    check_true("on ne peut pas relire ce qui n'existe pas encore",
+               'rien à relire tant qu\'il n\'y a pas de synthèse' in ui_r)
 
     # --- La relecture ne met JAMAIS la synthèse en danger ----------------------
     fin = inspect.getsource(C.terminer)

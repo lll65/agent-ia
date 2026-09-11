@@ -255,6 +255,7 @@
         <!-- ⚠️ Toujours disponible, même quand la synthèse a l'air bonne : une
              synthèse « plausible » peut très bien être médiocre, et c'est lui qui
              en juge, pas un seuil dans le code. La transcription ne bouge pas. -->
+        <button id="relire">🔎 Relire</button>
         <button id="regen">🔄 Regénérer</button>
         <button id="again">🎙️ Nouveau cours</button>
       </div>
@@ -837,15 +838,16 @@ function echecSynthese(sid, e){
   $("fichesCard").classList.add("hide");
   $("doutesCard").classList.add("hide");
   brancheTelechargement(sid);
+  $("relire").disabled = true;          // rien à relire tant qu'il n'y a pas de synthèse
   $("regen").onclick = () => relancerSynthese(sid, true);
   $("copy").textContent = "🔄 Réessayer la synthèse";
   $("copy").onclick = () => relancerSynthese(sid, true);
 }
 
 async function relancerSynthese(sid, refaire){
-  $("copy").disabled = true; $("regen").disabled = true;
+  $("copy").disabled = true; $("regen").disabled = true; $("relire").disabled = true;
   await synthetiser(sid, 0, refaire);
-  $("copy").disabled = false; $("regen").disabled = false;
+  $("copy").disabled = false; $("regen").disabled = false; $("relire").disabled = false;
 }
 
 /* La synthèse tourne côté serveur ; ici on suit son avancement.
@@ -928,6 +930,48 @@ function afficheDoutes(doutes){
     `<div class="r">${esc(x.souci)}</div></div>`).join("");
 }
 
+/* ── Relire à la demande ─────────────────────────────────────────────────────
+   « si quand je clique sur relire ya des erreur alors ca me propose de
+   regénrer ou non » — proposer, donc, jamais décider à sa place.
+
+   ⚠️ Et la proposition doit dire la VÉRITÉ sur ce qu'elle peut faire. Regénérer
+   repart de la TRANSCRIPTION : ça peut réparer une erreur de rédaction (un signe
+   inversé, un total faux), ça ne répare pas un mot que Whisper a mal entendu —
+   « PANC » restera « PANC », il est dans la transcription. Laisser croire le
+   contraire lui ferait relancer trois fois pour rien.
+   ────────────────────────────────────────────────────────────────────────── */
+async function relanceRelecture(sid){
+  const b = $("relire"), avant = b.textContent;
+  b.disabled = true; $("regen").disabled = true; b.textContent = "🔎 Relecture…";
+  try{
+    const r = await fetch(ORIGIN + "/agent/cours/relire", { method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ key:KEY, id:sid }) });
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
+    afficheDoutes(d.doutes);
+    $("doutesCard").scrollIntoView({ behavior:"smooth", block:"start" });
+    const n = (d.doutes || []).length;
+    if(n){
+      // On propose. On ne relance pas tout seul : c'est sa synthèse.
+      if(confirm(`${n} point(s) douteux relevé(s).\n\n` +
+                 "Veux-tu regénérer la synthèse à partir de la transcription ?\n\n" +
+                 "⚠️ Ça peut corriger une erreur de rédaction (un signe inversé, un " +
+                 "total faux). Ça ne corrigera PAS un mot mal entendu à " +
+                 "l'enregistrement : celui-là est dans la transcription, il reviendra.\n\n" +
+                 "Ta transcription n'est pas touchée dans tous les cas."))
+        relancerSynthese(sid, true);
+    }
+  }catch(e){
+    // ⚠️ Un échec ne doit pas se lire comme « rien trouvé » : les doutes déjà
+    // affichés restent, et on dit franchement que la relecture n'a pas abouti.
+    warn("outWarn", "⚠️ La relecture n'a pas abouti (" +
+         esc(String(e.message || e)).slice(0,120) + "). Rien n'a changé — réessaie.", true);
+  }finally{
+    b.disabled = false; $("regen").disabled = false; b.textContent = avant;
+  }
+}
+
 function afficher(d, perdues){
   show("out");
   $("synth").closest(".card").classList.remove("hide");
@@ -957,6 +1001,8 @@ function afficher(d, perdues){
   brancheTelechargement(sid);
   // Regénérer reste possible quoi qu'il arrive : `refaire` force le serveur à
   // repasser sur la transcription au lieu de rendre la synthèse déjà en place.
+  $("relire").disabled = false;
+  $("relire").onclick = () => relanceRelecture(sid);
   $("regen").onclick = () => {
     if(!confirm("Refaire la synthèse à partir de la transcription ?\n\n" +
                 "Ta transcription n'est pas touchée. La synthèse actuelle sera remplacée."))
