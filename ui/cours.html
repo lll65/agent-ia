@@ -255,6 +255,14 @@
       </div>
     </div>
     <div class="card"><div class="md" id="synth"></div></div>
+    <!-- Relecture : elle SIGNALE, elle ne corrige pas. Placée AVANT les fiches :
+         on vérifie un point douteux avant de l'apprendre par cœur, pas après. -->
+    <div class="card hide" id="doutesCard">
+      <h2 style="font-size:19px; margin-bottom:4px">⚠️ À vérifier</h2>
+      <p class="muted" style="margin-bottom:14px" id="doutesIntro"></p>
+      <div id="doutes"></div>
+    </div>
+
     <div class="card hide" id="fichesCard">
       <h2 style="font-size:19px; margin-bottom:4px">Fiches de révision</h2>
       <p class="muted" style="margin-bottom:14px">Clique une question pour révéler la réponse.</p>
@@ -822,6 +830,7 @@ function echecSynthese(sid, e){
   $("synth").innerHTML = "";
   $("synth").closest(".card").classList.add("hide");
   $("fichesCard").classList.add("hide");
+  $("doutesCard").classList.add("hide");
   brancheTelechargement(sid);
   $("regen").onclick = () => relancerSynthese(sid, true);
   $("copy").textContent = "🔄 Réessayer la synthèse";
@@ -876,6 +885,44 @@ async function synthetiser(sid, perdues, refaire){
 }
 
 /* ── Affichage du résultat ─────────────────────────────────────────────── */
+/* ── Relecture : ce qu'on affiche, et ce qu'on se garde bien de promettre ────
+   Trois états, TROIS phrases différentes. Les confondre serait la panne
+   silencieuse habituelle, sous un habillage rassurant :
+     • des doutes  → on les montre, sans les corriger à sa place ;
+     • aucun doute → « rien relevé », ce qui N'EST PAS « tout est juste » ;
+     • relecture impossible → on le dit, au lieu d'un silence qui ressemble
+       exactement à « rien à signaler ».
+   ────────────────────────────────────────────────────────────────────────── */
+const _LIB_DOUTE = { MOT: "🗣️ mot probablement mal transcrit",
+                     COHERENCE: "🧮 incohérence dans le cours",
+                     FAIT: "📚 à confronter à ton cours papier" };
+
+function afficheDoutes(doutes){
+  const carte = $("doutesCard"), zone = $("doutes"), intro = $("doutesIntro");
+  carte.classList.remove("hide");
+  if(doutes === null || doutes === undefined){
+    intro.innerHTML = "La relecture n'a <b>pas pu être faite</b> (modèles gratuits " +
+                      "saturés). Ce cours n'a donc été vérifié par personne — " +
+                      "relance la synthèse plus tard si tu veux la relecture.";
+    zone.innerHTML = ""; return;
+  }
+  if(!doutes.length){
+    // ⚠️ Ne JAMAIS écrire « cours vérifié ✅ ». Un relecteur qui ne trouve rien
+    // n'a pas prouvé que tout est juste — il n'a rien trouvé. C'est tout.
+    intro.innerHTML = "La relecture <b>n'a rien relevé</b>. Attention : " +
+                      "ça ne veut pas dire que tout est juste — seulement que rien " +
+                      "n'a sauté aux yeux. Ton cours papier reste la référence.";
+    zone.innerHTML = ""; return;
+  }
+  intro.innerHTML = `<b>${doutes.length} point(s)</b> à confirmer avec ton prof ou ton ` +
+                    `manuel. Nova <b>n'a rien corrigé</b> : sur un cours, une correction ` +
+                    `silencieuse s'apprend par cœur, un doute se vérifie en trente secondes.`;
+  zone.innerHTML = doutes.map(x =>
+    `<div class="fiche open"><div class="th">${esc(_LIB_DOUTE[x.type] || x.type)}</div>` +
+    `<div class="q">« ${esc(x.passage)} »</div>` +
+    `<div class="r">${esc(x.souci)}</div></div>`).join("");
+}
+
 function afficher(d, perdues){
   show("out");
   $("synth").closest(".card").classList.remove("hide");
@@ -893,6 +940,7 @@ function afficher(d, perdues){
     ? `⚠️ ${bouts.join(" · ")} — <b>il manque des passages</b>, ce cours n'est pas complet.`
     : "", true);
   $("synth").innerHTML = md(d.synthese || "");
+  afficheDoutes(d.doutes);
   const F = d.fiches || [];
   $("fichesCard").classList.toggle("hide", !F.length);
   $("fiches").innerHTML = F.map(f =>

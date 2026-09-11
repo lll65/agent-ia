@@ -754,6 +754,103 @@ _SYS_SYNTHESE = (
     "entendu ». Écris « rien à signaler » si tout est net.)"
 )
 
+# ── Relecture : un SECOND passage, qui signale et ne corrige jamais ───────────
+# « le llm reverifie pas si ya des truc faux dans mon cour ? parce que cest
+# important quand meme que ce que j'apprend ce soit vrai »
+#
+# Jusqu'ici, non. La section « Zones à éclaircir » était écrite par le MÊME modèle,
+# dans le MÊME appel que la synthèse. Ça attrape les mots que la transcription a
+# déformés (« PANC », « Dates France ») — un modèle voit bien qu'un mot n'existe
+# pas. Ça n'attrape PAS ses propres erreurs de raisonnement : celui qui vient
+# d'écrire « crédit fournisseur : −2500 » ne se contredira pas trois lignes plus bas.
+#
+# D'où un vrai second passage, avec deux règles non négociables :
+#
+#   1. IL SIGNALE, IL NE CORRIGE PAS. Si Nova réécrit ce qu'elle croit faux, Lohan
+#      révise une phrase que son prof n'a jamais dite — et il n'a aucun moyen de
+#      s'en apercevoir. Un doute affiché se vérifie en trente secondes ; une
+#      correction silencieuse s'apprend par cœur.
+#   2. L'ENSEIGNANT A RAISON PAR DÉFAUT. Le suspect n°1 est la transcription,
+#      pas le cours.
+_SYS_RELECTURE = (
+    "Tu relis un cours transcrit automatiquement, pour un étudiant qui va réviser "
+    "dessus. Ton rôle est de SIGNALER des doutes, JAMAIS de corriger ni de réécrire.\n"
+    "Cherche, dans cet ordre :\n"
+    "1. MOT — un terme qui n'existe pas ou n'a aucun sens dans cette matière. La "
+    "transcription automatique déforme les mots qu'elle ne connaît pas.\n"
+    "2. COHERENCE — le cours se contredit, un calcul ne tombe pas juste, un signe "
+    "ou un sens est inversé, un total ne correspond pas à ses lignes, une unité est "
+    "absurde (un délai de paiement en heures, une distance en litres).\n"
+    "3. FAIT — une affirmation qui contredit ce que tu sais solidement de la matière.\n"
+    "RÈGLES ABSOLUES :\n"
+    "• Cite le passage EXACTEMENT tel qu'il est écrit dans le cours, mot pour mot, "
+    "sans le reformuler. Un passage que tu ne peux pas citer exactement, tu le laisses.\n"
+    "• N'invente AUCUN doute. Deux doutes justes valent mieux que dix approximatifs : "
+    "une liste qui crie au loup, on apprend à ne plus la lire.\n"
+    "• Ne présente jamais ta correction comme la vérité. Écris « probablement », "
+    "« à confirmer » — c'est l'étudiant qui tranchera avec son prof ou son manuel.\n"
+    "• Si tout est net, rends une liste VIDE. Ne remplis pas pour faire nombre.\n"
+    'JSON STRICT, rien autour : {"doutes":[{"passage":"…","type":"MOT|COHERENCE|FAIT",'
+    '"souci":"…"}]}\n'
+    "8 doutes maximum."
+)
+
+_TYPES_DOUTE = {"MOT", "COHERENCE", "FAIT"}
+
+
+def doutes_verifiables(doutes: list, cours: str) -> list:
+    """Ne garde que les doutes dont le passage cité existe VRAIMENT dans le cours.
+
+    ⚠️ C'est la règle du projet : on vérifie APRÈS le modèle. Un relecteur qui cite
+    une phrase absente du cours ne relit pas, il invente — et un faux doute coûte
+    cher : il envoie réviser un point qui n'a jamais posé problème, et il décrédibilise
+    les vrais. Cette vérification-là, elle, est mécanique et sans appel.
+    """
+    ref = _normalise(cours)
+    gardes, vus = [], set()
+    for d in doutes or []:
+        if not isinstance(d, dict):
+            continue
+        passage = str(d.get("passage") or "").strip()
+        souci = str(d.get("souci") or "").strip()
+        p = _normalise(passage)
+        # Trop court, on ne peut rien vérifier ; absent du cours, c'est inventé.
+        if len(p) < 8 or p not in ref or not souci:
+            continue
+        if p in vus:
+            continue
+        vus.add(p)
+        t = str(d.get("type") or "").strip().upper()
+        gardes.append({"passage": passage[:300],
+                       "type": t if t in _TYPES_DOUTE else "COHERENCE",
+                       "souci": souci[:400]})
+    return gardes[:8]
+
+
+def relire(cours: str, matiere: str = "") -> list:
+    """Second passage de relecture. Rend une liste de doutes, éventuellement vide.
+
+    N'échoue jamais : une relecture impossible ne doit pas priver Lohan de sa synthèse.
+    """
+    from llm.client import chat
+    texte = (cours or "").strip()
+    if len(texte) < 400:                      # trop court pour qu'une relecture ait du sens
+        return []
+    sujet = f"Matière : {matiere}\n\n" if matiere else ""
+    brut = _propre(chat([
+        {"role": "system", "content": _SYS_RELECTURE},
+        {"role": "user", "content": sujet + "Cours à relire :\n\n" + texte[:12000]},
+    ], temperature=0.1, niveau="equilibre", patience=PATIENCE)) or ""
+    m = re.search(r"\{[\s\S]*\}", brut)
+    if not m:
+        return []
+    try:
+        data = json.loads(m.group(0))
+    except Exception:
+        return []
+    return doutes_verifiables(data.get("doutes") or [], texte)
+
+
 _SYS_FICHES = (
     "Tu fabriques des fiches de révision (questions/réponses) à partir d'un cours.\n"
     "RÈGLES : réponses tirées UNIQUEMENT du cours fourni, jamais de connaissance extérieure.\n"
@@ -899,6 +996,14 @@ def terminer(sid: str, refaire: bool = False) -> dict:
                            "relance la synthèse, un autre modèle prendra le relais.")
 
     fiches = _fiches_depuis(synthese)
+    # ⚠️ La relecture ne doit JAMAIS priver Lohan de sa synthèse : si elle échoue,
+    # on le dit (doutes = None) plutôt que de rendre une liste vide, qui se lirait
+    # comme « relu, rien trouvé ». Ce n'est pas la même chose du tout.
+    try:
+        doutes = relire(synthese, s.get("matiere", ""))
+    except Exception as e:
+        logger.warning(f"[cours] relecture impossible : {str(e)[:120]}")
+        doutes = None
     # Une synthese amputee doit le DIRE, en tete du document et dans les trous.
     if perdu_pct:
         synthese = (f"> ⚠️ **Cette synthèse est incomplète** : environ {perdu_pct} % du "
@@ -915,6 +1020,7 @@ def terminer(sid: str, refaire: bool = False) -> dict:
                                            "n'a pas pu être résumé"}]
         s["synthese"] = synthese
         s["fiches"] = fiches
+        s["doutes"] = doutes                  # None = relecture impossible ≠ [] = rien trouvé
         s["etat"] = "termine"
         s["fin"] = time.time()
         _ecrire(s)
@@ -961,6 +1067,24 @@ def markdown(sid: str) -> str:
         except Exception as e:
             logger.info(f"[cours] relecture de la synthèse ignorée ({type(e).__name__})")
     L += ["---", "", _syn or "_Synthèse non générée._", ""]
+    # La relecture part AVEC le cours : c'est le fichier qu'il garde hors de Render,
+    # et un doute qui ne voyage pas avec sa page ne sert plus à rien le jour du contrôle.
+    _d = s.get("doutes")
+    if _d is None:
+        L += ["---", "", "## ⚠️ À vérifier", "",
+              "_La relecture n'a pas pu être faite : ce cours n'a été vérifié par "
+              "personne._", ""]
+    elif _d:
+        L += ["---", "", "## ⚠️ À vérifier", "",
+              f"_{len(_d)} point(s) à confirmer avec ton enseignant. Rien n'a été "
+              "corrigé automatiquement._", ""]
+        for x in _d:
+            L += [f"- « {x.get('passage','')} » — {x.get('souci','')}"]
+        L.append("")
+    else:
+        L += ["---", "", "## ⚠️ À vérifier", "",
+              "_La relecture n'a rien relevé. Cela ne veut pas dire que tout est "
+              "juste._", ""]
     if s.get("fiches"):
         L += ["---", "", "## Fiches de révision", ""]
         for i, f in enumerate(s["fiches"], 1):

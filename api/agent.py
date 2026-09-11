@@ -6318,6 +6318,9 @@ def _vue_cours(s: dict) -> dict:
     return {"id": s["id"], "titre": s["titre"], "etat": s.get("etat", ""),
             "synthese": s.get("synthese", ""), "fiches": s.get("fiches", []),
             "trous": s.get("trous", []), "erreurs": s.get("erreurs", []),
+            # ⚠️ `None` (relecture impossible) et `[]` (relue, rien trouvé) ne se
+            # disent PAS pareil à l'écran. On ne les confond donc pas ici.
+            "doutes": s.get("doutes"),
             "mots": len(s.get("transcript", "").split()), "secondes": s.get("secondes", 0)}
 
 
