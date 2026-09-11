@@ -10305,7 +10305,7 @@ def test_un_verdict_de_moderation_nest_pas_une_synthese_de_cours():
     # fausse synthèse. Il aurait pu relancer cent fois, il aurait rerecu
     # « User Safety: safe » — parce que le champ était rempli.
     check_true("une fausse synthèse déjà enregistrée peut être refaite",
-               'if s.get("synthese") and not invraisemblance(' in fin)
+               'not invraisemblance(s["synthese"]' in fin and "not refaire" in fin)
     # Et les condensés : un verdict rangé dans les notes empoisonnerait la
     # synthèse des heures plus tard, quand plus personne ne saurait d'où il vient.
     cond = inspect.getsource(C._condenser)
@@ -10327,6 +10327,53 @@ def test_un_verdict_de_moderation_nest_pas_une_synthese_de_cours():
     from llm.client import _MODELES_INADAPTES
     for nom in ("shield", "safety", "guard"):
         check_true(f"« {nom} » n'est pas choisi tout seul", nom in _MODELES_INADAPTES)
+
+    # --- ⚠️ LE MIROIR, qui manquait au premier correctif ----------------------
+    # La route n'appelle pas `terminer`, elle appelle `lancer_synthese`. Le
+    # contrôle posé sur `terminer` seul se testait parfaitement et ne changeait
+    # RIEN pour lui : `lancer_synthese` rendait la synthèse déjà en place avant
+    # même d'arriver là. C'est le défaut qui revient le plus souvent ici —
+    # corriger un chemin et pas son jumeau.
+    lanc = inspect.getsource(C.lancer_synthese)
+    check_true("le chemin réellement emprunté vérifie aussi", "invraisemblance(" in lanc)
+    check_true("…et sait forcer une reprise", "not refaire" in lanc)
+    api = (Path(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
+    check_true("la route transmet la demande de reprise",
+               "bool(req.refaire)" in api and "refaire: Optional[bool]" in api)
+    ui2 = (Path(__file__).resolve().parents[1] / "ui" / "cours.html").read_text(encoding="utf-8")
+    check_true("un bouton regénère même une synthèse correcte", 'id="regen"' in ui2)
+    check_true("…et l'écran envoie bien le drapeau", "refaire: !!refaire" in ui2)
+    # ⚠️ Il remplace une synthèse : on demande confirmation, et on dit ce qui
+    # n'est PAS touché — la transcription est la seule copie du cours.
+    check_true("la reprise est confirmée", "Refaire la synthèse à partir de" in ui2)
+    check_true("…en disant ce qui ne bouge pas", "transcription n'est pas touchée" in ui2)
+
+
+def test_un_cours_en_tableaux_saffiche_en_tableaux():
+    """« elle pourrait faire des tableau nova non ? » — elle en FAISAIT déjà.
+    C'est l'affichage qui ne suivait pas : `md()` ne connaissait pas les
+    tableaux, donc un cours de compta sortait en « | Poste | Compte | Effet |
+    |---|---|---| » brut, au milieu du texte.
+
+    Le modèle travaillait bien, la page le trahissait — et de l'extérieur ça
+    ressemble exactement à un modèle qui ne sait pas faire de tableaux.
+    """
+    ui = (Path(__file__).resolve().parents[1] / "ui" / "cours.html").read_text(encoding="utf-8")
+    code = _code_js_seul(ui)
+    check_true("les tableaux sont rendus", "<thead><tr>" in ui)
+    # Les modèles intercalent souvent une ligne vide entre deux rangées : sans
+    # les sauter, le tableau se coupait à la première.
+    tbl = code[code.index("function md("):]
+    check_true("une ligne vide ne coupe pas le tableau",
+               "if(!L[k].trim()){ k++; continue; }" in tbl)
+    # ⚠️ Une rangée doit commencer par « | » : sinon « le prix est de 10 | 20 »
+    # deviendrait un tableau au milieu d'un cours.
+    check_true("une phrase avec un trait vertical n'est pas un tableau",
+               "function _rangee(l){ return /^\\s*\\|.*\\|\\s*$/.test(l); }" in code)
+    check_true("les citations sont rendues", "<blockquote>${cite[1]}" in ui)
+    check_true("les filets aussi", 'out.push("<hr>")' in ui)
+    # Sur téléphone, un tableau large doit défiler DANS SA BOÎTE, pas élargir la page.
+    check_true("un tableau large ne casse pas la page", ".tbl{ overflow-x:auto" in ui)
 
 
 def test_un_micro_muet_ne_passe_pas_pour_un_cours():
@@ -12988,6 +13035,7 @@ if __name__ == "__main__":
                test_le_kine_qui_n_existait_pas_et_la_meteo_cherchee_sur_le_web,
                test_les_diapos_en_markdown_brut_et_les_cours_qu_on_range,
                test_un_verdict_de_moderation_nest_pas_une_synthese_de_cours,
+               test_un_cours_en_tableaux_saffiche_en_tableaux,
                test_un_micro_muet_ne_passe_pas_pour_un_cours,
                test_une_question_francaise_nappelle_pas_le_fisc_americain,
                test_ecran_eteint_le_cours_ne_sarrete_pas_en_silence,

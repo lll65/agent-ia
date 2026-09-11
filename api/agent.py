@@ -6254,6 +6254,11 @@ class CoursReq(BaseModel):
     titre: Optional[str] = None
     matiere: Optional[str] = None
     id: Optional[str] = None
+    # « tu peux pas rajouter un bouton pour regénérer un cour meme si il est deja
+    # généré ? » — oui. Sans ce drapeau, la synthèse déjà en place court-circuite
+    # tout : on lui rendait la MÊME page en lui laissant croire qu'elle avait été
+    # refaite.
+    refaire: Optional[bool] = False
 
 
 @router.get("/cours/dispo")
@@ -6328,7 +6333,7 @@ async def cours_stop(req: CoursReq):
     from agent import cours
     from agent.core import _off
     try:
-        s = await _off(cours.lancer_synthese, req.id or "")
+        s = await _off(cours.lancer_synthese, req.id or "", bool(req.refaire))
     except KeyError:
         raise HTTPException(status_code=404, detail="Session inconnue.")
     except Exception as e:
