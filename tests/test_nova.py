@@ -10369,6 +10369,32 @@ def test_ecran_eteint_le_cours_ne_sarrete_pas_en_silence():
                "timerRec = setInterval(relancer, TRANCHE_MS);" in
                ui[ui.index("function reprendsSiCoupe"):ui.index("document.addEventListener(\"visibilitychange\"")])
     check_true("le trou est annoncé sur le moment", "ce passage manque" in ui)
+
+    # ⚠️ ET SURTOUT — la leçon de la première version, qui cassait ce qui marchait.
+    # « sur pc ca met ce message et ca coupe l'enregistrement quand je clique sur
+    # le moins de la fenetre alors que avant ca le faisait pas. »
+    # Réduire une fenêtre met la piste en sourdine une fraction de seconde sans
+    # rien interrompre. Le code comptait `muted` comme une mort et ARRÊTAIT
+    # l'enregistreur pour en relancer un « propre » : c'est la réparation qui
+    # créait la coupure qu'elle annonçait. Un garde-fou qui fabrique la panne
+    # est pire que pas de garde-fou du tout.
+    coupe = ui[ui.index("function reprendsSiCoupe"):]
+    coupe = coupe[:coupe.index('document.addEventListener("visibilitychange"')]
+    # (sur le CODE seul : le commentaire juste au-dessus explique le piège et cite
+    #  `muted` — six fois déjà qu'un test se fait piéger par mes propres commentaires)
+    check_true("la vie se lit sur l'état, jamais sur muted",
+               "muted" not in _code_js_seul(coupe))
+    check_true("l'état de l'enregistreur fait foi", 'recA.state === "recording"' in coupe)
+    # On sort AVANT la ligne qui arrête quoi que ce soit : un enregistreur qui
+    # tourne n'est jamais touché.
+    check_true("on ne touche pas à un enregistreur qui tourne",
+               coupe.index("if(enMarche && piste){") < coupe.index("recA.stop()"))
+    check_true("…et on en sort", "return;" in coupe[coupe.index("if(enMarche && piste){"):
+                                                    coupe.index("recA.stop()")])
+    # Le mute passager ne déclenche plus de bandeau : on attend qu'il dure.
+    surv = ui[ui.index("function surveillePiste"):ui.index("function reprendsSiCoupe")]
+    check_true("un mute passager ne crie pas au loup", "MUTE_TOLERE_MS" in surv)
+    check_true("…et l'alerte est annulée s'il repart", "clearTimeout(muteTimer)" in surv)
     # 3. …et il survit jusqu'à la synthèse : le serveur, lui, n'a AUCUNE trace
     # d'une coupure côté téléphone. Sans cette ligne le cours a l'air complet.
     check_true("le trou est rappelé dans la synthèse", "coupé l'enregistrement pendant" in ui)

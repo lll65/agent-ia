@@ -476,15 +476,28 @@ async function garderEveille(){
 }
 
 /* Le micro peut aussi mourir écran allumé : appel entrant, autre appli qui le
-   prend, casque débranché. Même règle — on le dit tout de suite. */
+   prend, casque débranché. Mais une mise en sourdine PASSAGÈRE arrive aussi en
+   réduisant simplement une fenêtre, sans que rien ne s'interrompe. Annoncer une
+   panne à chaque fois, c'est apprendre à ignorer le bandeau — donc on attend de
+   voir si ça dure avant de parler. */
+const MUTE_TOLERE_MS = 8000;
+let muteTimer = null;
+
 function surveillePiste(){
   for(const t of (stream ? stream.getAudioTracks() : [])){
     t.onended  = () => { if(!fini) reprendsSiCoupe(); };
-    t.onmute   = () => { if(!fini && !enPause) warn("liveWarn",
-      "🔇 Le téléphone a coupé le micro (appel entrant, autre application ?). " +
-      "<b>Nova n'entend plus rien</b> tant que ça dure.", true); };
-    t.onunmute = () => { if(!fini && !enPause){
-      warn("liveWarn", ""); dernierSon = Date.now(); silencePrevenu = false; } };
+    t.onmute   = () => {
+      clearTimeout(muteTimer);
+      muteTimer = setTimeout(() => {
+        if(!fini && !enPause && t.muted) warn("liveWarn",
+          "🔇 Le micro est coupé depuis plusieurs secondes (appel entrant, autre " +
+          "application ?). <b>Nova n'entend plus rien</b> tant que ça dure.", true);
+      }, MUTE_TOLERE_MS);
+    };
+    t.onunmute = () => {
+      clearTimeout(muteTimer);
+      if(!fini && !enPause){ warn("liveWarn", ""); dernierSon = Date.now(); silencePrevenu = false; }
+    };
   }
 }
 
@@ -492,27 +505,36 @@ function reprendsSiCoupe(){
   if(fini || enPause) return;
   const absence = cacheDepuis ? Date.now() - cacheDepuis : 0;
   cacheDepuis = 0;
-  const vivant = recA && recA.state === "recording" &&
-                 stream && stream.getAudioTracks().some(t => t.readyState === "live" && !t.muted);
-  if(vivant){
+
+  // ⚠️ Deux règles, apprises en cassant ce qui marchait. Première version : on
+  // comptait `muted` comme une mort, et on ARRÊTAIT l'enregistreur pour en
+  // relancer un « propre ». Sur PC, réduire la fenêtre met la piste en sourdine
+  // une fraction de seconde sans rien interrompre : c'était donc la réparation
+  // qui créait la coupure qu'elle annonçait, et le bandeau criait au loup sur
+  // 6 secondes. Un garde-fou qui fabrique la panne est pire que pas de garde-fou.
+  //   1. la vie d'un enregistreur se lit sur son ÉTAT, pas sur `muted` ;
+  //   2. on ne touche JAMAIS à un enregistreur qui tourne.
+  const piste   = stream && stream.getAudioTracks().some(t => t.readyState === "live");
+  const enMarche = recA && recA.state === "recording";
+  if(enMarche && piste){
     // Rien n'est perdu : les minuteries ont seulement été ralenties en fond.
     // On recoupe tout de suite pour ne pas garder une tranche géante en mémoire.
     if(absence > TRANCHE_MS) relancer();
     return;
   }
+  // Ici, et seulement ici, l'enregistreur est RÉELLEMENT arrêté.
   trouMs += absence;
   try{ recA && recA.state !== "inactive" && recA.stop(); }catch(e){}
   recA = null;
-  const micVivant = stream && stream.getAudioTracks().some(t => t.readyState === "live");
-  if(micVivant){
+  if(piste){
     recA = nouvelEnregistreur();
     clearInterval(timerRec); timerRec = setInterval(relancer, TRANCHE_MS);
-    warn("liveWarn", "⚠️ Le téléphone a coupé l'enregistrement" +
+    warn("liveWarn", "⚠️ L'enregistrement a été coupé par l'appareil" +
          (absence > 3000 ? " pendant <b>" + hhmmss(absence / 1000) + "</b>" : "") +
-         " (écran éteint ?). Nova a repris, mais <b>ce passage manque</b> : " +
-         "il n'existe nulle part ailleurs.", true);
+         ". Nova a repris, mais <b>ce passage manque</b> : il n'existe nulle part " +
+         "ailleurs.", true);
   }else{
-    warn("liveWarn", "❌ Le micro a été fermé par le téléphone et Nova ne peut pas " +
+    warn("liveWarn", "❌ Le micro a été fermé par l'appareil et Nova ne peut pas " +
          "le rouvrir seule. <b>Appuie sur « Terminer »</b> : tout ce qui est déjà " +
          "transcrit est gardé et sera synthétisé. Puis relance un cours.", true);
   }
@@ -609,7 +631,7 @@ $("stop").onclick = async () => {
   await new Promise(r => setTimeout(r, 500));          // laisse tomber la dernière tranche
   try{ stream.getTracks().forEach(t => t.stop()); }catch(e){}
   try{ if(wakeLock){ wakeLock.release(); wakeLock = null; } }catch(e){}
-  veilleOk = false; etatVeille();
+  veilleOk = false; etatVeille(); clearTimeout(muteTimer);
   try{ if(ac) ac.close(); }catch(e){}
 
   show("work");
