@@ -827,28 +827,53 @@ def doutes_verifiables(doutes: list, cours: str) -> list:
     return gardes[:8]
 
 
-def relire(cours: str, matiere: str = "") -> list:
-    """Second passage de relecture. Rend une liste de doutes, éventuellement vide.
+def relire(cours: str, matiere: str = "", patience: int = None) -> list:
+    """Second passage de relecture. Rend la liste des doutes, éventuellement VIDE.
 
-    N'échoue jamais : une relecture impossible ne doit pas priver Lohan de sa synthèse.
+    ⚠️ Une liste vide veut dire « relu, rien trouvé ». Tout ce qui empêche de
+    relire — texte trop court, modèle qui répond n'importe quoi — LÈVE une
+    exception au lieu de rendre []. Confondre les deux, c'est présenter un
+    silence comme un feu vert, et c'est précisément la panne qu'on refuse ici.
+    L'appelant, lui, décide s'il peut s'en passer.
     """
     from llm.client import chat
     texte = (cours or "").strip()
     if len(texte) < 400:                      # trop court pour qu'une relecture ait du sens
-        return []
+        raise RuntimeError("ce cours est trop court pour être relu")
     sujet = f"Matière : {matiere}\n\n" if matiere else ""
     brut = _propre(chat([
         {"role": "system", "content": _SYS_RELECTURE},
         {"role": "user", "content": sujet + "Cours à relire :\n\n" + texte[:12000]},
-    ], temperature=0.1, niveau="equilibre", patience=PATIENCE)) or ""
+    ], temperature=0.1, niveau="equilibre",
+       patience=PATIENCE if patience is None else patience)) or ""
     m = re.search(r"\{[\s\S]*\}", brut)
     if not m:
-        return []
+        raise RuntimeError("le relecteur n'a pas rendu de résultat exploitable")
     try:
         data = json.loads(m.group(0))
     except Exception:
-        return []
+        raise RuntimeError("le relecteur a rendu un résultat illisible")
     return doutes_verifiables(data.get("doutes") or [], texte)
+
+
+def relire_cours(sid: str) -> dict:
+    """Relecture À LA DEMANDE d'un cours déjà synthétisé.
+
+    Patience réduite : ici quelqu'un attend devant son écran. Mieux vaut un « je
+    n'ai pas pu, réessaie » en trente secondes qu'une page qui tourne trois
+    minutes. Un échec ne touche PAS les doutes déjà trouvés : on ne remplace pas
+    un résultat par un silence.
+    """
+    with _LOCK:
+        s = _lire(sid)
+    if not (s.get("synthese") or "").strip():
+        raise RuntimeError("ce cours n'a pas encore de synthèse à relire")
+    doutes = relire(s["synthese"], s.get("matiere", ""), patience=1)
+    with _LOCK:
+        s = _lire(sid)
+        s["doutes"] = doutes
+        _ecrire(s)
+        return s
 
 
 _SYS_FICHES = (
