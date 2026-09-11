@@ -363,15 +363,40 @@ def decoupe(question: str, n: int, appel_modele) -> list:
 
 
 # ── Rassembler ───────────────────────────────────────────────────────────────
+# Les en-têtes par lesquels une étape ANNONCE son échec. ⏳ manquait — et il
+# manquait au pire endroit : c'est celui de la saturation, le plus fréquent de
+# tous sur des modèles gratuits.
+_ECHEC_DEBUTS = ("[ERREUR]", "❌", "⏱️", "🔌", "✂️", "🤔", "⏳", "🚫", "⚠️")
+
+# ⚠️ Et parce qu'une liste de symboles tenue à la main finit TOUJOURS par rater
+# le suivant, on reconnaît aussi la panne à ce qu'elle DIT. Sans ça :
+# une étape rendait « Mes modèles gratuits sont à leur limite, réessaie dans une
+# minute », elle était comptée comme un résultat valable, et la synthèse en a
+# fait « aucune information n'est disponible pour le moment ». Une panne interne
+# transformée en fait sur le monde — la pire chose que ce projet puisse produire.
+_ECHEC_PHRASES = re.compile(
+    r"mod[eè]les? (?:gratuits? )?(?:sont|est) à (?:leur|sa) limite|"
+    r"r[ée]essaie dans une minute|"
+    r"je n'?ai pas pu (?:acc[ée]der|joindre|obtenir|r[ée]pondre)|"
+    r"aucun mod[eè]le (?:ne )?(?:r[ée]pond|disponible)|"
+    r"quota (?:atteint|d[ée]pass[ée])", re.I)
+
+
+def echec_detape(texte: str) -> bool:
+    """Ce texte est-il l'aveu d'une panne plutôt qu'une réponse ?"""
+    t = str(texte or "").strip()
+    if not t:
+        return True
+    if t.lstrip().startswith(_ECHEC_DEBUTS):
+        return True
+    # Une panne s'annonce au DÉBUT. Plus loin, la même phrase peut être une
+    # citation ou une nuance dans une vraie réponse : on ne la jette pas.
+    return bool(_ECHEC_PHRASES.search(t[:300]))
+
+
 def resultats_utiles(resultats: list) -> list:
     """Les étapes qui ont VRAIMENT abouti. Une étape en échec n'est pas une réponse."""
-    out = []
-    for r in resultats or []:
-        t = str((r or {}).get("texte") or "").strip()
-        if not t or t.lstrip().startswith(("[ERREUR]", "❌", "⏱️", "🔌", "✂️", "🤔")):
-            continue
-        out.append(r)
-    return out
+    return [r for r in (resultats or []) if not echec_detape((r or {}).get("texte"))]
 
 
 def consigne_synthese(question: str, resultats: list) -> str:
@@ -417,6 +442,45 @@ def rapport(question: str, resultats: list, raison: str = "") -> str:
 # ── Quand ça vaut le coup ────────────────────────────────────────────────────
 # Une question à plusieurs sujets se reconnaît : elle est longue, elle enchaîne les
 # « et », elle pose plusieurs interrogations.
+# Une consigne de FORME n'est pas un sujet : « réponds en 2 phrases max » dit
+# comment répondre, pas de quoi parler. Laissée dans la question, elle gonfle le
+# compte de mots et fait passer une demande de six mots pour une demande longue.
+_CONSIGNE_FORME = re.compile(
+    r"\b(?:r[ée]pon?ds?|explique|dis[- ]moi)?\s*(?:en|avec)\s+\d+\s+"
+    r"(?:phrases?|mots?|lignes?|points?)\b[^.?!]*|"
+    r"\b(?:sois|reste)\s+(?:bref|courte?|concise?)\b|"
+    r"\ben\s+(?:deux|trois)\s+phrases?\b|\bmax(?:imum)?\b|\bs['’]?il te pla[iî]t\b|\bstp\b",
+    re.I)
+
+_LIENS_SUJETS = re.compile(r"\bet\b|\bpuis\b|\bensuite\b|\baussi\b|\bde plus\b|\bsinon\b", re.I)
+
+
+def un_seul_sujet(question: str) -> str:
+    """Raison de NE PAS découper cette demande, ou "" si le découpage se justifie.
+
+    ⚠️ Vu en vrai : « jachète ou je vend duc repond en 2 phrases max » — un
+    follow-up de six mots sur un graphique déjà à l'écran. Le bouton était sur 5
+    étapes, et un clic était honoré sans condition. Résultat : la question a été
+    coupée en « Comment acheter du duc » / « Comment vendre du duc », « duc »
+    (pour « donc ») est devenu un code boursier, et Nova a expliqué comment
+    revendre un titre qui n'existe pas.
+
+    Un clic dit « creuse davantage ». Il ne dit pas « invente-moi des sujets ».
+    Découper une question qui n'en porte qu'un ne réfléchit pas mieux : ça
+    fabrique deux moitiés, et la synthèse recolle du vide.
+    """
+    q = _CONSIGNE_FORME.sub(" ", str(question or ""))
+    q = re.sub(r"\s+", " ", q).strip()
+    mots = re.findall(r"[\wÀ-ÿ0-9']+", q)
+    if len(mots) < 8:
+        return "ta question tient en une phrase — je réponds d'un coup"
+    # « acheter OU vendre » : une alternative, c'est UNE question à deux issues,
+    # pas deux sujets. Les découper produit deux réponses dont une est à jeter.
+    if re.search(r"\bou\b", q, re.I) and not _LIENS_SUJETS.search(q) and q.count("?") <= 1:
+        return "ta question pose une alternative — c'est une seule question, pas deux"
+    return ""
+
+
 def merite_des_etapes(question: str) -> bool:
     """Cette demande contient-elle assez de sujets pour justifier plusieurs appels ?
 
