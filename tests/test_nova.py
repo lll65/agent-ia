@@ -9735,9 +9735,12 @@ def test_son_cours_s_ouvre_dans_libreoffice():
     api = (Path(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
     check_true("la route accepte les trois formats", 'if f in ("odt", "ods", "odp"):' in api)
     ui = (Path(__file__).resolve().parents[1] / "ui" / "cours.html").read_text(encoding="utf-8")
-    check_true("un seul bouton, un menu", 'id="dlMenu"' in ui and 'data-fmt="odp"' in ui)
+    check_true("un seul bouton, un menu", 'id="dlMenu"' in ui)
+    # Le menu n'est plus écrit en dur : il est construit depuis FORMATS, seule
+    # source de vérité partagée avec le « … » de MES COURS.
     check_true("les quatre formats sont proposés",
-               all(f'data-fmt="{f}"' in ui for f in ("md", "odt", "ods", "odp")))
+               all(f'["{f}",' in ui.replace("  ", "") or f'["{f}"' in ui
+                   for f in ("md", "odt", "ods", "odp")))
     # ⚠️ Chaque ligne dit ce qu'elle EMPORTE : un tableur n'a pas de paragraphes, un
     # diaporama n'a pas de tableaux. Le lire avant vaut mieux que le découvrir après.
     check_true("et disent ce qu'ils emportent",
@@ -10347,6 +10350,37 @@ def test_un_verdict_de_moderation_nest_pas_une_synthese_de_cours():
     # n'est PAS touché — la transcription est la seule copie du cours.
     check_true("la reprise est confirmée", "Refaire la synthèse à partir de" in ui2)
     check_true("…en disant ce qui ne bouge pas", "transcription n'est pas touchée" in ui2)
+
+
+def test_telecharger_un_cours_sans_avoir_a_louvrir():
+    """« cette case tu peux la mettre dans les … aussi la ou ya export notion
+    renommer ett » — les quatre formats étaient réservés à la carte du cours
+    ouvert. Pour récupérer un .odt d'un cours d'octobre, il fallait l'ouvrir.
+    """
+    ui = (Path(__file__).resolve().parents[1] / "ui" / "cours.html").read_text(encoding="utf-8")
+    code = _code_js_seul(ui)
+
+    # ⚠️ UNE seule liste pour les deux menus. Recopiée, elle aurait divergé au
+    # premier format ajouté — et personne ne cherche un .ods là où il n'est pas.
+    check("les formats ne sont écrits qu'une fois", ui.count('"odp"'), 1)
+    check("…et les deux menus la partagent", code.count("boutonsFormats("), 3)
+    check_true("le menu de la carte est construit depuis la liste",
+               'm.innerHTML = boutonsFormats(' in code)
+    check_true("le « … » de chaque cours aussi", 'data-act="dl" data-fmt=' in ui)
+    # Télécharger depuis la liste ne doit pas obliger à ouvrir le cours.
+    check_true("l'action télécharge directement", 'if(act === "dl")' in ui)
+    check_true("…et le format suit jusqu'à l'action", "b.dataset.fmt" in code)
+
+    # ⚠️ Le rouge de « définitif » s'appliquait à TOUS les sous-titres du menu :
+    # « le texte brut, tout est dedans » serait devenu un avertissement rouge.
+    # À force de rouge partout, plus rien n'alerte.
+    check_true("le rouge reste réservé à la suppression",
+               '.cmenu button[data-act="del"] span{ color:#fca5a5; }' in ui)
+    check_true("un menu plus long reste atteignable", ".cmenu{" in ui and "overflow-y:auto" in ui)
+
+    # Au passage : rouvrir un cours depuis la liste doit montrer la relecture.
+    # Le même écran par deux chemins, un seul câblé — encore le miroir.
+    check_true("la relecture suit quand on rouvre un cours", "doutes:d.doutes" in code)
 
 
 def test_le_cours_est_relu_par_un_second_passage_qui_ne_corrige_rien():
@@ -13115,6 +13149,7 @@ if __name__ == "__main__":
                test_le_kine_qui_n_existait_pas_et_la_meteo_cherchee_sur_le_web,
                test_les_diapos_en_markdown_brut_et_les_cours_qu_on_range,
                test_un_verdict_de_moderation_nest_pas_une_synthese_de_cours,
+               test_telecharger_un_cours_sans_avoir_a_louvrir,
                test_le_cours_est_relu_par_un_second_passage_qui_ne_corrige_rien,
                test_un_cours_en_tableaux_saffiche_en_tableaux,
                test_un_micro_muet_ne_passe_pas_pour_un_cours,
