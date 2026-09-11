@@ -320,7 +320,15 @@ let dernierSon = 0, silencePrevenu = false;
 /* ── Utilitaires ─────────────────────────────────────────────────────────── */
 function hhmmss(s){ s=Math.max(0,Math.floor(s));
   return [Math.floor(s/3600),Math.floor(s/60)%60,s%60].map(v=>String(v).padStart(2,"0")).join(":"); }
-function show(id){ ["setup","live","work","out"].forEach(x=>$(x).classList.toggle("hide", x!==id)); }
+function show(id){
+  ["setup","live","work","out"].forEach(x=>$(x).classList.toggle("hide", x!==id));
+  // ⚠️ Ces deux cartes vivent HORS des quatre sections, donc elles survivaient au
+  // changement d'écran. Sur un cours déjà ouvert on est scrollé sur elles : le
+  // panneau « traitement » apparaissait tout en haut, hors du champ de vision, et
+  // il ne « se passait rien » à l'écran. On les range, et on remonte.
+  ["doutesCard","fichesCard"].forEach(x => $(x) && $(x).classList.add("hide"));
+  try{ window.scrollTo({ top:0, behavior:"smooth" }); }catch(e){ window.scrollTo(0,0); }
+}
 function warn(el, txt, grave){ const e=$(el);
   if(!txt){ e.classList.add("hide"); return; }
   e.innerHTML = txt; e.classList.remove("hide"); e.classList.toggle("bad", !!grave); }
@@ -855,13 +863,22 @@ async function relancerSynthese(sid, refaire){
 const ATTENTE_MAX = 8 * 60 * 1000;      // 8 min : large, même modèles saturés
 async function synthetiser(sid, perdues, refaire){
   show("work");
-  $("workTxt").innerHTML = "Elle relit toute la transcription, structure le cours puis prépare tes fiches.";
+  $("workTxt").innerHTML = refaire
+    ? "Elle refait la synthèse à partir de ta transcription. <b>La précédente reste " +
+      "en place tant que la nouvelle n'est pas prête.</b>"
+    : "Elle relit toute la transcription, structure le cours puis prépare tes fiches.";
   try{
     const r = await fetch(ORIGIN + "/agent/cours/stop", { method:"POST",
       headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ key:KEY, id:sid, refaire: !!refaire }) });
     const d = await r.json();
     if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
-    if(d.synthese){ afficher(d, perdues); charger(); return; }
+    // ⚠️ ICI ÉTAIT LE « il se passe rien ». Sur une REPRISE, la synthèse déjà
+    // enregistrée est encore là quand le serveur rend la main : le travail vient
+    // à peine de partir en tâche de fond. L'accepter comme résultat réaffichait
+    // EXACTEMENT la même page, en une fraction de seconde. Nova disait « c'est
+    // fait » en remontrant le travail d'avant.
+    // On attend donc que le serveur ait REPOSÉ l'état à « termine ».
+    if(!refaire && d.synthese){ afficher(d, perdues); charger(); return; }
   }catch(e){ echecSynthese(sid, e); return; }
 
   const debut = Date.now();
@@ -876,8 +893,11 @@ async function synthetiser(sid, perdues, refaire){
       const d = await (await fetch(ORIGIN + "/agent/cours/detail?id=" + encodeURIComponent(sid) +
                                    "&key=" + encodeURIComponent(KEY))).json();
       echecsSuite = 0;
-      if(d.synthese){ afficher({ ...d, id: sid, mots:(d.transcript||"").split(/\s+/).length },
-                               perdues); charger(); return; }
+      // Sur une reprise, seule la fin RÉELLE du travail compte, pas la présence
+      // d'une synthèse — l'ancienne est là depuis le début.
+      if(d.synthese && (!refaire || d.etat === "termine")){
+        afficher({ ...d, id: sid, mots:(d.transcript||"").split(/\s+/).length },
+                 perdues); charger(); return; }
       if(d.etat === "a_reprendre" || d.etat === "vide"){
         echecSynthese(sid, (d.erreurs || []).slice(-1)[0] || "La synthèse n'a pas abouti.");
         charger(); return;
@@ -960,7 +980,7 @@ async function relanceRelecture(sid){
                  "total faux). Ça ne corrigera PAS un mot mal entendu à " +
                  "l'enregistrement : celui-là est dans la transcription, il reviendra.\n\n" +
                  "Ta transcription n'est pas touchée dans tous les cas."))
-        relancerSynthese(sid, true);
+        await relancerSynthese(sid, true);
     }
   }catch(e){
     // ⚠️ Un échec ne doit pas se lire comme « rien trouvé » : les doutes déjà

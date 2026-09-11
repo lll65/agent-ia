@@ -10466,6 +10466,22 @@ def test_le_cours_est_relu_par_un_second_passage_qui_ne_corrige_rien():
                "ne corrigera PAS un mot mal entendu" in ui_r)
     check_true("l'échec de relecture ne se lit pas comme « rien trouvé »",
                "La relecture n'a pas abouti" in ui_r)
+    # ⚠️ « je met oui il se passe rien ». Sur une REPRISE, le serveur rend la main
+    # tout de suite (le travail part en tâche de fond) et la synthèse DÉJÀ
+    # enregistrée est encore là. L'accepter comme résultat réaffichait exactement
+    # la même page en une fraction de seconde : Nova disait « c'est fait » en
+    # remontrant le travail d'avant. Le pire des cas — rien ne signale l'erreur.
+    check_true("une reprise n'accepte pas l'ancienne synthèse",
+               "if(!refaire && d.synthese){" in ui_r)
+    check_true("…elle attend la fin réelle du travail",
+               'd.synthese && (!refaire || d.etat === "termine")' in ui_r)
+    check_true("…et le dit pendant l'attente", "La précédente reste" in ui_r)
+    # Les cartes « à vérifier » et « fiches » vivent HORS des quatre écrans : elles
+    # restaient affichées pendant la reprise, et comme on est scrollé dessus, le
+    # panneau de travail apparaissait hors du champ de vision.
+    check_true("changer d'écran range les cartes annexes",
+               '["doutesCard","fichesCard"].forEach' in ui_r)
+    check_true("…et remonte en haut", "window.scrollTo({ top:0" in ui_r)
     check_true("on ne peut pas relire ce qui n'existe pas encore",
                'rien à relire tant qu\'il n\'y a pas de synthèse' in ui_r)
 
