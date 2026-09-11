@@ -160,12 +160,24 @@
         <input id="matiere" placeholder="Ex. Mathématiques" autocomplete="off">
       </div>
     </div>
+    <!-- ⚠️ Le navigateur choisit le micro « par défaut » du système, qui peut être
+         un casque débranché ou une entrée muette : on enregistre alors 6 minutes
+         de silence sans le savoir. Le choix doit être visible AVANT de commencer. -->
+    <div id="micBloc" class="hide" style="margin-top:12px">
+      <label>Micro</label>
+      <select id="mic" style="width:100%;padding:11px 12px;border-radius:12px;
+              background:rgba(255,255,255,.06);color:inherit;
+              border:1px solid rgba(255,255,255,.14);font:inherit"></select>
+      <button id="micTester" style="margin-top:8px">🎤 Tester le micro</button>
+      <div class="sub" style="font-size:11px;text-align:left;margin-top:6px" id="micTest"></div>
+    </div>
     <button class="big" id="go">🎙️ Commencer à écouter</button>
     <div id="setupWarn" class="warn hide"></div>
     <p class="muted" style="margin-top:14px">
       Nova transcrit au fil de l'eau et <b>efface l'audio aussitôt</b> — seul le texte est gardé.
       À la fin, elle te rend la synthèse du cours et tes fiches de révision.
-      Laisse cet onglet ouvert : l'écran peut s'éteindre, l'enregistrement continue.
+      Laisse cet onglet ouvert et <b>garde l'écran allumé</b> : si l'appareil se met en
+      veille, le navigateur coupe le micro. Nova te préviendra si ça arrive.
     </p>
   </section>
 
@@ -351,7 +363,20 @@ async function _pousser(){
       $("sMots").textContent = d.mots || 0;
       $("sSeg").textContent  = d.segments || 0;
       if(d.apercu) $("apercu").textContent = "…" + d.apercu;
-      warn("liveWarn", "");
+      // ⚠️ On n'efface plus le bandeau sans regarder. « Tranche transmise » a
+      // longtemps effacé l'alerte qui disait que le micro ne captait rien — or une
+      // tranche parfaitement transmise peut être une minute de silence complet.
+      const suite = d.muettes_suite || 0;
+      if(suite >= 2){
+        warn("liveWarn",
+          `🎤 <b>${suite} minutes d'affilée sans rien entendre.</b> ` +
+          (d.inventees ? "Whisper comble le vide avec des phrases inventées " +
+                         "(« Sous-titrage Société Radio-Canada ») — elles sont retirées. " : "") +
+          "Nova enregistre du silence. <b>Arrête l'enregistrement</b>, teste un autre " +
+          "micro sur l'écran d'accueil, puis relance : continuer ne servira à rien.", true);
+      }else if(!silencePrevenu){
+        warn("liveWarn", "");
+      }
     }catch(e){
       echecs++;
       // On NE JETTE PAS la tranche : elle repart au prochain tour.
@@ -423,12 +448,82 @@ function demarrerVu(){
       if(niv > 6){ dernierSon = Date.now(); if(silencePrevenu){ silencePrevenu=false; warn("liveWarn",""); } }
       else if(!enPause && !silencePrevenu && Date.now() - dernierSon > 120000){
         silencePrevenu = true;
-        warn("liveWarn", "🔇 Aucun son depuis 2 minutes. Vérifie que le bon micro est " +
-             "sélectionné et que rien ne le bloque.", true);
+        warn("liveWarn", "🔇 <b>Aucun son depuis 2 minutes</b> — Nova enregistre du " +
+             "silence. Arrête, teste un autre micro sur l'écran d'accueil, puis " +
+             "relance. Laisser tourner ne produira qu'une transcription vide.", true);
       }
     })();
   }catch(e){}
 }
+
+/* ── Choix du micro, et preuve qu'il capte ─────────────────────────────────
+   Vu en vrai : 10 tranches, 9 mots, et « Sous-titrage Société Radio-Canada »
+   répété en boucle. Six minutes de silence enregistrées comme un cours. Le
+   navigateur avait pris le micro « par défaut » du système — un casque
+   débranché, une entrée muette — et rien, nulle part, ne le disait.
+   Tant qu'on ne peut pas en CHOISIR un autre et VÉRIFIER qu'il capte avant de
+   commencer, il n'y a pas de remède : seulement un constat, deux heures trop tard.
+   ────────────────────────────────────────────────────────────────────────── */
+let MIC = "";
+try{ MIC = localStorage.getItem("nova_micro") || ""; }catch(e){}
+
+async function listeMicros(){
+  try{
+    if(!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+    const d = (await navigator.mediaDevices.enumerateDevices()).filter(x => x.kind === "audioinput");
+    const s = $("mic");
+    // Sans permission accordée, les libellés sont vides : on garde une entrée
+    // neutre plutôt qu'une liste de « Micro 1 / Micro 2 » indéchiffrable.
+    s.innerHTML = d.length && d.some(x => x.label)
+      ? d.map(x => `<option value="${esc(x.deviceId)}">${esc(x.label)}</option>`).join("")
+      : `<option value="">Micro par défaut du système</option>`;
+    if(MIC && [...s.options].some(o => o.value === MIC)) s.value = MIC;
+    MIC = s.value;
+    $("micBloc").classList.remove("hide");
+  }catch(e){}
+}
+
+async function testeMicro(){
+  const z = $("micTest"); z.textContent = "test en cours…"; z.style.color = "";
+  let st = null, c = null;
+  try{
+    st = await navigator.mediaDevices.getUserMedia({
+      audio: MIC ? { deviceId: { exact: MIC } } : true });
+    await listeMicros();                 // les libellés n'existent qu'une fois autorisé
+    c = new (window.AudioContext || window.webkitAudioContext)();
+    const an = c.createAnalyser(); an.fftSize = 512;
+    c.createMediaStreamSource(st).connect(an);
+    const buf = new Uint8Array(an.frequencyBinCount);
+    let pic = 0; const t0t = Date.now();
+    await new Promise(r => (function b(){
+      an.getByteFrequencyData(buf);
+      let s = 0; for(const v of buf) s += v;
+      pic = Math.max(pic, (s / buf.length) * 2.6);
+      $("micTest").textContent = "test en cours… parle : " + Math.round(pic) + "%";
+      if(Date.now() - t0t < 2500) requestAnimationFrame(b); else r();
+    })());
+    if(pic > 6){ z.textContent = "✅ ce micro capte (niveau atteint : " + Math.round(pic) + "%)"; }
+    else{
+      z.innerHTML = "⚠️ <b>aucun son détecté sur ce micro.</b> Choisis-en un autre, " +
+                    "sinon le cours sera enregistré vide.";
+      z.style.color = "#ffb4a2";
+    }
+  }catch(e){
+    z.textContent = "⚠️ micro inaccessible (" + String(e && e.name || e).slice(0, 40) + ")";
+    z.style.color = "#ffb4a2";
+  }finally{
+    try{ st && st.getTracks().forEach(x => x.stop()); }catch(e){}
+    try{ c && c.close(); }catch(e){}
+  }
+}
+
+$("micTester").onclick = testeMicro;
+$("mic").onchange = () => {
+  MIC = $("mic").value;
+  try{ localStorage.setItem("nova_micro", MIC); }catch(e){}
+  testeMicro();
+};
+listeMicros();
 
 /* ── Veille de l'écran, et ce qui arrive quand elle lâche ───────────────────
    Sur téléphone, quand l'écran s'éteint, le navigateur gèle la page : le
@@ -494,9 +589,12 @@ function surveillePiste(){
           "application ?). <b>Nova n'entend plus rien</b> tant que ça dure.", true);
       }, MUTE_TOLERE_MS);
     };
+    // ⚠️ On n'efface le bandeau QUE s'il appartenait à la sourdine. Effacer sans
+    // regarder aurait emporté l'alerte « aucun son depuis 2 minutes » — celle qui
+    // dit justement que le micro ne capte rien.
     t.onunmute = () => {
       clearTimeout(muteTimer);
-      if(!fini && !enPause){ warn("liveWarn", ""); dernierSon = Date.now(); silencePrevenu = false; }
+      if(!fini && !enPause && !silencePrevenu) warn("liveWarn", "");
     };
   }
 }
@@ -545,11 +643,14 @@ document.addEventListener("visibilitychange", async () => {
   if(document.visibilityState !== "visible"){ if(!cacheDepuis) cacheDepuis = Date.now(); return; }
   await garderEveille();
   try{ if(ac && ac.state === "suspended") ac.resume(); }catch(e){}
-  // Le VU-mètre tourne sur requestAnimationFrame, gelé quand la page est cachée :
-  // sans cette remise à zéro, l'alarme « aucun son depuis 2 minutes » se
-  // déclenchait au retour alors que le micro allait très bien. Une alarme qui
-  // crie au loup, on finit par l'ignorer — y compris le jour où elle a raison.
-  dernierSon = Date.now(); silencePrevenu = false;
+  // ⚠️ Le VU-mètre tourne sur requestAnimationFrame, GELÉ tant que la page est
+  // cachée : ce temps-là n'est ni du son ni du silence, il n'est pas mesuré.
+  // La version d'hier remettait le compteur à ZÉRO — un aller-retour vers une
+  // autre fenêtre suffisait alors à repousser indéfiniment l'alarme « aucun son
+  // depuis 2 minutes ». Six minutes de micro muet sont passées comme ça, et
+  // c'est précisément l'alarme qui aurait dû les annoncer. On DÉCALE donc le
+  // compteur du temps non mesuré, au lieu de l'effacer.
+  if(cacheDepuis) dernierSon += Date.now() - cacheDepuis;
   reprendsSiCoupe();
 });
 
@@ -566,10 +667,12 @@ $("go").onclick = async () => {
   }catch(e){ warn("setupWarn", "❌ Serveur injoignable.", true); $("go").disabled = false; return; }
 
   try{
-    stream = await navigator.mediaDevices.getUserMedia({ audio:{
+    const contraintes = {
       echoCancellation:false,           // un cours n'est pas un appel : on ne veut aucun filtrage
       noiseSuppression:false,           // qui pourrait couper la voix lointaine du prof
-      autoGainControl:true, channelCount:1 } });
+      autoGainControl:true, channelCount:1 };
+    if(MIC) contraintes.deviceId = { exact: MIC };
+    stream = await navigator.mediaDevices.getUserMedia({ audio: contraintes });
   }catch(e){
     warn("setupWarn", "🎤 Micro refusé. Autorise-le dans la barre d'adresse, puis réessaie.", true);
     $("go").disabled = false; return;

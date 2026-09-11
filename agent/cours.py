@@ -383,6 +383,71 @@ def transcrire(audio: bytes, nom_fichier: str = "tranche.webm") -> str:
     raise RuntimeError("transcription indisponible — " + " | ".join(soucis))
 
 
+# ── Ce que Whisper invente quand il n'entend rien ─────────────────────────────
+# Sur une tranche muette, Whisper ne rend pas « rien » : il rend la phrase la plus
+# fréquente de son corpus de sous-titres. En français, c'est presque toujours
+# « Sous-titrage Société Radio-Canada ». Vu en vrai : 10 tranches, 9 mots, cette
+# phrase répétée — six minutes de silence présentées comme un cours transcrit.
+#
+# ⚠️ Les effacer ne suffirait pas, ce serait même pire : une tranche vidée devient
+# une tranche « sans rien à signaler », et le micro muet redevient invisible. On
+# les retire du texte ET on les COMPTE, pour pouvoir le dire.
+#
+# La liste reste volontairement courte et littérale : uniquement des mentions de
+# sous-titrage, qui n'apparaissent jamais dans un cours. Pas de « merci de votre
+# attention » ni de « abonnez-vous » — un prof peut les dire, et perdre une vraie
+# phrase de cours serait exactement ce qu'on refuse ici.
+_INVENTIONS = (
+    "sous-titrage société radio-canada",
+    "sous-titrage societe radio-canada",
+    "sous-titres réalisés par la communauté d'amara.org",
+    "sous-titres réalisés para la communauté d'amara.org",
+    "sous-titres réalisés par la communauté damara.org",
+    "sous-titrage st' 501", "sous-titrage st'501", "sous-titrage mfp",
+    "sous-titres fait par", "sous-titrage:", "sous-titres:",
+    "merci d'avoir regardé cette vidéo",
+    "soustitreur.com", "amara.org",
+)
+
+
+def _normalise(p: str) -> str:
+    return re.sub(r"[\s\W_]+", " ", (p or "").lower()).strip()
+
+
+def sans_hallucination(texte: str) -> tuple:
+    """Retire les phrases que Whisper invente sur du silence.
+
+    Rend (texte_nettoyé, nombre_de_phrases_retirées).
+    """
+    if not texte:
+        return "", 0
+    motifs = [_normalise(m) for m in _INVENTIONS]
+    gardees, retirees = [], 0
+    # Découpe en phrases : Whisper répète l'invention, chaque occurrence compte.
+    for phrase in re.split(r"(?<=[.!?…])\s+|\n+", texte):
+        p = phrase.strip()
+        if not p:
+            continue
+        # Whisper répète l'invention SANS ponctuation : « Sous-titrage Société
+        # Radio-Canada Sous-titrage Société Radio-Canada Sous-titrage… ». Découper
+        # en phrases ne suffit donc pas — on retire chaque occurrence et on
+        # regarde ce qui reste.
+        reste, occ = _normalise(p), 0
+        for m in motifs:
+            if m and m in reste:
+                occ += reste.count(m)
+                reste = reste.replace(m, " ")
+        reste = re.sub(r"\s+", " ", reste).strip()
+        # Il ne restait que ça : la tranche était muette.
+        if occ and len(reste) <= 12:
+            retirees += occ
+            continue
+        # Il reste de la vraie parole autour : on garde TOUT. Mieux vaut laisser
+        # passer une mention de sous-titrage que d'amputer une phrase du cours.
+        gardees.append(p)
+    return " ".join(gardees).strip(), retirees
+
+
 # ── Raccord des tranches ──────────────────────────────────────────────────────
 def _mots_nus(txt: str) -> list:
     """(position dans le texte d'origine, mot normalisé) — la ponctuation seule est ignorée.
@@ -448,6 +513,10 @@ def ajouter_tranche(sid: str, audio: bytes, secondes: float = 0.0,
             _ecrire(s)
         raise
 
+    # Ce que Whisper a inventé sur du silence n'entre pas dans le cours — mais on
+    # retient qu'il l'a inventé : c'est le seul indice qu'un micro ne capte rien.
+    texte, inventees = sans_hallucination(texte)
+
     with _LOCK:
         s = _lire(sid)
         # On donne assez de contexte pour que la fenêtre de recollage soit réellement remplie.
@@ -456,9 +525,18 @@ def ajouter_tranche(sid: str, audio: bytes, secondes: float = 0.0,
             s["transcript"] = (s["transcript"] + " " + propre).strip()
             s["en_attente"] = (s["en_attente"] + " " + propre).strip()
         s["segments"] += 1
+        # Une minute muette arrive (le prof écrit au tableau) : ce n'est pas une
+        # panne. Une SUITE de minutes muettes, si. On compte donc les deux.
+        muette = not texte.strip()
+        if muette:
+            s["muettes"] = s.get("muettes", 0) + 1
+            s["muettes_suite"] = s.get("muettes_suite", 0) + 1
+        else:
+            s["muettes_suite"] = 0
         s["secondes"] = round(s.get("secondes", 0.0) + max(0.0, secondes), 1)
         _ecrire(s)
         a_condenser = len(s["en_attente"]) >= SEUIL_CONDENSE
+        suite_muette = s.get("muettes_suite", 0)
 
     if a_condenser:
         try:
@@ -470,7 +548,10 @@ def ajouter_tranche(sid: str, audio: bytes, secondes: float = 0.0,
         s = _lire(sid)
     return {"ok": True, "mots": len(s["transcript"].split()), "segments": s["segments"],
             "secondes": s["secondes"], "trous": len(s["trous"]),
-            "apercu": propre[-160:] if propre else ""}
+            "apercu": propre[-160:] if propre else "",
+            # De quoi dire la vérité à l'écran : rien d'entendu sur cette minute,
+            # depuis combien de minutes d'affilée, et si Whisper a comblé le vide.
+            "muette": muette, "muettes_suite": suite_muette, "inventees": inventees}
 
 
 # ── Condensation au fil de l'eau (le « map ») ─────────────────────────────────
