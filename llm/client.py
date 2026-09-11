@@ -60,7 +60,11 @@ def _retenir_modele(fournisseur: str, modele: str) -> None:
 # réponse est mauvaise — et c'est invisible, puisqu'il n'y a pas d'erreur.
 _MODELES_INADAPTES = ("allam", "arabic", "-ar-", "saba", "jais",
                       "code-", "coder", "embed", "guard", "whisper", "tts",
-                      "vision", "ocr", "rerank", "moderation", "compound", "agent")
+                      "vision", "ocr", "rerank", "moderation", "compound", "agent",
+                      # ⚠️ « User Safety: safe » rendu comme synthèse d'un cours de 80 min :
+                      # un classificateur de sécurité avait répondu à la place du rédacteur.
+                      # Ces noms-là ne contiennent pas toujours « guard ».
+                      "shield", "safety", "nemoguard", "safeguard")
 
 # Familles connues pour bien répondre en français, dans l'ordre de préférence.
 _FAMILLES_SURES = ("llama-3.3", "llama-3.1", "llama-4", "gpt-oss", "mixtral",

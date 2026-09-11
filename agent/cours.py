@@ -567,6 +567,46 @@ _SYS_CONDENSE = (
 )
 
 
+# ── Une synthèse doit ressembler à un cours ───────────────────────────────────
+# Vu en vrai : 80 minutes, 8259 mots transcrits, et pour toute synthèse
+# « User Safety: safe ». C'est le verdict d'un modèle de MODÉRATION — un
+# classificateur a répondu à la place du rédacteur. Le texte n'était pas vide,
+# donc le seul garde-fou existant (`if not synthese`) l'a laissé passer, et Nova
+# a rangé ces cinq mots comme étant le cours de Lohan.
+#
+# ⚠️ La vérification porte sur la FORME de ce qui revient, pas sur une liste de
+# modèles interdits : llm/client.py écarte déjà les noms contenant « guard » ou
+# « moderation », et ça n'a pas suffi. Filtrer par nom, c'est se protéger des
+# fournisseurs qu'on connaît ; vérifier le résultat, c'est se protéger de tous.
+# C'est la règle du projet — la vérification se fait APRÈS le modèle.
+_VERDICT_MODERATION = re.compile(
+    r"^\s*(?:user\s*safety|safety|assessment|verdict|classification|moderation)\s*[:=]|"
+    r"^\s*(?:un)?safe\s*(?:[.\n]|$)|"
+    r"^\s*s(?:1[0-4]|[1-9])\s*(?:[:\-–]|$)", re.I)
+
+
+def invraisemblance(texte: str, mots_source: int) -> str:
+    """Rend "" si le texte peut être un résumé du cours, sinon la raison du refus.
+
+    Sert pour la synthèse finale ET pour chaque condensé : un verdict de
+    modération glissé dans les notes empoisonnerait la synthèse plus tard, quand
+    plus personne ne saurait d'où il vient.
+    """
+    t = (texte or "").strip()
+    if not t:
+        return "le modèle n'a rien renvoyé"
+    if _VERDICT_MODERATION.match(t) and len(t.split()) < 40:
+        return ("un modèle de modération a répondu à la place du rédacteur "
+                f"(« {t[:60]} »)")
+    mots = len(t.split())
+    # Un résumé fait au moins ~1 % de sa source, et au moins 25 mots. En dessous,
+    # ce n'est pas un résumé court : c'est autre chose qui a répondu.
+    plancher = max(25, int(mots_source * 0.01))
+    if mots_source >= 200 and mots < plancher:
+        return f"{mots} mot(s) rendus pour {mots_source} mots de cours"
+    return ""
+
+
 def _propre(texte: str) -> str:
     """Retire le brouillon interne des modèles raisonneurs.
 
@@ -614,6 +654,16 @@ def _condenser(sid: str) -> None:
             s["en_attente"] = (brut + " " + s["en_attente"]).strip()
             _ecrire(s)
         raise
+    # Un verdict de modération rangé dans les notes empoisonnerait la synthèse
+    # finale des heures plus tard, quand plus personne ne saurait d'où il vient.
+    # On traite ça comme une panne : le texte retourne en file, rien n'est perdu.
+    mauvais = invraisemblance(notes, len(brut.split()))
+    if mauvais:
+        with _LOCK:
+            s = _lire(sid)
+            s["en_attente"] = (brut + " " + s["en_attente"]).strip()
+            _ecrire(s)
+        raise RuntimeError(f"condensé refusé — {mauvais}")
     with _LOCK:
         s = _lire(sid)
         s["condenses"].append({"t": time.time(), "notes": (notes or "").strip()})
@@ -789,7 +839,12 @@ def terminer(sid: str) -> dict:
         if not s.get("transcript", "").strip():
             s["etat"] = "vide"; s["fin"] = time.time(); _ecrire(s)
             raise RuntimeError("aucune parole n'a été transcrite — rien à synthétiser")
-        if s.get("synthese"):                     # déjà fait : on ne refait pas le travail
+        # Déjà fait — mais seulement si ce qui est rangé là ressemble vraiment à
+        # une synthèse. Sinon « on ne refait pas le travail » verrouille la fausse
+        # réponse pour toujours : le cours de 80 minutes serait resté « User
+        # Safety: safe » quel que soit le nombre de fois qu'il relance.
+        if s.get("synthese") and not invraisemblance(s["synthese"],
+                                                     len(s["transcript"].split())):
             return s
         s["etat"] = "traitement"
         _ecrire(s)
@@ -823,12 +878,19 @@ def terminer(sid: str) -> dict:
             s["erreurs"] = (s.get("erreurs", []) + [str(e)[:200]])[-5:]
             _ecrire(s)
         raise
-    if not synthese:
+    # ⚠️ Ce test ne portait QUE sur le vide. « User Safety: safe » n'est pas vide :
+    # 80 minutes de cours ont été rangées derrière ces cinq mots, sans une erreur,
+    # sans un avertissement. Un état « à reprendre » est une bien meilleure
+    # nouvelle qu'une fausse synthèse : la transcription, elle, reste intacte.
+    refus = invraisemblance(synthese, len(s["transcript"].split()))
+    if refus:
         with _LOCK:
             s = _lire(sid)
             s["etat"] = "a_reprendre"
+            s["erreurs"] = (s.get("erreurs", []) + [refus])[-5:]
             _ecrire(s)
-        raise RuntimeError("le modèle n'a rien renvoyé pour la synthèse")
+        raise RuntimeError(f"synthèse refusée — {refus}. La transcription est intacte : "
+                           "relance la synthèse, un autre modèle prendra le relais.")
 
     fiches = _fiches_depuis(synthese)
     # Une synthese amputee doit le DIRE, en tete du document et dans les trous.

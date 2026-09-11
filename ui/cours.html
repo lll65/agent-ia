@@ -848,6 +848,21 @@ function afficher(d, perdues){
     catch(e){ $("copy").textContent = "❌ Échec"; }
     setTimeout(() => $("copy").textContent = "📋 Copier", 1800);
   };
+
+  // ⚠️ « 80 min · 8259 mots » et pour toute synthèse « User Safety: safe » — le
+  // verdict d'un modèle de modération, rangé comme étant le cours. Le serveur
+  // refuse maintenant ces réponses-là, mais les cours DÉJÀ enregistrés portent
+  // encore la fausse synthèse : sans ce contrôle ici, la correction serveur ne
+  // répare que l'avenir et laisse l'heure de cours déjà perdue telle quelle.
+  const motsSyn = (d.synthese || "").trim().split(/\s+/).filter(Boolean).length;
+  if((d.mots || 0) >= 200 && motsSyn < Math.max(25, Math.round((d.mots || 0) * 0.01))){
+    warn("outWarn", `❌ Cette synthèse est invraisemblable : <b>${motsSyn} mot(s)</b> pour ` +
+         `${d.mots} mots de cours. Un modèle s'est trompé de tâche. ` +
+         `<b>Ta transcription est intacte</b> — refais la synthèse, un autre modèle ` +
+         `prendra le relais.`, true);
+    $("copy").textContent = "🔄 Refaire la synthèse";
+    $("copy").onclick = () => relancerSynthese(sid);
+  }
 }
 /* Un seul bouton, un menu. Le format choisi part dans l'URL ; le menu se referme
    dès qu'on clique ailleurs, sinon il reste ouvert par-dessus la synthèse. */
