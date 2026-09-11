@@ -10349,6 +10349,86 @@ def test_un_verdict_de_moderation_nest_pas_une_synthese_de_cours():
     check_true("…en disant ce qui ne bouge pas", "transcription n'est pas touchée" in ui2)
 
 
+def test_le_cours_est_relu_par_un_second_passage_qui_ne_corrige_rien():
+    """« le llm reverifie pas si ya des truc faux dans mon cour ? parce que cest
+    important quand meme que ce que j'apprend ce soit vrai »
+
+    Il ne le faisait pas vraiment. La section « Zones à éclaircir » était écrite
+    par le MÊME modèle dans le MÊME appel que la synthèse : ça attrape les mots
+    que la transcription a déformés (« PANC », « Dates France »), pas ses propres
+    erreurs de raisonnement. Celui qui vient d'écrire « crédit fournisseur :
+    −2500 » ne se contredit pas trois lignes plus bas.
+
+    D'où un vrai second passage, avec deux règles non négociables :
+      1. IL SIGNALE, IL NE CORRIGE PAS. Une correction silencieuse s'apprend par
+         cœur ; un doute affiché se vérifie en trente secondes. Sur un cours,
+         réécrire ce qu'on croit faux, c'est faire réviser une phrase que le prof
+         n'a jamais dite — et il n'a aucun moyen de s'en apercevoir.
+      2. Le passage cité doit EXISTER dans le cours. Vérification mécanique,
+         après le modèle : un relecteur qui cite une phrase absente n'a pas relu,
+         il a inventé — et un faux doute décrédibilise les vrais.
+    """
+    import inspect
+    import agent.cours as C
+
+    cours = ("Le credit fournisseur diminue de 2500 euros et le delai de reglement "
+             "est de 5 h. " * 8)
+    brut = [
+        {"passage": "le delai de reglement est de 5 h", "type": "COHERENCE",
+         "souci": "un delai de reglement se compte en jours"},
+        {"passage": "la TVA collectee sur les ventes de janvier", "type": "FAIT",
+         "souci": "citation absente du cours"},
+        {"passage": "le delai de reglement est de 5 h", "type": "MOT",
+         "souci": "doublon du premier"},
+        {"passage": "5 h", "type": "MOT", "souci": "trop court pour être situé"},
+        {"passage": "Le credit fournisseur diminue", "type": "N_IMPORTE_QUOI",
+         "souci": "type inconnu"},
+        {"passage": "Le credit fournisseur diminue de 2500", "type": "COHERENCE",
+         "souci": ""},
+    ]
+    gardes = C.doutes_verifiables(brut, cours)
+    passages = [d["passage"] for d in gardes]
+    check("un vrai doute est gardé", passages[0], "le delai de reglement est de 5 h")
+    # ⚠️ Le cœur du garde-fou.
+    check_true("une citation absente du cours est jetée",
+               not any("TVA" in p for p in passages))
+    check("le même doute n'est pas compté deux fois", len(passages), len(set(passages)))
+    check_true("une citation trop courte est jetée", "5 h" not in passages)
+    check_true("un doute sans explication est jeté",
+               all(d["souci"] for d in gardes))
+    check("un type inconnu est ramené à quelque chose d'affichable",
+          [d["type"] for d in gardes if d["passage"].startswith("Le credit")][0],
+          "COHERENCE")
+    check("jamais plus de 8 doutes",
+          len(C.doutes_verifiables([{"passage": cours[:60], "type": "MOT",
+                                     "souci": f"n{i}"} for i in range(20)], cours)), 1)
+    check("un texte trop court n'est pas relu", C.relire("deux mots"), [])
+
+    # --- La relecture ne met JAMAIS la synthèse en danger ----------------------
+    fin = inspect.getsource(C.terminer)
+    check_true("la relecture est branchée", "relire(synthese" in fin)
+    check_true("…et son échec ne coûte pas la synthèse", "doutes = None" in fin)
+    # ⚠️ `None` (relecture impossible) et `[]` (relue, rien trouvé) ne veulent pas
+    # dire la même chose. Les confondre, c'est présenter un silence comme un
+    # feu vert — la panne silencieuse sous habillage rassurant.
+    check_true("les deux états sont distingués jusqu'à l'écran",
+               '"doutes": s.get("doutes")' in
+               (Path(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8"))
+
+    ui = (Path(__file__).resolve().parents[1] / "ui" / "cours.html").read_text(encoding="utf-8")
+    check_true("relecture impossible : c'est dit", "pas pu être faite" in ui)
+    check_true("rien trouvé : c'est dit AUTREMENT", "n'a rien relevé" in ui)
+    # ⚠️ Et surtout, la phrase qu'il ne faut jamais écrire.
+    check_true("« rien trouvé » n'est pas « tout est juste »",
+               "ne veut pas dire que tout est juste" in ui)
+    # (sur le CODE seul : le commentaire juste au-dessus cite la phrase interdite —
+    #  septième fois qu'un test se fait piéger par mes propres commentaires)
+    check_true("aucun « cours vérifié ✅ »", "cours vérifié" not in _code_js_seul(ui).lower())
+    check_true("Nova dit qu'elle n'a rien corrigé", "n'a rien corrigé" in ui)
+    check_true("les doutes partent dans l'export téléchargé",
+               "## ⚠️ À vérifier" in inspect.getsource(C.markdown))
+
+
 def test_un_cours_en_tableaux_saffiche_en_tableaux():
     """« elle pourrait faire des tableau nova non ? » — elle en FAISAIT déjà.
     C'est l'affichage qui ne suivait pas : `md()` ne connaissait pas les
@@ -13035,6 +13115,7 @@ if __name__ == "__main__":
                test_le_kine_qui_n_existait_pas_et_la_meteo_cherchee_sur_le_web,
                test_les_diapos_en_markdown_brut_et_les_cours_qu_on_range,
                test_un_verdict_de_moderation_nest_pas_une_synthese_de_cours,
+               test_le_cours_est_relu_par_un_second_passage_qui_ne_corrige_rien,
                test_un_cours_en_tableaux_saffiche_en_tableaux,
                test_un_micro_muet_ne_passe_pas_pour_un_cours,
                test_une_question_francaise_nappelle_pas_le_fisc_americain,
