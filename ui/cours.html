@@ -139,8 +139,18 @@
   /* Un seul point d'entrée par ligne : le menu ne se voit que quand on le demande. */
   .mini.pts{ font-size:15px; letter-spacing:.06em; padding:1px 9px 5px; }
   .cAct{ position:relative; }
-  .cmenu{ right:0; left:auto; bottom:auto; top:calc(100% + 6px); min-width:210px; }
-  .cmenu button span{ display:block; font-size:10.5px; color:#fca5a5; }
+  .cmenu{ right:0; left:auto; bottom:auto; top:calc(100% + 6px); min-width:210px;
+          max-height:70vh; overflow-y:auto; }
+  /* ⚠️ Le rouge était sur TOUS les sous-titres du menu — il n'était là que pour
+     le « définitif » de Supprimer. En ajoutant les formats de téléchargement,
+     « le texte brut, tout est dedans » serait devenu un avertissement rouge :
+     à force de rouge partout, plus rien n'alerte. */
+  .cmenu button span{ display:block; font-size:10.5px; color:var(--dim); }
+  .cmenu button[data-act="del"] span{ color:#fca5a5; }
+  /* Le téléchargement est un groupe : un filet le sépare des actions qui, elles,
+     modifient le cours. */
+  .cmenu .sepHaut{ border-top:1px solid var(--stroke); margin-top:4px; padding-top:11px;
+                   border-radius:0 0 10px 10px; }
   .hist a[draggable]{ cursor:grab; }
   .hist a.drag{ opacity:.4; }
   .hist .dossier.cible{ outline:2px dashed var(--neon2); outline-offset:4px; border-radius:12px; }
@@ -239,12 +249,7 @@
              que le découvrir à l'ouverture. -->
         <div class="ddwrap">
           <button id="dl">⬇️ Télécharger ▾</button>
-          <div class="ddmenu" id="dlMenu">
-            <button data-fmt="md">📝 Markdown (.md)<span>le texte brut, tout est dedans</span></button>
-            <button data-fmt="odt">📄 Writer (.odt)<span>tout le cours, mis en forme</span></button>
-            <button data-fmt="odp">📊 Impress (.odp)<span>une diapo par section</span></button>
-            <button data-fmt="ods">🔢 Calc (.ods)<span>les tableaux seulement</span></button>
-          </div>
+          <div class="ddmenu" id="dlMenu"><!-- rempli depuis FORMATS --></div>
         </div>
         <button id="copy">📋 Copier</button>
         <!-- ⚠️ Toujours disponible, même quand la synthèse a l'air bonne : une
@@ -985,6 +990,7 @@ function afficher(d, perdues){
 function brancheTelechargement(sid){
   const b = $("dl"), m = $("dlMenu");
   if(!b || !m) return;
+  m.innerHTML = boutonsFormats(f => `data-fmt="${f}"`);
   b.onclick = (e)=>{ e.stopPropagation(); m.classList.toggle("show"); };
   m.querySelectorAll("button[data-fmt]").forEach(x=>{
     x.onclick = ()=>{ m.classList.remove("show");
@@ -997,6 +1003,21 @@ document.addEventListener("click", ()=>{
   if(m) m.classList.remove("show");
   document.querySelectorAll(".cmenu.show").forEach(x=>x.classList.remove("show"));
 });
+/* ⚠️ UNE seule liste pour les deux menus (la carte du cours et le « … » de MES
+   COURS). Deux listes recopiées finissent toujours par diverger : un format
+   ajouté d'un côté et pas de l'autre, et personne ne s'en aperçoit avant que
+   quelqu'un cherche son .ods là où il n'est pas. */
+const FORMATS = [
+  ["md",  "📝 Markdown (.md)", "le texte brut, tout est dedans"],
+  ["odt", "📄 Writer (.odt)",  "tout le cours, mis en forme"],
+  ["odp", "📊 Impress (.odp)", "une diapo par section"],
+  ["ods", "🔢 Calc (.ods)",    "les tableaux seulement"],
+];
+function boutonsFormats(attrs){
+  return FORMATS.map(([f, nom, aide], i) =>
+    `<button ${attrs(f, i)}>${nom}<span>${aide}</span></button>`).join("");
+}
+
 function telecharger(sid, format){
   window.location = ORIGIN + "/agent/cours/export?id=" + encodeURIComponent(sid) +
                     "&key=" + encodeURIComponent(KEY) +
@@ -1009,7 +1030,9 @@ $("again").onclick = () => { SID = null; show("setup"); $("go").disabled = false
    ⚠️ La suppression demande confirmation ET nomme le cours : « supprimer ce cours ? »
    sans son titre, on clique sans lire. Rien ne s'efface jamais tout seul — c'est le
    seul endroit du programme qui efface un cours. */
-async function actionCours(act, id){
+async function actionCours(act, id, fmt){
+  // Télécharger depuis la liste : aucune raison d'ouvrir le cours d'abord.
+  if(act === "dl"){ telecharger(id, fmt === "md" ? "" : fmt); return; }
   const carte = document.querySelector(`a[data-id="${id}"] span`);
   const titre = carte ? carte.textContent.replace(/^[^\w]+/, "").trim() : "ce cours";
   try{
@@ -1120,6 +1143,8 @@ async function charger(){
                `<div class="ddmenu cmenu" data-for="${s.id}">` +
                `<button data-act="ren" data-id="${s.id}">Renommer / ranger</button>` +
                `<button data-act="notion" data-id="${s.id}">Envoyer dans Notion</button>` +
+               boutonsFormats((f, i) => `data-act="dl" data-fmt="${f}" data-id="${s.id}"` +
+                                        (i ? "" : ' class="sepHaut"')) +
                `<button data-act="del" data-id="${s.id}">Supprimer<span>définitif</span></button>` +
                `</div></span></a>`;
       }).join("");
@@ -1142,7 +1167,7 @@ async function charger(){
       const b = ev.target.closest("button[data-act]");
       if(b){ ev.stopPropagation();
         document.querySelectorAll(".cmenu.show").forEach(x=>x.classList.remove("show"));
-        await actionCours(b.dataset.act, b.dataset.id); return; }
+        await actionCours(b.dataset.act, b.dataset.id, b.dataset.fmt || ""); return; }
       await ouvrir(a.dataset.id); });
   }catch(e){}
 }
@@ -1156,8 +1181,12 @@ async function ouvrir(id){
       else{ alert("Ce cours ne contient aucune parole transcrite."); }
       window.scrollTo(0,0); return;
     }
+    // ⚠️ `doutes` manquait ici : la relecture s'affichait à la fin d'un
+    // enregistrement et disparaissait dès qu'on rouvrait le cours depuis la
+    // liste. Le même écran, deux chemins, un seul câblé — encore le miroir.
     afficher({ id, titre:d.titre, synthese:d.synthese, fiches:d.fiches, trous:d.trous,
-               secondes:d.secondes, mots:(d.transcript||"").split(/\s+/).length }, 0);
+               doutes:d.doutes, secondes:d.secondes,
+               mots:(d.transcript||"").split(/\s+/).length }, 0);
     window.scrollTo(0,0);
   }catch(e){}
 }
