@@ -64,6 +64,17 @@
   .chrono{ font-size:46px; font-weight:800; font-variant-numeric:tabular-nums; letter-spacing:.02em; }
   .sub{ color:var(--dim); font-size:13.5px; margin-top:8px; line-height:1.6; }
   /* Niveau sonore : la preuve visuelle que le micro capte VRAIMENT du son */
+  /* Un tableau large ne doit jamais élargir la page sur téléphone : il défile
+     dans sa propre boîte. */
+  .tbl{ overflow-x:auto; margin:14px 0; }
+  .tbl table{ border-collapse:collapse; width:100%; font-size:13px; }
+  .tbl th,.tbl td{ border:1px solid rgba(255,255,255,.14); padding:8px 10px; text-align:left;
+                   vertical-align:top; }
+  .tbl th{ background:rgba(255,255,255,.07); font-weight:600; white-space:nowrap; }
+  .tbl tr:nth-child(even) td{ background:rgba(255,255,255,.03); }
+  blockquote{ margin:10px 0; padding:8px 14px; border-left:3px solid rgba(255,255,255,.22);
+              background:rgba(255,255,255,.04); border-radius:0 10px 10px 0; }
+  hr{ border:0; border-top:1px solid rgba(255,255,255,.12); margin:18px 0; }
   .vu{ height:7px; background:rgba(255,255,255,.08); border-radius:5px; overflow:hidden; margin:18px auto 4px; max-width:320px; }
   .vu i{ display:block; height:100%; width:0%; border-radius:5px;
          background:linear-gradient(90deg,var(--ok),var(--neon2)); transition:width .1s linear; }
@@ -236,6 +247,10 @@
           </div>
         </div>
         <button id="copy">📋 Copier</button>
+        <!-- ⚠️ Toujours disponible, même quand la synthèse a l'air bonne : une
+             synthèse « plausible » peut très bien être médiocre, et c'est lui qui
+             en juge, pas un seuil dans le code. La transcription ne bouge pas. -->
+        <button id="regen">🔄 Regénérer</button>
         <button id="again">🎙️ Nouveau cours</button>
       </div>
     </div>
@@ -302,6 +317,13 @@ function warn(el, txt, grave){ const e=$(el);
 function esc(s){ return String(s==null?"":s)
   .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
   .replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
+/* Une rangée DOIT commencer par « | » : sinon une phrase de cours contenant un
+   trait vertical se transformerait en tableau. */
+function _rangee(l){ return /^\s*\|.*\|\s*$/.test(l); }
+function _separateur(l){ return /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(l); }
+function _cells(l){
+  return l.trim().replace(/^\|/,"").replace(/\|\s*$/,"").split("|").map(c=>c.trim());
+}
 function md(src){
   const blocs=[]; let s=esc(src||"");
   s=s.replace(/```(\w*)\n([\s\S]*?)```/g,(m,l,c)=>{ blocs.push(c); return `@@BLOC${blocs.length-1}@@`; });
@@ -309,7 +331,44 @@ function md(src){
      .replace(/^#\s+(.+)$/gm,"<h2>$1</h2>")
      .replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>").replace(/`([^`]+)`/g,"<code>$1</code>");
   const out=[]; let liste=null;
-  for(const ligne of s.split("\n")){
+  const L = s.split("\n");
+  for(let i=0;i<L.length;i++){
+    const ligne = L[i];
+    // ── Tableaux ────────────────────────────────────────────────────────────
+    // ⚠️ `md()` ne les connaissait pas. Un cours de compta rendu en tableaux
+    // s'affichait en « | Poste | Compte | Effet | |---|---|---| » brut : le
+    // modèle faisait bien son travail, c'est l'affichage qui ne suivait pas.
+    // Les modèles intercalent souvent une ligne vide entre deux rangées — sans
+    // les sauter, le tableau se coupait à la première.
+    if(_rangee(ligne)){
+      let j=i+1; while(j<L.length && !L[j].trim()) j++;
+      if(j<L.length && _separateur(L[j])){
+        if(liste){ out.push(`</${liste}>`); liste=null; }
+        const tete=_cells(ligne), corps=[];
+        let k=j+1;
+        while(k<L.length){
+          if(!L[k].trim()){ k++; continue; }
+          if(!_rangee(L[k])) break;
+          corps.push(_cells(L[k])); k++;
+        }
+        out.push('<div class="tbl"><table><thead><tr>' +
+          tete.map(c=>`<th>${c}</th>`).join("") + "</tr></thead><tbody>" +
+          corps.map(r=>"<tr>"+r.map(c=>`<td>${c}</td>`).join("")+"</tr>").join("") +
+          "</tbody></table></div>");
+        i = k-1; continue;
+      }
+    }
+    // Filet et citation : le modèle en produit beaucoup, ils finissaient en
+    // « --- » et « &gt; » affichés tels quels au milieu du cours.
+    if(/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(ligne)){
+      if(liste){ out.push(`</${liste}>`); liste=null; }
+      out.push("<hr>"); continue;
+    }
+    const cite = ligne.match(/^\s*&gt;\s?(.*)$/);
+    if(cite){
+      if(liste){ out.push(`</${liste}>`); liste=null; }
+      out.push(`<blockquote>${cite[1]}</blockquote>`); continue;
+    }
     const li=ligne.match(/^\s*[-*]\s+(.+)$/), no=ligne.match(/^\s*\d+[.)]\s+(.+)$/);
     if(li||no){ const t=li?"ul":"ol"; if(liste!==t){ if(liste) out.push(`</${liste}>`); out.push(`<${t}>`); liste=t; }
       out.push(`<li>${(li||no)[1]}</li>`); continue; }
@@ -764,25 +823,26 @@ function echecSynthese(sid, e){
   $("synth").closest(".card").classList.add("hide");
   $("fichesCard").classList.add("hide");
   brancheTelechargement(sid);
+  $("regen").onclick = () => relancerSynthese(sid, true);
   $("copy").textContent = "🔄 Réessayer la synthèse";
-  $("copy").onclick = () => relancerSynthese(sid);
+  $("copy").onclick = () => relancerSynthese(sid, true);
 }
 
-async function relancerSynthese(sid){
-  $("copy").disabled = true;
-  await synthetiser(sid, 0);
-  $("copy").disabled = false;
+async function relancerSynthese(sid, refaire){
+  $("copy").disabled = true; $("regen").disabled = true;
+  await synthetiser(sid, 0, refaire);
+  $("copy").disabled = false; $("regen").disabled = false;
 }
 
 /* La synthèse tourne côté serveur ; ici on suit son avancement.
    Fermer l'onglet ne l'interrompt pas : le résultat sera dans « MES COURS ». */
 const ATTENTE_MAX = 8 * 60 * 1000;      // 8 min : large, même modèles saturés
-async function synthetiser(sid, perdues){
+async function synthetiser(sid, perdues, refaire){
   show("work");
   $("workTxt").innerHTML = "Elle relit toute la transcription, structure le cours puis prépare tes fiches.";
   try{
     const r = await fetch(ORIGIN + "/agent/cours/stop", { method:"POST",
-      headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ key:KEY, id:sid }) });
+      headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ key:KEY, id:sid, refaire: !!refaire }) });
     const d = await r.json();
     if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
     if(d.synthese){ afficher(d, perdues); charger(); return; }
@@ -842,6 +902,14 @@ function afficher(d, perdues){
     el.onclick = () => el.classList.toggle("open"));
   const sid = d.id || SID;
   brancheTelechargement(sid);
+  // Regénérer reste possible quoi qu'il arrive : `refaire` force le serveur à
+  // repasser sur la transcription au lieu de rendre la synthèse déjà en place.
+  $("regen").onclick = () => {
+    if(!confirm("Refaire la synthèse à partir de la transcription ?\n\n" +
+                "Ta transcription n'est pas touchée. La synthèse actuelle sera remplacée."))
+      return;
+    relancerSynthese(sid, true);
+  };
   $("copy").textContent = "📋 Copier";
   $("copy").onclick = async () => {
     try{ await navigator.clipboard.writeText(d.synthese || ""); $("copy").textContent = "✅ Copié"; }
@@ -861,7 +929,7 @@ function afficher(d, perdues){
          `<b>Ta transcription est intacte</b> — refais la synthèse, un autre modèle ` +
          `prendra le relais.`, true);
     $("copy").textContent = "🔄 Refaire la synthèse";
-    $("copy").onclick = () => relancerSynthese(sid);
+    $("copy").onclick = () => relancerSynthese(sid, true);
   }
 }
 /* Un seul bouton, un menu. Le format choisi part dans l'URL ; le menu se referme

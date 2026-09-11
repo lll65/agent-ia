@@ -795,7 +795,7 @@ def _fiches_depuis(cours: str) -> list:
 _TRAVAUX = {}          # sid -> thread de synthèse en cours
 
 
-def lancer_synthese(sid: str) -> dict:
+def lancer_synthese(sid: str, refaire: bool = False) -> dict:
     """Démarre la synthèse EN TÂCHE DE FOND et rend la main immédiatement.
 
     Une synthèse peut prendre plusieurs minutes quand les modèles gratuits sont saturés
@@ -806,7 +806,13 @@ def lancer_synthese(sid: str) -> dict:
     """
     with _LOCK:
         s = _lire(sid)                                  # lève KeyError si inconnue
-        if s.get("synthese"):
+        # ⚠️ MÊME RÈGLE QUE `terminer`, ET C'EST LE POINT : la correction posée sur
+        # `terminer` seul ne servait à rien, parce que c'est ICI que la route passe.
+        # Corriger un chemin et pas son miroir, c'est le défaut qui revient le plus
+        # souvent dans ce projet — il produit un correctif qui se teste très bien et
+        # ne change rien pour l'utilisateur.
+        if s.get("synthese") and not refaire and not invraisemblance(
+                s["synthese"], len(s.get("transcript", "").split())):
             return s
         if not s.get("transcript", "").strip():
             s["etat"] = "vide"; s["fin"] = time.time(); _ecrire(s)
@@ -820,7 +826,7 @@ def lancer_synthese(sid: str) -> dict:
 
     def travail():
         try:
-            terminer(sid)
+            terminer(sid, refaire)
         except Exception as e:
             logger.warning(f"[cours] synthèse en fond échouée : {str(e)[:150]}")
 
@@ -831,7 +837,7 @@ def lancer_synthese(sid: str) -> dict:
         return _lire(sid)
 
 
-def terminer(sid: str) -> dict:
+def terminer(sid: str, refaire: bool = False) -> dict:
     """Clôture la session : condensation du reste, synthèse finale, fiches de révision."""
     from llm.client import chat
     with _LOCK:
@@ -843,8 +849,8 @@ def terminer(sid: str) -> dict:
         # une synthèse. Sinon « on ne refait pas le travail » verrouille la fausse
         # réponse pour toujours : le cours de 80 minutes serait resté « User
         # Safety: safe » quel que soit le nombre de fois qu'il relance.
-        if s.get("synthese") and not invraisemblance(s["synthese"],
-                                                     len(s["transcript"].split())):
+        if (s.get("synthese") and not refaire
+                and not invraisemblance(s["synthese"], len(s["transcript"].split()))):
             return s
         s["etat"] = "traitement"
         _ecrire(s)
