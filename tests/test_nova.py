@@ -10261,6 +10261,74 @@ def test_les_diapos_en_markdown_brut_et_les_cours_qu_on_range():
     check_true("le retour de Notion n'est pas maquillé", "(r && r.message)" in ui)
 
 
+def test_un_verdict_de_moderation_nest_pas_une_synthese_de_cours():
+    """« jenregistre un cour une heure et regarde cest ca le resultat » :
+    80 min · 8259 mots · 0 fiches, et pour toute synthèse « User Safety: safe ».
+
+    C'est la sortie d'un modèle de MODÉRATION — un classificateur a répondu à la
+    place du rédacteur. Le seul garde-fou existant testait `if not synthese` :
+    ces cinq mots n'étaient pas vides, donc une heure de cours a été rangée
+    derrière eux, sans une erreur, sans un avertissement.
+
+    ⚠️ La vérification porte sur la FORME de ce qui revient, pas sur une liste de
+    modèles interdits. llm/client.py écartait DÉJÀ les noms contenant « guard »
+    et « moderation », et ça n'a pas suffi : filtrer par nom protège des
+    fournisseurs qu'on connaît, vérifier le résultat protège de tous. C'est la
+    règle du projet — la vérification se fait APRÈS le modèle.
+    """
+    import inspect
+    import agent.cours as C
+
+    mots = 8259
+    # --- Le verdict de modération, sous ses formes connues --------------------
+    for sortie in ("User Safety: safe", "safe", "unsafe\nS1", "Assessment: safe",
+                   "S3: violence"):
+        check_true(f"refusé : « {sortie[:22]} »", bool(C.invraisemblance(sortie, mots)))
+    check_true("…et la raison est dite", "modération" in C.invraisemblance("safe", mots))
+    check_true("le vide reste refusé", bool(C.invraisemblance("", mots)))
+
+    # --- Mais une vraie synthèse passe ----------------------------------------
+    vraie = "# Les intégrales\n" + "mot " * 300
+    check("une vraie synthèse est acceptée", C.invraisemblance(vraie, mots), "")
+    # ⚠️ Un cours COURT a le droit d'avoir une synthèse courte : le plancher ne
+    # doit pas transformer « 5 minutes de cours » en échec permanent.
+    check("un cours court garde une synthèse courte",
+          C.invraisemblance("mot " * 30, 120), "")
+    # …mais 40 mots pour 8259, non.
+    check_true("une synthèse absurdement courte est refusée",
+               bool(C.invraisemblance("mot " * 40, mots)))
+
+    # --- Les trois endroits où ça devait mordre -------------------------------
+    fin = inspect.getsource(C.terminer)
+    check_true("la synthèse finale est vérifiée", "invraisemblance(synthese" in fin)
+    # ⚠️ Le piège : « déjà fait, on ne refait pas le travail » VERROUILLAIT la
+    # fausse synthèse. Il aurait pu relancer cent fois, il aurait rerecu
+    # « User Safety: safe » — parce que le champ était rempli.
+    check_true("une fausse synthèse déjà enregistrée peut être refaite",
+               'if s.get("synthese") and not invraisemblance(' in fin)
+    # Et les condensés : un verdict rangé dans les notes empoisonnerait la
+    # synthèse des heures plus tard, quand plus personne ne saurait d'où il vient.
+    cond = inspect.getsource(C._condenser)
+    check_true("les condensés aussi sont vérifiés", "invraisemblance(notes" in cond)
+    check_true("…et le texte refusé retourne en file, jamais perdu",
+               's["en_attente"] = (brut + " " + s["en_attente"]).strip()' in
+               cond[cond.index("invraisemblance(notes"):])
+
+    # --- L'écran : le cours DÉJÀ enregistré doit pouvoir être refait ----------
+    # Sans ça, la correction serveur ne répare que l'avenir et laisse l'heure de
+    # cours déjà perdue telle quelle.
+    ui = (Path(__file__).resolve().parents[1] / "ui" / "cours.html").read_text(encoding="utf-8")
+    check_true("l'écran détecte une synthèse invraisemblable", "motsSyn" in ui)
+    check_true("…le dit franchement", "Cette synthèse est invraisemblable" in ui)
+    check_true("…rappelle que rien n'est perdu", "transcription est intacte" in ui)
+    check_true("…et propose de la refaire", "🔄 Refaire la synthèse" in ui)
+
+    # --- La ceinture en plus : ces modèles ne sont plus choisis tout seuls ----
+    from llm.client import _MODELES_INADAPTES
+    for nom in ("shield", "safety", "guard"):
+        check_true(f"« {nom} » n'est pas choisi tout seul", nom in _MODELES_INADAPTES)
+
+
 def test_un_micro_muet_ne_passe_pas_pour_un_cours():
     """« Sous-titrage Société Radio-Canada ya toujours ecrit ca. ca enregistre
     meme pas. » — 10 tranches, 9 mots, six minutes de silence.
@@ -12919,6 +12987,7 @@ if __name__ == "__main__":
                test_la_mise_en_page_des_maquettes_sans_les_phrases_qui_rassurent,
                test_le_kine_qui_n_existait_pas_et_la_meteo_cherchee_sur_le_web,
                test_les_diapos_en_markdown_brut_et_les_cours_qu_on_range,
+               test_un_verdict_de_moderation_nest_pas_une_synthese_de_cours,
                test_un_micro_muet_ne_passe_pas_pour_un_cours,
                test_une_question_francaise_nappelle_pas_le_fisc_americain,
                test_ecran_eteint_le_cours_ne_sarrete_pas_en_silence,
