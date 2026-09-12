@@ -4830,7 +4830,12 @@ def _veut_des_etapes(message: str, demande: int) -> bool:
     découpe que les demandes qui portent VRAIMENT plusieurs sujets — découper « quelle
     heure il est » brûlerait son quota pour rien.
     """
-    from agent.etapes import merite_des_etapes
+    from agent.etapes import merite_des_etapes, un_seul_sujet
+    # ⚠️ Même sur un clic. Un clic dit « creuse davantage », pas « invente-moi
+    # des sujets » : découper une question qui n'en porte qu'un fabrique deux
+    # moitiés, et la synthèse recolle du vide.
+    if un_seul_sujet(message):
+        return False
     if int(demande or 0) > 1:
         return True
     return merite_des_etapes(message)
@@ -5318,6 +5323,12 @@ async def ask_stream(q: str = "", key: str = "", modele: str = "", vocal: int = 
                 async for ev in _reflexion_par_etapes(message, cfg, etapes, vocal):
                     yield ev
                 return
+            if int(etapes or 0) > 1:
+                # Il a cliqué et on ne découpe pas : on le DIT. Ignorer un clic en
+                # silence, c'est le laisser croire que le bouton ne marche pas.
+                from agent.etapes import un_seul_sujet as _un_sujet
+                yield sse({"type": "step", "kind": "route", "tool": "analyse",
+                           "text": "une seule étape : " + _un_sujet(message)})
 
             _minutes = recherche_approfondie(message)
             if _minutes:
@@ -6185,7 +6196,19 @@ def _analyze_upload(path: str, question: str) -> str:
     if p.suffix.lower() in _IMG_EXT:
         try:
             from llm.client import chat_vision
-            return chat_vision(str(p), question or "Décris cette image en détail, en français.")
+            from agent.core import sans_raisonnement
+            brut = chat_vision(str(p), question or "Décris cette image en détail, en français.")
+            # ⚠️ TOUS les chemins de texte passent par sans_raisonnement(). Celui-ci,
+            # non — et c'est le seul qui manquait. Sur une capture de graphique, le
+            # monologue complet du modèle s'affichait : « L'utilisateur me demande de
+            # l'aide pour une décision de trading… Self-Correction pendant la
+            # rédaction… », des dizaines de lignes de brouillon avant la réponse.
+            # Encore une correction posée partout sauf sur un miroir.
+            propre = sans_raisonnement(brut or "")
+            if not propre:
+                return ("❌ Le modèle n'a rendu que son brouillon interne, sans réponse "
+                        "utilisable. Réessaie — c'est passager.")
+            return propre
         except Exception as e:
             # ⚠️ DEUX DÉFAUTS ICI, LES DEUX DE MON FAIT, VUS SUR SA CAPTURE.
             # 1. « …c'est le modèle de vis » — la troncature à 200 signes coupait le

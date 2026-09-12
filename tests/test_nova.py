@@ -10352,6 +10352,63 @@ def test_un_verdict_de_moderation_nest_pas_une_synthese_de_cours():
     check_true("…en disant ce qui ne bouge pas", "transcription n'est pas touchée" in ui2)
 
 
+def test_un_follow_up_de_six_mots_ne_se_decoupe_pas_en_sujets():
+    """« jachète ou je vend duc repond en 2 phrases max » — six mots, sur un
+    graphique déjà à l'écran. Nova a découpé ça en « Comment acheter du duc » et
+    « Comment vendre du duc », a pris « duc » (pour « donc ») pour un code
+    boursier, et a expliqué comment revendre un titre qui n'existe pas.
+
+    Trois défauts enchaînés, chacun déjà connu sous un autre nom.
+    """
+    import inspect
+    from agent.etapes import un_seul_sujet, echec_detape, resultats_utiles
+
+    # --- 1. Un clic ne dit pas « invente-moi des sujets » ----------------------
+    check_true("un follow-up de six mots n'est pas découpé",
+               bool(un_seul_sujet("jachète ou je vend duc repond en 2 phrases max")))
+    check_true("…ni la même question sans la consigne de forme",
+               bool(un_seul_sujet("j achete ou je vends ?")))
+    # ⚠️ « réponds en 2 phrases max » dit COMMENT répondre, pas de quoi parler :
+    # laissée dans la question, elle faisait passer six mots pour une demande longue.
+    check_true("une alternative reste UNE question",
+               "alternative" in un_seul_sujet(
+                   "je dois reviser la compta ou les maths ce week-end sachant que jai un controle"))
+    # …mais une vraie demande multiple se découpe toujours.
+    check("une demande à plusieurs sujets se découpe encore",
+          un_seul_sujet("dis moi si il faut acheter 2crsi et quand et revendre a quel "
+                        "prix dans combien de temps"), "")
+    check("…et celle du trading aussi",
+          un_seul_sujet("comment etre forme au trading combien de temps ca met et quelle "
+                        "organisation nous fait passer un test et apres quelle sont les taxe ?"), "")
+    api = (Path(__file__).resolve().parents[1] / "api" / "agent.py").read_text(encoding="utf-8")
+    check_true("le garde-fou passe avant le clic", "if un_seul_sujet(message):" in api)
+    # Ignorer un clic EN SILENCE, c'est le laisser croire que le bouton est cassé.
+    check_true("le refus de découper est dit", '"une seule étape : "' in api)
+
+    # --- 2. Une panne interne ne devient pas un fait sur le monde --------------
+    # Une étape a rendu « Mes modèles gratuits sont à leur limite ». Elle a été
+    # comptée comme un résultat VALABLE, et la synthèse en a fait « aucune
+    # information n'est disponible pour le moment ». ⏳ manquait dans la liste des
+    # en-têtes d'échec — au pire endroit, celui de la saturation.
+    sature = ("⏳ Mes modèles gratuits sont à leur limite en ce moment. "
+              "Réessaie dans une minute — ça se débloque tout seul.")
+    check_true("la saturation est reconnue comme un échec", echec_detape(sature))
+    check_true("…même sans son symbole devant", echec_detape(sature[2:]))
+    check("elle ne compte pas comme un résultat",
+          len(resultats_utiles([{"texte": sature}, {"texte": "Le Nasdaq est un indice."}])), 1)
+    # ⚠️ Mais la même phrase AU MILIEU d'une vraie réponse n'est pas une panne :
+    # un filtre trop large jetterait du contenu utile.
+    check_true("une mention tardive ne fait pas jeter la réponse",
+               not echec_detape("Le Nasdaq est un indice. " * 40 + "réessaie dans une minute"))
+
+    # --- 3. Le <think> du modèle vision partait tel quel à l'écran ------------
+    src = inspect.getsource
+    import api.agent as A
+    vis = src(A._analyze_upload)
+    check_true("l'analyse d'image nettoie le brouillon", "sans_raisonnement(brut" in vis)
+    check_true("…et un brouillon seul est dit, pas affiché", "brouillon interne" in vis)
+
+
 def test_telecharger_un_cours_sans_avoir_a_louvrir():
     """« cette case tu peux la mettre dans les … aussi la ou ya export notion
     renommer ett » — les quatre formats étaient réservés à la carte du cours
@@ -12324,8 +12381,21 @@ def test_les_etapes_et_la_fiole_qui_decide():
     check_true("aucune étape aboutie : on le dit franchement",
                "Aucune de mes étapes n'a abouti" in E.rapport("x", [{"sujet": "a", "texte": "❌"}]))
 
-    # 5. Un clic passe devant le routage — c'est tout l'objet de sa demande.
-    check_true("le bouton impose les étapes", A._veut_des_etapes("salut", 5))
+    # 5. Un clic passe devant le routage — c'est tout l'objet de sa demande…
+    check_true("le bouton impose les étapes",
+               A._veut_des_etapes("dis moi si il faut acheter 2crsi et quand et revendre "
+                                  "a quel prix et dans combien de temps", 5))
+    # …mais un clic dit « creuse davantage », PAS « invente-moi des sujets ».
+    # ⚠️ Cette ligne affirmait `_veut_des_etapes("salut", 5)`. C'est exactement ce
+    # qui a produit : « jachète ou je vend duc repond en 2 phrases max » découpé en
+    # « Comment acheter du duc » / « Comment vendre du duc », « duc » (pour
+    # « donc ») pris pour un code boursier, et une explication sur la revente d'un
+    # titre qui n'existe pas. Découper une question qui n'a qu'un sujet ne
+    # réfléchit pas mieux : ça fabrique deux moitiés et la synthèse recolle du vide.
+    check_true("une demande d'un seul sujet n'est pas découpée, même sur clic",
+               not A._veut_des_etapes("salut", 5))
+    check_true("…ni un follow-up de six mots",
+               not A._veut_des_etapes("jachète ou je vend duc repond en 2 phrases max", 5))
     check("sans clic, une petite question reste simple", A._veut_des_etapes("salut", 0), False)
     src = inspect.getsource(A.ask_stream)
     avant_smalltalk = src.split("_is_smalltalk(message)")[0]
@@ -13196,6 +13266,7 @@ if __name__ == "__main__":
                test_le_kine_qui_n_existait_pas_et_la_meteo_cherchee_sur_le_web,
                test_les_diapos_en_markdown_brut_et_les_cours_qu_on_range,
                test_un_verdict_de_moderation_nest_pas_une_synthese_de_cours,
+               test_un_follow_up_de_six_mots_ne_se_decoupe_pas_en_sujets,
                test_telecharger_un_cours_sans_avoir_a_louvrir,
                test_le_cours_est_relu_par_un_second_passage_qui_ne_corrige_rien,
                test_un_cours_en_tableaux_saffiche_en_tableaux,
